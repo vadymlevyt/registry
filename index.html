@@ -496,7 +496,7 @@ function CaseCard({ c, onClick }) {
   );
 }
 
-function CaseModal({ c, onClose, onEdit }) {
+function CaseModal({ c, onClose, onEdit, onDelete }) {
   const hearingDays = daysUntil(c.hearing_date);
   const deadlineDays = daysUntil(c.deadline);
   return (
@@ -523,6 +523,7 @@ function CaseModal({ c, onClose, onEdit }) {
             <span className="modal-field-label">Наступне засідання</span>
             <span className={`modal-field-val ${urgencyClass(hearingDays) || ''}`}>
               {formatDate(c.hearing_date)}
+              {c.hearing_time && <span style={{marginLeft:6}}>о {c.hearing_time}</span>}
               {hearingDays !== null && <span style={{marginLeft:6,fontSize:'11px',opacity:0.7}}>({daysLabel(hearingDays)})</span>}
             </span>
           </div>
@@ -551,6 +552,12 @@ function CaseModal({ c, onClose, onEdit }) {
           <button className="btn-lg secondary">📁 Google Drive</button>
           <button className="btn-lg secondary">📄 Генерувати документ</button>
           <button className="btn-lg secondary">💡 Ідея для контенту</button>
+          <button className="btn-lg danger" onClick={() => {
+            if (window.confirm(`Видалити справу ${c.name}? Цю дію не можна скасувати.`)) {
+              onDelete(c.id);
+              onClose();
+            }
+          }}>🗑 Видалити справу</button>
         </div>
       </div>
     </div>
@@ -658,13 +665,48 @@ function Calendar({ cases, onSelectCase }) {
 }
 
 // ── QUICK INPUT ───────────────────────────────────────────────────────────────
-function QuickInput({ cases, onClose }) {
+function QuickInput({ cases, setCases, onClose }) {
   const [text, setText] = useState('');
   const [result, setResult] = useState(null);
 
   React.useEffect(() => { usageLog.log('quick_input'); }, []);
   const analyze = () => {
     if (!text.trim()) return;
+
+    // SYSTEM_IMPORT: автоматичне оновлення/створення справи
+    if (text.trim().startsWith('===SYSTEM_IMPORT===')) {
+      const data = {};
+      text.split('\n').forEach(line => {
+        const m = line.match(/^(\w+):\s*(.+)$/);
+        if (m) data[m[1].trim()] = m[2].trim();
+      });
+      const caseName = data.name || '';
+      setCases(prev => {
+        const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
+        if (existing) {
+          return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
+        } else {
+          return [...prev, {
+            id: Date.now(),
+            name: caseName,
+            client: data.client || '',
+            category: data.category || 'civil',
+            status: 'active',
+            court: data.court || '',
+            case_no: data.case_no || '',
+            hearing_date: data.hearing_date || '',
+            hearing_time: data.hearing_time || '',
+            deadline: data.deadline || '',
+            deadline_type: data.deadline_type || '',
+            next_action: data.next_action || '',
+            notes: data.notes || ''
+          }];
+        }
+      });
+      alert(`Дані внесено з контекстного файлу: ${caseName}`);
+      onClose();
+      return;
+    }
     const t = text.toLowerCase();
     // Simple mock parsing for demo
     const dateMatch = text.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/);
@@ -755,13 +797,14 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
     court: initialData.court || '',
     case_no: initialData.case_no || '',
     hearing_date: initialData.hearing_date || '',
+    hearing_time: initialData.hearing_time || '',
     deadline: initialData.deadline || '',
     deadline_type: initialData.deadline_type || '',
     next_action: initialData.next_action || '',
     notes: initialData.notes || ''
   } : {
     name:'', client:'', category:'civil', status:'active',
-    court:'', case_no:'', hearing_date:'', deadline:'',
+    court:'', case_no:'', hearing_date:'', hearing_time:'', deadline:'',
     deadline_type:'', next_action:'', notes:''
   });
   const set = (k,v) => setForm(f => ({...f,[k]:v}));
@@ -855,6 +898,10 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
         <div className="form-group">
           <label className="form-label">Дата засідання</label>
           <input className="form-input" type="date" value={form.hearing_date} onChange={e=>set('hearing_date',e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Час засідання</label>
+          <input className="form-input" type="time" value={form.hearing_time} onChange={e=>set('hearing_time',e.target.value)} />
         </div>
         <div className="form-group">
           <label className="form-label">Дедлайн подачі</label>
@@ -1124,6 +1171,11 @@ function App() {
     setTab('add');
   };
 
+  const deleteCase = (id) => {
+    setCases(prev => prev.filter(c => c.id !== id));
+    setSelected(null);
+  };
+
   return (
     <div className="app">
       {/* TOPBAR */}
@@ -1241,8 +1293,8 @@ function App() {
       </div>
 
       {/* MODALS */}
-      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} />}
-      {showQI && <QuickInput cases={cases} onClose={() => setShowQI(false)} />}
+      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={deleteCase} />}
+      {showQI && <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} />}
 
       {/* FAB */}
       <button className="fab" onClick={() => setShowQI(true)} title="Quick Input">⚡</button>
