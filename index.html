@@ -668,6 +668,24 @@ function Calendar({ cases, onSelectCase }) {
 function QuickInput({ cases, setCases, onClose }) {
   const [text, setText] = useState('');
   const [result, setResult] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = React.useRef(null);
+
+  const handleFile = (file) => {
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'txt' || ext === 'md') {
+      const reader = new FileReader();
+      reader.onload = (e) => setText(e.target.result);
+      reader.readAsText(file);
+    } else {
+      setText(`[Файл: ${file.name} — обробка AI буде додана в наступній версії]`);
+    }
+  };
+
+  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+  const onDragLeave = () => setDragOver(false);
+  const onDrop = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
 
   React.useEffect(() => { usageLog.log('quick_input'); }, []);
   const analyze = () => {
@@ -744,10 +762,24 @@ function QuickInput({ cases, setCases, onClose }) {
 
   return (
     <div className="qi-overlay" onClick={onClose}>
-      <div className="qi-panel" onClick={e => e.stopPropagation()}>
+      <div
+        className="qi-panel"
+        onClick={e => e.stopPropagation()}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        style={dragOver ? {outline:'2px solid var(--blue)',background:'var(--bg2)'} : {}}
+      >
         <div className="qi-title">
           <span>⚡</span> Quick Input — вставте повістку, напишіть або скиньте файл
         </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="*"
+          style={{display:'none'}}
+          onChange={e => handleFile(e.target.files[0])}
+        />
         <textarea
           className="qi-textarea"
           placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або введіть будь-яку інформацію по справі..."
@@ -778,7 +810,7 @@ function QuickInput({ cases, setCases, onClose }) {
           </div>
         )}
         <div className="qi-row">
-          <span className="qi-hint">📎 Фото / скріншот / PDF — ще в розробці</span>
+          <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>📎 Прикріпити файл</button>
           <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
           <button className="btn-sm btn-primary" onClick={analyze}>Аналізувати</button>
         </div>
@@ -921,7 +953,7 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
         </div>
       </div>
       <div className="form-actions">
-        <button className="btn-lg primary" onClick={() => { if(form.name&&form.client&&form.court) onSave(initialData ? {...form, id: initialData.id} : form); }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
+        <button className="btn-lg primary" onClick={() => { if(form.name) onSave(initialData ? {...form, id: initialData.id} : form); }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
         <button className="btn-lg secondary" onClick={onCancel}>Скасувати</button>
         <button className="btn-sm btn-ghost" style={{marginLeft:'auto'}}>💡 Ідея для контенту</button>
       </div>
