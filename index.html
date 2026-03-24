@@ -496,7 +496,7 @@ function CaseCard({ c, onClick }) {
   );
 }
 
-function CaseModal({ c, onClose }) {
+function CaseModal({ c, onClose, onEdit }) {
   const hearingDays = daysUntil(c.hearing_date);
   const deadlineDays = daysUntil(c.deadline);
   return (
@@ -547,7 +547,7 @@ function CaseModal({ c, onClose }) {
         </div>
 
         <div className="modal-actions">
-          <button className="btn-lg primary">✏️ Редагувати</button>
+          <button className="btn-lg primary" onClick={() => onEdit(c)}>✏️ Редагувати</button>
           <button className="btn-lg secondary">📁 Google Drive</button>
           <button className="btn-lg secondary">📄 Генерувати документ</button>
           <button className="btn-lg secondary">💡 Ідея для контенту</button>
@@ -746,8 +746,20 @@ function QuickInput({ cases, onClose }) {
 }
 
 // ── INTAKE / ADD CASE FORM ────────────────────────────────────────────────────
-function AddCaseForm({ onSave, onCancel }) {
-  const [form, setForm] = useState({
+function AddCaseForm({ onSave, onCancel, initialData }) {
+  const [form, setForm] = useState(initialData ? {
+    name: initialData.name || '',
+    client: initialData.client || '',
+    category: initialData.category || 'civil',
+    status: initialData.status || 'active',
+    court: initialData.court || '',
+    case_no: initialData.case_no || '',
+    hearing_date: initialData.hearing_date || '',
+    deadline: initialData.deadline || '',
+    deadline_type: initialData.deadline_type || '',
+    next_action: initialData.next_action || '',
+    notes: initialData.notes || ''
+  } : {
     name:'', client:'', category:'civil', status:'active',
     court:'', case_no:'', hearing_date:'', deadline:'',
     deadline_type:'', next_action:'', notes:''
@@ -777,7 +789,7 @@ function AddCaseForm({ onSave, onCancel }) {
 
   return (
     <div className="form-panel">
-      <div className="form-title">Нова справа — Intake</div>
+      <div className="form-title">{initialData ? 'Редагувати справу' : 'Нова справа — Intake'}</div>
       <div className="form-desc">Заповніть форму, використайте AI-чат для нотаток, або завантажте документи для автозаповнення</div>
 
       {/* AI chat */}
@@ -862,7 +874,7 @@ function AddCaseForm({ onSave, onCancel }) {
         </div>
       </div>
       <div className="form-actions">
-        <button className="btn-lg primary" onClick={() => { if(form.name&&form.client&&form.court) onSave(form); }}>Зберегти справу</button>
+        <button className="btn-lg primary" onClick={() => { if(form.name&&form.client&&form.court) onSave(initialData ? {...form, id: initialData.id} : form); }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
         <button className="btn-lg secondary" onClick={onCancel}>Скасувати</button>
         <button className="btn-sm btn-ghost" style={{marginLeft:'auto'}}>💡 Ідея для контенту</button>
       </div>
@@ -1049,6 +1061,7 @@ function App() {
   const openCase = (c) => { usageLog.log('open_case', {name: c.name}); setSelected(c); };
   const [showQI, setShowQI] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [editingCase, setEditingCase] = useState(null);
   const [search, setSearch] = useState('');
   const [filterCat, setFilterCat] = useState('all');
   const [filterStatus, setFilterStatus] = useState('active');
@@ -1098,6 +1111,19 @@ function App() {
     setTab('cases');
   };
 
+  const updateCase = (form) => {
+    setCases(prev => prev.map(c => c.id === form.id ? { ...form } : c));
+    setEditingCase(null);
+    setSelected({ ...form });
+    setTab('cases');
+  };
+
+  const handleEdit = (c) => {
+    setSelected(null);
+    setEditingCase(c);
+    setTab('add');
+  };
+
   return (
     <div className="app">
       {/* TOPBAR */}
@@ -1125,7 +1151,7 @@ function App() {
           {id:'add',       label:'➕ Нова справа'},
           {id:'analysis',  label:'🔍 Аналіз системи'},
         ].map(t => (
-          <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => setTab(t.id)}>
+          <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => { if (t.id !== 'add') setEditingCase(null); setTab(t.id); }}>
             {t.label}
           </button>
         ))}
@@ -1200,7 +1226,11 @@ function App() {
 
         {/* ── ADD CASE ── */}
         {tab === 'add' && (
-          <AddCaseForm onSave={addCase} onCancel={() => setTab('cases')} />
+          <AddCaseForm
+            onSave={editingCase ? updateCase : addCase}
+            onCancel={() => { setEditingCase(null); setTab('cases'); }}
+            initialData={editingCase}
+          />
         )}
 
         {/* ── ANALYSIS ── */}
@@ -1211,7 +1241,7 @@ function App() {
       </div>
 
       {/* MODALS */}
-      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} />}
+      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} />}
       {showQI && <QuickInput cases={cases} onClose={() => setShowQI(false)} />}
 
       {/* FAB */}
