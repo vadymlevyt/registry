@@ -7,6 +7,7 @@
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -993,8 +994,83 @@ const usageLog = {
   }
 };
 
+// ── GOOGLE DRIVE SERVICE ──────────────────────────────────────────────────────
+const GOOGLE_CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID'; // Replace with your Google Cloud Console Client ID
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_FILE_NAME = 'registry_data.json';
+
+const driveService = {
+  _fileId: null,
+
+  isConnected() { return !!localStorage.getItem('levytskyi_drive_token'); },
+  getToken()    { return localStorage.getItem('levytskyi_drive_token'); },
+  saveToken(t)  { localStorage.setItem('levytskyi_drive_token', t); },
+  clearToken()  { localStorage.removeItem('levytskyi_drive_token'); this._fileId = null; },
+
+  authorize() {
+    return new Promise((resolve, reject) => {
+      if (!window.google) { reject(new Error('Google API не завантажено')); return; }
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: (resp) => {
+          if (resp.error) { reject(new Error(resp.error)); return; }
+          this.saveToken(resp.access_token);
+          resolve(resp.access_token);
+        }
+      });
+      client.requestAccessToken();
+    });
+  },
+
+  async _findFileId(token) {
+    if (this._fileId) return this._fileId;
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}'+and+trashed=false&fields=files(id)`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const data = await res.json();
+    if (data.files && data.files.length > 0) { this._fileId = data.files[0].id; }
+    return this._fileId || null;
+  },
+
+  async readCases(token) {
+    const id = await this._findFileId(token);
+    if (!id) return null;
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${id}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  },
+
+  async writeCases(token, cases) {
+    const body = JSON.stringify(cases);
+    const id = await this._findFileId(token);
+    if (id) {
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body
+      });
+    } else {
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'application/json' })], { type: 'application/json' }));
+      form.append('file', new Blob([body], { type: 'application/json' }));
+      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form
+      });
+      const created = await res.json();
+      this._fileId = created.id;
+    }
+  }
+};
+
 // ── ANALYSIS MODULE ───────────────────────────────────────────────────────────
-function AnalysisPanel({ cases }) {
+function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, driveSyncStatus }) {
   const stats = usageLog.getStats();
   const ideas = usageLog.getIdeas();
 
@@ -1051,10 +1127,87 @@ function AnalysisPanel({ cases }) {
     analysis_idea_saved: 'Ідей збережено',
   };
 
+  const importRef = React.useRef(null);
+
+  const exportData = () => {
+    const date = new Date().toISOString().slice(0,10);
+    const blob = new Blob([JSON.stringify(cases, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `registry_export_${date}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        if (!Array.isArray(parsed)) { alert('Невірний формат файлу. Очікується масив справ.'); return; }
+        if (!confirm(`Буде завантажено ${parsed.length} справ. Поточні дані будуть замінені. Продовжити?`)) return;
+        setCases(parsed);
+        localStorage.setItem('levytskyi_cases', JSON.stringify(parsed));
+        alert(`Імпортовано ${parsed.length} справ.`);
+      } catch(err) { alert('Помилка читання файлу: ' + err.message); }
+    };
+    reader.readAsText(file);
+  };
+
+  const connectDrive = async () => {
+    try {
+      const token = await driveService.authorize();
+      setDriveConnected(true);
+      alert('Google Drive підключено успішно!');
+      // Try to load cases from Drive right away
+      const driveCases = await driveService.readCases(token);
+      if (driveCases && Array.isArray(driveCases)) {
+        if (confirm(`На Google Drive знайдено ${driveCases.length} справ. Завантажити і замінити поточні?`)) {
+          setCases(driveCases);
+        }
+      }
+    } catch(err) { alert('Помилка підключення: ' + err.message); }
+  };
+
+  const disconnectDrive = () => {
+    driveService.clearToken();
+    setDriveConnected(false);
+  };
+
   return (
     <div className="analysis-panel">
       <div className="form-title" style={{marginBottom:4}}>🔍 Аналіз системи</div>
       <div className="form-desc">Спостереження за використанням · Ідеї для покращення</div>
+
+      {/* Export / Import */}
+      <div className="section-title" style={{fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:10}}>Резервне копіювання</div>
+      <div style={{display:'flex',gap:8,marginBottom:20,flexWrap:'wrap'}}>
+        <button className="btn-sm btn-ghost" onClick={exportData}>⬇ Експорт даних</button>
+        <button className="btn-sm btn-ghost" onClick={() => importRef.current.click()}>⬆ Імпорт даних</button>
+        <input ref={importRef} type="file" accept=".json" style={{display:'none'}} onChange={e => { importData(e.target.files[0]); e.target.value=''; }} />
+      </div>
+
+      {/* Google Drive */}
+      <div className="section-title" style={{fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:10}}>Google Drive синхронізація</div>
+      <div style={{background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:14,marginBottom:20}}>
+        {driveConnected ? (
+          <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <span style={{color:'var(--green)',fontSize:13}}>✅ Google Drive підключено</span>
+            {driveSyncStatus === 'syncing' && <span style={{fontSize:11,color:'var(--text3)'}}>⏳ Збереження...</span>}
+            {driveSyncStatus === 'synced'  && <span style={{fontSize:11,color:'var(--text3)'}}>✓ Синхронізовано</span>}
+            {driveSyncStatus === 'error'   && <span style={{fontSize:11,color:'var(--red)'}}>⚠ Помилка синхронізації</span>}
+            <button className="btn-sm btn-ghost" style={{marginLeft:'auto'}} onClick={disconnectDrive}>Відключити</button>
+          </div>
+        ) : (
+          <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,marginBottom:4}}>Автоматична синхронізація справ через Google Drive</div>
+              <div style={{fontSize:11,color:'var(--text3)'}}>Дані зберігаються у файл registry_data.json у вашому Drive</div>
+            </div>
+            <button className="btn-sm btn-primary" onClick={connectDrive}>🔗 Підключити Google Drive</button>
+          </div>
+        )}
+      </div>
 
       {/* Stats */}
       <div className="section-title" style={{fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:10}}>Статистика використання</div>
@@ -1136,6 +1289,8 @@ function App() {
     return INITIAL_CASES;
   });
   const [lastSaved, setLastSaved] = useState(null);
+  const [driveConnected, setDriveConnected] = useState(() => driveService.isConnected());
+  const [driveSyncStatus, setDriveSyncStatus] = useState('idle');
   const [selected, setSelected] = useState(null);
   const openCase = (c) => { usageLog.log('open_case', {name: c.name}); setSelected(c); };
   const [showQI, setShowQI] = useState(false);
@@ -1145,12 +1300,33 @@ function App() {
   const [filterCat, setFilterCat] = useState('all');
   const [filterStatus, setFilterStatus] = useState('active');
 
-  // Auto-save to localStorage on every change
+  // Load from Drive on mount if connected
+  React.useEffect(() => {
+    if (!driveConnected) return;
+    const token = driveService.getToken();
+    if (!token) return;
+    driveService.readCases(token).then(driveCases => {
+      if (driveCases && Array.isArray(driveCases) && driveCases.length > 0) {
+        setCases(driveCases);
+      }
+    }).catch(() => {});
+  }, []); // eslint-disable-line
+
+  // Auto-save to localStorage (always) and Drive (if connected)
   React.useEffect(() => {
     try {
       localStorage.setItem('levytskyi_cases', JSON.stringify(cases));
       setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
     } catch(e) {}
+    if (driveConnected) {
+      const token = driveService.getToken();
+      if (token) {
+        setDriveSyncStatus('syncing');
+        driveService.writeCases(token, cases)
+          .then(() => setDriveSyncStatus('synced'))
+          .catch(() => setDriveSyncStatus('error'));
+      }
+    }
   }, [cases]);
 
   const hotCases = useMemo(() => cases
@@ -1319,7 +1495,7 @@ function App() {
 
         {/* ── ANALYSIS ── */}
         {tab === 'analysis' && (
-          <AnalysisPanel cases={cases} />
+          <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />
         )}
 
       </div>
