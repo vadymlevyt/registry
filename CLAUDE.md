@@ -1,0 +1,1 @@
+Це реєстр справ адвокатського бюро Левицького. Один файл index.html на React+Babel. Сховище: localStorage. GitHub Pages: https://vadymlevyt.github.io/registry/ Після будь-яких змін завжди комітити в гілку main.
