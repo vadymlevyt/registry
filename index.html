@@ -688,9 +688,15 @@ function QuickInput({ cases, setCases, onClose }) {
   const onDragLeave = () => setDragOver(false);
   const onDrop = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
 
+  const [loading, setLoading] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const apiKey = localStorage.getItem('claude_api_key') || '';
+
   React.useEffect(() => { usageLog.log('quick_input'); }, []);
-  const analyze = () => {
+
+  const analyze = async () => {
     if (!text.trim()) return;
+    setApiError(null);
 
     // SYSTEM_IMPORT: автоматичне оновлення/створення справи
     if (text.trim().startsWith('===SYSTEM_IMPORT===')) {
@@ -726,39 +732,38 @@ function QuickInput({ cases, setCases, onClose }) {
       onClose();
       return;
     }
-    const t = text.toLowerCase();
-    // Simple mock parsing for demo
-    const dateMatch = text.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/);
-    const timeMatch = text.match(/(\d{1,2}):(\d{2})/);
-    const isSubpoena = t.includes('повістк') || t.includes('засідання') || t.includes('судове') || t.includes('слухання');
-    const courtMatch = cases.find(c => t.includes(c.name.toLowerCase()) || t.includes(c.client.toLowerCase()));
 
-    if (isSubpoena && dateMatch) {
-      const day = dateMatch[1].padStart(2,'0');
-      const mon = dateMatch[2].padStart(2,'0');
-      const yr = dateMatch[3].length===2 ? '20'+dateMatch[3] : dateMatch[3];
-      const parsedDate = `${yr}-${mon}-${day}`;
-      const daysAway = daysUntil(parsedDate);
-      const isDuplicate = courtMatch && courtMatch.hearing_date === parsedDate;
-
-      setResult({
-        type: 'subpoena',
-        date: `${day}.${mon}.${yr}`,
-        time: timeMatch ? `${timeMatch[1]}:${timeMatch[2]}` : null,
-        case: courtMatch ? courtMatch.name : null,
-        isDuplicate,
-        isPast: daysAway !== null && daysAway < 0,
-        action: isDuplicate
-          ? `⚠️ Ця дата вже зафіксована у справі «${courtMatch?.name}». Це та сама повістка чи нова?`
-          : `Виявлено повістку на ${day}.${mon}.${yr}${timeMatch?` о ${timeMatch[1]}:${timeMatch[2]}`:''}. ${courtMatch ? `Схоже на справу «${courtMatch.name}».` : 'Справу не розпізнано — оберіть вручну.'}`
+    // Real Claude API call
+    setLoading(true);
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1000,
+          system: 'Ти — асистент адвокатського бюро Левицького. Отримуєш текст: повістку, нотатку, документ або команду. Визнач: 1) тип вводу, 2) до якої справи належить якщо можна визначити з тексту, 3) які дані витягнути — дата, номер справи, суд, наступна дія. Відповідай коротко українською.',
+          messages: [{ role: 'user', content: text }]
+        })
       });
-    } else {
-      setResult({
-        type: 'note',
-        action: `Розпізнано як нотатку. Прикріпити до справи або зберегти як загальну нотатку?`,
-        case: courtMatch ? courtMatch.name : null,
-      });
+      const data = await res.json();
+      if (!res.ok) {
+        const errMsg = data?.error?.message || `Помилка API: ${res.status}`;
+        setApiError(errMsg);
+        setLoading(false);
+        return;
+      }
+      const reply = data?.content?.[0]?.text || 'Відповідь не отримана';
+      setResult({ type: 'ai', action: reply, case: null });
+    } catch(err) {
+      setApiError(err.message || 'Мережева помилка');
     }
+    setLoading(false);
   };
 
   return (
@@ -788,32 +793,47 @@ function QuickInput({ cases, setCases, onClose }) {
           onChange={e => setText(e.target.value)}
           autoFocus
         />
-        {result && (
+        {apiError && (
+          <div className="qi-result" style={{borderColor:'var(--red)'}}>
+            <div className="qi-result-title" style={{color:'var(--red)'}}>⚠️ Помилка API</div>
+            <div className="qi-result-text" style={{fontSize:12}}>{apiError}</div>
+            <div className="qi-result-actions">
+              <button className="btn-sm btn-ghost" onClick={() => setApiError(null)}>Закрити</button>
+            </div>
+          </div>
+        )}
+        {result && !apiError && (
           <div className="qi-result">
             <div className="qi-result-title">
-              {result.type === 'subpoena' ? '📅 Повістка' : '📝 Нотатка'}
+              {result.type === 'subpoena' ? '📅 Повістка' : result.type === 'ai' ? '🤖 AI аналіз' : '📝 Нотатка'}
               {result.isPast && <span style={{marginLeft:8,color:'var(--orange)',fontSize:11}}>⚠️ Дата в минулому</span>}
             </div>
             <div className="qi-result-text">{result.action}</div>
             {result.case && <div style={{fontSize:11,color:'var(--text2)',marginTop:4}}>Справа: {result.case}</div>}
             <div className="qi-result-actions">
-              {!result.isDuplicate && !result.isPast && (
+              {result.type === 'ai' && (
+                <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Закрити</button>
+              )}
+              {result.type !== 'ai' && !result.isDuplicate && !result.isPast && (
                 <button className="btn-sm btn-primary" onClick={onClose}>✓ Підтвердити і зберегти</button>
               )}
-              {(result.isDuplicate || result.isPast) && (
+              {result.type !== 'ai' && (result.isDuplicate || result.isPast) && (
                 <>
                   <button className="btn-sm btn-primary" onClick={onClose}>Так, зберегти</button>
                   <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Ні, скасувати</button>
                 </>
               )}
-              {!result.case && <button className="btn-sm btn-ghost">Обрати справу</button>}
+              {result.type !== 'ai' && !result.case && <button className="btn-sm btn-ghost">Обрати справу</button>}
             </div>
           </div>
         )}
         <div className="qi-row">
           <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>📎 Прикріпити файл</button>
           <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
-          <button className="btn-sm btn-primary" onClick={analyze}>Аналізувати</button>
+          {apiKey
+            ? <button className="btn-sm btn-primary" onClick={analyze} disabled={loading}>{loading ? '⏳ Аналіз...' : 'Аналізувати'}</button>
+            : <span style={{fontSize:11,color:'var(--orange)'}}>⚠️ Додайте Claude API Key в розділі Аналіз системи</span>
+          }
         </div>
       </div>
     </div>
@@ -1128,6 +1148,15 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
   };
 
   const importRef = React.useRef(null);
+  const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('claude_api_key') || '');
+  const [apiKeySaved, setApiKeySaved] = useState(() => !!localStorage.getItem('claude_api_key'));
+
+  const saveApiKey = () => {
+    const val = apiKeyInput.trim();
+    if (!val) { alert('Введіть API ключ'); return; }
+    localStorage.setItem('claude_api_key', val);
+    setApiKeySaved(true);
+  };
 
   const exportData = () => {
     const date = new Date().toISOString().slice(0,10);
@@ -1178,6 +1207,29 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
     <div className="analysis-panel">
       <div className="form-title" style={{marginBottom:4}}>🔍 Аналіз системи</div>
       <div className="form-desc">Спостереження за використанням · Ідеї для покращення</div>
+
+      {/* API Settings */}
+      <div className="section-title" style={{fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:10}}>API налаштування</div>
+      <div style={{background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:14,marginBottom:20}}>
+        <label className="form-label" style={{display:'block',marginBottom:8}}>Claude API Key</label>
+        <div style={{display:'flex',gap:8,marginBottom:8}}>
+          <input
+            type="password"
+            className="form-input"
+            style={{flex:1}}
+            placeholder="sk-ant-..."
+            value={apiKeyInput}
+            onChange={e => { setApiKeyInput(e.target.value); setApiKeySaved(false); }}
+          />
+          <button className="btn-sm btn-primary" onClick={saveApiKey}>Зберегти ключ</button>
+        </div>
+        <div style={{fontSize:11}}>
+          {apiKeySaved
+            ? <span style={{color:'var(--green)'}}>✅ API ключ збережено</span>
+            : <span style={{color:'var(--orange)'}}>⚠️ Ключ не додано</span>
+          }
+        </div>
+      </div>
 
       {/* Export / Import */}
       <div className="section-title" style={{fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:10}}>Резервне копіювання</div>
