@@ -665,106 +665,370 @@ function Calendar({ cases, onSelectCase }) {
   );
 }
 
+// ── QUICK INPUT V2 — CONSTANTS & PIPELINE ────────────────────────────────────
+
+const QUICK_INPUT_SYSTEM_PROMPT = `You are a legal document intake parser for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
+
+Your ONLY output must be a single valid JSON object. No text before. No text after. No markdown. No explanations.
+
+Your task:
+1. Classify the input (subpoena, court document, new case document, note, or unknown)
+2. Extract all relevant legal/court data
+3. Match to an existing case if possible
+4. Recommend system actions
+
+Return this exact JSON structure:
+{
+  "input_type": "subpoena | document | new_case | note | unknown",
+  "source_type": "text | pdf | image | screenshot | file",
+  "processing_status": "success | partial | failed",
+  "case_match": {
+    "found": true or false,
+    "case_name": "string or null",
+    "confidence": 0.0 to 1.0
+  },
+  "extracted": {
+    "case_number": "string or null",
+    "court": "string or null",
+    "judge": "string or null",
+    "hearing_date": "YYYY-MM-DD or null",
+    "hearing_time": "HH:MM or null",
+    "deadlines": [],
+    "person": "string or null"
+  },
+  "recommended_actions": ["create_hearing_event", "update_case_date", "save_to_drive", "create_case", "save_note"],
+  "human_message": "Short Ukrainian-language summary for the lawyer",
+  "warnings": [],
+  "confidence": 0.0 to 1.0,
+  "needs_review": true or false
+}
+
+Rules:
+- Unknown field = null, never invent values
+- If unsure about anything = needs_review: true
+- hearing_date must be YYYY-MM-DD format
+- human_message must be in Ukrainian
+- recommended_actions must only contain values from the allowed list above
+- If input is clearly just a note or unrecognized = input_type: "note", recommended_actions: ["save_note"]
+- Never output anything except the JSON object`;
+
+// Pipeline: detectInputType
+function detectInputType(input) {
+  if (typeof input === 'string') return 'text';
+  if (input instanceof File) {
+    const ext = input.name.split('.').pop().toLowerCase();
+    if (['jpg','jpeg','png','webp'].includes(ext)) return 'image';
+    if (ext === 'heic') return 'heic';
+    if (ext === 'pdf') return 'pdf';
+    if (['txt','md'].includes(ext)) return 'text_file';
+    return 'unsupported';
+  }
+  return 'unknown';
+}
+
+// Pipeline: extractTextFromInput (local, no LLM)
+async function extractTextFromInput(input) {
+  const type = detectInputType(input);
+
+  if (type === 'text') return { text: input, sourceType: 'text', imageData: null };
+
+  if (type === 'text_file') {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve({ text: e.target.result, sourceType: 'file', imageData: null });
+      reader.onerror = () => resolve({ text: null, sourceType: 'file', imageData: null, error: 'extraction_failed' });
+      reader.readAsText(input);
+    });
+  }
+
+  if (type === 'image') {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = e.target.result.split(',')[1];
+        resolve({ text: null, sourceType: 'image', imageData: { base64, mediaType: input.type || 'image/jpeg' } });
+      };
+      reader.onerror = () => resolve({ text: null, sourceType: 'image', imageData: null, error: 'extraction_failed' });
+      reader.readAsDataURL(input);
+    });
+  }
+
+  if (type === 'pdf') {
+    if (window.pdfjsLib) {
+      try {
+        const arrayBuffer = await input.arrayBuffer();
+        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const tc = await page.getTextContent();
+          fullText += tc.items.map(s => s.str).join(' ') + '\n';
+        }
+        if (fullText.trim()) return { text: fullText, sourceType: 'pdf', imageData: null };
+        // Scanned PDF — render first page as image
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 2.0 });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+        return { text: null, sourceType: 'pdf', imageData: { base64, mediaType: 'image/jpeg' } };
+      } catch(e) {
+        return { text: null, sourceType: 'pdf', imageData: null, error: 'extraction_failed' };
+      }
+    }
+    return { text: null, sourceType: 'pdf', imageData: null, error: 'unsupported_format' };
+  }
+
+  if (type === 'heic' || type === 'unsupported') {
+    return { text: null, sourceType: 'file', imageData: null, error: 'unsupported_format' };
+  }
+
+  return { text: null, sourceType: 'unknown', imageData: null, error: 'unsupported_format' };
+}
+
+// Pipeline: normalizeExtractedText
+function normalizeExtractedText(text) {
+  if (!text) return '';
+  return text.trim().replace(/\s+/g, ' ').slice(0, 8000);
+}
+
+// Pipeline: analyzeWithLLM
+async function analyzeWithLLM(text, imageData, mediaType, cases, apiKey) {
+  const caseNames = cases.map(c => c.name).join(', ');
+  const systemPrompt = QUICK_INPUT_SYSTEM_PROMPT + '\n\nExisting cases in the registry: ' + caseNames;
+
+  const messages = imageData
+    ? [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageData } },
+        { type: 'text', text: 'Analyze this legal document.' }
+      ]}]
+    : [{ role: 'user', content: text }];
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1000, system: systemPrompt, messages })
+  });
+
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data?.error?.message || `API error: ${res.status}`);
+  }
+  const data = await res.json();
+  return data?.content?.[0]?.text || '';
+}
+
+// Pipeline: validateJSON
+function validateJSON(raw) {
+  try { return JSON.parse(raw); } catch(e) {}
+  try {
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) return JSON.parse(m[0]);
+  } catch(e) {}
+  return {
+    input_type: 'unknown', source_type: 'text', processing_status: 'failed',
+    case_match: { found: false, case_name: null, confidence: 0 },
+    extracted: { case_number: null, court: null, judge: null, hearing_date: null, hearing_time: null, deadlines: [], person: null },
+    recommended_actions: ['save_note'],
+    human_message: 'Не вдалося розібрати відповідь. Збережіть як нотатку.',
+    warnings: [], confidence: 0, needs_review: true
+  };
+}
+
+// Scenario registry — modular, each scenario is independent
+const scenario_subpoena = {
+  name: 'subpoena',
+  matches: (r) => r.input_type === 'subpoena' || !!(r.extracted && r.extracted.hearing_date),
+  getActions: (r) => {
+    const actions = [];
+    if (r.extracted?.hearing_date) {
+      const timeStr = r.extracted.hearing_time ? ' о ' + r.extracted.hearing_time : '';
+      actions.push({ id: 'update_case_date', label: 'Оновити дату засідання: ' + r.extracted.hearing_date + timeStr, type: 'primary' });
+    }
+    actions.push({ id: 'create_hearing_event', label: 'Створити подію в календарі', type: 'secondary' });
+    return actions;
+  }
+};
+
+const scenario_existing_case = {
+  name: 'existing_case',
+  matches: (r) => r.case_match?.found === true,
+  getActions: (r) => [{ id: 'save_to_drive', label: 'Зберегти до справи «' + r.case_match.case_name + '»', type: 'primary' }]
+};
+
+const scenario_new_case = {
+  name: 'new_case',
+  matches: (r) => r.input_type === 'new_case' || (r.case_match?.found === false && r.input_type !== 'note' && r.input_type !== 'unknown'),
+  getActions: () => [{ id: 'create_case', label: 'Створити нову справу', type: 'primary' }]
+};
+
+const scenario_multiple_files = {
+  name: 'multiple_files',
+  matches: (r, files) => !!(files && files.length >= 2),
+  getActions: () => [{ id: 'save_to_drive', label: 'Зберегти всі файли', type: 'primary' }]
+};
+
+const scenario_note = {
+  name: 'note',
+  matches: () => true, // fallback
+  getActions: () => [{ id: 'save_note', label: 'Зберегти як нотатку', type: 'secondary' }]
+};
+
+const SCENARIO_REGISTRY = [
+  scenario_subpoena,
+  scenario_existing_case,
+  scenario_new_case,
+  scenario_multiple_files,
+  scenario_note,
+];
+
+function collectScenarioActions(result, files) {
+  const nonFallback = SCENARIO_REGISTRY.slice(0, -1);
+  const anyNonFallbackMatched = nonFallback.some(s => s.matches(result, files));
+  const useFallback = !anyNonFallbackMatched || result.confidence < 0.5 || result.processing_status === 'failed';
+
+  const active = SCENARIO_REGISTRY.filter((s, i) => {
+    if (s.name === 'note') return useFallback;
+    return s.matches(result, files);
+  });
+
+  const seen = new Set();
+  return active.flatMap(s => s.getActions(result, files)).filter(a => {
+    if (seen.has(a.id)) return false;
+    seen.add(a.id);
+    return true;
+  });
+}
+
+const QI_ERROR_MESSAGES = {
+  unsupported_format: 'Формат файлу не підтримується. Оберіть .txt, .md, .pdf, .jpg, .png або .webp.',
+  extraction_failed: 'Не вдалося витягти текст з файлу.',
+  llm_failed: 'API не відповів. Перевірте ключ або спробуйте ще раз.',
+  invalid_json: 'Модель повернула некоректний формат. Збережіть як нотатку.',
+  low_confidence: 'Низька впевненість в аналізі. Перевірте результат.',
+};
+
 // ── QUICK INPUT ───────────────────────────────────────────────────────────────
 function QuickInput({ cases, setCases, onClose }) {
   const [text, setText] = useState('');
-  const [result, setResult] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [result, setResult] = useState(null);  // parsed JSON from LLM
+  const [qiError, setQiError] = useState(null); // { category, message }
+  const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [doneAction, setDoneAction] = useState(null);
   const fileInputRef = React.useRef(null);
+  const apiKey = localStorage.getItem('claude_api_key') || '';
 
-  const handleFile = (file) => {
+  React.useEffect(() => { usageLog.log('quick_input'); }, []);
+
+  const addFile = (file) => {
     if (!file) return;
+    setFiles(prev => [...prev, file]);
     const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'txt' || ext === 'md') {
+    if (['txt','md'].includes(ext)) {
       const reader = new FileReader();
       reader.onload = (e) => setText(e.target.result);
       reader.readAsText(file);
-    } else {
-      setText(`[Файл: ${file.name} — обробка AI буде додана в наступній версії]`);
     }
   };
 
   const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
   const onDragLeave = () => setDragOver(false);
-  const onDrop = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
+  const onDrop = (e) => {
+    e.preventDefault(); setDragOver(false);
+    if (e.dataTransfer.files) Array.from(e.dataTransfer.files).forEach(addFile);
+  };
 
-  const [loading, setLoading] = useState(false);
-  const [apiError, setApiError] = useState(null);
-  const apiKey = localStorage.getItem('claude_api_key') || '';
+  const reset = () => { setResult(null); setQiError(null); setDoneAction(null); };
 
-  React.useEffect(() => { usageLog.log('quick_input'); }, []);
+  // "📝 Нотатка" — bypass pipeline, save directly
+  const saveNote = () => {
+    const content = text.trim() || (files.length > 0 ? '[Файл: ' + files.map(f=>f.name).join(', ') + ']' : '');
+    if (!content) { onClose(); return; }
+    usageLog.saveIdea('[Нотатка Quick Input] ' + content.slice(0, 200));
+    usageLog.log('quick_input_note', { length: content.length });
+    alert('Нотатку збережено');
+    onClose();
+  };
+
+  const executeAction = (actionId) => {
+    if (actionId === 'save_note') { saveNote(); return; }
+    if (actionId === 'update_case_date' && result?.extracted?.hearing_date && result?.case_match?.found) {
+      setCases(prev => prev.map(c => {
+        if (c.name.toLowerCase() === (result.case_match.case_name || '').toLowerCase()) {
+          return { ...c, hearing_date: result.extracted.hearing_date, ...(result.extracted.hearing_time && { hearing_time: result.extracted.hearing_time }) };
+        }
+        return c;
+      }));
+    }
+    setDoneAction(actionId);
+  };
 
   const analyze = async () => {
-    if (!text.trim()) return;
-    setApiError(null);
-
-    // SYSTEM_IMPORT: автоматичне оновлення/створення справи
+    // SYSTEM_IMPORT bypass
     if (text.trim().startsWith('===SYSTEM_IMPORT===')) {
       const data = {};
-      text.split('\n').forEach(line => {
-        const m = line.match(/^(\w+):\s*(.+)$/);
-        if (m) data[m[1].trim()] = m[2].trim();
-      });
+      text.split('\n').forEach(line => { const m = line.match(/^(\w+):\s*(.+)$/); if (m) data[m[1].trim()] = m[2].trim(); });
       const caseName = data.name || '';
       setCases(prev => {
         const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
-        if (existing) {
-          return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
-        } else {
-          return [...prev, {
-            id: Date.now(),
-            name: caseName,
-            client: data.client || '',
-            category: data.category || 'civil',
-            status: 'active',
-            court: data.court || '',
-            case_no: data.case_no || '',
-            hearing_date: data.hearing_date || '',
-            hearing_time: data.hearing_time || '',
-            deadline: data.deadline || '',
-            deadline_type: data.deadline_type || '',
-            next_action: data.next_action || '',
-            notes: data.notes || ''
-          }];
-        }
+        if (existing) return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
+        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status: 'active', court: data.court||'', case_no: data.case_no||'', hearing_date: data.hearing_date||'', hearing_time: data.hearing_time||'', deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes||'' }];
       });
-      alert(`Дані внесено з контекстного файлу: ${caseName}`);
+      alert('Дані внесено: ' + caseName);
       onClose();
       return;
     }
 
-    // Real Claude API call
-    setLoading(true);
+    const inputText = text.trim();
+    if (!inputText && files.length === 0) return;
+    if (!apiKey) { setQiError({ category: 'llm_failed', message: 'API ключ не налаштовано. Додайте у розділі Аналіз системи.' }); return; }
+
+    setLoading(true); setQiError(null); setResult(null);
+
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 1000,
-          system: 'Ти — асистент адвокатського бюро Левицького. Отримуєш текст: повістку, нотатку, документ або команду. Визнач: 1) тип вводу, 2) до якої справи належить якщо можна визначити з тексту, 3) які дані витягнути — дата, номер справи, суд, наступна дія. Відповідай коротко українською.',
-          messages: [{ role: 'user', content: text }]
-        })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const errMsg = data?.error?.message || `Помилка API: ${res.status}`;
-        setApiError(errMsg);
-        setLoading(false);
-        return;
+      const source = files.length > 0 ? files[0] : inputText;
+      const extracted = await extractTextFromInput(source);
+
+      if (extracted.error) {
+        setQiError({ category: extracted.error, message: QI_ERROR_MESSAGES[extracted.error] || extracted.error });
+        setLoading(false); return;
       }
-      const reply = data?.content?.[0]?.text || 'Відповідь не отримана';
-      setResult({ type: 'ai', action: reply, case: null });
-    } catch(err) {
-      setApiError(err.message || 'Мережева помилка');
+
+      const normalText = normalizeExtractedText(extracted.text || inputText);
+
+      let rawResponse;
+      try {
+        rawResponse = await analyzeWithLLM(normalText, extracted.imageData?.base64, extracted.imageData?.mediaType, cases, apiKey);
+      } catch(e) {
+        setQiError({ category: 'llm_failed', message: QI_ERROR_MESSAGES.llm_failed + ' ' + e.message });
+        setLoading(false); return;
+      }
+
+      const parsed = validateJSON(rawResponse);
+      if (parsed.confidence < 0.5 && parsed.processing_status !== 'failed') {
+        parsed.warnings = [...(parsed.warnings || []), QI_ERROR_MESSAGES.low_confidence];
+        parsed.needs_review = true;
+      }
+      setResult(parsed);
+    } catch(e) {
+      setQiError({ category: 'llm_failed', message: e.message || QI_ERROR_MESSAGES.llm_failed });
     }
     setLoading(false);
   };
+
+  const actions = result ? collectScenarioActions(result, files) : [];
+
+  const typeIcon = (t) => ({ subpoena:'📅', new_case:'🆕', document:'📄', note:'📝' }[t] || '🔍');
+  const typeLabel = (t) => ({ subpoena:'Повістка', new_case:'Нова справа', document:'Документ', note:'Нотатка' }[t] || 'Аналіз');
+  const actionIcon = (id) => ({ update_case_date:'📅', create_hearing_event:'📆', save_to_drive:'📁', create_case:'🆕', save_note:'📝' }[id] || '✅');
 
   return (
     <div className="qi-overlay" onClick={onClose}>
@@ -774,66 +1038,128 @@ function QuickInput({ cases, setCases, onClose }) {
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        style={dragOver ? {outline:'2px solid var(--blue)',background:'var(--bg2)'} : {}}
+        style={dragOver ? { outline: '2px solid var(--accent)', background: 'var(--surface2)' } : {}}
       >
         <div className="qi-title">
-          <span>⚡</span> Quick Input — вставте повістку, напишіть або скиньте файл
+          <span>⚡</span> Quick Input
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="*"
-          style={{display:'none'}}
-          onChange={e => handleFile(e.target.files[0])}
-        />
-        <textarea
-          className="qi-textarea"
-          placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або введіть будь-яку інформацію по справі..."
-          value={text}
-          onChange={e => setText(e.target.value)}
-          autoFocus
-        />
-        {apiError && (
-          <div className="qi-result" style={{borderColor:'var(--red)'}}>
-            <div className="qi-result-title" style={{color:'var(--red)'}}>⚠️ Помилка API</div>
-            <div className="qi-result-text" style={{fontSize:12}}>{apiError}</div>
+
+        <input ref={fileInputRef} type="file" accept="*" multiple style={{display:'none'}} onChange={e => Array.from(e.target.files).forEach(addFile)} />
+
+        {!result && (
+          <>
+            <textarea
+              className="qi-textarea"
+              placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або введіть будь-яку інформацію по справі..."
+              value={text}
+              onChange={e => setText(e.target.value)}
+              autoFocus
+            />
+            {files.length > 0 && (
+              <div style={{marginTop:8,display:'flex',gap:6,flexWrap:'wrap'}}>
+                {files.map((f,i) => (
+                  <span key={i} style={{fontSize:11,background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:6,padding:'3px 8px',color:'var(--text2)',display:'flex',alignItems:'center',gap:6}}>
+                    📎 {f.name}
+                    <button onClick={() => setFiles(prev => prev.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:'var(--text3)',cursor:'pointer',padding:0,fontSize:12,lineHeight:1}}>✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {qiError && (
+          <div className="qi-result" style={{borderColor:'var(--red)',marginTop:12}}>
+            <div className="qi-result-title" style={{color:'var(--red)'}}>
+              ⚠️ {qiError.category==='unsupported_format'?'Формат не підтримується':qiError.category==='extraction_failed'?'Помилка читання файлу':'Помилка API'}
+            </div>
+            <div className="qi-result-text" style={{fontSize:12}}>{qiError.message}</div>
             <div className="qi-result-actions">
-              <button className="btn-sm btn-ghost" onClick={() => setApiError(null)}>Закрити</button>
+              <button className="btn-sm btn-ghost" onClick={saveNote}>📝 Зберегти як нотатку</button>
+              <button className="btn-sm btn-ghost" onClick={() => setQiError(null)}>Закрити</button>
             </div>
           </div>
         )}
-        {result && !apiError && (
+
+        {result && !qiError && (
           <div className="qi-result">
             <div className="qi-result-title">
-              {result.type === 'subpoena' ? '📅 Повістка' : result.type === 'ai' ? '🤖 AI аналіз' : '📝 Нотатка'}
-              {result.isPast && <span style={{marginLeft:8,color:'var(--orange)',fontSize:11}}>⚠️ Дата в минулому</span>}
+              {typeIcon(result.input_type)} {typeLabel(result.input_type)}
+              {result.needs_review && <span style={{marginLeft:8,color:'var(--orange)',fontSize:11}}>⚠️ Потребує перевірки</span>}
             </div>
-            <div className="qi-result-text">{result.action}</div>
-            {result.case && <div style={{fontSize:11,color:'var(--text2)',marginTop:4}}>Справа: {result.case}</div>}
-            <div className="qi-result-actions">
-              {result.type === 'ai' && (
-                <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Закрити</button>
-              )}
-              {result.type !== 'ai' && !result.isDuplicate && !result.isPast && (
-                <button className="btn-sm btn-primary" onClick={onClose}>✓ Підтвердити і зберегти</button>
-              )}
-              {result.type !== 'ai' && (result.isDuplicate || result.isPast) && (
-                <>
-                  <button className="btn-sm btn-primary" onClick={onClose}>Так, зберегти</button>
-                  <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Ні, скасувати</button>
-                </>
-              )}
-              {result.type !== 'ai' && !result.case && <button className="btn-sm btn-ghost">Обрати справу</button>}
+            <div className="qi-result-text" style={{marginBottom:10}}>{result.human_message}</div>
+
+            {/* Extracted data card */}
+            {result.extracted && Object.entries(result.extracted).some(([k,v]) => v !== null && (!Array.isArray(v) || v.length > 0)) && (
+              <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'10px 12px',marginBottom:10,fontSize:12}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--text3)',marginBottom:8}}>Витягнуті дані</div>
+                {result.case_match?.found && (
+                  <div style={{display:'flex',gap:8,marginBottom:5}}>
+                    <span style={{color:'var(--text2)',minWidth:110}}>Справа:</span>
+                    <span style={{fontWeight:600,color:'var(--green)'}}>{result.case_match.case_name} <span style={{color:'var(--text3)',fontWeight:400}}>({Math.round((result.case_match.confidence||0)*100)}%)</span></span>
+                  </div>
+                )}
+                {result.extracted.case_number && <div style={{display:'flex',gap:8,marginBottom:5}}><span style={{color:'var(--text2)',minWidth:110}}>Номер справи:</span><span>{result.extracted.case_number}</span></div>}
+                {result.extracted.court && <div style={{display:'flex',gap:8,marginBottom:5}}><span style={{color:'var(--text2)',minWidth:110}}>Суд:</span><span>{result.extracted.court}</span></div>}
+                {result.extracted.judge && <div style={{display:'flex',gap:8,marginBottom:5}}><span style={{color:'var(--text2)',minWidth:110}}>Суддя:</span><span>{result.extracted.judge}</span></div>}
+                {result.extracted.hearing_date && (
+                  <div style={{display:'flex',gap:8,marginBottom:5}}>
+                    <span style={{color:'var(--text2)',minWidth:110}}>Дата засідання:</span>
+                    <span style={{color:'var(--accent)',fontWeight:600}}>{result.extracted.hearing_date}{result.extracted.hearing_time ? ' о ' + result.extracted.hearing_time : ''}</span>
+                  </div>
+                )}
+                {result.extracted.person && <div style={{display:'flex',gap:8,marginBottom:5}}><span style={{color:'var(--text2)',minWidth:110}}>Особа:</span><span>{result.extracted.person}</span></div>}
+                {result.extracted.deadlines?.length > 0 && <div style={{display:'flex',gap:8}}><span style={{color:'var(--text2)',minWidth:110}}>Дедлайни:</span><span>{result.extracted.deadlines.join(', ')}</span></div>}
+              </div>
+            )}
+
+            {/* Warnings */}
+            {result.warnings?.length > 0 && (
+              <div style={{background:'rgba(255,140,66,0.08)',border:'1px solid rgba(255,140,66,0.25)',borderRadius:'var(--radius-sm)',padding:'8px 12px',marginBottom:10,fontSize:12,color:'var(--orange)'}}>
+                {result.warnings.map((w,i) => <div key={i}>⚠ {w}</div>)}
+              </div>
+            )}
+
+            {/* Confirmed action feedback */}
+            {doneAction && (
+              <div style={{background:'rgba(61,214,140,0.08)',border:'1px solid rgba(61,214,140,0.2)',borderRadius:'var(--radius-sm)',padding:'8px 12px',marginBottom:10,fontSize:12,color:'var(--green)'}}>
+                ✅ Дію виконано
+              </div>
+            )}
+
+            {/* Action buttons from scenarios */}
+            <div className="qi-result-actions" style={{flexWrap:'wrap',gap:6}}>
+              {actions.map(a => (
+                <button
+                  key={a.id}
+                  className={`btn-sm ${a.type==='primary'?'btn-primary':'btn-ghost'}`}
+                  onClick={() => executeAction(a.id)}
+                  disabled={!!doneAction}
+                >
+                  {actionIcon(a.id)} {a.label}
+                </button>
+              ))}
+              <button className="btn-sm btn-ghost" onClick={reset}>← Назад</button>
             </div>
           </div>
         )}
+
         <div className="qi-row">
-          <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>📎 Прикріпити файл</button>
+          {!result && <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>📎 Файл</button>}
+          {!result && (
+            <button className="btn-sm btn-ghost" style={{borderColor:'rgba(61,214,140,0.3)',color:'var(--green)'}} onClick={saveNote}>
+              📝 Нотатка
+            </button>
+          )}
           <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
-          {apiKey
-            ? <button className="btn-sm btn-primary" onClick={analyze} disabled={loading}>{loading ? '⏳ Аналіз...' : 'Аналізувати'}</button>
-            : <span style={{fontSize:11,color:'var(--orange)'}}>⚠️ Додайте Claude API Key в розділі Аналіз системи</span>
-          }
+          {!result && (
+            apiKey
+              ? <button className="btn-sm btn-primary" onClick={analyze} disabled={loading || (!text.trim() && files.length===0)}>
+                  {loading ? '⏳ Аналіз...' : '🔍 Аналізувати'}
+                </button>
+              : <span style={{fontSize:11,color:'var(--orange)'}}>⚠️ Додайте API Key в Аналіз системи</span>
+          )}
+          {result && <button className="btn-sm btn-ghost" onClick={onClose}>Готово</button>}
         </div>
       </div>
     </div>
@@ -1410,6 +1736,13 @@ function App() {
     noDeadline: cases.filter(c=>c.status==='active'&&!c.deadline&&!c.hearing_date).length,
   }), [cases]);
 
+  const statusCounts = useMemo(() => ({
+    active: cases.filter(c=>c.status==='active').length,
+    paused: cases.filter(c=>c.status==='paused').length,
+    closed: cases.filter(c=>c.status==='closed').length,
+    total: cases.length,
+  }), [cases]);
+
   const addCase = (form) => {
     usageLog.log('case_added', {name: form.name});
     const newCase = { ...form, id: Date.now() };
@@ -1514,6 +1847,13 @@ function App() {
         {/* ── CASES ── */}
         {tab === 'cases' && (
           <div>
+            <div style={{fontSize:11,color:'var(--text2)',marginBottom:10,display:'flex',gap:14,flexWrap:'wrap',alignItems:'center'}}>
+              <span>Активні: <strong style={{color:'var(--green)'}}>{statusCounts.active}</strong></span>
+              <span style={{color:'var(--text3)'}}>|</span>
+              <span>Призупинені: <strong style={{color:'var(--text2)'}}>{statusCounts.paused}</strong></span>
+              <span style={{color:'var(--text3)'}}>|</span>
+              <span>Закриті: <strong style={{color:'var(--text3)'}}>{statusCounts.closed}</strong></span>
+            </div>
             <div className="cases-toolbar">
               <div className="search-box">
                 <span style={{color:'var(--text3)'}}>🔍</span>
@@ -1524,8 +1864,19 @@ function App() {
                   {cat==='all'?'Всі':CAT_LABELS[cat]}
                 </button>
               ))}
-              <button className={`filter-btn${filterStatus==='all'?' active':''}`} onClick={()=>setFilterStatus(filterStatus==='all'?'active':'all')}>
-                {filterStatus==='all'?'Всі статуси':'Лише активні'}
+            </div>
+            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+              <button className={`filter-btn${filterStatus==='active'?' active':''}`} onClick={()=>setFilterStatus('active')}>
+                Активні ({statusCounts.active})
+              </button>
+              <button className={`filter-btn${filterStatus==='paused'?' active':''}`} onClick={()=>setFilterStatus('paused')}>
+                Призупинені ({statusCounts.paused})
+              </button>
+              <button className={`filter-btn${filterStatus==='closed'?' active':''}`} onClick={()=>setFilterStatus('closed')}>
+                Закриті ({statusCounts.closed})
+              </button>
+              <button className={`filter-btn${filterStatus==='all'?' active':''}`} onClick={()=>setFilterStatus('all')}>
+                Всі ({statusCounts.total})
               </button>
             </div>
             <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
