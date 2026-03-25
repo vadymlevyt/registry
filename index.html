@@ -8,6 +8,9 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -351,6 +354,56 @@
   .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.4; }
   .empty-text { font-size: 14px; }
 
+  /* Status bar (БЛОК А) */
+  .status-bar {
+    display: flex; gap: 12px; padding: 8px 12px; margin-bottom: 10px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font-size: 12px; color: var(--text2); flex-wrap: wrap; align-items: center;
+  }
+  .status-bar-item { display: flex; gap: 5px; align-items: center; }
+  .status-bar-count { font-weight: 700; font-family: var(--font-head); }
+  .status-bar-count.active { color: var(--green); }
+  .status-bar-count.paused { color: var(--text2); }
+  .status-bar-count.closed { color: var(--text3); }
+
+  /* QI v2 */
+  .qi-file-badge {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 10px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); margin-top: 8px; font-size: 12px;
+  }
+  .qi-file-remove { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 12px; padding: 0; }
+  .qi-file-remove:hover { color: var(--red); }
+  .qi-error {
+    margin-top: 10px; padding: 10px 12px;
+    background: rgba(255,79,106,0.08); border: 1px solid rgba(255,79,106,0.25); border-radius: var(--radius-sm);
+  }
+  .qi-error-title { font-size: 12px; font-weight: 600; color: var(--red); margin-bottom: 4px; }
+  .qi-analysis-card {
+    margin-top: 12px; padding: 12px; background: rgba(79,124,255,0.08);
+    border: 1px solid rgba(79,124,255,0.25); border-radius: var(--radius-sm); border-left: 3px solid var(--accent);
+  }
+  .qi-analysis-failed { background: rgba(255,79,106,0.08); border-color: rgba(255,79,106,0.25); border-left-color: var(--red); }
+  .qi-needs-review {
+    display: inline-block; margin-top: 6px; padding: 2px 8px;
+    background: rgba(255,209,102,0.15); border: 1px solid rgba(255,209,102,0.3);
+    border-radius: 20px; font-size: 11px; color: var(--yellow);
+  }
+  .qi-extracted-card {
+    margin-top: 8px; padding: 10px 12px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+  .qi-extracted-row { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(45,50,80,0.5); align-items: center; }
+  .qi-extracted-row:last-child { border-bottom: none; }
+  .qi-extracted-label { font-size: 11px; color: var(--text2); min-width: 120px; flex-shrink: 0; }
+  .qi-extracted-val { font-size: 12px; font-weight: 500; }
+  .qi-warnings { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .qi-warning {
+    padding: 5px 10px; background: rgba(255,209,102,0.08); border: 1px solid rgba(255,209,102,0.2);
+    border-radius: var(--radius-sm); font-size: 11px; color: var(--yellow);
+  }
+  .qi-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
   /* tooltip-like urgency banner */
   .urgency-banner {
     background: rgba(255,79,106,0.08); border: 1px solid rgba(255,79,106,0.2);
@@ -665,176 +718,423 @@ function Calendar({ cases, onSelectCase }) {
   );
 }
 
-// ── QUICK INPUT ───────────────────────────────────────────────────────────────
+// ── QI PIPELINE ───────────────────────────────────────────────────────────────
+
+// System prompt — окремий блок, легко замінюється
+const QI_SYSTEM_PROMPT = `Ти — асистент адвокатського бюро Левицького. Аналізуй юридичні документи, повістки, нотатки. Повертай ТІЛЬКИ валідний JSON без жодного тексту до чи після, без markdown-блоків.
+
+Обов'язкова структура відповіді:
+{"input_type":"subpoena|document|new_case|note|unknown","source_type":"text|pdf|image|screenshot|file","processing_status":"success|partial|failed","case_match":{"found":false,"case_name":null,"confidence":0},"extracted":{"case_number":null,"court":null,"judge":null,"hearing_date":null,"hearing_time":null,"deadlines":[],"person":null},"recommended_actions":[],"human_message":"","warnings":[],"confidence":0.5,"needs_review":false}
+
+Правила: невідоме поле = null, не вигадувати; hearing_date формат YYYY-MM-DD; hearing_time формат HH:MM; якщо невпевнений — needs_review:true; якщо є прізвище або номер справи — вкажи в case_match.
+recommended_actions: create_hearing_event, update_case_date, create_new_case, add_note, link_to_case, update_deadline.`;
+
+const ACTION_CONFIG = {
+  create_hearing_event: { label: 'Додати засідання', icon: '📅' },
+  update_case_date:     { label: 'Оновити дату засідання', icon: '🔄' },
+  create_new_case:      { label: 'Створити нову справу', icon: '📁' },
+  add_note:             { label: 'Додати нотатку', icon: '📝' },
+  link_to_case:         { label: "Прив'язати до справи", icon: '🔗' },
+  update_deadline:      { label: 'Оновити дедлайн', icon: '⚡' },
+};
+
+// Локальні функції без LLM
+async function qi_readAsText(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = e => res(e.target.result);
+    r.onerror = rej;
+    r.readAsText(file, 'UTF-8');
+  });
+}
+async function qi_readAsBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = e => res(e.target.result.split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+async function qi_extractPdfText(file) {
+  if (!window.pdfjsLib) throw new Error('pdf.js не завантажено');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = '';
+  for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map(it => it.str).join(' ') + '\n';
+  }
+  return text;
+}
+async function qi_pdfToBase64(file) {
+  if (!window.pdfjsLib) throw new Error('pdf.js не завантажено');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const page = await pdf.getPage(1);
+  const vp = page.getViewport({ scale: 1.5 });
+  const canvas = document.createElement('canvas');
+  canvas.width = vp.width; canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
+async function qi_extractDocxText(file) {
+  if (!window.mammoth) throw new Error('mammoth.js не завантажено');
+  const buf = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({ arrayBuffer: buf });
+  return result.value;
+}
+async function qi_convertHeic(file) {
+  if (!window.heic2any) throw new Error('heic2any не завантажено');
+  return await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+}
+
+// extractTextFromInput — локально, без LLM
+async function qi_extractTextFromInput(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  try {
+    if (ext === 'txt' || ext === 'md') {
+      return { text: await qi_readAsText(file), sourceType: 'file' };
+    }
+    if (ext === 'pdf') {
+      const text = await qi_extractPdfText(file);
+      if (text.trim().length > 50) return { text, sourceType: 'pdf' };
+      // Скан — рендеримо сторінку в base64
+      return { base64: await qi_pdfToBase64(file), mediaType: 'image/jpeg', sourceType: 'pdf', isBase64: true };
+    }
+    if (['jpg','jpeg','png','webp'].includes(ext)) {
+      return { base64: await qi_readAsBase64(file), mediaType: file.type||'image/jpeg', sourceType: 'image', isBase64: true };
+    }
+    if (ext === 'heic') {
+      const jpeg = await qi_convertHeic(file);
+      return { base64: await qi_readAsBase64(jpeg), mediaType: 'image/jpeg', sourceType: 'image', isBase64: true };
+    }
+    if (ext === 'docx') {
+      return { text: await qi_extractDocxText(file), sourceType: 'file' };
+    }
+    // Непідтримуваний формат — structured failure
+    return { processing_status: 'failed', error: `Непідтримуваний формат: .${ext}`, sourceType: 'file' };
+  } catch(e) {
+    return { processing_status: 'failed', error: e.message, sourceType: 'file' };
+  }
+}
+
+function qi_normalizeText(text) {
+  if (!text) return '';
+  return text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/\n{3,}/g,'\n\n').trim().slice(0, 4000);
+}
+
+function qi_validateJSON(raw) {
+  try {
+    const cleaned = raw.replace(/^```(?:json)?\n?/,'').replace(/\n?```$/,'').trim();
+    const parsed = JSON.parse(cleaned);
+    const required = ['input_type','source_type','processing_status','case_match','extracted','recommended_actions','human_message','warnings','confidence','needs_review'];
+    for (const f of required) if (!(f in parsed)) return { valid: false, error: `Відсутнє поле: ${f}` };
+    return { valid: true, data: parsed };
+  } catch(e) { return { valid: false, error: e.message }; }
+}
+
+// analyzeWithLLM — тут Haiku
+async function qi_analyzeWithLLM(content, apiKey, cases) {
+  const caseList = cases.slice(0,20).map(c => `${c.name}(${c.case_no||''})`).join(', ');
+  const messages = content.isBase64
+    ? [{ role:'user', content:[
+        { type:'image', source:{ type:'base64', media_type: content.mediaType, data: content.base64 } },
+        { type:'text', text:`Реєстр справ: ${caseList}` }
+      ]}]
+    : [{ role:'user', content:`Реєстр справ: ${caseList}\n\nДокумент:\n${content.text}` }];
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({ model:'claude-haiku-4-5-20251001', max_tokens:1024, system: QI_SYSTEM_PROMPT, messages })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `API помилка: ${res.status}`);
+  return data?.content?.[0]?.text || '';
+}
+
+// SCENARIO_REGISTRY — модульні сценарії
+const SCENARIO_REGISTRY = [
+  {
+    id: 'scenario_subpoena',
+    matches: r => r.input_type==='subpoena' || r.recommended_actions.includes('create_hearing_event'),
+    actions: ['create_hearing_event', 'update_case_date'],
+  },
+  {
+    id: 'scenario_existing_case',
+    matches: r => r.case_match?.found && r.recommended_actions.some(a=>['update_case_date','add_note','update_deadline','link_to_case'].includes(a)),
+    actions: ['update_case_date', 'add_note', 'update_deadline', 'link_to_case'],
+  },
+  {
+    id: 'scenario_new_case',
+    matches: r => r.input_type==='new_case' || r.recommended_actions.includes('create_new_case'),
+    actions: ['create_new_case'],
+  },
+  {
+    id: 'scenario_note', // fallback — завжди останній
+    matches: () => true,
+    actions: ['add_note'],
+  },
+];
+
+function qi_getActiveActions(result) {
+  const all = new Set();
+  for (const scenario of SCENARIO_REGISTRY) {
+    if (scenario.matches(result)) {
+      for (const a of scenario.actions) {
+        if (result.recommended_actions.includes(a)) all.add(a);
+      }
+    }
+  }
+  if (all.size === 0) all.add('add_note');
+  return [...all];
+}
+
+// ── QUICK INPUT V2 ────────────────────────────────────────────────────────────
 function QuickInput({ cases, setCases, onClose }) {
   const [text, setText] = useState('');
-  const [result, setResult] = useState(null);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = React.useRef(null);
-
-  const handleFile = (file) => {
-    if (!file) return;
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'txt' || ext === 'md') {
-      const reader = new FileReader();
-      reader.onload = (e) => setText(e.target.result);
-      reader.readAsText(file);
-    } else {
-      setText(`[Файл: ${file.name} — обробка AI буде додана в наступній версії]`);
-    }
-  };
-
-  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
-  const onDragLeave = () => setDragOver(false);
-  const onDrop = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
-
-  const [loading, setLoading] = useState(false);
+  const [file, setFile] = useState(null);
+  const [stage, setStage] = useState('input'); // 'input'|'loading'|'result'|'error'
+  const [analysisResult, setAnalysisResult] = useState(null);
   const [apiError, setApiError] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [doneActions, setDoneActions] = useState(new Set());
+  const [noteMode, setNoteMode] = useState(false);
+  const [noteCase, setNoteCase] = useState('');
+  const fileInputRef = React.useRef(null);
   const apiKey = localStorage.getItem('claude_api_key') || '';
 
   React.useEffect(() => { usageLog.log('quick_input'); }, []);
 
-  const analyze = async () => {
-    if (!text.trim()) return;
-    setApiError(null);
+  const handleFile = f => { if (f) setFile(f); };
+  const onDragOver = e => { e.preventDefault(); setDragOver(true); };
+  const onDragLeave = () => setDragOver(false);
+  const onDrop = e => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
 
-    // SYSTEM_IMPORT: автоматичне оновлення/створення справи
-    if (text.trim().startsWith('===SYSTEM_IMPORT===')) {
-      const data = {};
-      text.split('\n').forEach(line => {
-        const m = line.match(/^(\w+):\s*(.+)$/);
-        if (m) data[m[1].trim()] = m[2].trim();
-      });
-      const caseName = data.name || '';
-      setCases(prev => {
-        const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
-        if (existing) {
-          return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
-        } else {
-          return [...prev, {
-            id: Date.now(),
-            name: caseName,
-            client: data.client || '',
-            category: data.category || 'civil',
-            status: 'active',
-            court: data.court || '',
-            case_no: data.case_no || '',
-            hearing_date: data.hearing_date || '',
-            hearing_time: data.hearing_time || '',
-            deadline: data.deadline || '',
-            deadline_type: data.deadline_type || '',
-            next_action: data.next_action || '',
-            notes: data.notes || ''
-          }];
-        }
-      });
-      alert(`Дані внесено з контекстного файлу: ${caseName}`);
-      onClose();
-      return;
-    }
-
-    // Real Claude API call
-    setLoading(true);
+  const handleAnalyze = async () => {
+    if (!text.trim() && !file) return;
+    if (!apiKey) { setApiError('Додайте Claude API Key в розділі "Аналіз системи"'); return; }
+    setStage('loading'); setApiError(null);
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 1000,
-          system: 'Ти — асистент адвокатського бюро Левицького. Отримуєш текст: повістку, нотатку, документ або команду. Визнач: 1) тип вводу, 2) до якої справи належить якщо можна визначити з тексту, 3) які дані витягнути — дата, номер справи, суд, наступна дія. Відповідай коротко українською.',
-          messages: [{ role: 'user', content: text }]
-        })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const errMsg = data?.error?.message || `Помилка API: ${res.status}`;
-        setApiError(errMsg);
-        setLoading(false);
-        return;
+      let content;
+      if (file) {
+        content = await qi_extractTextFromInput(file);
+        if (content.processing_status === 'failed') {
+          setAnalysisResult({ input_type:'unknown', source_type:content.sourceType, processing_status:'failed', case_match:{found:false,case_name:null,confidence:0}, extracted:{case_number:null,court:null,judge:null,hearing_date:null,hearing_time:null,deadlines:[],person:null}, recommended_actions:[], human_message:`Не вдалося обробити файл: ${content.error}`, warnings:[content.error], confidence:0, needs_review:true });
+          setStage('result'); return;
+        }
+        if (text.trim() && !content.isBase64) content.text = qi_normalizeText(text + '\n\n' + (content.text||''));
+      } else {
+        content = { text: qi_normalizeText(text), sourceType:'text' };
       }
-      const reply = data?.content?.[0]?.text || 'Відповідь не отримана';
-      setResult({ type: 'ai', action: reply, case: null });
+      if (content.text) content.text = qi_normalizeText(content.text);
+      const raw = await qi_analyzeWithLLM(content, apiKey, cases);
+      const v = qi_validateJSON(raw);
+      if (!v.valid) { setApiError(`Помилка JSON: ${v.error}\n\nВідповідь:\n${raw.slice(0,300)}`); setStage('error'); return; }
+      setAnalysisResult(v.data);
+      setStage('result');
     } catch(err) {
       setApiError(err.message || 'Мережева помилка');
+      setStage('error');
     }
-    setLoading(false);
   };
+
+  const executeAction = action => {
+    if (!analysisResult) return;
+    const { extracted, case_match } = analysisResult;
+    const findCase = () => cases.find(c =>
+      (case_match.case_name && c.name.toLowerCase().includes(case_match.case_name.toLowerCase())) ||
+      (extracted.case_number && c.case_no && c.case_no.includes(extracted.case_number))
+    );
+    if (action === 'create_hearing_event' || action === 'update_case_date') {
+      if (!extracted.hearing_date) { alert('Дата засідання не визначена.'); return; }
+      const mc = findCase();
+      if (!mc) { alert('Не вдалося знайти справу. Оновіть вручну.'); return; }
+      setCases(prev => prev.map(c => c.id===mc.id ? {...c, hearing_date:extracted.hearing_date, ...(extracted.hearing_time?{hearing_time:extracted.hearing_time}:{}), ...(extracted.court?{court:extracted.court}:{})} : c));
+      setDoneActions(p => new Set([...p, action]));
+    } else if (action === 'create_new_case') {
+      const nc = { id:Date.now(), name:case_match.case_name||extracted.person||'Нова справа', client:extracted.person||'', category:'civil', status:'active', court:extracted.court||'', case_no:extracted.case_number||'', hearing_date:extracted.hearing_date||'', hearing_time:extracted.hearing_time||'', deadline:'', deadline_type:'', next_action:'', notes:text||'' };
+      setCases(prev=>[...prev,nc]);
+      setDoneActions(p => new Set([...p, action]));
+    } else if (action === 'add_note' || action === 'link_to_case') {
+      const mc = findCase();
+      if (!mc) { alert('Не вдалося знайти справу. Виберіть вручну.'); return; }
+      const note = `[${new Date().toLocaleDateString('uk-UA')}] ${text}`;
+      setCases(prev => prev.map(c => c.id===mc.id ? {...c, notes:c.notes?c.notes+'\n'+note:note} : c));
+      setDoneActions(p => new Set([...p, action]));
+    } else if (action === 'update_deadline') {
+      if (!extracted.deadlines?.length) { alert('Дедлайн не визначено.'); return; }
+      const mc = findCase();
+      if (!mc) { alert('Не вдалося знайти справу.'); return; }
+      setCases(prev => prev.map(c => c.id===mc.id ? {...c, deadline:extracted.deadlines[0]} : c));
+      setDoneActions(p => new Set([...p, action]));
+    }
+  };
+
+  const saveAsNote = () => {
+    const noteText = text.trim() || (file ? `[Файл: ${file.name}]` : '');
+    if (!noteText) return;
+    if (noteCase) {
+      const tc = cases.find(c => c.id===parseInt(noteCase));
+      if (tc) {
+        const ts = `[${new Date().toLocaleDateString('uk-UA')}] ${noteText}`;
+        setCases(prev => prev.map(c => c.id===tc.id ? {...c, notes:c.notes?c.notes+'\n'+ts:ts} : c));
+      }
+    } else {
+      try {
+        const notes = JSON.parse(localStorage.getItem('levytskyi_general_notes')||'[]');
+        notes.push({ text:noteText, ts:new Date().toISOString() });
+        localStorage.setItem('levytskyi_general_notes', JSON.stringify(notes));
+      } catch(e) {}
+    }
+    onClose();
+  };
+
+  const activeActions = analysisResult ? qi_getActiveActions(analysisResult) : [];
 
   return (
     <div className="qi-overlay" onClick={onClose}>
-      <div
-        className="qi-panel"
-        onClick={e => e.stopPropagation()}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        style={dragOver ? {outline:'2px solid var(--blue)',background:'var(--bg2)'} : {}}
-      >
+      <div className="qi-panel" onClick={e=>e.stopPropagation()} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+        style={dragOver?{borderColor:'var(--accent)',background:'var(--surface2)'}:{}}>
+
         <div className="qi-title">
-          <span>⚡</span> Quick Input — вставте повістку, напишіть або скиньте файл
+          <span>⚡</span> Quick Input
+          {stage==='loading' && <span style={{fontSize:11,color:'var(--text2)',fontWeight:400,marginLeft:6}}>— аналіз...</span>}
+          {stage==='result' && <span style={{fontSize:11,color:'var(--green)',fontWeight:400,marginLeft:6}}>— результат</span>}
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="*"
-          style={{display:'none'}}
-          onChange={e => handleFile(e.target.files[0])}
-        />
-        <textarea
-          className="qi-textarea"
-          placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або введіть будь-яку інформацію по справі..."
-          value={text}
-          onChange={e => setText(e.target.value)}
-          autoFocus
-        />
-        {apiError && (
-          <div className="qi-result" style={{borderColor:'var(--red)'}}>
-            <div className="qi-result-title" style={{color:'var(--red)'}}>⚠️ Помилка API</div>
-            <div className="qi-result-text" style={{fontSize:12}}>{apiError}</div>
-            <div className="qi-result-actions">
-              <button className="btn-sm btn-ghost" onClick={() => setApiError(null)}>Закрити</button>
+
+        {/* INPUT / ERROR STAGE */}
+        {(stage==='input'||stage==='error') && !noteMode && (
+          <>
+            <textarea className="qi-textarea" placeholder="Вставте текст повістки, напишіть або скиньте файл..." value={text} onChange={e=>setText(e.target.value)} autoFocus />
+            {file && (
+              <div className="qi-file-badge">
+                <span>📎 {file.name}</span>
+                <button className="qi-file-remove" onClick={()=>setFile(null)}>✕</button>
+              </div>
+            )}
+            {apiError && (
+              <div className="qi-error"><div className="qi-error-title">⚠️ Помилка</div><div style={{fontSize:12,whiteSpace:'pre-wrap'}}>{apiError}</div></div>
+            )}
+            <input ref={fileInputRef} type="file" accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp,.heic,.docx" style={{display:'none'}} onChange={e=>{handleFile(e.target.files[0]); e.target.value='';}} />
+            <div className="qi-row">
+              <button className="btn-sm btn-ghost" onClick={()=>fileInputRef.current.click()}>📎 Файл</button>
+              <button className="btn-sm btn-ghost" onClick={()=>setNoteMode(true)}>📝 Нотатка</button>
+              <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
+              {apiKey
+                ? <button className="btn-sm btn-primary" onClick={handleAnalyze} disabled={!text.trim()&&!file}>Аналізувати</button>
+                : <span style={{fontSize:11,color:'var(--orange)'}}>⚠️ Додайте API Key</span>
+              }
             </div>
+          </>
+        )}
+
+        {/* NOTE MODE — обходить pipeline */}
+        {(stage==='input'||stage==='error') && noteMode && (
+          <>
+            <textarea className="qi-textarea" placeholder="Текст нотатки..." value={text} onChange={e=>setText(e.target.value)} autoFocus />
+            <div style={{marginTop:8}}>
+              <label style={{fontSize:11,color:'var(--text2)',display:'block',marginBottom:4}}>Прив'язати до справи:</label>
+              <select className="form-select" style={{fontSize:12,padding:'6px 10px'}} value={noteCase} onChange={e=>setNoteCase(e.target.value)}>
+                <option value="">— Загальна нотатка —</option>
+                {cases.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div className="qi-row">
+              <button className="btn-sm btn-ghost" onClick={()=>setNoteMode(false)}>← Назад</button>
+              <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
+              <button className="btn-sm btn-primary" onClick={saveAsNote} disabled={!text.trim()&&!file}>💾 Зберегти</button>
+            </div>
+          </>
+        )}
+
+        {/* LOADING STAGE */}
+        {stage==='loading' && (
+          <div style={{textAlign:'center',padding:'32px 20px'}}>
+            <div style={{fontSize:32,marginBottom:12}}>⏳</div>
+            <div style={{color:'var(--text2)',fontSize:13}}>Обробка та аналіз AI...</div>
+            <div style={{fontSize:11,color:'var(--text3)',marginTop:6}}>Зазвичай займає 2–5 секунд</div>
           </div>
         )}
-        {result && !apiError && (
-          <div className="qi-result">
-            <div className="qi-result-title">
-              {result.type === 'subpoena' ? '📅 Повістка' : result.type === 'ai' ? '🤖 AI аналіз' : '📝 Нотатка'}
-              {result.isPast && <span style={{marginLeft:8,color:'var(--orange)',fontSize:11}}>⚠️ Дата в минулому</span>}
+
+        {/* RESULT STAGE */}
+        {stage==='result' && analysisResult && (
+          <>
+            <div className={`qi-analysis-card${analysisResult.processing_status==='failed'?' qi-analysis-failed':''}`}>
+              <div style={{fontWeight:600,fontSize:13}}>
+                {analysisResult.input_type==='subpoena'?'📅':analysisResult.input_type==='new_case'?'📁':analysisResult.input_type==='note'?'📝':'📄'}{' '}
+                {analysisResult.human_message}
+              </div>
+              {analysisResult.needs_review && <div className="qi-needs-review">⚠️ Потребує перевірки</div>}
             </div>
-            <div className="qi-result-text">{result.action}</div>
-            {result.case && <div style={{fontSize:11,color:'var(--text2)',marginTop:4}}>Справа: {result.case}</div>}
-            <div className="qi-result-actions">
-              {result.type === 'ai' && (
-                <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Закрити</button>
-              )}
-              {result.type !== 'ai' && !result.isDuplicate && !result.isPast && (
-                <button className="btn-sm btn-primary" onClick={onClose}>✓ Підтвердити і зберегти</button>
-              )}
-              {result.type !== 'ai' && (result.isDuplicate || result.isPast) && (
-                <>
-                  <button className="btn-sm btn-primary" onClick={onClose}>Так, зберегти</button>
-                  <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Ні, скасувати</button>
-                </>
-              )}
-              {result.type !== 'ai' && !result.case && <button className="btn-sm btn-ghost">Обрати справу</button>}
+
+            {analysisResult.processing_status!=='failed' && (
+              <div className="qi-extracted-card">
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:8}}>Витягнуті дані</div>
+                {analysisResult.case_match.found && (
+                  <div className="qi-extracted-row">
+                    <span className="qi-extracted-label">Справа</span>
+                    <span className="qi-extracted-val" style={{color:'var(--accent)'}}>
+                      {analysisResult.case_match.case_name}
+                      <span style={{fontSize:10,color:'var(--text3)',marginLeft:6}}>{Math.round((analysisResult.case_match.confidence||0)*100)}%</span>
+                    </span>
+                  </div>
+                )}
+                {analysisResult.extracted.case_number && <div className="qi-extracted-row"><span className="qi-extracted-label">Номер справи</span><span className="qi-extracted-val">{analysisResult.extracted.case_number}</span></div>}
+                {analysisResult.extracted.court && <div className="qi-extracted-row"><span className="qi-extracted-label">Суд</span><span className="qi-extracted-val">{analysisResult.extracted.court}</span></div>}
+                {analysisResult.extracted.judge && <div className="qi-extracted-row"><span className="qi-extracted-label">Суддя</span><span className="qi-extracted-val">{analysisResult.extracted.judge}</span></div>}
+                {analysisResult.extracted.hearing_date && (
+                  <div className="qi-extracted-row">
+                    <span className="qi-extracted-label">Дата засідання</span>
+                    <span className="qi-extracted-val" style={{color:'var(--green)'}}>
+                      {formatDate(analysisResult.extracted.hearing_date)}{analysisResult.extracted.hearing_time&&` о ${analysisResult.extracted.hearing_time}`}
+                    </span>
+                  </div>
+                )}
+                {analysisResult.extracted.person && <div className="qi-extracted-row"><span className="qi-extracted-label">Особа</span><span className="qi-extracted-val">{analysisResult.extracted.person}</span></div>}
+                {analysisResult.extracted.deadlines?.length>0 && <div className="qi-extracted-row"><span className="qi-extracted-label">Дедлайни</span><span className="qi-extracted-val">{analysisResult.extracted.deadlines.join(', ')}</span></div>}
+              </div>
+            )}
+
+            {analysisResult.warnings?.length>0 && (
+              <div className="qi-warnings">
+                {analysisResult.warnings.map((w,i)=><div key={i} className="qi-warning">⚠️ {w}</div>)}
+              </div>
+            )}
+
+            {activeActions.length>0 && (
+              <div style={{marginTop:12}}>
+                <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--text3)',marginBottom:8}}>Запропоновані дії — нічого не виконується без підтвердження</div>
+                <div className="qi-actions">
+                  {activeActions.map(action => {
+                    const cfg = ACTION_CONFIG[action]||{label:action,icon:'▶'};
+                    const done = doneActions.has(action);
+                    return (
+                      <button key={action} className={`btn-sm ${done?'btn-ghost':'btn-primary'}`}
+                        style={done?{color:'var(--green)',borderColor:'var(--green)'}:{}}
+                        onClick={()=>!done&&executeAction(action)} disabled={done}>
+                        {done?`✓ Виконано`:`${cfg.icon} ${cfg.label}`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="qi-row" style={{marginTop:14}}>
+              <button className="btn-sm btn-ghost" onClick={()=>{setStage('input');setAnalysisResult(null);setDoneActions(new Set());}}>← Назад</button>
+              <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
             </div>
-          </div>
+          </>
         )}
-        <div className="qi-row">
-          <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>📎 Прикріпити файл</button>
-          <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
-          {apiKey
-            ? <button className="btn-sm btn-primary" onClick={analyze} disabled={loading}>{loading ? '⏳ Аналіз...' : 'Аналізувати'}</button>
-            : <span style={{fontSize:11,color:'var(--orange)'}}>⚠️ Додайте Claude API Key в розділі Аналіз системи</span>
-          }
-        </div>
       </div>
     </div>
   );
@@ -1514,6 +1814,14 @@ function App() {
         {/* ── CASES ── */}
         {tab === 'cases' && (
           <div>
+            <div className="status-bar">
+              <span>Статуси:</span>
+              <span className="status-bar-item"><span className="status-bar-count active">{cases.filter(c=>c.status==='active').length}</span> активних</span>
+              <span style={{color:'var(--text3)'}}>|</span>
+              <span className="status-bar-item"><span className="status-bar-count paused">{cases.filter(c=>c.status==='paused').length}</span> призупинених</span>
+              <span style={{color:'var(--text3)'}}>|</span>
+              <span className="status-bar-item"><span className="status-bar-count closed">{cases.filter(c=>c.status==='closed').length}</span> закритих</span>
+            </div>
             <div className="cases-toolbar">
               <div className="search-box">
                 <span style={{color:'var(--text3)'}}>🔍</span>
@@ -1524,9 +1832,14 @@ function App() {
                   {cat==='all'?'Всі':CAT_LABELS[cat]}
                 </button>
               ))}
-              <button className={`filter-btn${filterStatus==='all'?' active':''}`} onClick={()=>setFilterStatus(filterStatus==='all'?'active':'all')}>
-                {filterStatus==='all'?'Всі статуси':'Лише активні'}
-              </button>
+              {[{s:'active',l:'Активні'},{s:'paused',l:'Призупинені'},{s:'closed',l:'Закриті'},{s:'all',l:'Всі'}].map(({s,l}) => {
+                const cnt = s==='all' ? cases.length : cases.filter(c=>c.status===s).length;
+                return (
+                  <button key={s} className={`filter-btn${filterStatus===s?' active':''}`} onClick={()=>setFilterStatus(s)}>
+                    {l} ({cnt})
+                  </button>
+                );
+              })}
             </div>
             <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
             {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
