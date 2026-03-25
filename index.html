@@ -412,6 +412,24 @@
     display: inline-flex; align-items: center; gap: 4px;
     font-size: 11px; color: var(--green); padding: 5px 8px;
   }
+
+  /* Split Panel */
+  @keyframes splitPanelIn { from { opacity: 0; } to { opacity: 1; } }
+  .split-resizer {
+    background: var(--border); flex-shrink: 0; transition: background 0.15s;
+    user-select: none; -webkit-user-select: none; touch-action: none; z-index: 10;
+  }
+  .split-resizer:hover, .split-resizer:active { background: var(--accent); }
+
+  /* QI chat input */
+  .qi-chat-input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body);
+    font-size: 13px; padding: 8px 12px; outline: none; transition: border-color 0.15s;
+  }
+  .qi-chat-input:focus { border-color: var(--accent); }
+  .qi-chat-input::placeholder { color: var(--text3); }
+  .qi-chat-input:disabled { opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -765,7 +783,14 @@ Rules:
 - human_message must be in Ukrainian
 - recommended_actions must only contain values from the allowed list above
 - If input is clearly just a note or unrecognized = input_type: "note", recommended_actions: ["save_note"]
-- Never output anything except the JSON object`;
+- Never output anything except the JSON object
+
+When responding to follow-up commands (not the initial document):
+- Respond with a short conversational message in Ukrainian PLUS optionally a JSON action block
+- Format: plain Ukrainian text, then on a new line: ACTION_JSON: {...}
+- The JSON in ACTION_JSON should follow the same schema (include only relevant fields)
+- If no system action needed — just respond in Ukrainian, no JSON required
+- Always remember what document was analyzed and what actions were already taken`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -897,10 +922,18 @@ function QuickInput({ cases, setCases, onClose }) {
   const [errorDetail, setErrorDetail]     = useState('');
   const [executedActions, setExecutedActions] = useState([]);
   const [dragOver, setDragOver]           = useState(false);
+  const [conversationHistory, setConversationHistory] = useState([]);
+  const [chatInput, setChatInput]         = useState('');
+  const [chatLoading, setChatLoading]     = useState(false);
   const fileInputRef = React.useRef(null);
+  const chatEndRef   = React.useRef(null);
   const apiKey = localStorage.getItem('claude_api_key') || '';
 
   React.useEffect(() => { usageLog.log('quick_input'); }, []);
+
+  React.useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [conversationHistory]);
 
   // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = (file) => {
@@ -986,6 +1019,7 @@ function QuickInput({ cases, setCases, onClose }) {
     setErrorCategory(null);
     setAnalysisResult(null);
     setExecutedActions([]);
+    setConversationHistory([]);
     const caseNames = cases.map(c => c.name).join(', ');
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1022,6 +1056,13 @@ function QuickInput({ cases, setCases, onClose }) {
       if (parsed.processing_status === 'failed') setErrorCategory('invalid_json');
       else if (typeof parsed.confidence === 'number' && parsed.confidence < 0.5) setErrorCategory('low_confidence');
       setAnalysisResult(parsed);
+      setConversationHistory([
+        { role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Data } },
+          { type: 'text', text: `Existing cases in registry: ${caseNames}\nFile: ${fileName}` },
+        ]},
+        { role: 'assistant', content: rawText },
+      ]);
     } catch(err) {
       setErrorCategory('llm_failed');
       setErrorDetail(err.message || 'Мережева помилка');
@@ -1049,6 +1090,7 @@ function QuickInput({ cases, setCases, onClose }) {
     setErrorDetail('');
     setAnalysisResult(null);
     setExecutedActions([]);
+    setConversationHistory([]);
 
     // SYSTEM_IMPORT passthrough (legacy support)
     if (text.trim().startsWith('===SYSTEM_IMPORT===')) {
@@ -1108,6 +1150,10 @@ function QuickInput({ cases, setCases, onClose }) {
       }
 
       setAnalysisResult(parsed);
+      setConversationHistory([
+        { role: 'user', content: userContent },
+        { role: 'assistant', content: rawText },
+      ]);
     } catch(err) {
       setErrorCategory('llm_failed');
       setErrorDetail(err.message || 'Мережева помилка');
@@ -1180,6 +1226,55 @@ function QuickInput({ cases, setCases, onClose }) {
     markDone();
   };
 
+  // ── Chat (follow-up commands) ───────────────────────────────────────────────
+  const sendChat = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const userMsg = chatInput.trim();
+    setChatInput('');
+    setChatLoading(true);
+
+    const newHistory = [
+      ...conversationHistory.slice(-9),
+      { role: 'user', content: userMsg },
+    ];
+    setConversationHistory(prev => [...prev.slice(-9), { role: 'user', content: userMsg }]);
+
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          system: QUICK_INPUT_SYSTEM_PROMPT,
+          messages: newHistory,
+          max_tokens: 1024,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setConversationHistory(prev => [...prev, { role: 'assistant', content: `Помилка: ${err?.error?.message || res.status}` }]);
+      } else {
+        const data = await res.json();
+        const responseText = data?.content?.[0]?.text || '';
+        const parts = responseText.split('\nACTION_JSON:');
+        const displayText = parts[0].trim();
+        let actionResult = null;
+        if (parts.length > 1) {
+          try { actionResult = validateAndParseJSON(parts[1].trim()); } catch (e) {}
+        }
+        setConversationHistory(prev => [...prev, { role: 'assistant', content: displayText, actionResult }]);
+      }
+    } catch (err) {
+      setConversationHistory(prev => [...prev, { role: 'assistant', content: `Помилка мережі: ${err.message}` }]);
+    }
+    setChatLoading(false);
+  };
+
   // ── Derived UI state ───────────────────────────────────────────────────────
   const activeScenarios = analysisResult ? getActiveScenarios(analysisResult) : [];
 
@@ -1197,29 +1292,36 @@ function QuickInput({ cases, setCases, onClose }) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="qi-overlay" onClick={onClose}>
-      <div
-        className="qi-panel"
-        onClick={e => e.stopPropagation()}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        style={dragOver ? { outline: '2px solid var(--accent)', background: 'var(--surface2)' } : {}}
-      >
-        <div className="qi-title">
+    <div
+      style={Object.assign(
+        { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--surface)' },
+        dragOver ? { outline: '2px solid var(--accent)' } : {}
+      )}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '11px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <div className="qi-title" style={{ margin: 0 }}>
           <span>{inputTypeIcon}</span> Quick Input
-          <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-body)', fontWeight: 400 }}>
-            {' '}— текст, файл або фото документу
+          <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-body)', fontWeight: 400, marginLeft: 4 }}>
+            — текст, файл або фото
           </span>
         </div>
+        <button className="modal-close" onClick={onClose} style={{ float: 'none', flexShrink: 0, marginLeft: 8 }}>✕</button>
+      </div>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp"
-          style={{ display: 'none' }}
-          onChange={e => { handleFile(e.target.files[0]); e.target.value = ''; }}
-        />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp"
+        style={{ display: 'none' }}
+        onChange={e => { handleFile(e.target.files[0]); e.target.value = ''; }}
+      />
+
+      {/* Scrollable content */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', minHeight: 0 }}>
 
         {/* Input area — hidden once result shown */}
         {!analysisResult && (
@@ -1318,7 +1420,7 @@ function QuickInput({ cases, setCases, onClose }) {
               <button
                 className="btn-sm btn-ghost"
                 style={{ marginLeft: 'auto' }}
-                onClick={() => { setAnalysisResult(null); setErrorCategory(null); setErrorDetail(''); setExecutedActions([]); }}
+                onClick={() => { setAnalysisResult(null); setErrorCategory(null); setErrorDetail(''); setExecutedActions([]); setConversationHistory([]); }}
               >
                 ← Змінити
               </button>
@@ -1326,40 +1428,91 @@ function QuickInput({ cases, setCases, onClose }) {
           </div>
         )}
 
-        {/* Bottom row */}
-        <div className="qi-row">
-          {!analysisResult && (
-            <>
-              <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>
-                📎 Файл
-              </button>
-              <button
-                className="btn-sm btn-ghost"
-                onClick={saveAsNote}
-                disabled={!text.trim()}
-                title="Зберегти без AI-аналізу"
-              >
-                📝 Нотатка
-              </button>
-            </>
-          )}
-          <button className="btn-sm btn-ghost" onClick={onClose} style={{ marginLeft: analysisResult ? 0 : 'auto' }}>
-            Закрити
-          </button>
-          {!analysisResult && (
-            apiKey
-              ? <button
-                  className="btn-sm btn-primary"
-                  onClick={analyze}
-                  disabled={loading || !text.trim()}
-                >
-                  {loading ? '⏳ Аналіз...' : '🔍 Аналізувати'}
-                </button>
-              : <span style={{ fontSize: 11, color: 'var(--orange)' }}>
-                  ⚠️ Додайте API-ключ в «Аналіз системи»
-                </span>
-          )}
+        {/* Chat messages — appear after initial analysis */}
+        {analysisResult && conversationHistory.length > 2 && (
+          <div style={{ marginTop: 12 }}>
+            {conversationHistory.slice(2).map((msg, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
+                <div style={Object.assign(
+                  { maxWidth: '85%', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.5 },
+                  msg.role === 'user'
+                    ? { background: 'rgba(79,124,255,0.1)', border: '1px solid rgba(79,124,255,0.2)' }
+                    : { background: 'var(--surface2)', border: '1px solid var(--border)' }
+                )}>
+                  {msg.content}
+                  {msg.actionResult && (msg.actionResult.recommended_actions || []).length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                      {msg.actionResult.recommended_actions.map(action => (
+                        <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action)} style={{ fontSize: 11 }}>
+                          {QI_ACTION_LABELS[action] || action}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {chatLoading && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8 }}>
+                <div style={{ padding: '8px 12px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: 13, color: 'var(--text2)' }}>
+                  ⏳ Думаю...
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+        )}
+
+      </div>
+
+      {/* Chat input row — shown after analysis */}
+      {analysisResult && apiKey && (
+        <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexShrink: 0 }}>
+          <input
+            className="qi-chat-input"
+            placeholder="Команда для агента... (напр. «додай засідання»)"
+            value={chatInput}
+            onChange={e => setChatInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
+            disabled={chatLoading}
+          />
+          <button className="btn-sm btn-primary" onClick={sendChat} disabled={chatLoading || !chatInput.trim()}>→</button>
         </div>
+      )}
+
+      {/* Bottom row */}
+      <div className="qi-row" style={{ padding: '8px 16px', margin: 0, flexShrink: 0, borderTop: '1px solid var(--border)' }}>
+        {!analysisResult && (
+          <>
+            <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>
+              📎 Файл
+            </button>
+            <button
+              className="btn-sm btn-ghost"
+              onClick={saveAsNote}
+              disabled={!text.trim()}
+              title="Зберегти без AI-аналізу"
+            >
+              📝 Нотатка
+            </button>
+          </>
+        )}
+        <button className="btn-sm btn-ghost" onClick={onClose} style={{ marginLeft: analysisResult ? 0 : 'auto' }}>
+          Закрити
+        </button>
+        {!analysisResult && (
+          apiKey
+            ? <button
+                className="btn-sm btn-primary"
+                onClick={analyze}
+                disabled={loading || !text.trim()}
+              >
+                {loading ? '⏳ Аналіз...' : '🔍 Аналізувати'}
+              </button>
+            : <span style={{ fontSize: 11, color: 'var(--orange)' }}>
+                ⚠️ Додайте API-ключ в «Аналіз системи»
+              </span>
+        )}
       </div>
     </div>
   );
@@ -1877,6 +2030,14 @@ function App() {
   const [filterCat, setFilterCat] = useState('all');
   const [filterStatus, setFilterStatus] = useState('active');
 
+  // ── Split panel ────────────────────────────────────────────────────────────
+  const [isLandscape, setIsLandscape] = useState(() => window.matchMedia('(orientation: landscape)').matches);
+  const [qiRatio, setQiRatio] = useState(null); // null = default
+  const isDragging = React.useRef(false);
+  const containerRef = React.useRef(null);
+  const isLandscapeRef = React.useRef(isLandscape);
+  const ratio = qiRatio !== null ? qiRatio : (isLandscape ? 0.33 : 0.60);
+
   // Load from Drive on mount if connected
   React.useEffect(() => {
     if (!driveConnected) return;
@@ -1905,6 +2066,41 @@ function App() {
       }
     }
   }, [cases]);
+
+  // ── Split panel effects ────────────────────────────────────────────────────
+  React.useEffect(() => { isLandscapeRef.current = isLandscape; }, [isLandscape]);
+
+  React.useEffect(() => {
+    const mq = window.matchMedia('(orientation: landscape)');
+    const handler = (e) => { setIsLandscape(e.matches); setQiRatio(null); };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  React.useEffect(() => {
+    const onMove = (clientX, clientY) => {
+      if (!isDragging.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const r = isLandscapeRef.current
+        ? (rect.right - clientX) / rect.width
+        : (rect.bottom - clientY) / rect.height;
+      setQiRatio(Math.min(0.75, Math.max(0.25, r)));
+    };
+    const onMouseMove = (e) => onMove(e.clientX, e.clientY);
+    const onMouseUp   = () => { isDragging.current = false; };
+    const onTouchMove = (e) => { if (!isDragging.current) return; e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); };
+    const onTouchEnd  = () => { isDragging.current = false; };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup',   onMouseUp);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend',  onTouchEnd);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup',   onMouseUp);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend',  onTouchEnd);
+    };
+  }, []);
 
   const hotCases = useMemo(() => cases
     .filter(c => c.status==='active' && (c.deadline || c.hearing_date))
@@ -1994,113 +2190,192 @@ function App() {
         ))}
       </div>
 
-      {/* MAIN */}
-      <div className="main">
-
-        {/* ── DASHBOARD ── */}
-        {tab === 'dashboard' && (
-          <div>
-            {hotCases.length > 0 && stats.hot > 0 && (
-              <div className="urgency-banner">
-                <span className="urgency-banner-icon">🔴</span>
-                <span><strong>{stats.hot} справ</strong> з дедлайном найближчі 3 дні</span>
+      {/* MAIN — split or full depending on showQI */}
+      {showQI ? (
+        <div
+          ref={containerRef}
+          style={{ flex: 1, display: 'flex', flexDirection: isLandscape ? 'row' : 'column', overflow: 'hidden', minHeight: 0 }}
+        >
+          {/* Main content panel */}
+          <div className="main" style={{ flex: 1 - ratio, overflow: 'auto', minWidth: 0, minHeight: 0 }}>
+            {/* ── DASHBOARD ── */}
+            {tab === 'dashboard' && (
+              <div>
+                {hotCases.length > 0 && stats.hot > 0 && (
+                  <div className="urgency-banner">
+                    <span className="urgency-banner-icon">🔴</span>
+                    <span><strong>{stats.hot} справ</strong> з дедлайном найближчі 3 дні</span>
+                  </div>
+                )}
+                <div className="stats-row">
+                  <div className="stat-chip blue"><div className="stat-chip-val">{stats.total}</div><div className="stat-chip-label">Активних справ</div></div>
+                  <div className="stat-chip red"><div className="stat-chip-val">{stats.hot}</div><div className="stat-chip-label">Горять (≤3 дні)</div></div>
+                  <div className="stat-chip orange"><div className="stat-chip-val">{stats.thisWeek}</div><div className="stat-chip-label">Засідань цього тижня</div></div>
+                  <div className="stat-chip green"><div className="stat-chip-val">{stats.noDeadline}</div><div className="stat-chip-label">Без дедлайну</div></div>
+                </div>
+                <div className="dash-grid">
+                  <div>
+                    <div className="section-title">Гарячі справи</div>
+                    {hotCases.length === 0 && <div className="empty"><div className="empty-icon">✅</div><div className="empty-text">Немає термінових справ</div></div>}
+                    {hotCases.map(c => (
+                      <div key={c.id} className="hot-case" onClick={() => setSelected(c)}>
+                        <div className="hot-case-dot" style={{background: c.category==='civil'?'var(--accent)':c.category==='criminal'?'var(--red)':c.category==='military'?'var(--orange)':'var(--green)'}} />
+                        <div style={{flex:1}}><div className="hot-case-name">{c.name}</div><div className="hot-case-meta">{c.next_action}</div></div>
+                        <span className={`hot-case-days ${daysChipClass(c.minDays)}`}>{daysLabel(c.minDays)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div><div className="section-title">Календар</div><Calendar cases={cases} onSelectCase={setSelected} /></div>
+                </div>
               </div>
             )}
-            <div className="stats-row">
-              <div className="stat-chip blue"><div className="stat-chip-val">{stats.total}</div><div className="stat-chip-label">Активних справ</div></div>
-              <div className="stat-chip red"><div className="stat-chip-val">{stats.hot}</div><div className="stat-chip-label">Горять (≤3 дні)</div></div>
-              <div className="stat-chip orange"><div className="stat-chip-val">{stats.thisWeek}</div><div className="stat-chip-label">Засідань цього тижня</div></div>
-              <div className="stat-chip green"><div className="stat-chip-val">{stats.noDeadline}</div><div className="stat-chip-label">Без дедлайну</div></div>
-            </div>
-
-            <div className="dash-grid">
+            {tab === 'cases' && (
               <div>
-                <div className="section-title">Гарячі справи</div>
-                {hotCases.length === 0 && <div className="empty"><div className="empty-icon">✅</div><div className="empty-text">Немає термінових справ</div></div>}
-                {hotCases.map(c => (
-                  <div key={c.id} className="hot-case" onClick={() => setSelected(c)}>
-                    <div className="hot-case-dot" style={{background: c.category==='civil'?'var(--accent)':c.category==='criminal'?'var(--red)':c.category==='military'?'var(--orange)':'var(--green)'}} />
-                    <div style={{flex:1}}>
-                      <div className="hot-case-name">{c.name}</div>
-                      <div className="hot-case-meta">{c.next_action}</div>
+                <div className="status-counter">
+                  <span>Активні: <strong style={{color:'var(--green)'}}>{cases.filter(c=>c.status==='active').length}</strong></span>
+                  <span className="status-counter-sep">|</span>
+                  <span>Призупинені: <strong style={{color:'var(--text2)'}}>{cases.filter(c=>c.status==='paused').length}</strong></span>
+                  <span className="status-counter-sep">|</span>
+                  <span>Закриті: <strong style={{color:'var(--text3)'}}>{cases.filter(c=>c.status==='closed').length}</strong></span>
+                </div>
+                <div className="cases-toolbar">
+                  <div className="search-box"><span style={{color:'var(--text3)'}}>🔍</span><input placeholder="Пошук..." value={search} onChange={e=>setSearch(e.target.value)} /></div>
+                  {['all','civil','criminal','military','admin'].map(cat => (
+                    <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>{cat==='all'?'Всі':CAT_LABELS[cat]}</button>
+                  ))}
+                </div>
+                <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+                  {[{val:'active',label:`Активні (${cases.filter(c=>c.status==='active').length})`},{val:'paused',label:`Призупинені (${cases.filter(c=>c.status==='paused').length})`},{val:'closed',label:`Закриті (${cases.filter(c=>c.status==='closed').length})`},{val:'all',label:`Всі (${cases.length})`}].map(({val,label}) => (
+                    <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>{label}</button>
+                  ))}
+                </div>
+                <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
+                {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
+                <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={setSelected} />)}</div>
+              </div>
+            )}
+            {tab === 'add' && <AddCaseForm onSave={editingCase ? updateCase : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
+            {tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
+          </div>
+
+          {/* Resizer */}
+          <div
+            className="split-resizer"
+            style={{ width: isLandscape ? 7 : '100%', height: isLandscape ? '100%' : 7, cursor: isLandscape ? 'col-resize' : 'row-resize' }}
+            onMouseDown={() => { isDragging.current = true; }}
+            onTouchStart={() => { isDragging.current = true; }}
+          />
+
+          {/* Quick Input panel */}
+          <div style={{ flex: ratio, overflow: 'hidden', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
+            <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} />
+          </div>
+        </div>
+      ) : (
+        <div className="main">
+
+          {/* ── DASHBOARD ── */}
+          {tab === 'dashboard' && (
+            <div>
+              {hotCases.length > 0 && stats.hot > 0 && (
+                <div className="urgency-banner">
+                  <span className="urgency-banner-icon">🔴</span>
+                  <span><strong>{stats.hot} справ</strong> з дедлайном найближчі 3 дні</span>
+                </div>
+              )}
+              <div className="stats-row">
+                <div className="stat-chip blue"><div className="stat-chip-val">{stats.total}</div><div className="stat-chip-label">Активних справ</div></div>
+                <div className="stat-chip red"><div className="stat-chip-val">{stats.hot}</div><div className="stat-chip-label">Горять (≤3 дні)</div></div>
+                <div className="stat-chip orange"><div className="stat-chip-val">{stats.thisWeek}</div><div className="stat-chip-label">Засідань цього тижня</div></div>
+                <div className="stat-chip green"><div className="stat-chip-val">{stats.noDeadline}</div><div className="stat-chip-label">Без дедлайну</div></div>
+              </div>
+
+              <div className="dash-grid">
+                <div>
+                  <div className="section-title">Гарячі справи</div>
+                  {hotCases.length === 0 && <div className="empty"><div className="empty-icon">✅</div><div className="empty-text">Немає термінових справ</div></div>}
+                  {hotCases.map(c => (
+                    <div key={c.id} className="hot-case" onClick={() => setSelected(c)}>
+                      <div className="hot-case-dot" style={{background: c.category==='civil'?'var(--accent)':c.category==='criminal'?'var(--red)':c.category==='military'?'var(--orange)':'var(--green)'}} />
+                      <div style={{flex:1}}>
+                        <div className="hot-case-name">{c.name}</div>
+                        <div className="hot-case-meta">{c.next_action}</div>
+                      </div>
+                      <span className={`hot-case-days ${daysChipClass(c.minDays)}`}>{daysLabel(c.minDays)}</span>
                     </div>
-                    <span className={`hot-case-days ${daysChipClass(c.minDays)}`}>{daysLabel(c.minDays)}</span>
-                  </div>
+                  ))}
+                </div>
+                <div>
+                  <div className="section-title">Календар</div>
+                  <Calendar cases={cases} onSelectCase={setSelected} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── CASES ── */}
+          {tab === 'cases' && (
+            <div>
+              <div className="status-counter">
+                <span>Активні: <strong style={{color:'var(--green)'}}>{cases.filter(c=>c.status==='active').length}</strong></span>
+                <span className="status-counter-sep">|</span>
+                <span>Призупинені: <strong style={{color:'var(--text2)'}}>{cases.filter(c=>c.status==='paused').length}</strong></span>
+                <span className="status-counter-sep">|</span>
+                <span>Закриті: <strong style={{color:'var(--text3)'}}>{cases.filter(c=>c.status==='closed').length}</strong></span>
+              </div>
+              <div className="cases-toolbar">
+                <div className="search-box">
+                  <span style={{color:'var(--text3)'}}>🔍</span>
+                  <input placeholder="Пошук за назвою, клієнтом, судом..." value={search} onChange={e=>setSearch(e.target.value)} />
+                </div>
+                {['all','civil','criminal','military','admin'].map(cat => (
+                  <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>
+                    {cat==='all'?'Всі':CAT_LABELS[cat]}
+                  </button>
                 ))}
               </div>
-              <div>
-                <div className="section-title">Календар</div>
-                <Calendar cases={cases} onSelectCase={setSelected} />
+              <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+                {[
+                  {val:'active', label:`Активні (${cases.filter(c=>c.status==='active').length})`},
+                  {val:'paused', label:`Призупинені (${cases.filter(c=>c.status==='paused').length})`},
+                  {val:'closed', label:`Закриті (${cases.filter(c=>c.status==='closed').length})`},
+                  {val:'all',    label:`Всі (${cases.length})`},
+                ].map(({val,label}) => (
+                  <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
+              {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
+              <div className="cases-grid">
+                {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={setSelected} />)}
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ── CASES ── */}
-        {tab === 'cases' && (
-          <div>
-            {/* Status counter */}
-            <div className="status-counter">
-              <span>Активні: <strong style={{color:'var(--green)'}}>{cases.filter(c=>c.status==='active').length}</strong></span>
-              <span className="status-counter-sep">|</span>
-              <span>Призупинені: <strong style={{color:'var(--text2)'}}>{cases.filter(c=>c.status==='paused').length}</strong></span>
-              <span className="status-counter-sep">|</span>
-              <span>Закриті: <strong style={{color:'var(--text3)'}}>{cases.filter(c=>c.status==='closed').length}</strong></span>
-            </div>
-            <div className="cases-toolbar">
-              <div className="search-box">
-                <span style={{color:'var(--text3)'}}>🔍</span>
-                <input placeholder="Пошук за назвою, клієнтом, судом..." value={search} onChange={e=>setSearch(e.target.value)} />
-              </div>
-              {['all','civil','criminal','military','admin'].map(cat => (
-                <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>
-                  {cat==='all'?'Всі':CAT_LABELS[cat]}
-                </button>
-              ))}
-            </div>
-            {/* Status filter tabs */}
-            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
-              {[
-                {val:'active', label:`Активні (${cases.filter(c=>c.status==='active').length})`},
-                {val:'paused', label:`Призупинені (${cases.filter(c=>c.status==='paused').length})`},
-                {val:'closed', label:`Закриті (${cases.filter(c=>c.status==='closed').length})`},
-                {val:'all',    label:`Всі (${cases.length})`},
-              ].map(({val,label}) => (
-                <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
-            {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
-            <div className="cases-grid">
-              {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={setSelected} />)}
-            </div>
-          </div>
-        )}
+          {/* ── ADD CASE ── */}
+          {tab === 'add' && (
+            <AddCaseForm
+              onSave={editingCase ? updateCase : addCase}
+              onCancel={() => { setEditingCase(null); setTab('cases'); }}
+              initialData={editingCase}
+            />
+          )}
 
-        {/* ── ADD CASE ── */}
-        {tab === 'add' && (
-          <AddCaseForm
-            onSave={editingCase ? updateCase : addCase}
-            onCancel={() => { setEditingCase(null); setTab('cases'); }}
-            initialData={editingCase}
-          />
-        )}
+          {/* ── ANALYSIS ── */}
+          {tab === 'analysis' && (
+            <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />
+          )}
 
-        {/* ── ANALYSIS ── */}
-        {tab === 'analysis' && (
-          <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />
-        )}
-
-      </div>
+        </div>
+      )}
 
       {/* MODALS */}
       {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={deleteCase} />}
-      {showQI && <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} />}
 
-      {/* FAB */}
-      <button className="fab" onClick={() => setShowQI(true)} title="Quick Input">⚡</button>
+      {/* FAB — hidden when QI panel is open */}
+      {!showQI && <button className="fab" onClick={() => setShowQI(true)} title="Quick Input">⚡</button>}
     </div>
   );
 }
