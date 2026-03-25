@@ -8,6 +8,8 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script>if (typeof pdfjsLib !== 'undefined') { pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js'; }</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -358,6 +360,58 @@
     display: flex; gap: 10px; align-items: center; font-size: 12px;
   }
   .urgency-banner-icon { font-size: 16px; }
+
+  /* Status counter bar */
+  .status-counter {
+    display: flex; gap: 14px; align-items: center; padding: 0 0 10px;
+    font-size: 12px; color: var(--text2); flex-wrap: wrap;
+  }
+  .status-counter-sep { color: var(--text3); }
+
+  /* QI v2 */
+  .qi-action-card {
+    margin-top: 12px; background: var(--surface2); border: 1px solid rgba(79,124,255,0.3);
+    border-radius: var(--radius-sm); overflow: hidden;
+  }
+  .qi-action-card-header {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; gap: 10px; background: rgba(79,124,255,0.06);
+  }
+  .qi-action-card-body { padding: 10px 14px; }
+  .qi-extracted-field {
+    display: flex; gap: 8px; padding: 5px 0; font-size: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .qi-extracted-field:last-child { border-bottom: none; }
+  .qi-extracted-label { color: var(--text2); min-width: 120px; flex-shrink: 0; }
+  .qi-extracted-val { color: var(--text); font-weight: 500; }
+  .qi-action-btns {
+    display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px;
+    border-top: 1px solid var(--border); background: rgba(0,0,0,0.08);
+  }
+  .qi-warning-row {
+    display: flex; gap: 8px; padding: 7px 12px; margin: 0 14px 8px;
+    background: rgba(255,209,102,0.07); border: 1px solid rgba(255,209,102,0.2);
+    border-radius: var(--radius-sm); font-size: 12px; color: var(--yellow);
+  }
+  .qi-review-badge {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px;
+    background: rgba(255,140,66,0.12); border: 1px solid rgba(255,140,66,0.3);
+    border-radius: 20px; font-size: 11px; color: var(--orange); white-space: nowrap;
+  }
+  .qi-case-match {
+    font-size: 11px; color: var(--green); margin-top: 3px;
+    display: flex; gap: 6px; align-items: center;
+  }
+  .qi-error-card {
+    margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm);
+    background: rgba(255,79,106,0.08); border: 1px solid rgba(255,79,106,0.25); font-size: 12px;
+  }
+  .qi-error-title { color: var(--red); font-weight: 600; margin-bottom: 6px; font-size: 13px; }
+  .qi-done-action {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--green); padding: 5px 8px;
+  }
 </style>
 </head>
 <body>
@@ -665,40 +719,338 @@ function Calendar({ cases, onSelectCase }) {
   );
 }
 
-// ── QUICK INPUT ───────────────────────────────────────────────────────────────
-function QuickInput({ cases, setCases, onClose }) {
-  const [text, setText] = useState('');
-  const [result, setResult] = useState(null);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = React.useRef(null);
+// ── QUICK INPUT v2 ────────────────────────────────────────────────────────────
 
+// System prompt — replace this block to change AI behaviour
+const QUICK_INPUT_SYSTEM_PROMPT = `You are a legal document intake parser for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
+
+Your ONLY output must be a single valid JSON object. No text before. No text after. No markdown. No explanations.
+
+Your task:
+1. Classify the input (subpoena, court document, new case document, note, or unknown)
+2. Extract all relevant legal/court data
+3. Match to an existing case if possible (the user message will list existing case names)
+4. Recommend system actions
+
+Return this exact JSON structure:
+{
+  "input_type": "subpoena | document | new_case | note | unknown",
+  "source_type": "text | pdf | image | screenshot | file",
+  "processing_status": "success | partial | failed",
+  "case_match": {
+    "found": true or false,
+    "case_name": "string or null",
+    "confidence": 0.0 to 1.0
+  },
+  "extracted": {
+    "case_number": "string or null",
+    "court": "string or null",
+    "judge": "string or null",
+    "hearing_date": "YYYY-MM-DD or null",
+    "hearing_time": "HH:MM or null",
+    "deadlines": [],
+    "person": "string or null"
+  },
+  "recommended_actions": ["create_hearing_event", "update_case_date", "save_to_drive", "create_case", "save_note"],
+  "human_message": "Short Ukrainian-language summary for the lawyer",
+  "warnings": [],
+  "confidence": 0.0 to 1.0,
+  "needs_review": true or false
+}
+
+Rules:
+- Unknown field = null, never invent values
+- If unsure about anything = needs_review: true
+- hearing_date must be YYYY-MM-DD format
+- human_message must be in Ukrainian
+- recommended_actions must only contain values from the allowed list above
+- If input is clearly just a note or unrecognized = input_type: "note", recommended_actions: ["save_note"]
+- Never output anything except the JSON object`;
+
+// JSON validator — 3-pass: direct parse → regex extract → fallback
+function validateAndParseJSON(rawText) {
+  if (!rawText) return null;
+  // Pass 1: direct
+  try { return JSON.parse(rawText.trim()); } catch(e) {}
+  // Pass 2: extract first {...} block
+  const m = rawText.match(/\{[\s\S]*\}/);
+  if (m) { try { return JSON.parse(m[0]); } catch(e) {} }
+  // Pass 3: structured fallback
+  return {
+    input_type: 'unknown',
+    source_type: 'text',
+    processing_status: 'failed',
+    case_match: { found: false, case_name: null, confidence: 0 },
+    extracted: { case_number: null, court: null, judge: null, hearing_date: null, hearing_time: null, deadlines: [], person: null },
+    recommended_actions: ['save_note'],
+    human_message: 'Не вдалося розібрати відповідь. Збережіть як нотатку.',
+    warnings: [],
+    confidence: 0,
+    needs_review: true,
+  };
+}
+
+// Error category messages
+const QI_ERROR_MESSAGES = {
+  unsupported_format: 'Формат файлу не підтримується. Спробуйте TXT, PDF або зображення.',
+  extraction_failed:  'Не вдалося витягти текст з файлу.',
+  llm_failed:         'API Claude не відповів. Перевірте підключення та API-ключ.',
+  invalid_json:       'Модель повернула некоректну відповідь. Збережіть як нотатку.',
+  low_confidence:     'Низька впевненість аналізу — перевірте і підтвердьте дані вручну.',
+};
+
+// Action button labels
+const QI_ACTION_LABELS = {
+  create_hearing_event: '📅 Додати засідання',
+  update_case_date:     '🗓 Оновити дату',
+  save_to_drive:        '☁️ Зберегти в Drive',
+  update_case_status:   '🔄 Змінити статус',
+  create_case:          '➕ Створити справу',
+  create_drive_folder:  '📁 Створити папку',
+  save_note:            '📝 Зберегти нотатку',
+};
+
+// Extracted field display labels
+const QI_FIELD_LABELS = {
+  case_number:  'Номер справи',
+  court:        'Суд',
+  judge:        'Суддя',
+  hearing_date: 'Дата засідання',
+  hearing_time: 'Час засідання',
+  deadlines:    'Дедлайни',
+  person:       'Особа',
+};
+
+// ── SCENARIO REGISTRY ─────────────────────────────────────────────────────────
+// Each scenario is independent. Remove one — system still works. Add one — auto-activated.
+const scenario_subpoena = {
+  id: 'subpoena',
+  label: 'Повістка / нова дата засідання',
+  matches: (result) =>
+    result.input_type === 'subpoena' || !!(result.extracted && result.extracted.hearing_date),
+};
+
+const scenario_existing_case = {
+  id: 'existing_case',
+  label: 'Документ по існуючій справі',
+  matches: (result) => !!(result.case_match && result.case_match.found),
+};
+
+const scenario_new_case = {
+  id: 'new_case',
+  label: 'Нова справа',
+  matches: (result) =>
+    result.input_type === 'new_case' ||
+    (result.case_match && !result.case_match.found &&
+     result.input_type !== 'note' && result.input_type !== 'unknown'),
+};
+
+const scenario_multiple_files = {
+  id: 'multiple_files',
+  label: 'Кілька файлів',
+  matches: (_result, _meta, fileCount) => fileCount >= 2,
+};
+
+const scenario_note = {
+  id: 'note',
+  label: 'Нотатка (fallback)',
+  isFallback: true,
+  matches: (result, activeCount) =>
+    activeCount === 0 ||
+    result.processing_status === 'failed' ||
+    (typeof result.confidence === 'number' && result.confidence < 0.5),
+};
+
+const SCENARIO_REGISTRY = [
+  scenario_subpoena,
+  scenario_existing_case,
+  scenario_new_case,
+  scenario_multiple_files,
+  scenario_note,
+];
+
+function getActiveScenarios(result, fileCount = 0) {
+  const primary = SCENARIO_REGISTRY.filter(s =>
+    !s.isFallback && s.matches(result, 0, fileCount)
+  );
+  const fallback = SCENARIO_REGISTRY.filter(s =>
+    s.isFallback && s.matches(result, primary.length, fileCount)
+  );
+  return [...primary, ...fallback];
+}
+
+// Helper: save note to localStorage
+function saveNoteToStorage(text, resultPayload) {
+  try {
+    const notes = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
+    notes.push({ text, result: resultPayload || null, ts: new Date().toISOString() });
+    if (notes.length > 200) notes.splice(0, notes.length - 200);
+    localStorage.setItem('levytskyi_notes', JSON.stringify(notes));
+  } catch(e) {}
+}
+
+function QuickInput({ cases, setCases, onClose }) {
+  const [text, setText]                   = useState('');
+  const [loading, setLoading]             = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [errorCategory, setErrorCategory] = useState(null);  // see QI_ERROR_MESSAGES
+  const [errorDetail, setErrorDetail]     = useState('');
+  const [executedActions, setExecutedActions] = useState([]);
+  const [dragOver, setDragOver]           = useState(false);
+  const fileInputRef = React.useRef(null);
+  const apiKey = localStorage.getItem('claude_api_key') || '';
+
+  React.useEffect(() => { usageLog.log('quick_input'); }, []);
+
+  // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = (file) => {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
     if (ext === 'txt' || ext === 'md') {
       const reader = new FileReader();
       reader.onload = (e) => setText(e.target.result);
+      reader.onerror = () => setErrorCategory('extraction_failed');
       reader.readAsText(file);
+    } else if (ext === 'pdf') {
+      extractPdfText(file);
+    } else if (['jpg','jpeg','png','webp'].includes(ext)) {
+      readImageAsBase64(file);
     } else {
-      setText(`[Файл: ${file.name} — обробка AI буде додана в наступній версії]`);
+      setErrorCategory('unsupported_format');
+      setErrorDetail(`Файл: ${file.name}`);
     }
   };
 
-  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+  const extractPdfText = (file) => {
+    // pdf.js must be loaded; if not available fall back to vision
+    if (typeof pdfjsLib === 'undefined') {
+      // Treat as image fallback via base64
+      readImageAsBase64(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const typedArr = new Uint8Array(e.target.result);
+        const pdf = await pdfjsLib.getDocument({ data: typedArr }).promise;
+        let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          fullText += content.items.map(item => item.str).join(' ') + '\n';
+        }
+        if (fullText.trim().length > 20) {
+          setText(fullText.trim());
+        } else {
+          // Scanned PDF — render first page to base64 and use vision
+          renderPdfPageAsBase64(pdf, file.name);
+        }
+      } catch(err) {
+        setErrorCategory('extraction_failed');
+        setErrorDetail(err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const renderPdfPageAsBase64 = async (pdf, fileName) => {
+    try {
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+      analyzeImageWithVision(base64, 'image/jpeg', fileName);
+    } catch(err) {
+      setErrorCategory('extraction_failed');
+      setErrorDetail(err.message);
+    }
+  };
+
+  const readImageAsBase64 = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64 = e.target.result.split(',')[1];
+      const mediaType = file.type || 'image/jpeg';
+      analyzeImageWithVision(base64, mediaType, file.name);
+    };
+    reader.onerror = () => setErrorCategory('extraction_failed');
+    reader.readAsDataURL(file);
+  };
+
+  const analyzeImageWithVision = async (base64Data, mediaType, fileName) => {
+    if (!apiKey) { setErrorCategory('llm_failed'); setErrorDetail('API-ключ не налаштований'); return; }
+    setLoading(true);
+    setErrorCategory(null);
+    setAnalysisResult(null);
+    setExecutedActions([]);
+    const caseNames = cases.map(c => c.name).join(', ');
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 1024,
+          system: QUICK_INPUT_SYSTEM_PROMPT,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Data } },
+              { type: 'text', text: `Existing cases in registry: ${caseNames}\nFile: ${fileName}` },
+            ],
+          }],
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(()=>({}));
+        setErrorCategory('llm_failed');
+        setErrorDetail(d?.error?.message || `HTTP ${res.status}`);
+        setLoading(false);
+        return;
+      }
+      const data = await res.json();
+      const rawText = data?.content?.[0]?.text || '';
+      const parsed = validateAndParseJSON(rawText);
+      if (parsed.processing_status === 'failed') setErrorCategory('invalid_json');
+      else if (typeof parsed.confidence === 'number' && parsed.confidence < 0.5) setErrorCategory('low_confidence');
+      setAnalysisResult(parsed);
+    } catch(err) {
+      setErrorCategory('llm_failed');
+      setErrorDetail(err.message || 'Мережева помилка');
+    }
+    setLoading(false);
+  };
+
+  const onDragOver  = (e) => { e.preventDefault(); setDragOver(true); };
   const onDragLeave = () => setDragOver(false);
-  const onDrop = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
+  const onDrop      = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
 
-  const [loading, setLoading] = useState(false);
-  const [apiError, setApiError] = useState(null);
-  const apiKey = localStorage.getItem('claude_api_key') || '';
+  // ── Direct note save (bypasses pipeline) ──────────────────────────────────
+  const saveAsNote = () => {
+    if (!text.trim()) return;
+    saveNoteToStorage(text, null);
+    alert('Нотатку збережено');
+    onClose();
+  };
 
-  React.useEffect(() => { usageLog.log('quick_input'); }, []);
-
+  // ── Main analysis pipeline ─────────────────────────────────────────────────
   const analyze = async () => {
     if (!text.trim()) return;
-    setApiError(null);
+    setLoading(true);
+    setErrorCategory(null);
+    setErrorDetail('');
+    setAnalysisResult(null);
+    setExecutedActions([]);
 
-    // SYSTEM_IMPORT: автоматичне оновлення/створення справи
+    // SYSTEM_IMPORT passthrough (legacy support)
     if (text.trim().startsWith('===SYSTEM_IMPORT===')) {
       const data = {};
       text.split('\n').forEach(line => {
@@ -708,33 +1060,18 @@ function QuickInput({ cases, setCases, onClose }) {
       const caseName = data.name || '';
       setCases(prev => {
         const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
-        if (existing) {
-          return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
-        } else {
-          return [...prev, {
-            id: Date.now(),
-            name: caseName,
-            client: data.client || '',
-            category: data.category || 'civil',
-            status: 'active',
-            court: data.court || '',
-            case_no: data.case_no || '',
-            hearing_date: data.hearing_date || '',
-            hearing_time: data.hearing_time || '',
-            deadline: data.deadline || '',
-            deadline_type: data.deadline_type || '',
-            next_action: data.next_action || '',
-            notes: data.notes || ''
-          }];
-        }
+        if (existing) return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
+        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearing_date: data.hearing_date||'', hearing_time: data.hearing_time||'', deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes||'' }];
       });
-      alert(`Дані внесено з контекстного файлу: ${caseName}`);
+      alert(`Дані внесено: ${caseName}`);
       onClose();
+      setLoading(false);
       return;
     }
 
-    // Real Claude API call
-    setLoading(true);
+    const caseNames = cases.map(c => c.name).join(', ');
+    const userContent = `Existing cases in registry: ${caseNames}\n\n---\n\n${text}`;
+
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -742,30 +1079,123 @@ function QuickInput({ cases, setCases, onClose }) {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
+          'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
-          max_tokens: 1000,
-          system: 'Ти — асистент адвокатського бюро Левицького. Отримуєш текст: повістку, нотатку, документ або команду. Визнач: 1) тип вводу, 2) до якої справи належить якщо можна визначити з тексту, 3) які дані витягнути — дата, номер справи, суд, наступна дія. Відповідай коротко українською.',
-          messages: [{ role: 'user', content: text }]
-        })
+          max_tokens: 1024,
+          system: QUICK_INPUT_SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: userContent }],
+        }),
       });
-      const data = await res.json();
+
       if (!res.ok) {
-        const errMsg = data?.error?.message || `Помилка API: ${res.status}`;
-        setApiError(errMsg);
+        const d = await res.json().catch(()=>({}));
+        setErrorCategory('llm_failed');
+        setErrorDetail(d?.error?.message || `HTTP ${res.status}`);
         setLoading(false);
         return;
       }
-      const reply = data?.content?.[0]?.text || 'Відповідь не отримана';
-      setResult({ type: 'ai', action: reply, case: null });
+
+      const data = await res.json();
+      const rawText = data?.content?.[0]?.text || '';
+      const parsed = validateAndParseJSON(rawText);
+
+      if (parsed.processing_status === 'failed') {
+        setErrorCategory('invalid_json');
+      } else if (typeof parsed.confidence === 'number' && parsed.confidence < 0.5) {
+        setErrorCategory('low_confidence');
+      }
+
+      setAnalysisResult(parsed);
     } catch(err) {
-      setApiError(err.message || 'Мережева помилка');
+      setErrorCategory('llm_failed');
+      setErrorDetail(err.message || 'Мережева помилка');
     }
     setLoading(false);
   };
 
+  // ── Action execution ───────────────────────────────────────────────────────
+  const executeAction = (action) => {
+    if (!analysisResult) return;
+    const markDone = () => setExecutedActions(prev => [...prev, action]);
+
+    if (action === 'save_note') {
+      saveNoteToStorage(text, analysisResult);
+      markDone();
+      return;
+    }
+
+    if (action === 'create_hearing_event' || action === 'update_case_date') {
+      const hearing_date = analysisResult.extracted?.hearing_date;
+      const hearing_time = analysisResult.extracted?.hearing_time;
+      const caseName = analysisResult.case_match?.case_name;
+      if (!hearing_date) { alert('Дату засідання не визначено'); return; }
+      if (!caseName)     { alert('Справу не визначено — уточніть вручну'); return; }
+      const matched = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
+      if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
+      const timeStr = hearing_time ? ` о ${hearing_time}` : '';
+      if (!confirm(`Встановити дату засідання ${hearing_date}${timeStr} для справи "${matched.name}"?`)) return;
+      setCases(prev => prev.map(c =>
+        c.id === matched.id ? { ...c, hearing_date, ...(hearing_time ? { hearing_time } : {}) } : c
+      ));
+      markDone();
+      return;
+    }
+
+    if (action === 'update_case_status') {
+      const caseName = analysisResult.case_match?.case_name;
+      if (!caseName) { alert('Справу не визначено'); return; }
+      const matched = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
+      if (!matched) { alert(`Справу "${caseName}" не знайдено`); return; }
+      const newStatus = prompt(`Новий статус для "${matched.name}":\nactive — Активна\npaused — Призупинена\nclosed — Закрита`);
+      if (!newStatus || !['active','paused','closed'].includes(newStatus.trim())) {
+        alert('Невірний статус. Введіть: active, paused або closed'); return;
+      }
+      setCases(prev => prev.map(c => c.id === matched.id ? { ...c, status: newStatus.trim() } : c));
+      markDone();
+      return;
+    }
+
+    if (action === 'create_case') {
+      const ext = analysisResult.extracted || {};
+      const prefill = [
+        ext.court        && `Суд: ${ext.court}`,
+        ext.case_number  && `Номер: ${ext.case_number}`,
+        ext.person       && `Особа: ${ext.person}`,
+        ext.hearing_date && `Засідання: ${ext.hearing_date}`,
+      ].filter(Boolean).join('\n');
+      alert(`Перейдіть до розділу "Нова справа".\n\nДані для заповнення:\n${prefill || '(дані не визначені)'}`);
+      onClose();
+      return;
+    }
+
+    if (action === 'save_to_drive' || action === 'create_drive_folder') {
+      alert('Функція потребує підключення Google Drive (розділ "Аналіз системи").');
+      markDone();
+      return;
+    }
+
+    alert(`Дія "${QI_ACTION_LABELS[action] || action}" ще не реалізована в цій версії`);
+    markDone();
+  };
+
+  // ── Derived UI state ───────────────────────────────────────────────────────
+  const activeScenarios = analysisResult ? getActiveScenarios(analysisResult) : [];
+
+  const extractedFields = analysisResult?.extracted
+    ? Object.entries(analysisResult.extracted).filter(([k, v]) =>
+        k === 'deadlines' ? Array.isArray(v) && v.length > 0 : v !== null && v !== undefined && v !== ''
+      )
+    : [];
+
+  const inputTypeIcon = !analysisResult ? '⚡' :
+    analysisResult.input_type === 'subpoena'  ? '📅' :
+    analysisResult.input_type === 'new_case'  ? '📋' :
+    analysisResult.input_type === 'note'      ? '📝' :
+    analysisResult.input_type === 'document'  ? '📄' : '🤖';
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="qi-overlay" onClick={onClose}>
       <div
@@ -774,66 +1204,161 @@ function QuickInput({ cases, setCases, onClose }) {
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        style={dragOver ? {outline:'2px solid var(--blue)',background:'var(--bg2)'} : {}}
+        style={dragOver ? { outline: '2px solid var(--accent)', background: 'var(--surface2)' } : {}}
       >
         <div className="qi-title">
-          <span>⚡</span> Quick Input — вставте повістку, напишіть або скиньте файл
+          <span>{inputTypeIcon}</span> Quick Input
+          <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--font-body)', fontWeight: 400 }}>
+            {' '}— текст, файл або фото документу
+          </span>
         </div>
+
         <input
           ref={fileInputRef}
           type="file"
-          accept="*"
-          style={{display:'none'}}
-          onChange={e => handleFile(e.target.files[0])}
+          accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp"
+          style={{ display: 'none' }}
+          onChange={e => { handleFile(e.target.files[0]); e.target.value = ''; }}
         />
-        <textarea
-          className="qi-textarea"
-          placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або введіть будь-яку інформацію по справі..."
-          value={text}
-          onChange={e => setText(e.target.value)}
-          autoFocus
-        />
-        {apiError && (
-          <div className="qi-result" style={{borderColor:'var(--red)'}}>
-            <div className="qi-result-title" style={{color:'var(--red)'}}>⚠️ Помилка API</div>
-            <div className="qi-result-text" style={{fontSize:12}}>{apiError}</div>
-            <div className="qi-result-actions">
-              <button className="btn-sm btn-ghost" onClick={() => setApiError(null)}>Закрити</button>
+
+        {/* Input area — hidden once result shown */}
+        {!analysisResult && (
+          <textarea
+            className="qi-textarea"
+            placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або перетягніть файл..."
+            value={text}
+            onChange={e => setText(e.target.value)}
+            autoFocus
+          />
+        )}
+
+        {/* Error card (no result yet) */}
+        {errorCategory && !analysisResult && (
+          <div className="qi-error-card">
+            <div className="qi-error-title">
+              {errorCategory === 'llm_failed' ? '⚠️ Помилка API' :
+               errorCategory === 'unsupported_format' ? '⚠️ Формат не підтримується' :
+               '⚠️ Помилка обробки'}
+            </div>
+            <div style={{ color: 'var(--text2)', marginBottom: 8 }}>
+              {QI_ERROR_MESSAGES[errorCategory]}
+              {errorDetail && <span style={{ color: 'var(--text3)', display: 'block', marginTop: 4, fontSize: 11 }}>{errorDetail}</span>}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn-sm btn-ghost" onClick={() => { setErrorCategory(null); setErrorDetail(''); }}>Спробувати ще</button>
+              <button className="btn-sm btn-primary" onClick={saveAsNote} disabled={!text.trim()}>📝 Зберегти як нотатку</button>
             </div>
           </div>
         )}
-        {result && !apiError && (
-          <div className="qi-result">
-            <div className="qi-result-title">
-              {result.type === 'subpoena' ? '📅 Повістка' : result.type === 'ai' ? '🤖 AI аналіз' : '📝 Нотатка'}
-              {result.isPast && <span style={{marginLeft:8,color:'var(--orange)',fontSize:11}}>⚠️ Дата в минулому</span>}
+
+        {/* Analysis result card */}
+        {analysisResult && (
+          <div className="qi-action-card">
+            {/* Header */}
+            <div className="qi-action-card-header">
+              <span style={{ fontSize: 20, lineHeight: 1 }}>{inputTypeIcon}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.4 }}>
+                  {analysisResult.human_message}
+                </div>
+                {analysisResult.case_match?.found && (
+                  <div className="qi-case-match">
+                    ✅ Справа: <strong>{analysisResult.case_match.case_name}</strong>
+                    <span style={{ color: 'var(--text3)' }}>
+                      ({Math.round((analysisResult.case_match.confidence || 0) * 100)}%)
+                    </span>
+                  </div>
+                )}
+                {activeScenarios.length > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 3 }}>
+                    {activeScenarios.map(s => s.label).join(' · ')}
+                  </div>
+                )}
+              </div>
+              {analysisResult.needs_review && (
+                <span className="qi-review-badge">⚠️ Перевірте</span>
+              )}
             </div>
-            <div className="qi-result-text">{result.action}</div>
-            {result.case && <div style={{fontSize:11,color:'var(--text2)',marginTop:4}}>Справа: {result.case}</div>}
-            <div className="qi-result-actions">
-              {result.type === 'ai' && (
-                <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Закрити</button>
+
+            {/* Extracted fields */}
+            {extractedFields.length > 0 && (
+              <div className="qi-action-card-body">
+                {extractedFields.map(([k, v]) => (
+                  <div key={k} className="qi-extracted-field">
+                    <span className="qi-extracted-label">{QI_FIELD_LABELS[k] || k}</span>
+                    <span className="qi-extracted-val">
+                      {Array.isArray(v) ? v.join(', ') : String(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Warnings */}
+            {analysisResult.warnings && analysisResult.warnings.length > 0 && (
+              <div style={{ padding: '4px 0' }}>
+                {analysisResult.warnings.map((w, i) => (
+                  <div key={i} className="qi-warning-row">⚠️ {w}</div>
+                ))}
+              </div>
+            )}
+            {errorCategory === 'low_confidence' && (
+              <div className="qi-warning-row">⚠️ {QI_ERROR_MESSAGES.low_confidence}</div>
+            )}
+
+            {/* Action buttons */}
+            <div className="qi-action-btns">
+              {(analysisResult.recommended_actions || []).map(action =>
+                executedActions.includes(action)
+                  ? <span key={action} className="qi-done-action">✓ {QI_ACTION_LABELS[action] || action}</span>
+                  : <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action)}>
+                      {QI_ACTION_LABELS[action] || action}
+                    </button>
               )}
-              {result.type !== 'ai' && !result.isDuplicate && !result.isPast && (
-                <button className="btn-sm btn-primary" onClick={onClose}>✓ Підтвердити і зберегти</button>
-              )}
-              {result.type !== 'ai' && (result.isDuplicate || result.isPast) && (
-                <>
-                  <button className="btn-sm btn-primary" onClick={onClose}>Так, зберегти</button>
-                  <button className="btn-sm btn-ghost" onClick={() => setResult(null)}>Ні, скасувати</button>
-                </>
-              )}
-              {result.type !== 'ai' && !result.case && <button className="btn-sm btn-ghost">Обрати справу</button>}
+              <button
+                className="btn-sm btn-ghost"
+                style={{ marginLeft: 'auto' }}
+                onClick={() => { setAnalysisResult(null); setErrorCategory(null); setErrorDetail(''); setExecutedActions([]); }}
+              >
+                ← Змінити
+              </button>
             </div>
           </div>
         )}
+
+        {/* Bottom row */}
         <div className="qi-row">
-          <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>📎 Прикріпити файл</button>
-          <button className="btn-sm btn-ghost" onClick={onClose}>Закрити</button>
-          {apiKey
-            ? <button className="btn-sm btn-primary" onClick={analyze} disabled={loading}>{loading ? '⏳ Аналіз...' : 'Аналізувати'}</button>
-            : <span style={{fontSize:11,color:'var(--orange)'}}>⚠️ Додайте Claude API Key в розділі Аналіз системи</span>
-          }
+          {!analysisResult && (
+            <>
+              <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>
+                📎 Файл
+              </button>
+              <button
+                className="btn-sm btn-ghost"
+                onClick={saveAsNote}
+                disabled={!text.trim()}
+                title="Зберегти без AI-аналізу"
+              >
+                📝 Нотатка
+              </button>
+            </>
+          )}
+          <button className="btn-sm btn-ghost" onClick={onClose} style={{ marginLeft: analysisResult ? 0 : 'auto' }}>
+            Закрити
+          </button>
+          {!analysisResult && (
+            apiKey
+              ? <button
+                  className="btn-sm btn-primary"
+                  onClick={analyze}
+                  disabled={loading || !text.trim()}
+                >
+                  {loading ? '⏳ Аналіз...' : '🔍 Аналізувати'}
+                </button>
+              : <span style={{ fontSize: 11, color: 'var(--orange)' }}>
+                  ⚠️ Додайте API-ключ в «Аналіз системи»
+                </span>
+          )}
         </div>
       </div>
     </div>
@@ -1514,6 +2039,14 @@ function App() {
         {/* ── CASES ── */}
         {tab === 'cases' && (
           <div>
+            {/* Status counter */}
+            <div className="status-counter">
+              <span>Активні: <strong style={{color:'var(--green)'}}>{cases.filter(c=>c.status==='active').length}</strong></span>
+              <span className="status-counter-sep">|</span>
+              <span>Призупинені: <strong style={{color:'var(--text2)'}}>{cases.filter(c=>c.status==='paused').length}</strong></span>
+              <span className="status-counter-sep">|</span>
+              <span>Закриті: <strong style={{color:'var(--text3)'}}>{cases.filter(c=>c.status==='closed').length}</strong></span>
+            </div>
             <div className="cases-toolbar">
               <div className="search-box">
                 <span style={{color:'var(--text3)'}}>🔍</span>
@@ -1524,9 +2057,19 @@ function App() {
                   {cat==='all'?'Всі':CAT_LABELS[cat]}
                 </button>
               ))}
-              <button className={`filter-btn${filterStatus==='all'?' active':''}`} onClick={()=>setFilterStatus(filterStatus==='all'?'active':'all')}>
-                {filterStatus==='all'?'Всі статуси':'Лише активні'}
-              </button>
+            </div>
+            {/* Status filter tabs */}
+            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+              {[
+                {val:'active', label:`Активні (${cases.filter(c=>c.status==='active').length})`},
+                {val:'paused', label:`Призупинені (${cases.filter(c=>c.status==='paused').length})`},
+                {val:'closed', label:`Закриті (${cases.filter(c=>c.status==='closed').length})`},
+                {val:'all',    label:`Всі (${cases.length})`},
+              ].map(({val,label}) => (
+                <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>
+                  {label}
+                </button>
+              ))}
             </div>
             <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
             {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
