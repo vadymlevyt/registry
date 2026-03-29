@@ -267,9 +267,10 @@
   @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
   .qi-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
   .qi-textarea {
-    width: 100%; min-height: 100px; background: var(--surface2); border: 1px solid var(--border);
+    width: 100%; min-height: 80px; background: var(--surface2); border: 1px solid var(--border);
     border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body); font-size: 13px;
     padding: 12px; resize: none; outline: none; transition: border-color 0.15s;
+    flex: 1; overflow-y: auto;
   }
   .qi-textarea:focus { border-color: var(--accent); }
   .qi-textarea::placeholder { color: var(--text3); }
@@ -418,8 +419,17 @@
   .split-resizer {
     background: var(--border); flex-shrink: 0; transition: background 0.15s;
     user-select: none; -webkit-user-select: none; touch-action: none; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
   }
   .split-resizer:hover, .split-resizer:active { background: var(--accent); }
+  .split-resizer-vertical::after {
+    content: ''; display: block; background: rgba(255,255,255,0.3);
+    border-radius: 3px; width: 4px; height: 32px;
+  }
+  .split-resizer-horizontal::after {
+    content: ''; display: block; background: rgba(255,255,255,0.3);
+    border-radius: 3px; width: 32px; height: 4px;
+  }
 
   /* QI chat input */
   .qi-chat-input {
@@ -1294,7 +1304,7 @@ function QuickInput({ cases, setCases, onClose }) {
   return (
     <div
       style={Object.assign(
-        { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--surface)' },
+        { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: 'var(--surface)' },
         dragOver ? { outline: '2px solid var(--accent)' } : {}
       )}
       onDragOver={onDragOver}
@@ -2260,7 +2270,7 @@ function App() {
 
           {/* Resizer */}
           <div
-            className="split-resizer"
+            className={`split-resizer ${isLandscape ? 'split-resizer-vertical' : 'split-resizer-horizontal'}`}
             style={{ width: isLandscape ? 7 : '100%', height: isLandscape ? '100%' : 7, cursor: isLandscape ? 'col-resize' : 'row-resize' }}
             onMouseDown={() => { isDragging.current = true; }}
             onTouchStart={() => { isDragging.current = true; }}
