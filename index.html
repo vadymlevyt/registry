@@ -270,7 +270,7 @@
     width: 100%; min-height: 80px; background: var(--surface2); border: 1px solid var(--border);
     border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body); font-size: 13px;
     padding: 12px; resize: none; outline: none; transition: border-color 0.15s;
-    flex: 1; overflow-y: auto;
+    overflow-y: auto;
   }
   .qi-textarea:focus { border-color: var(--accent); }
   .qi-textarea::placeholder { color: var(--text3); }
@@ -1331,7 +1331,7 @@ function QuickInput({ cases, setCases, onClose }) {
       />
 
       {/* Scrollable content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', minHeight: 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
 
         {/* Input area — hidden once result shown */}
         {!analysisResult && (
