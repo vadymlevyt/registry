@@ -2277,7 +2277,7 @@ function App() {
           />
 
           {/* Quick Input panel */}
-          <div style={{ flex: ratio, overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
+          <div style={{ flex: ratio, overflow: 'hidden', alignSelf: 'stretch', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
             <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} />
           </div>
         </div>
