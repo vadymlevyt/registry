@@ -1304,7 +1304,7 @@ function QuickInput({ cases, setCases, onClose }) {
   return (
     <div
       style={Object.assign(
-        { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: 'var(--surface)' },
+        { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden', background: 'var(--surface)' },
         dragOver ? { outline: '2px solid var(--accent)' } : {}
       )}
       onDragOver={onDragOver}
@@ -2277,7 +2277,7 @@ function App() {
           />
 
           {/* Quick Input panel */}
-          <div style={{ flex: ratio, overflow: 'hidden', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
+          <div style={{ flex: ratio, overflow: 'hidden', height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
             <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} />
           </div>
         </div>
