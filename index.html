@@ -752,6 +752,8 @@ function Calendar({ cases, onSelectCase }) {
 // System prompt — replace this block to change AI behaviour
 const QUICK_INPUT_SYSTEM_PROMPT = `You are a legal document intake parser for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
 
+Current year: ${new Date().getFullYear()}. Today: ${new Date().toISOString().split('T')[0]}.
+
 Your ONLY output must be a single valid JSON object. No text before. No text after. No markdown. No explanations.
 
 Your task:
@@ -779,7 +781,7 @@ Return this exact JSON structure:
     "deadlines": [],
     "person": "string or null"
   },
-  "recommended_actions": ["create_hearing_event", "update_case_date", "save_to_drive", "create_case", "save_note"],
+  "recommended_actions": ["update_case_date", "save_to_drive", "create_case", "save_note", "update_case_status"],
   "human_message": "Short Ukrainian-language summary for the lawyer",
   "warnings": [],
   "confidence": 0.0 to 1.0,
@@ -791,14 +793,16 @@ Rules:
 - If unsure about anything = needs_review: true
 - hearing_date must be YYYY-MM-DD format
 - human_message must be in Ukrainian
-- recommended_actions must only contain values from the allowed list above
+- recommended_actions must only contain values from the allowed list above: update_case_date, save_to_drive, create_case, save_note, update_case_status
 - If input is clearly just a note or unrecognized = input_type: "note", recommended_actions: ["save_note"]
 - Never output anything except the JSON object
 
 When responding to follow-up commands (not the initial document):
-- Respond with a short conversational message in Ukrainian PLUS optionally a JSON action block
-- Format: plain Ukrainian text, then on a new line: ACTION_JSON: {...}
+- Respond in Ukrainian
+- If a system action is needed, add on a new line: ACTION_JSON: {"recommended_actions": ["action_id"], "extracted": {...}}
 - The JSON in ACTION_JSON should follow the same schema (include only relevant fields)
+- Only include ACTION_JSON if you are certain about the action
+- Never claim an action was completed — only propose it with ACTION_JSON buttons
 - If no system action needed — just respond in Ukrainian, no JSON required
 - Always remember what document was analyzed and what actions were already taken`;
 
@@ -836,8 +840,8 @@ const QI_ERROR_MESSAGES = {
 
 // Action button labels
 const QI_ACTION_LABELS = {
-  create_hearing_event: '📅 Додати засідання',
-  update_case_date:     '🗓 Оновити дату',
+  create_hearing_event: '📅 Оновити дату засідання',
+  update_case_date:     '📅 Оновити дату засідання',
   save_to_drive:        '☁️ Зберегти в Drive',
   update_case_status:   '🔄 Змінити статус',
   create_case:          '➕ Створити справу',
@@ -924,7 +928,7 @@ function saveNoteToStorage(text, resultPayload) {
   } catch(e) {}
 }
 
-function QuickInput({ cases, setCases, onClose }) {
+function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const [text, setText]                   = useState('');
   const [loading, setLoading]             = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -935,6 +939,7 @@ function QuickInput({ cases, setCases, onClose }) {
   const [conversationHistory, setConversationHistory] = useState([]);
   const [chatInput, setChatInput]         = useState('');
   const [chatLoading, setChatLoading]     = useState(false);
+  const [pendingStatusChange, setPendingStatusChange] = useState(null);
   const fileInputRef = React.useRef(null);
   const chatEndRef   = React.useRef(null);
   const apiKey = localStorage.getItem('claude_api_key') || '';
@@ -977,13 +982,15 @@ function QuickInput({ cases, setCases, onClose }) {
         const typedArr = new Uint8Array(e.target.result);
         const pdf = await pdfjsLib.getDocument({ data: typedArr }).promise;
         let fullText = '';
-        for (let i = 1; i <= pdf.numPages; i++) {
+        const maxPages = Math.min(pdf.numPages, 5);
+        for (let i = 1; i <= maxPages; i++) {
           const page = await pdf.getPage(i);
           const content = await page.getTextContent();
           fullText += content.items.map(item => item.str).join(' ') + '\n';
         }
+        const pageWarning = pdf.numPages > 5 ? `\n[Оброблено перші 5 з ${pdf.numPages} сторінок]` : '';
         if (fullText.trim().length > 20) {
-          setText(fullText.trim());
+          setText(fullText.trim() + pageWarning);
         } else {
           // Scanned PDF — render first page to base64 and use vision
           renderPdfPageAsBase64(pdf, file.name);
@@ -1030,7 +1037,7 @@ function QuickInput({ cases, setCases, onClose }) {
     setAnalysisResult(null);
     setExecutedActions([]);
     setConversationHistory([]);
-    const caseNames = cases.map(c => c.name).join(', ');
+    const caseNames = cases.map(c => c.case_no ? `${c.name} (${c.case_no})` : c.name).join(', ');
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -1121,7 +1128,7 @@ function QuickInput({ cases, setCases, onClose }) {
       return;
     }
 
-    const caseNames = cases.map(c => c.name).join(', ');
+    const caseNames = cases.map(c => c.case_no ? `${c.name} (${c.case_no})` : c.name).join(', ');
     const userContent = `Existing cases in registry: ${caseNames}\n\n---\n\n${text}`;
 
     try {
@@ -1172,20 +1179,29 @@ function QuickInput({ cases, setCases, onClose }) {
   };
 
   // ── Action execution ───────────────────────────────────────────────────────
-  const executeAction = (action) => {
+  const executeAction = (action, overrideData) => {
     if (!analysisResult) return;
     const markDone = () => setExecutedActions(prev => [...prev, action]);
+    // Merge override extracted/case_match from chat ACTION_JSON if provided
+    const effectiveResult = overrideData
+      ? {
+          ...analysisResult,
+          extracted: { ...analysisResult.extracted, ...(overrideData.extracted || {}) },
+          case_match: overrideData.case_match || analysisResult.case_match,
+        }
+      : analysisResult;
+    const _analysisResult = effectiveResult;
 
     if (action === 'save_note') {
-      saveNoteToStorage(text, analysisResult);
+      saveNoteToStorage(text, _analysisResult);
       markDone();
       return;
     }
 
     if (action === 'create_hearing_event' || action === 'update_case_date') {
-      const hearing_date = analysisResult.extracted?.hearing_date;
-      const hearing_time = analysisResult.extracted?.hearing_time;
-      const caseName = analysisResult.case_match?.case_name;
+      const hearing_date = _analysisResult.extracted?.hearing_date;
+      const hearing_time = _analysisResult.extracted?.hearing_time;
+      const caseName = _analysisResult.case_match?.case_name;
       if (!hearing_date) { alert('Дату засідання не визначено'); return; }
       if (!caseName)     { alert('Справу не визначено — уточніть вручну'); return; }
       const matched = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
@@ -1200,21 +1216,16 @@ function QuickInput({ cases, setCases, onClose }) {
     }
 
     if (action === 'update_case_status') {
-      const caseName = analysisResult.case_match?.case_name;
+      const caseName = _analysisResult.case_match?.case_name;
       if (!caseName) { alert('Справу не визначено'); return; }
       const matched = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
       if (!matched) { alert(`Справу "${caseName}" не знайдено`); return; }
-      const newStatus = prompt(`Новий статус для "${matched.name}":\nactive — Активна\npaused — Призупинена\nclosed — Закрита`);
-      if (!newStatus || !['active','paused','closed'].includes(newStatus.trim())) {
-        alert('Невірний статус. Введіть: active, paused або closed'); return;
-      }
-      setCases(prev => prev.map(c => c.id === matched.id ? { ...c, status: newStatus.trim() } : c));
-      markDone();
+      setPendingStatusChange({ caseId: matched.id, caseName: matched.name });
       return;
     }
 
     if (action === 'create_case') {
-      const ext = analysisResult.extracted || {};
+      const ext = _analysisResult.extracted || {};
       const prefill = [
         ext.court        && `Суд: ${ext.court}`,
         ext.case_number  && `Номер: ${ext.case_number}`,
@@ -1227,7 +1238,8 @@ function QuickInput({ cases, setCases, onClose }) {
     }
 
     if (action === 'save_to_drive' || action === 'create_drive_folder') {
-      alert('Функція потребує підключення Google Drive (розділ "Аналіз системи").');
+      if (!driveConnected) return; // button should be disabled, but guard anyway
+      alert('Функція збереження в Drive ще не реалізована в Quick Input.');
       markDone();
       return;
     }
@@ -1243,8 +1255,18 @@ function QuickInput({ cases, setCases, onClose }) {
     setChatInput('');
     setChatLoading(true);
 
+    const cleanMsg = (msg) => ({
+      role: msg.role,
+      content: Array.isArray(msg.content)
+        ? msg.content.map(block => {
+            if (block.type === 'text') return { type: 'text', text: block.text };
+            if (block.type === 'image') return { type: 'image', source: block.source };
+            return block;
+          })
+        : (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)),
+    });
     const newHistory = [
-      ...conversationHistory.slice(-9),
+      ...conversationHistory.slice(-9).map(cleanMsg),
       { role: 'user', content: userMsg },
     ];
     setConversationHistory(prev => [...prev.slice(-9), { role: 'user', content: userMsg }]);
@@ -1423,23 +1445,48 @@ function QuickInput({ cases, setCases, onClose }) {
               {(analysisResult.recommended_actions || []).map(action =>
                 executedActions.includes(action)
                   ? <span key={action} className="qi-done-action">✓ {QI_ACTION_LABELS[action] || action}</span>
-                  : <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action)}>
-                      {QI_ACTION_LABELS[action] || action}
-                    </button>
+                  : (action === 'save_to_drive' || action === 'create_drive_folder') && !driveConnected
+                    ? <button key={action} className="btn-sm btn-ghost" disabled title="Підключіть Google Drive в розділі «Аналіз системи»" style={{ opacity: 0.5, cursor: 'not-allowed' }}>
+                        ☁️ Drive (не підключено)
+                      </button>
+                    : <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action)}>
+                        {QI_ACTION_LABELS[action] || action}
+                      </button>
               )}
               <button
                 className="btn-sm btn-ghost"
                 style={{ marginLeft: 'auto' }}
-                onClick={() => { setAnalysisResult(null); setErrorCategory(null); setErrorDetail(''); setExecutedActions([]); setConversationHistory([]); }}
+                onClick={() => { setAnalysisResult(null); setErrorCategory(null); setErrorDetail(''); setExecutedActions([]); setConversationHistory([]); setPendingStatusChange(null); }}
               >
                 ← Змінити
               </button>
             </div>
+
+            {/* Inline status change UI */}
+            {pendingStatusChange && (
+              <div style={{ marginTop: 10, padding: '10px 12px', background: 'var(--surface2)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 8 }}>
+                  Змінити статус справи <strong>"{pendingStatusChange.caseName}"</strong> на:
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {[['active','Активна','var(--green)'],['paused','Призупинена','var(--orange)'],['closed','Закрита','var(--text3)']].map(([val, label, color]) => (
+                    <button key={val} className="btn-sm btn-ghost" style={{ borderColor: color, color }}
+                      onClick={() => {
+                        setCases(prev => prev.map(c => c.id === pendingStatusChange.caseId ? { ...c, status: val } : c));
+                        setExecutedActions(prev => [...prev, 'update_case_status']);
+                        setPendingStatusChange(null);
+                      }}
+                    >{label}</button>
+                  ))}
+                  <button className="btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={() => setPendingStatusChange(null)}>Скасувати</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* Chat messages — appear after initial analysis */}
-        {analysisResult && conversationHistory.length > 2 && (
+        {analysisResult && (
           <div style={{ marginTop: 12 }}>
             {conversationHistory.slice(2).map((msg, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
@@ -1453,7 +1500,7 @@ function QuickInput({ cases, setCases, onClose }) {
                   {msg.actionResult && (msg.actionResult.recommended_actions || []).length > 0 && (
                     <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                       {msg.actionResult.recommended_actions.map(action => (
-                        <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action)} style={{ fontSize: 11 }}>
+                        <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action, msg.actionResult)} style={{ fontSize: 11 }}>
                           {QI_ACTION_LABELS[action] || action}
                         </button>
                       ))}
@@ -2278,7 +2325,7 @@ function App() {
 
           {/* Quick Input panel */}
           <div style={{ flex: ratio, overflow: 'hidden', alignSelf: 'stretch', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
-            <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} />
+            <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} driveConnected={driveConnected} />
           </div>
         </div>
       ) : (
