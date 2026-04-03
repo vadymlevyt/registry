@@ -796,6 +796,11 @@ Return this exact JSON structure:
 }
 
 Rules:
+- case_name must be SHORT: last name + initials of the CLIENT only (e.g. "Дордоль С.К.")
+- The client is: the accused/suspect if Levytskyi is defender; the plaintiff if Levytskyi is plaintiff's representative; the defendant if Levytskyi is defendant's representative
+- Extract client's last name and initials from the person field
+- case_name format: "Прізвище І.Б." — never include Levytskyi's name in case_name
+- If person field contains full name like "Дордоль Сергій Карлович" → case_name = "Дордоль С.К."
 - Unknown field = null, never invent values
 - If unsure about anything = needs_review: true
 - hearing_date must be YYYY-MM-DD format
@@ -819,7 +824,11 @@ When the user gives you a command:
 - If case not found in the list: ask which case the user means
 - If date not specified: ask for the date
 - After successful action: confirm with "✅ Додано засідання у справі [назва] на [дата] о [час]"
-- Remember what was discussed in the conversation history`;
+- Remember what was discussed in the conversation history
+- If the case is NOT found in the registry AND the input describes a new court matter → use create_case action, NOT update_case_date
+- Only use update_case_date if the case EXISTS in the registry
+- If uncertain whether case exists — propose create_case
+- When creating case from chat: use short name format "Прізвище І.Б."`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -957,6 +966,17 @@ function findCaseForAction(caseName, cases) {
       baseName.toLowerCase().includes(c.name.toLowerCase())
     );
     if (found) return found;
+  }
+  // 5. Пошук по прізвищу в полі client
+  if (baseName) {
+    const lastName = baseName.split(/\s+/)[0].toLowerCase();
+    if (lastName.length > 2) {
+      found = cases.find(c =>
+        (c.client || '').toLowerCase().includes(lastName) ||
+        (c.name || '').toLowerCase().includes(lastName)
+      );
+      if (found) return found;
+    }
   }
   return null;
 }
@@ -1302,10 +1322,24 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       const caseMatch = _analysisResult.case_match || {};
 
       // Визначити назву справи
-      const caseName = caseMatch.case_name
-        || ext.person
-        || ext.case_number
-        || 'Нова справа';
+      const rawPerson = ext.person || caseMatch.case_name || '';
+
+      function extractShortName(fullName) {
+        if (!fullName) return '';
+        const clean = fullName.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
+        const withoutLev = clean.replace(/левицьк\S+\s+\S+\s+\S+\s*/gi, '').trim();
+        const parts = withoutLev.split(/\s+/);
+        if (parts.length >= 2) {
+          const lastName = parts[0];
+          const initials = parts.slice(1)
+            .map(p => p[0] ? p[0].toUpperCase() + '.' : '')
+            .join('');
+          return `${lastName} ${initials}`;
+        }
+        return withoutLev || fullName;
+      }
+
+      const caseName = extractShortName(rawPerson) || 'Нова справа';
 
       // Визначити категорію
       // Кримінальна якщо є обвинувачений або КПК
@@ -1532,6 +1566,45 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         // Якщо є дії — виконати одразу з чату
         if (actionResult && (actionResult.recommended_actions || []).length > 0) {
           const action = actionResult.recommended_actions[0];
+          if (action === 'create_case') {
+            const ext = actionResult.extracted || {};
+            const rawPerson = ext.person || actionResult.case_match?.case_name || '';
+
+            function extractShortName(fullName) {
+              if (!fullName) return '';
+              const clean = fullName.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
+              const withoutLev = clean.replace(/левицьк\S+\s+\S+\s+\S+\s*/gi, '').trim();
+              const parts = withoutLev.split(/\s+/);
+              if (parts.length >= 2) {
+                return parts[0] + ' ' + parts.slice(1).map(p => p[0] ? p[0].toUpperCase() + '.' : '').join('');
+              }
+              return withoutLev || fullName;
+            }
+
+            const caseName = extractShortName(rawPerson) || 'Нова справа';
+            const isCriminal = /кпк|кримінал|\d+\s*кк|обвинувач|підозрюван/i.test(JSON.stringify(actionResult));
+
+            const newCase = {
+              id: Date.now(),
+              name: caseName,
+              client: rawPerson.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim(),
+              category: isCriminal ? 'criminal' : 'civil',
+              status: 'active',
+              court: ext.court || '',
+              case_no: ext.case_number || '',
+              hearing_date: ext.hearing_date || '',
+              hearing_time: ext.hearing_time || '',
+              deadline: '', deadline_type: '', next_action: '', notes: '',
+            };
+
+            setCases(prev => [...prev, newCase]);
+            setConversationHistory(prev => [...prev, {
+              role: 'assistant',
+              content: `✅ Справу "${newCase.name}" створено${newCase.court ? ' (' + newCase.court + ')' : ''}. Знайдіть її в реєстрі і доповніть деталі.`
+            }]);
+            setChatLoading(false);
+            return;
+          }
           if (action === 'update_case_date') {
             const hearing_date = actionResult.extracted?.hearing_date;
             const hearing_time = actionResult.extracted?.hearing_time;
