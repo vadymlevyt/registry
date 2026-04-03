@@ -1299,14 +1299,56 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
     if (action === 'create_case') {
       const ext = _analysisResult.extracted || {};
-      const prefill = [
-        ext.court        && `Суд: ${ext.court}`,
-        ext.case_number  && `Номер: ${ext.case_number}`,
-        ext.person       && `Особа: ${ext.person}`,
-        ext.hearing_date && `Засідання: ${ext.hearing_date}`,
+      const caseMatch = _analysisResult.case_match || {};
+
+      // Визначити назву справи
+      const caseName = caseMatch.case_name
+        || ext.person
+        || ext.case_number
+        || 'Нова справа';
+
+      // Визначити категорію
+      // Кримінальна якщо є обвинувачений або КПК
+      const isCriminal = (ext.person && /обвинувач|підозрюван|захисник/i.test(JSON.stringify(ext)))
+        || /кпк|кримінал|122 кк|ст\.\s*\d+\s*кк/i.test(JSON.stringify(_analysisResult));
+      const category = isCriminal ? 'criminal' : 'civil';
+
+      // Побудувати новий об'єкт справи
+      const newCase = {
+        id: Date.now(),
+        name: caseName,
+        client: ext.person || '',
+        category,
+        status: 'active',
+        court: ext.court || '',
+        case_no: ext.case_number || '',
+        hearing_date: ext.hearing_date || '',
+        hearing_time: ext.hearing_time || '',
+        deadline: '',
+        deadline_type: '',
+        next_action: '',
+        notes: '',
+      };
+
+      // Показати підтвердження з даними
+      const preview = [
+        `Назва: ${newCase.name}`,
+        newCase.client    && `Клієнт: ${newCase.client}`,
+        newCase.court     && `Суд: ${newCase.court}`,
+        newCase.case_no   && `Номер: ${newCase.case_no}`,
+        newCase.hearing_date && `Засідання: ${newCase.hearing_date}${newCase.hearing_time ? ' о ' + newCase.hearing_time : ''}`,
+        `Категорія: ${category === 'criminal' ? 'Кримінальна' : 'Цивільна'}`,
       ].filter(Boolean).join('\n');
-      alert(`Перейдіть до розділу "Нова справа".\n\nДані для заповнення:\n${prefill || '(дані не визначені)'}`);
-      onClose();
+
+      if (confirm(`Створити нову справу?\n\n${preview}`)) {
+        setCases(prev => [...prev, newCase]);
+        markDone();
+        // Показати повідомлення про успіх в чаті
+        setConversationHistory(prev => [...prev, {
+          role: 'assistant',
+          content: `✅ Справу "${newCase.name}" створено. Ви можете знайти її в реєстрі і доповнити деталі.`
+        }]);
+      }
       return;
     }
 
