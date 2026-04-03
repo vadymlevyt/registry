@@ -443,24 +443,10 @@
   .qi-chat-input:disabled { opacity: 0.5; }
 
   /* Voice recording indicator */
-  @keyframes voiceWave { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
-  .voice-bar {
-    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-    background: rgba(255,79,106,0.08); border: 1px solid rgba(255,79,106,0.25);
-    border-radius: var(--radius-sm); animation: fadeIn 0.15s ease;
+  @keyframes voiceWave {
+    from { transform: scaleY(0.3); }
+    to   { transform: scaleY(1); }
   }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  .voice-wave { display: flex; gap: 2px; align-items: center; height: 18px; }
-  .voice-wave span {
-    display: inline-block; width: 3px; background: var(--red); border-radius: 2px;
-    animation: voiceWave 0.7s ease-in-out infinite;
-  }
-  .voice-wave span:nth-child(1) { height: 8px; animation-delay: 0s; }
-  .voice-wave span:nth-child(2) { height: 14px; animation-delay: 0.1s; }
-  .voice-wave span:nth-child(3) { height: 18px; animation-delay: 0.2s; }
-  .voice-wave span:nth-child(4) { height: 12px; animation-delay: 0.3s; }
-  .voice-wave span:nth-child(5) { height: 16px; animation-delay: 0.4s; }
-  .voice-interim { font-size: 12px; color: var(--text3); font-style: italic; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -990,10 +976,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const [chatInput, setChatInput]         = useState('');
   const [chatLoading, setChatLoading]     = useState(false);
   const [pendingStatusChange, setPendingStatusChange] = useState(null);
-  const [isRecording, setIsRecording] = useState(null); // 'doc' | 'chat' | null
-  const [interimText, setInterimText] = useState('');
-  const recognitionRef = React.useRef(null);
-  const recordingTargetRef = React.useRef(null); // stores {setter, id}
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceInterim, setVoiceInterim] = useState('');
+  const [activeVoiceTarget, setActiveVoiceTarget] = useState(null);
+  const activeRecognition = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const chatEndRef   = React.useRef(null);
   const chatInputRef = React.useRef(null);
@@ -1174,16 +1160,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   // ── Main analysis pipeline ─────────────────────────────────────────────────
   const analyze = async () => {
     if (!text.trim()) return;
-    // Smart routing: if text looks like a command, send to chat instead
-    if (isCommand(text.trim())) {
-      setChatInput(text.trim());
-      setText('');
-      // Auto-send to chat after brief delay to let state update
-      setTimeout(() => {
-        if (chatInputRef.current) chatInputRef.current.focus();
-      }, 100);
-      return;
-    }
     setLoading(true);
     setErrorCategory(null);
     setErrorDetail('');
@@ -1333,73 +1309,68 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   // ── Voice input (Web Speech API) — continuous mode ──────────────────────────
-  const startVoiceInput = (targetSetter, targetId) => {
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+  function startVoiceInput(targetSetter) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
       alert('Мікрофон не підтримується в цьому браузері');
       return;
     }
-    // If already recording — stop
-    if (recognitionRef.current) { stopVoiceInput(); return; }
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    // If already recording — stop current first
+    if (activeRecognition.current) { stopVoice(); return; }
+
     const recognition = new SR();
     recognition.lang = 'uk-UA';
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognitionRef.current = recognition;
-    recordingTargetRef.current = { setter: targetSetter, id: targetId };
-    setIsRecording(targetId);
-    setInterimText('');
 
-    recognition.onresult = (e) => {
-      let finalText = '';
+    let finalTranscript = '';
+
+    recognition.onresult = (event) => {
       let interim = '';
-      for (let i = 0; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          finalText += e.results[i][0].transcript;
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += t + ' ';
         } else {
-          interim += e.results[i][0].transcript;
+          interim = t;
         }
       }
-      if (finalText) {
-        const target = recordingTargetRef.current;
-        if (target) target.setter(prev => prev + finalText);
-      }
-      setInterimText(interim);
+      setVoiceInterim(interim);
     };
+
     recognition.onend = () => {
-      // Auto-restart in continuous mode if not explicitly stopped
-      if (recognitionRef.current) {
-        try { recognitionRef.current.start(); } catch(e) {}
+      if (finalTranscript.trim()) {
+        targetSetter(prev => prev ? prev + ' ' + finalTranscript.trim() : finalTranscript.trim());
       }
+      setIsRecording(false);
+      setVoiceInterim('');
+      setActiveVoiceTarget(null);
+      activeRecognition.current = null;
+      finalTranscript = '';
     };
+
     recognition.onerror = (e) => {
       if (e.error !== 'no-speech' && e.error !== 'aborted') {
-        stopVoiceInput();
+        cancelVoice();
       }
     };
+
     recognition.start();
+    setIsRecording(true);
+    setActiveVoiceTarget(() => targetSetter);
+    activeRecognition.current = recognition;
+  }
+
+  const stopVoice = () => {
+    activeRecognition.current?.stop(); // onend спрацює і вставить текст
   };
 
-  const stopVoiceInput = () => {
-    if (recognitionRef.current) {
-      const ref = recognitionRef.current;
-      recognitionRef.current = null; // clear first to prevent auto-restart in onend
-      try { ref.stop(); } catch(e) {}
-    }
-    recordingTargetRef.current = null;
-    setIsRecording(null);
-    setInterimText('');
-  };
-
-  const cancelVoiceInput = (targetSetter) => {
-    if (recognitionRef.current) {
-      const ref = recognitionRef.current;
-      recognitionRef.current = null;
-      try { ref.abort(); } catch(e) {}
-    }
-    recordingTargetRef.current = null;
-    setIsRecording(null);
-    setInterimText('');
+  const cancelVoice = () => {
+    activeRecognition.current?.abort(); // без onend — текст не вставляється
+    activeRecognition.current = null;
+    setIsRecording(false);
+    setVoiceInterim('');
+    setActiveVoiceTarget(null);
   };
 
   // ── Chat (follow-up commands) ───────────────────────────────────────────────
@@ -1518,30 +1489,55 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
           📎 Документ / текст
         </div>
-        <textarea
-          className="qi-textarea"
-          style={{ height: 90, marginBottom: 0 }}
-          placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або перетягніть файл..."
-          value={text}
-          onChange={e => setText(e.target.value)}
-          autoFocus
-        />
-        {isRecording === 'doc' && (
-          <div className="voice-bar" style={{ marginTop: 6 }}>
-            <div className="voice-wave"><span/><span/><span/><span/><span/></div>
-            <div className="voice-interim">{interimText || 'Говоріть...'}</div>
-            <button className="btn-sm btn-ghost" onClick={() => cancelVoiceInput(setText)} style={{ padding: '4px 8px', fontSize: 11 }} title="Скасувати">✕</button>
-            <button className="btn-sm btn-primary" onClick={stopVoiceInput} style={{ padding: '4px 10px', fontSize: 11 }} title="Підтвердити">→</button>
+        {isRecording && activeVoiceTarget === setText ? (
+          <div style={{
+            background: '#1a1a2e', border: '1px solid #4a4a8a',
+            borderRadius: '8px', padding: '12px 16px',
+            minHeight: '80px', display: 'flex',
+            flexDirection: 'column', gap: '8px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '3px', height: '30px' }}>
+              {[...Array(20)].map((_, i) => (
+                <div key={i} style={{
+                  width: '3px', background: '#6c63ff', borderRadius: '2px',
+                  animation: `voiceWave 0.8s ease-in-out ${i * 0.04}s infinite alternate`,
+                  minHeight: '4px', height: `${8 + (i % 5) * 5}px`
+                }} />
+              ))}
+            </div>
+            {voiceInterim && (
+              <div style={{ color: '#888', fontSize: '13px', fontStyle: 'italic' }}>
+                {voiceInterim}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={cancelVoice} style={{
+                flex: 1, padding: '6px', background: '#333',
+                color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer'
+              }}>× Скасувати</button>
+              <button onClick={stopVoice} style={{
+                flex: 1, padding: '6px', background: '#6c63ff',
+                color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer'
+              }}>✓ Готово</button>
+            </div>
           </div>
+        ) : (
+          <textarea
+            className="qi-textarea"
+            style={{ height: 90, marginBottom: 0 }}
+            placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або перетягніть файл..."
+            value={text}
+            onChange={e => setText(e.target.value)}
+            autoFocus
+          />
         )}
         <div className="qi-row" style={{ margin: 0, marginTop: 8 }}>
           <button
             className="btn-sm btn-ghost"
-            onClick={() => startVoiceInput(setText, 'doc')}
-            style={isRecording === 'doc' ? { background: 'rgba(255,79,106,0.15)', borderColor: 'var(--red)', color: 'var(--red)' } : {}}
+            onClick={() => startVoiceInput(setText)}
             title="Надиктувати голосом"
           >
-            🎤{isRecording === 'doc' ? ' Зупинити' : ''}
+            🎤
           </button>
           <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>
             📎 Файл
@@ -1740,39 +1736,62 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         {/* Chat input row — always visible */}
         {apiKey && (
           <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-            {isRecording === 'chat' && (
-              <div className="voice-bar" style={{ marginBottom: 6 }}>
-                <div className="voice-wave"><span/><span/><span/><span/><span/></div>
-                <div className="voice-interim">{interimText || 'Говоріть...'}</div>
-                <button className="btn-sm btn-ghost" onClick={() => cancelVoiceInput(setChatInput)} style={{ padding: '4px 8px', fontSize: 11 }}>✕</button>
-                <button className="btn-sm btn-primary" onClick={stopVoiceInput} style={{ padding: '4px 10px', fontSize: 11 }}>→</button>
+            {isRecording && activeVoiceTarget === setChatInput ? (
+              <div style={{
+                background: '#1a1a2e', border: '1px solid #4a4a8a',
+                borderRadius: '8px', padding: '12px 16px',
+                minHeight: '80px', display: 'flex',
+                flexDirection: 'column', gap: '8px', marginBottom: 6
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', height: '30px' }}>
+                  {[...Array(20)].map((_, i) => (
+                    <div key={i} style={{
+                      width: '3px', background: '#6c63ff', borderRadius: '2px',
+                      animation: `voiceWave 0.8s ease-in-out ${i * 0.04}s infinite alternate`,
+                      minHeight: '4px', height: `${8 + (i % 5) * 5}px`
+                    }} />
+                  ))}
+                </div>
+                {voiceInterim && (
+                  <div style={{ color: '#888', fontSize: '13px', fontStyle: 'italic' }}>
+                    {voiceInterim}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button onClick={cancelVoice} style={{
+                    flex: 1, padding: '6px', background: '#333',
+                    color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer'
+                  }}>× Скасувати</button>
+                  <button onClick={stopVoice} style={{
+                    flex: 1, padding: '6px', background: '#6c63ff',
+                    color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer'
+                  }}>✓ Готово</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                <textarea
+                  ref={chatInputRef}
+                  className="qi-chat-input"
+                  rows={2}
+                  style={{ resize: 'none' }}
+                  placeholder="Команда для агента... (напр. «додай засідання»)"
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
+                  disabled={chatLoading}
+                />
+                <button
+                  className="btn-sm btn-ghost"
+                  onClick={() => startVoiceInput(setChatInput)}
+                  style={{ flexShrink: 0, padding: '6px 8px' }}
+                  title="Надиктувати голосом"
+                >
+                  🎤
+                </button>
+                <button className="btn-sm btn-primary" onClick={sendChat} disabled={chatLoading || !chatInput.trim()} style={{ flexShrink: 0 }}>→</button>
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-              <textarea
-                ref={chatInputRef}
-                className="qi-chat-input"
-                rows={2}
-                style={{ resize: 'none' }}
-                placeholder="Команда для агента... (напр. «додай засідання»)"
-                value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
-                disabled={chatLoading}
-              />
-              <button
-                className="btn-sm btn-ghost"
-                onClick={() => startVoiceInput(setChatInput, 'chat')}
-                style={Object.assign(
-                  { flexShrink: 0, padding: '6px 8px' },
-                  isRecording === 'chat' ? { background: 'rgba(255,79,106,0.15)', borderColor: 'var(--red)', color: 'var(--red)' } : {}
-                )}
-                title="Надиктувати голосом"
-              >
-                🎤{isRecording === 'chat' ? ' ...' : ''}
-              </button>
-              <button className="btn-sm btn-primary" onClick={sendChat} disabled={chatLoading || !chatInput.trim()} style={{ flexShrink: 0 }}>→</button>
-            </div>
           </div>
         )}
 
