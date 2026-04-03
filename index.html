@@ -756,8 +756,8 @@ function Calendar({ cases, onSelectCase }) {
 
 // ── QUICK INPUT v2 ────────────────────────────────────────────────────────────
 
-// System prompt — replace this block to change AI behaviour
-const QUICK_INPUT_SYSTEM_PROMPT = `You are a legal document intake parser for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
+// Для Haiku — аналіз документів, тільки JSON
+const HAIKU_SYSTEM_PROMPT = `You are a legal document intake parser for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
 
 Current year: ${new Date().getFullYear()}. Today: ${new Date().toISOString().split('T')[0]}.
 
@@ -800,27 +800,26 @@ Rules:
 - If unsure about anything = needs_review: true
 - hearing_date must be YYYY-MM-DD format
 - human_message must be in Ukrainian
-- recommended_actions must only contain values from the allowed list above: update_case_date, save_to_drive, create_case, save_note, update_case_status
+- recommended_actions must only contain values from the allowed list: update_case_date, save_to_drive, create_case, save_note, update_case_status
 - If input is clearly just a note or unrecognized = input_type: "note", recommended_actions: ["save_note"]
-- Never output anything except the JSON object
+- Never output anything except the JSON object`;
 
-When responding to follow-up chat commands:
-- Respond conversationally in Ukrainian (1-3 sentences max)
-- If a system action is needed, append on a new line: ACTION_JSON: {"recommended_actions": ["action_id"], "extracted": {"case_name": "...", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}}
+// Для Sonnet — чат-команди, розмовна мова
+const SONNET_CHAT_PROMPT = `You are an AI assistant for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
+You help the lawyer manage cases through natural voice and text commands.
+
+Current year: ${new Date().getFullYear()}. Today: ${new Date().toISOString().split('T')[0]}.
+
+When the user gives you a command:
+- Respond conversationally in Ukrainian (1-3 sentences)
+- If a system action is needed, append on a NEW LINE: ACTION_JSON: {"recommended_actions": ["action_id"], "extracted": {"case_name": "...", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}}
 - Available action_ids: update_case_date, save_note, create_case, update_case_status
-- Only include ACTION_JSON when you are certain what action to take
-- NEVER say an action was completed — only propose it via ACTION_JSON
-- If uncertain about which case — ask for clarification, no ACTION_JSON
-- Today's date: ${new Date().toISOString().split('T')[0]}
-- Always remember what document was analyzed and what actions were already taken
-
-When user gives a command in chat:
-- Execute intent immediately via ACTION_JSON
-- Do NOT ask for confirmation for adding/updating dates
-- Only ask confirmation for: deleting cases, changing status to closed
-- After ACTION_JSON, respond with confirmation in Ukrainian: "✅ Додано засідання у справі [назва] на [дата] о [час]"
-- If case not found: ask which case user means
-- If date not specified: ask for date`;
+- Execute intent immediately — do NOT ask for confirmation for adding/updating hearing dates
+- Only ask confirmation for: changing status to closed, deleting cases
+- If case not found in the list: ask which case the user means
+- If date not specified: ask for the date
+- After successful action: confirm with "✅ Додано засідання у справі [назва] на [дата] о [час]"
+- Remember what was discussed in the conversation history`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -1108,7 +1107,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 1024,
-          system: QUICK_INPUT_SYSTEM_PROMPT,
+          system: HAIKU_SYSTEM_PROMPT,
           messages: [{
             role: 'user',
             content: [
@@ -1211,7 +1210,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 1024,
-          system: QUICK_INPUT_SYSTEM_PROMPT,
+          system: HAIKU_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userContent }],
         }),
       });
@@ -1429,7 +1428,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          system: QUICK_INPUT_SYSTEM_PROMPT,
+          system: SONNET_CHAT_PROMPT,
           messages: newHistory,
           max_tokens: 1024,
         }),
