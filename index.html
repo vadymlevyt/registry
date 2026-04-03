@@ -980,6 +980,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const [voiceInterim, setVoiceInterim] = useState('');
   const [activeVoiceTarget, setActiveVoiceTarget] = useState(null);
   const activeRecognition = React.useRef(null);
+  const pendingTranscript = React.useRef('');
+  const isRecordingRef = React.useRef(false);
   const fileInputRef = React.useRef(null);
   const chatEndRef   = React.useRef(null);
   const chatInputRef = React.useRef(null);
@@ -1309,7 +1311,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   // ── Voice input (Web Speech API) — continuous mode ──────────────────────────
-  function startVoiceInput(targetSetter) {
+  function startVoiceInput(targetSetter, targetKey) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       alert('Мікрофон не підтримується в цьому браузері');
@@ -1320,33 +1322,32 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
     const recognition = new SR();
     recognition.lang = 'uk-UA';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    let finalTranscript = '';
+    recognition.continuous = false;
+    recognition.interimResults = false;
 
     recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += t + ' ';
-        } else {
-          interim = t;
-        }
-      }
-      setVoiceInterim(interim);
+      const t = event.results[0][0].transcript;
+      setVoiceInterim(t);
+      // Зберегти в ref щоб onend міг взяти
+      pendingTranscript.current = (pendingTranscript.current || '') + t + ' ';
     };
 
     recognition.onend = () => {
-      if (finalTranscript.trim()) {
-        targetSetter(prev => prev ? prev + ' ' + finalTranscript.trim() : finalTranscript.trim());
+      // Якщо запис ще активний (користувач не натиснув ✓ або ×) — перезапустити
+      if (activeRecognition.current && isRecordingRef.current) {
+        recognition.start(); // продовжуємо слухати
+        return;
+      }
+      // Якщо зупинено — вставити текст
+      const final = (pendingTranscript.current || '').trim();
+      if (final) {
+        targetSetter(prev => prev ? prev + ' ' + final : final);
       }
       setIsRecording(false);
       setVoiceInterim('');
       setActiveVoiceTarget(null);
       activeRecognition.current = null;
-      finalTranscript = '';
+      pendingTranscript.current = '';
     };
 
     recognition.onerror = (e) => {
@@ -1357,17 +1358,21 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
     recognition.start();
     setIsRecording(true);
-    setActiveVoiceTarget(() => targetSetter);
+    isRecordingRef.current = true;
+    setActiveVoiceTarget(targetKey);
     activeRecognition.current = recognition;
   }
 
   const stopVoice = () => {
-    activeRecognition.current?.stop(); // onend спрацює і вставить текст
+    isRecordingRef.current = false;
+    activeRecognition.current?.stop(); // onend спрацює, вставить текст
   };
 
   const cancelVoice = () => {
-    activeRecognition.current?.abort(); // без onend — текст не вставляється
+    isRecordingRef.current = false;
+    activeRecognition.current?.abort();
     activeRecognition.current = null;
+    pendingTranscript.current = '';
     setIsRecording(false);
     setVoiceInterim('');
     setActiveVoiceTarget(null);
@@ -1489,7 +1494,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
           📎 Документ / текст
         </div>
-        {isRecording && activeVoiceTarget === setText ? (
+        {isRecording && activeVoiceTarget === 'text' ? (
           <div style={{
             background: '#1a1a2e', border: '1px solid #4a4a8a',
             borderRadius: '8px', padding: '12px 16px',
@@ -1534,7 +1539,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         <div className="qi-row" style={{ margin: 0, marginTop: 8 }}>
           <button
             className="btn-sm btn-ghost"
-            onClick={() => startVoiceInput(setText)}
+            onClick={() => startVoiceInput(setText, 'text')}
             title="Надиктувати голосом"
           >
             🎤
@@ -1736,7 +1741,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         {/* Chat input row — always visible */}
         {apiKey && (
           <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-            {isRecording && activeVoiceTarget === setChatInput ? (
+            {isRecording && activeVoiceTarget === 'chat' ? (
               <div style={{
                 background: '#1a1a2e', border: '1px solid #4a4a8a',
                 borderRadius: '8px', padding: '12px 16px',
@@ -1783,7 +1788,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                 />
                 <button
                   className="btn-sm btn-ghost"
-                  onClick={() => startVoiceInput(setChatInput)}
+                  onClick={() => startVoiceInput(setChatInput, 'chat')}
                   style={{ flexShrink: 0, padding: '6px 8px' }}
                   title="Надиктувати голосом"
                 >
