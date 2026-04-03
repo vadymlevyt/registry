@@ -785,10 +785,12 @@ Return this exact JSON structure:
     "judge": "string or null",
     "hearing_date": "YYYY-MM-DD or null",
     "hearing_time": "HH:MM or null",
+    "deadline_date": "YYYY-MM-DD or null",
+    "deadline_type": "string or null",
     "deadlines": [],
     "person": "string or null"
   },
-  "recommended_actions": ["update_case_date", "save_to_drive", "create_case", "save_note", "update_case_status"],
+  "recommended_actions": ["update_case_date", "update_deadline", "save_to_drive", "create_case", "save_note", "update_case_status"],
   "human_message": "Short Ukrainian-language summary for the lawyer",
   "warnings": [],
   "confidence": 0.0 to 1.0,
@@ -805,7 +807,11 @@ Rules:
 - If unsure about anything = needs_review: true
 - hearing_date must be YYYY-MM-DD format
 - human_message must be in Ukrainian
-- recommended_actions must only contain values from the allowed list: update_case_date, save_to_drive, create_case, save_note, update_case_status
+- recommended_actions must only contain values from the allowed list above: update_case_date, update_deadline, save_to_drive, create_case, save_note, update_case_status
+- Use update_case_date when document contains a HEARING date (судове засідання)
+- Use update_deadline when document contains a DEADLINE for filing/response (процесуальний строк, дедлайн подачі)
+- extracted.deadline_date — дата дедлайну (YYYY-MM-DD)
+- extracted.deadline_type — тип дедлайну (напр. "Відзив", "Апеляція", "Процесуальний строк")
 - If input is clearly just a note or unrecognized = input_type: "note", recommended_actions: ["save_note"]
 - Never output anything except the JSON object`;
 
@@ -822,7 +828,10 @@ Current year: ${new Date().getFullYear()}. Today: ${new Date().toISOString().spl
 When the user gives you a command:
 - Respond conversationally in Ukrainian (1-3 sentences)
 - If a system action is needed, append on a NEW LINE: ACTION_JSON: {"recommended_actions": ["action_id"], "extracted": {"case_name": "...", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}}
-- Available action_ids: update_case_date, save_note, create_case, update_case_status
+- Available action_ids: update_case_date, update_deadline, save_note, create_case, update_case_status
+- update_case_date: for hearing dates (засідання)
+- update_deadline: for procedural deadlines (дедлайни подачі документів, строки)
+- For update_deadline use: ACTION_JSON: {"recommended_actions": ["update_deadline"], "extracted": {"case_name": "...", "deadline_date": "YYYY-MM-DD", "deadline_type": "..."}}
 - Execute intent immediately — do NOT ask for confirmation for adding/updating hearing dates
 - Only ask confirmation for: changing status to closed, deleting cases
 - If case not found in the list: ask which case the user means
@@ -869,6 +878,7 @@ const QI_ERROR_MESSAGES = {
 // Action button labels
 const QI_ACTION_LABELS = {
   update_case_date:     '📅 Оновити дату засідання',
+  update_deadline:      '⚡ Встановити дедлайн',
   save_to_drive:        '☁️ Зберегти в Drive',
   update_case_status:   '🔄 Змінити статус',
   create_case:          '➕ Створити справу',
@@ -1312,6 +1322,25 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       return;
     }
 
+    if (action === 'update_deadline') {
+      const deadline_date = _analysisResult.extracted?.deadline_date;
+      const deadline_type = _analysisResult.extracted?.deadline_type;
+      const caseName = _analysisResult.case_match?.case_name;
+      if (!deadline_date) { alert('Дату дедлайну не визначено'); return; }
+      if (!caseName) { alert('Справу не визначено — уточніть вручну'); return; }
+      const matched = findCaseForAction(caseName, cases);
+      if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
+      const typeStr = deadline_type ? ` (${deadline_type})` : '';
+      if (!confirm(`Встановити дедлайн ${deadline_date}${typeStr} для справи "${matched.name}"?`)) return;
+      setCases(prev => prev.map(c =>
+        c.id === matched.id
+          ? { ...c, deadline: deadline_date, ...(deadline_type ? { deadline_type } : {}) }
+          : c
+      ));
+      markDone();
+      return;
+    }
+
     if (action === 'update_case_status') {
       const caseName = _analysisResult.case_match?.case_name;
       if (!caseName) { alert('Справу не визначено'); return; }
@@ -1732,6 +1761,26 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
               setConversationHistory(prev => [...prev, {
                 role: 'assistant',
                 content: `✅ Додано засідання у справі "${matched.name}" на ${hearing_date}${timeStr}`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+          if (action === 'update_deadline') {
+            const deadline_date = actionResult.extracted?.deadline_date;
+            const deadline_type = actionResult.extracted?.deadline_type;
+            const caseName = actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            if (matched && deadline_date) {
+              setCases(prev => prev.map(c =>
+                c.id === matched.id
+                  ? { ...c, deadline: deadline_date, ...(deadline_type ? { deadline_type } : {}) }
+                  : c
+              ));
+              const typeStr = deadline_type ? ` (${deadline_type})` : '';
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Дедлайн у справі "${matched.name}" встановлено: ${deadline_date}${typeStr}`
               }]);
               setChatLoading(false);
               return;
