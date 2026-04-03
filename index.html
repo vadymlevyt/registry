@@ -267,7 +267,7 @@
   @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
   .qi-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
   .qi-textarea {
-    width: 100%; height: 120px; background: var(--surface2); border: 1px solid var(--border);
+    width: 100%; height: 90px; background: var(--surface2); border: 1px solid var(--border);
     border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body); font-size: 13px;
     padding: 12px; resize: none; outline: none; transition: border-color 0.15s;
     overflow-y: auto; display: block;
@@ -441,6 +441,26 @@
   .qi-chat-input:focus { border-color: var(--accent); }
   .qi-chat-input::placeholder { color: var(--text3); }
   .qi-chat-input:disabled { opacity: 0.5; }
+
+  /* Voice recording indicator */
+  @keyframes voiceWave { 0%, 100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
+  .voice-bar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: rgba(255,79,106,0.08); border: 1px solid rgba(255,79,106,0.25);
+    border-radius: var(--radius-sm); animation: fadeIn 0.15s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .voice-wave { display: flex; gap: 2px; align-items: center; height: 18px; }
+  .voice-wave span {
+    display: inline-block; width: 3px; background: var(--red); border-radius: 2px;
+    animation: voiceWave 0.7s ease-in-out infinite;
+  }
+  .voice-wave span:nth-child(1) { height: 8px; animation-delay: 0s; }
+  .voice-wave span:nth-child(2) { height: 14px; animation-delay: 0.1s; }
+  .voice-wave span:nth-child(3) { height: 18px; animation-delay: 0.2s; }
+  .voice-wave span:nth-child(4) { height: 12px; animation-delay: 0.3s; }
+  .voice-wave span:nth-child(5) { height: 16px; animation-delay: 0.4s; }
+  .voice-interim { font-size: 12px; color: var(--text3); font-style: italic; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -942,11 +962,21 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const [chatLoading, setChatLoading]     = useState(false);
   const [pendingStatusChange, setPendingStatusChange] = useState(null);
   const [isRecording, setIsRecording] = useState(null); // 'doc' | 'chat' | null
+  const [interimText, setInterimText] = useState('');
+  const recognitionRef = React.useRef(null);
+  const recordingTargetRef = React.useRef(null); // stores {setter, id}
   const fileInputRef = React.useRef(null);
   const chatEndRef   = React.useRef(null);
+  const chatInputRef = React.useRef(null);
   const apiKey = localStorage.getItem('claude_api_key') || '';
 
-  React.useEffect(() => { usageLog.log('quick_input'); console.log('QI driveConnected:', driveConnected); }, []);
+  React.useEffect(() => {
+    usageLog.log('quick_input');
+    // Auto-focus chat input when QI opens (if no document loaded)
+    if (!text.trim() && chatInputRef.current) {
+      setTimeout(() => chatInputRef.current?.focus(), 150);
+    }
+  }, []);
   React.useEffect(() => { console.log('QI driveConnected changed:', driveConnected); }, [driveConnected]);
 
   React.useEffect(() => {
@@ -1102,9 +1132,29 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     onClose();
   };
 
+  // ── Command detection (smart routing) ──────────────────────────────────────
+  const isCommand = (t) => {
+    const patterns = [
+      /додай|додати|внеси|встав|запиши|зміни|оновити|оновлю/i,
+      /засідання|дедлайн|статус|нотатк/i,
+      /по справі|справа\s|клієнт/i,
+    ];
+    return patterns.some(p => p.test(t));
+  };
+
   // ── Main analysis pipeline ─────────────────────────────────────────────────
   const analyze = async () => {
     if (!text.trim()) return;
+    // Smart routing: if text looks like a command, send to chat instead
+    if (isCommand(text.trim())) {
+      setChatInput(text.trim());
+      setText('');
+      // Auto-send to chat after brief delay to let state update
+      setTimeout(() => {
+        if (chatInputRef.current) chatInputRef.current.focus();
+      }, 100);
+      return;
+    }
     setLoading(true);
     setErrorCategory(null);
     setErrorDetail('');
@@ -1183,18 +1233,18 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
   // ── Action execution ───────────────────────────────────────────────────────
   const executeAction = (action, overrideData) => {
-    if (!analysisResult) return;
     const markDone = () => setExecutedActions(prev => [...prev, action]);
-    // Merge override extracted/case_match from chat ACTION_JSON if provided
+    // Build effective result from analysisResult and/or overrideData (chat ACTION_JSON)
+    const baseResult = analysisResult || { extracted: {}, case_match: { found: false }, recommended_actions: [] };
     const effectiveResult = overrideData
       ? {
-          ...analysisResult,
-          extracted: { ...analysisResult.extracted, ...(overrideData.extracted || {}) },
+          ...baseResult,
+          extracted: { ...baseResult.extracted, ...(overrideData.extracted || {}) },
           case_match: overrideData.case_match
             || (overrideData.extracted?.case_name ? { found: true, case_name: overrideData.extracted.case_name, confidence: 1 } : null)
-            || analysisResult.case_match,
+            || baseResult.case_match,
         }
-      : analysisResult;
+      : baseResult;
     const _analysisResult = effectiveResult;
 
     if (action === 'save_note') {
@@ -1253,24 +1303,74 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     markDone();
   };
 
-  // ── Voice input (Web Speech API) ────────────────────────────────────────────
+  // ── Voice input (Web Speech API) — continuous mode ──────────────────────────
   const startVoiceInput = (targetSetter, targetId) => {
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
       alert('Мікрофон не підтримується в цьому браузері');
       return;
     }
+    // If already recording — stop
+    if (recognitionRef.current) { stopVoiceInput(); return; }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new SR();
     recognition.lang = 'uk-UA';
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
+    recordingTargetRef.current = { setter: targetSetter, id: targetId };
     setIsRecording(targetId);
+    setInterimText('');
+
     recognition.onresult = (e) => {
-      targetSetter(prev => prev + e.results[0][0].transcript);
+      let finalText = '';
+      let interim = '';
+      for (let i = 0; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          finalText += e.results[i][0].transcript;
+        } else {
+          interim += e.results[i][0].transcript;
+        }
+      }
+      if (finalText) {
+        const target = recordingTargetRef.current;
+        if (target) target.setter(prev => prev + finalText);
+      }
+      setInterimText(interim);
     };
-    recognition.onend = () => setIsRecording(null);
-    recognition.onerror = () => setIsRecording(null);
+    recognition.onend = () => {
+      // Auto-restart in continuous mode if not explicitly stopped
+      if (recognitionRef.current) {
+        try { recognitionRef.current.start(); } catch(e) {}
+      }
+    };
+    recognition.onerror = (e) => {
+      if (e.error !== 'no-speech' && e.error !== 'aborted') {
+        stopVoiceInput();
+      }
+    };
     recognition.start();
+  };
+
+  const stopVoiceInput = () => {
+    if (recognitionRef.current) {
+      const ref = recognitionRef.current;
+      recognitionRef.current = null; // clear first to prevent auto-restart in onend
+      try { ref.stop(); } catch(e) {}
+    }
+    recordingTargetRef.current = null;
+    setIsRecording(null);
+    setInterimText('');
+  };
+
+  const cancelVoiceInput = (targetSetter) => {
+    if (recognitionRef.current) {
+      const ref = recognitionRef.current;
+      recognitionRef.current = null;
+      try { ref.abort(); } catch(e) {}
+    }
+    recordingTargetRef.current = null;
+    setIsRecording(null);
+    setInterimText('');
   };
 
   // ── Chat (follow-up commands) ───────────────────────────────────────────────
@@ -1386,12 +1486,20 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         </div>
         <textarea
           className="qi-textarea"
-          style={{ height: 120, marginBottom: 0 }}
+          style={{ height: 90, marginBottom: 0 }}
           placeholder="Вставте текст повістки з Viber, напишіть повідомлення від клієнта, або перетягніть файл..."
           value={text}
           onChange={e => setText(e.target.value)}
           autoFocus
         />
+        {isRecording === 'doc' && (
+          <div className="voice-bar" style={{ marginTop: 6 }}>
+            <div className="voice-wave"><span/><span/><span/><span/><span/></div>
+            <div className="voice-interim">{interimText || 'Говоріть...'}</div>
+            <button className="btn-sm btn-ghost" onClick={() => cancelVoiceInput(setText)} style={{ padding: '4px 8px', fontSize: 11 }} title="Скасувати">✕</button>
+            <button className="btn-sm btn-primary" onClick={stopVoiceInput} style={{ padding: '4px 10px', fontSize: 11 }} title="Підтвердити">→</button>
+          </div>
+        )}
         <div className="qi-row" style={{ margin: 0, marginTop: 8 }}>
           <button
             className="btn-sm btn-ghost"
@@ -1399,7 +1507,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             style={isRecording === 'doc' ? { background: 'rgba(255,79,106,0.15)', borderColor: 'var(--red)', color: 'var(--red)' } : {}}
             title="Надиктувати голосом"
           >
-            🎤{isRecording === 'doc' ? ' Запис...' : ''}
+            🎤{isRecording === 'doc' ? ' Зупинити' : ''}
           </button>
           <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>
             📎 Файл
@@ -1597,29 +1705,40 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
         {/* Chat input row — always visible */}
         {apiKey && (
-          <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexShrink: 0, alignItems: 'flex-end' }}>
-            <textarea
-              className="qi-chat-input"
-              rows={2}
-              style={{ resize: 'none' }}
-              placeholder="Команда для агента... (напр. «додай засідання»)"
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
-              disabled={chatLoading}
-            />
-            <button
-              className="btn-sm btn-ghost"
-              onClick={() => startVoiceInput(setChatInput, 'chat')}
-              style={Object.assign(
-                { flexShrink: 0, padding: '6px 8px' },
-                isRecording === 'chat' ? { background: 'rgba(255,79,106,0.15)', borderColor: 'var(--red)', color: 'var(--red)' } : {}
-              )}
-              title="Надиктувати голосом"
-            >
-              🎤{isRecording === 'chat' ? ' ...' : ''}
-            </button>
-            <button className="btn-sm btn-primary" onClick={sendChat} disabled={chatLoading || !chatInput.trim()} style={{ flexShrink: 0 }}>→</button>
+          <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+            {isRecording === 'chat' && (
+              <div className="voice-bar" style={{ marginBottom: 6 }}>
+                <div className="voice-wave"><span/><span/><span/><span/><span/></div>
+                <div className="voice-interim">{interimText || 'Говоріть...'}</div>
+                <button className="btn-sm btn-ghost" onClick={() => cancelVoiceInput(setChatInput)} style={{ padding: '4px 8px', fontSize: 11 }}>✕</button>
+                <button className="btn-sm btn-primary" onClick={stopVoiceInput} style={{ padding: '4px 10px', fontSize: 11 }}>→</button>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <textarea
+                ref={chatInputRef}
+                className="qi-chat-input"
+                rows={2}
+                style={{ resize: 'none' }}
+                placeholder="Команда для агента... (напр. «додай засідання»)"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
+                disabled={chatLoading}
+              />
+              <button
+                className="btn-sm btn-ghost"
+                onClick={() => startVoiceInput(setChatInput, 'chat')}
+                style={Object.assign(
+                  { flexShrink: 0, padding: '6px 8px' },
+                  isRecording === 'chat' ? { background: 'rgba(255,79,106,0.15)', borderColor: 'var(--red)', color: 'var(--red)' } : {}
+                )}
+                title="Надиктувати голосом"
+              >
+                🎤{isRecording === 'chat' ? ' ...' : ''}
+              </button>
+              <button className="btn-sm btn-primary" onClick={sendChat} disabled={chatLoading || !chatInput.trim()} style={{ flexShrink: 0 }}>→</button>
+            </div>
           </div>
         )}
 
