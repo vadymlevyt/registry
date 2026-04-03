@@ -939,6 +939,35 @@ function getActiveScenarios(result, fileCount = 0) {
   return [...primary, ...fallback];
 }
 
+// Helper: find case for action — tolerant matching (exact → base name → case_no → partial)
+function findCaseForAction(caseName, cases) {
+  if (!caseName) return null;
+  // 1. Exact match
+  let found = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
+  if (found) return found;
+  // 2. Match by base name (strip parenthesized number)
+  const baseName = caseName.replace(/\s*\([^)]*\)\s*/g, '').trim();
+  if (baseName) {
+    found = cases.find(c => c.name.toLowerCase() === baseName.toLowerCase());
+    if (found) return found;
+  }
+  // 3. Match by case_no extracted from parentheses
+  const numberMatch = caseName.match(/\(([^)]+)\)/);
+  if (numberMatch) {
+    found = cases.find(c => c.case_no === numberMatch[1]);
+    if (found) return found;
+  }
+  // 4. Partial match
+  if (baseName) {
+    found = cases.find(c =>
+      c.name.toLowerCase().includes(baseName.toLowerCase()) ||
+      baseName.toLowerCase().includes(c.name.toLowerCase())
+    );
+    if (found) return found;
+  }
+  return null;
+}
+
 // Helper: save note to localStorage
 function saveNoteToStorage(text, resultPayload) {
   try {
@@ -1259,7 +1288,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       const caseName = _analysisResult.case_match?.case_name;
       if (!hearing_date) { alert('Дату засідання не визначено'); return; }
       if (!caseName)     { alert('Справу не визначено — уточніть вручну'); return; }
-      const matched = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
+      const matched = findCaseForAction(caseName, cases);
       if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
       const timeStr = hearing_time ? ` о ${hearing_time}` : '';
       if (!confirm(`Встановити дату засідання ${hearing_date}${timeStr} для справи "${matched.name}"?`)) return;
@@ -1273,7 +1302,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     if (action === 'update_case_status') {
       const caseName = _analysisResult.case_match?.case_name;
       if (!caseName) { alert('Справу не визначено'); return; }
-      const matched = cases.find(c => c.name.toLowerCase() === caseName.toLowerCase());
+      const matched = findCaseForAction(caseName, cases);
       if (!matched) { alert(`Справу "${caseName}" не знайдено`); return; }
       setPendingStatusChange({ caseId: matched.id, caseName: matched.name });
       return;
@@ -1390,10 +1419,15 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
           })
         : (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)),
     });
+    // Include case list context if this is a fresh chat (no prior analysis)
+    const caseContext = cases.map(c => c.case_no ? `${c.name} (${c.case_no})` : c.name).join(', ');
+    const enrichedMsg = conversationHistory.length === 0
+      ? `[Existing cases in registry: ${caseContext}]\n\n${userMsg}`
+      : userMsg;
     const newHistory = conversationHistory.slice(-9)
       .filter(msg => msg.role === 'user' || msg.role === 'assistant')
       .map(cleanMsg)
-      .concat([{ role: 'user', content: userMsg }]);
+      .concat([{ role: 'user', content: enrichedMsg }]);
     setConversationHistory(prev => [...prev.slice(-9), { role: 'user', content: userMsg }]);
 
     try {
