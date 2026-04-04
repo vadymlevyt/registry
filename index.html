@@ -1889,7 +1889,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         type="file"
         accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.docx"
         style={{ display: 'none' }}
-        onChange={e => { handleFile(e.target.files[0]); e.target.value = ''; }}
+        onChange={e => { alert('onChange fired, files: ' + e.target.files.length); handleFile(e.target.files[0]); e.target.value = ''; }}
       />
 
       {/* ── Top block: Document / text input ── */}
