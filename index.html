@@ -1056,12 +1056,15 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
     let workingFile = file;
     try {
-      const blob = await file.arrayBuffer();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 5000)
+      );
+      const blob = await Promise.race([file.arrayBuffer(), timeoutPromise]);
       console.log('arrayBuffer OK, size:', blob.byteLength);
       workingFile = new File([blob], file.name, { type: file.type || 'application/octet-stream' });
       console.log('workingFile created:', { name: workingFile.name, type: workingFile.type, size: workingFile.size });
     } catch(e) {
-      console.warn('arrayBuffer failed:', e.message);
+      console.warn('arrayBuffer failed or timed out:', e.message);
       workingFile = file;
     }
 
