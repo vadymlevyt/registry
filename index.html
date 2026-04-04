@@ -1057,7 +1057,20 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       workingFile = file;
     }
 
-    const ext = workingFile.name.split('.').pop().toLowerCase();
+    // Визначити розширення з імені або з MIME типу
+    let ext = (workingFile.name || '').split('.').pop().toLowerCase();
+
+    // Якщо розширення не визначилось — спробувати з MIME типу
+    if (!ext || ext === workingFile.name.toLowerCase()) {
+      const mime = workingFile.type || '';
+      if (mime.includes('pdf')) ext = 'pdf';
+      else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
+      else if (mime.includes('png')) ext = 'png';
+      else if (mime.includes('webp')) ext = 'webp';
+      else if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
+      else if (mime.includes('word') || mime.includes('docx')) ext = 'docx';
+      else if (mime.includes('text')) ext = 'txt';
+    }
 
     if (ext === 'txt' || ext === 'md') {
       const reader = new FileReader();
@@ -1221,6 +1234,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       const data = await res.json();
       const rawText = data?.content?.[0]?.text || '';
       const parsed = validateAndParseJSON(rawText);
+      if (!parsed) {
+        setErrorCategory('invalid_json');
+        setLoading(false);
+        return;
+      }
       if (parsed.processing_status === 'failed') setErrorCategory('invalid_json');
       else if (typeof parsed.confidence === 'number' && parsed.confidence < 0.5) setErrorCategory('low_confidence');
       setAnalysisResult(parsed);
