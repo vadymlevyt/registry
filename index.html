@@ -1045,7 +1045,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = async (file) => {
     if (!file) return;
-    alert('File: ' + file.name + ' | type: ' + file.type + ' | size: ' + file.size);
   };
 
   const extractPdfText = (file) => {
@@ -1889,7 +1888,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         type="file"
         accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.docx"
         style={{ display: 'none' }}
-        onChange={e => { alert('onChange fired, files: ' + e.target.files.length); handleFile(e.target.files[0]); e.target.value = ''; }}
+        onChange={e => { handleFile(e.target.files[0]); e.target.value = ''; }}
       />
 
       {/* ── Top block: Document / text input ── */}
