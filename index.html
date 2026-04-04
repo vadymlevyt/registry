@@ -1046,21 +1046,28 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const handleFile = async (file) => {
     if (!file) return;
 
-    // Якщо файл з Drive — може бути недоступний напряму
-    // Спробувати прочитати через blob()
+    // DEBUG — видалити після діагностики
+    console.log('handleFile called:', {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      constructor: file.constructor?.name
+    });
+
     let workingFile = file;
     try {
       const blob = await file.arrayBuffer();
+      console.log('arrayBuffer OK, size:', blob.byteLength);
       workingFile = new File([blob], file.name, { type: file.type || 'application/octet-stream' });
+      console.log('workingFile created:', { name: workingFile.name, type: workingFile.type, size: workingFile.size });
     } catch(e) {
-      // Якщо arrayBuffer() не працює — спробувати оригінальний файл
+      console.warn('arrayBuffer failed:', e.message);
       workingFile = file;
     }
 
-    // Визначити розширення з імені або з MIME типу
     let ext = (workingFile.name || '').split('.').pop().toLowerCase();
+    console.log('ext from name:', ext, '| mime:', workingFile.type);
 
-    // Якщо розширення не визначилось — спробувати з MIME типу
     if (!ext || ext === workingFile.name.toLowerCase()) {
       const mime = workingFile.type || '';
       if (mime.includes('pdf')) ext = 'pdf';
@@ -1070,7 +1077,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       else if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
       else if (mime.includes('word') || mime.includes('docx')) ext = 'docx';
       else if (mime.includes('text')) ext = 'txt';
+      console.log('ext from mime:', ext);
     }
+
+    console.log('final ext:', ext);
 
     if (ext === 'txt' || ext === 'md') {
       const reader = new FileReader();
@@ -1142,13 +1152,21 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   const readImageAsBase64 = (file) => {
+    // DEBUG — видалити після діагностики
+    console.log('readImageAsBase64 called:', file.name, file.type, file.size);
     const reader = new FileReader();
     reader.onload = (e) => {
+      console.log('FileReader onload, result length:', e.target.result?.length);
       const base64 = e.target.result.split(',')[1];
+      console.log('base64 length:', base64?.length);
       const mediaType = file.type || 'image/jpeg';
       analyzeImageWithVision(base64, mediaType, file.name);
     };
-    reader.onerror = () => setErrorCategory('extraction_failed');
+    reader.onerror = (e) => {
+      console.error('FileReader error:', e);
+      setErrorCategory('llm_failed');
+      setErrorDetail('FileReader помилка: ' + (e.target?.error?.message || 'невідома'));
+    };
     reader.readAsDataURL(file);
   };
 
@@ -1195,6 +1213,12 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   const analyzeImageWithVision = async (base64Data, mediaType, fileName) => {
+    // DEBUG — видалити після діагностики
+    if (!base64Data || base64Data.length < 10) {
+      setErrorCategory('extraction_failed');
+      setErrorDetail('Файл порожній або не читається (base64 empty)');
+      return;
+    }
     if (!apiKey) { setErrorCategory('llm_failed'); setErrorDetail('API-ключ не налаштований'); return; }
     setLoading(true);
     setErrorCategory(null);
