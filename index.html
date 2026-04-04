@@ -1042,18 +1042,38 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   }, [conversationHistory]);
 
   // ── File handling ──────────────────────────────────────────────────────────
-  const handleFile = (file) => {
+  const handleFile = async (file) => {
     if (!file) return;
+
+    // Перевірити чи файл доступний для читання
+    // Drive файли на Android можуть бути недоступні напряму
+    let accessibleFile = file;
+    try {
+      // Спробувати прочитати перший байт — якщо файл недоступний, впаде
+      await file.slice(0, 1).arrayBuffer();
+    } catch(e) {
+      setErrorCategory('llm_failed');
+      setErrorDetail('Файл недоступний для читання. Спробуйте завантажити файл локально.');
+      return;
+    }
+
     const ext = file.name.split('.').pop().toLowerCase();
     if (ext === 'txt' || ext === 'md') {
       const reader = new FileReader();
       reader.onload = (e) => setText(e.target.result);
-      reader.onerror = () => setErrorCategory('extraction_failed');
-      reader.readAsText(file);
+      reader.onerror = () => {
+        setErrorCategory('extraction_failed');
+        setErrorDetail('Не вдалось прочитати файл з Google Drive. Завантажте файл на пристрій і спробуйте знову.');
+      };
+      reader.readAsText(accessibleFile);
     } else if (ext === 'pdf') {
-      extractPdfText(file);
-    } else if (['jpg','jpeg','png','webp'].includes(ext)) {
-      readImageAsBase64(file);
+      extractPdfText(accessibleFile);
+    } else if (['jpg','jpeg','png','webp','heic','heif'].includes(ext)) {
+      if (ext === 'heic' || ext === 'heif') {
+        convertHeicToJpeg(accessibleFile);
+      } else {
+        readImageAsBase64(accessibleFile);
+      }
     } else {
       setErrorCategory('unsupported_format');
       setErrorDetail(`Файл: ${file.name}`);
@@ -1061,9 +1081,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   const extractPdfText = (file) => {
-    // pdf.js must be loaded; if not available fall back to vision
     if (typeof pdfjsLib === 'undefined') {
-      // Treat as image fallback via base64
+      // pdf.js не завантажилась — одразу vision fallback
       readImageAsBase64(file);
       return;
     }
@@ -1079,17 +1098,29 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
           const content = await page.getTextContent();
           fullText += content.items.map(item => item.str).join(' ') + '\n';
         }
-        const pageWarning = pdf.numPages > 5 ? `\n[Оброблено перші 5 з ${pdf.numPages} сторінок]` : '';
+        const pageWarning = pdf.numPages > 5
+          ? `\n[Оброблено перші 5 з ${pdf.numPages} сторінок]` : '';
         if (fullText.trim().length > 20) {
           setText(fullText.trim() + pageWarning);
         } else {
-          // Scanned PDF — render first page to base64 and use vision
+          // Скан — fallback на vision (перша сторінка)
           renderPdfPageAsBase64(pdf, file.name);
         }
       } catch(err) {
-        setErrorCategory('extraction_failed');
-        setErrorDetail(err.message);
+        // БУДЬ-ЯКА помилка → vision fallback, не blank page
+        console.warn('PDF extraction failed, trying vision:', err.message);
+        try {
+          readImageAsBase64(file);
+        } catch(e2) {
+          setErrorCategory('extraction_failed');
+          setErrorDetail('Не вдалось обробити PDF файл');
+          setLoading(false);
+        }
       }
+    };
+    reader.onerror = () => {
+      setErrorCategory('extraction_failed');
+      setErrorDetail('Не вдалось прочитати файл');
     };
     reader.readAsArrayBuffer(file);
   };
@@ -1119,6 +1150,23 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     };
     reader.onerror = () => setErrorCategory('extraction_failed');
     reader.readAsDataURL(file);
+  };
+
+  const convertHeicToJpeg = async (file) => {
+    try {
+      // Спробувати через canvas — деякі браузери підтримують HEIC
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      canvas.getContext('2d').drawImage(bitmap, 0, 0);
+      const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+      analyzeImageWithVision(base64, 'image/jpeg', file.name);
+    } catch(e) {
+      // Якщо браузер не підтримує HEIC — показати зрозуміле повідомлення
+      setErrorCategory('unsupported_format');
+      setErrorDetail('HEIC формат: збережіть фото як JPEG і спробуйте знову');
+    }
   };
 
   const analyzeImageWithVision = async (base64Data, mediaType, fileName) => {
@@ -1838,7 +1886,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp"
+        accept=".txt,.md,.pdf,.jpg,.jpeg,.png,.webp,.heic,.heif"
         style={{ display: 'none' }}
         onChange={e => { handleFile(e.target.files[0]); e.target.value = ''; }}
       />
