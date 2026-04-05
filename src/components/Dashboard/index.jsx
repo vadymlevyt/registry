@@ -359,7 +359,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
     <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden", height: "100%" }}>
 
       {/* ── ACTIVITY FEED ── */}
-      <div style={{ flex: 1, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div style={{ flex: 1, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border, #2e3148)", display: "flex", alignItems: "center", flexShrink: 0 }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em" }}>
             Стрічка подій
@@ -386,7 +386,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
       </div>
 
       {/* ── CALENDAR ── */}
-      <div style={{ flex: 2, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div style={{ flex: 2, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
         <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border, #2e3148)", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
           <button onClick={goPrev} style={navBtnStyle}>←</button>
           <h2 style={{ fontSize: 13, fontWeight: 600, flex: 1, textAlign: "center", margin: 0 }}>
@@ -401,7 +401,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
           </div>
         </div>
 
-        <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 8 }}>
           {calView === "month" ? (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
@@ -549,35 +549,45 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
             <span>·</span>
             <span>Закритих: <b style={{ color: "var(--text, #e6e8f0)" }}>{stats.closed}</b></span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
-            {[
-              { label: "Цивільні", val: stats.civil },
-              { label: "Кримінальні", val: stats.criminal },
-              { label: "Військові", val: stats.military },
-              { label: "Адміністративні", val: stats.admin },
-            ].map(s => (
-              <div key={s.label} style={{
-                background: "var(--surface, #1a1d27)",
-                border: "1px solid var(--border, #2e3148)",
-                borderRadius: 5,
-                padding: "3px 6px",
-                textAlign: "center"
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text, #e6e8f0)" }}>{s.val}</div>
-                <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".04em" }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text3, #5a6080)", opacity: 0.6 }}>
+          {(() => {
+            const catSegs = [
+              { label: "Цивільні", val: stats.civil, color: "#4f7cff" },
+              { label: "Кримінальні", val: stats.criminal, color: "#e74c3c" },
+              { label: "Військові", val: stats.military, color: "#f39c12" },
+              { label: "Адміністративні", val: stats.admin, color: "#2ecc71" },
+            ];
+            const total = catSegs.reduce((a, s) => a + s.val, 0) || 1;
+            return (
+              <>
+                <div style={{
+                  display: "flex", height: 8, borderRadius: 4, overflow: "hidden",
+                  background: "var(--surface, #1a1d27)",
+                  border: "1px solid var(--border, #2e3148)"
+                }}>
+                  {catSegs.map(s => s.val > 0 && (
+                    <div key={s.label} style={{ flex: s.val, background: s.color }} />
+                  ))}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, gap: 6, flexWrap: "wrap" }}>
+                  {catSegs.map(s => (
+                    <span key={s.label} style={{ color: s.color, fontWeight: 600 }}>
+                      {s.label}: <span style={{ color: "var(--text, #e6e8f0)" }}>{s.val}</span>
+                    </span>
+                  ))}
+                </div>
+              </>
+            );
+          })()}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text3, #5a6080)", opacity: 0.6, fontStyle: "italic" }}>
             <span>💳 Білінг</span>
             <span>·</span>
-            <span style={{ fontStyle: "italic" }}>Незабаром</span>
+            <span>Незабаром</span>
           </div>
         </div>
       </div>
 
       {/* ── DAY PANEL ── */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border, #2e3148)", flexShrink: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDayTitle(selectedDay)}</div>
           <div style={{ fontSize: 11, color: conflicts.length ? "#e74c3c" : "var(--text3, #5a6080)", marginTop: 2 }}>
