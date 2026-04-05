@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 const MONTHS_UK = [
   "Січень","Лютий","Березень","Квітень","Травень","Червень",
@@ -6,6 +6,165 @@ const MONTHS_UK = [
 ];
 const WDAYS = ["Пн","Вт","Ср","Чт","Пт","Сб","Нд"];
 const HOURS = [8,9,10,11,12,13,14,15,16,17,18,19];
+const SLOT_H = 36;
+
+function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) {
+  const evsInRange = events.filter(e => {
+    if (!e.time) return false;
+    const h = parseInt(e.time.slice(0, 2), 10);
+    return h >= HOURS[0] && h <= HOURS[HOURS.length - 1];
+  });
+
+  const conflictIds = new Set((conflicts || []).map(c => c.id));
+
+  function colorsFor(type, isConflict) {
+    if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)" };
+    if (type === "hearing") return { border: "#4f7cff", bg: "rgba(79,124,255,.2)" };
+    if (type === "deadline") return { border: "#f39c12", bg: "rgba(243,156,18,.2)" };
+    if (type === "travel") return { border: "#5a6080", bg: "rgba(90,96,128,.25)" };
+    return { border: "#4f7cff", bg: "rgba(79,124,255,.15)" };
+  }
+
+  const isDraggingHere = slotDrag.isDragging && slotDrag.dragContext === day;
+
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", ...style }}>
+      {HOURS.map(h => {
+        const inDrag = isDraggingHere && h >= slotDrag.rangeMin && h <= slotDrag.rangeMax;
+        return (
+          <div
+            key={h}
+            data-hour={h}
+            data-ctx={day}
+            onMouseDown={() => slotDrag.startDrag(h, day)}
+            onMouseEnter={() => slotDrag.updateDrag(h, day)}
+            onMouseUp={() => slotDrag.endDrag()}
+            onTouchStart={(e) => { e.preventDefault(); slotDrag.startDrag(h, day); }}
+            onTouchMove={(e) => { e.preventDefault(); slotDrag.handleTouchMove(e); }}
+            onTouchEnd={() => slotDrag.endDrag()}
+            onClick={onEmptyClick}
+            style={{
+              height: SLOT_H,
+              borderTop: "1px dashed var(--border, #2e3148)",
+              borderLeft: "1px dashed var(--border, #2e3148)",
+              borderRight: "1px dashed var(--border, #2e3148)",
+              borderBottom: h === HOURS[HOURS.length - 1] ? "1px dashed var(--border, #2e3148)" : "none",
+              background: inDrag ? "rgba(79,124,255,0.25)" : "transparent",
+              cursor: "pointer",
+              boxSizing: "border-box"
+            }}
+          />
+        );
+      })}
+      {evsInRange.map(ev => {
+        const startH = parseInt(ev.time.slice(0, 2), 10);
+        const startM = parseInt(ev.time.slice(3, 5), 10);
+        const dur = ev.duration || 60;
+        const top = (startH - HOURS[0]) * SLOT_H + (startM / 60) * SLOT_H;
+        const height = Math.max(18, (dur / 60) * SLOT_H - 1);
+        const c = colorsFor(ev.type, conflictIds.has(ev.id));
+        const endTime = ev.endTime || (() => {
+          const total = startH * 60 + startM + dur;
+          const eh = Math.floor(total / 60), em = total % 60;
+          return String(eh).padStart(2, "0") + ":" + String(em).padStart(2, "0");
+        })();
+        return (
+          <div
+            key={ev.id}
+            style={{
+              position: "absolute",
+              left: 2, right: 2,
+              top, height,
+              borderRadius: 5,
+              border: `1px solid ${c.border}`,
+              background: c.bg,
+              padding: "2px 5px",
+              fontSize: 10,
+              overflow: "hidden",
+              pointerEvents: "none",
+              color: "var(--text, #e6e8f0)",
+              zIndex: 1
+            }}
+          >
+            <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {ev.title}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {ev.time}—{endTime}
+              {ev.court ? " · " + ev.court : ""}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function useSlotDrag(onSelect) {
+  const [dragStart, setDragStart] = useState(null);
+  const [dragEnd, setDragEnd] = useState(null);
+  const [dragContext, setDragContext] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const isDraggingRef = useRef(false);
+  const stateRef = useRef({ start: null, end: null, ctx: null });
+
+  function startDrag(hour, ctx) {
+    setDragStart(hour); setDragEnd(hour); setDragContext(ctx ?? null);
+    setIsDragging(true);
+    isDraggingRef.current = true;
+    stateRef.current = { start: hour, end: hour, ctx: ctx ?? null };
+  }
+  function updateDrag(hour, ctx) {
+    if (!isDraggingRef.current) return;
+    // if ctx provided and different from start ctx, ignore (don't drag across days)
+    if (ctx !== undefined && stateRef.current.ctx !== null && ctx !== stateRef.current.ctx) return;
+    setDragEnd(hour);
+    stateRef.current.end = hour;
+  }
+  function handleTouchMove(e) {
+    const touch = e.touches[0];
+    if (!touch) return;
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const slotEl = el?.closest("[data-hour]");
+    if (!slotEl) return;
+    const h = parseInt(slotEl.dataset.hour, 10);
+    const c = slotEl.dataset.ctx || null;
+    updateDrag(h, c);
+  }
+  function endDrag() {
+    const { start, end, ctx } = stateRef.current;
+    if (isDraggingRef.current && start !== null && end !== null) {
+      const s = Math.min(start, end);
+      const e = Math.max(start, end) + 1;
+      onSelect(s, e, ctx);
+    }
+    isDraggingRef.current = false;
+    setIsDragging(false); setDragStart(null); setDragEnd(null); setDragContext(null);
+    stateRef.current = { start: null, end: null, ctx: null };
+  }
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const up = () => endDrag();
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchend", up);
+    window.addEventListener("touchcancel", up);
+    return () => {
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("touchend", up);
+      window.removeEventListener("touchcancel", up);
+    };
+  }, [isDragging]);
+
+  const rangeMin = dragStart !== null && dragEnd !== null ? Math.min(dragStart, dragEnd) : null;
+  const rangeMax = dragStart !== null && dragEnd !== null ? Math.max(dragStart, dragEnd) : null;
+
+  return {
+    dragStart, dragEnd, dragContext, isDragging,
+    rangeMin, rangeMax,
+    startDrag, updateDrag, handleTouchMove, endDrag
+  };
+}
 const MONTHS_GEN = [
   "січня","лютого","березня","квітня","травня","червня",
   "липня","серпня","вересня","жовтня","листопада","грудня"
@@ -94,10 +253,14 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
   const [agentResponse, setAgentResponse] = useState("");
   const [agentLoading, setAgentLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalTime, setModalTime] = useState("10:00");
+  const [modalDate, setModalDate] = useState(null);
+  const [modalStart, setModalStart] = useState("10:00");
+  const [modalEnd, setModalEnd] = useState("11:00");
   const [modalTitle, setModalTitle] = useState("");
   const [modalType, setModalType] = useState("hearing");
   const [modalCourt, setModalCourt] = useState("");
+  const [modalShowTravel, setModalShowTravel] = useState(false);
+  const [modalTravelMin, setModalTravelMin] = useState(60);
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [expandedGroups, setExpandedGroups] = useState({});
 
@@ -326,32 +489,85 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
     setAgentLoading(false);
   }
 
+  function openModalWithRange(startHour, endHour, dateStr) {
+    const day = dateStr || selectedDay;
+    setModalDate(day);
+    if (day !== selectedDay) setSelectedDay(day);
+    setModalStart(String(startHour).padStart(2, "0") + ":00");
+    setModalEnd(String(endHour).padStart(2, "0") + ":00");
+    setModalTitle("");
+    setModalCourt("");
+    setModalType("hearing");
+    setModalShowTravel(false);
+    setModalTravelMin(60);
+    setModalOpen(true);
+  }
+
+  function parseHM(s) {
+    const [h, m] = s.split(":").map(Number);
+    return h * 60 + m;
+  }
+  function toHM(totalMin) {
+    const m = ((totalMin % (24 * 60)) + 24 * 60) % (24 * 60);
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return String(h).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
+  }
+
   function saveEvent() {
     if (!modalTitle.trim()) return;
+    const day = modalDate || selectedDay;
 
-    const existingHearings = getEventsForDay(selectedDay).filter(e => e.type === "hearing" && e.time);
+    const startMin = parseHM(modalStart);
+    const endMin = parseHM(modalEnd);
+    if (endMin <= startMin) return;
+    const duration = endMin - startMin;
+
+    const existingHearings = getEventsForDay(day).filter(e => e.type === "hearing" && e.time);
     if (modalType === "hearing" && existingHearings.length > 0) {
       const ok = window.confirm("В цей день вже є засідання. Зберегти попри накладку?");
       if (!ok) return;
     }
 
-    const newEvent = {
-      id: Date.now(),
+    const baseId = Date.now();
+    const newEvents = [{
+      id: baseId,
       title: modalTitle.trim(),
-      date: selectedDay,
-      time: modalTime,
-      duration: 120,
+      date: day,
+      time: modalStart,
+      endTime: modalEnd,
+      duration,
       type: modalType,
       court: modalCourt.trim() || null,
       notes: ""
-    };
+    }];
 
-    setCalendarEvents(prev => [...prev, newEvent]);
+    if (modalShowTravel && modalTravelMin > 0) {
+      const travelStart = toHM(startMin - modalTravelMin);
+      newEvents.push({
+        id: baseId + 1,
+        title: "🚗 Дорога",
+        date: day,
+        time: travelStart,
+        endTime: modalStart,
+        duration: modalTravelMin,
+        type: "travel",
+        court: null,
+        notes: ""
+      });
+    }
+
+    setCalendarEvents(prev => [...prev, ...newEvents]);
     setModalOpen(false);
     setModalTitle("");
     setModalCourt("");
     setModalType("hearing");
+    setModalShowTravel(false);
   }
+
+  const slotDrag = useSlotDrag((s, e, ctx) => {
+    openModalWithRange(s, e, ctx || undefined);
+  });
 
   const weekDays = calView === "week" ? getWeekDays(selectedDay) : [];
 
@@ -500,54 +716,24 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                   );
                 })}
               </div>
-              <div>
-                {HOURS.map(h => {
-                  const timeStr = String(h).padStart(2,"0") + ":00";
-                  return (
-                    <div key={h} style={{ display: "grid", gridTemplateColumns: "40px repeat(7, 1fr)", gap: 2, marginBottom: 2 }}>
-                      <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", textAlign: "right", paddingRight: 4, paddingTop: 3 }}>
-                        {timeStr}
-                      </div>
-                      {weekDays.map(ds => {
-                        const evs = getEventsForDay(ds);
-                        const ev = evs.find(e => e.time && e.time.startsWith(String(h).padStart(2,"0")));
-                        const borderCol = ev
-                          ? (ev.type === "hearing" ? "#4f7cff" : "#f39c12")
-                          : "var(--border, #2e3148)";
-                        const bgCol = ev
-                          ? (ev.type === "hearing" ? "rgba(79,124,255,.2)" : "rgba(243,156,18,.2)")
-                          : "var(--surface, #1a1d27)";
-                        return (
-                          <div
-                            key={ds+h}
-                            onClick={() => {
-                              setSelectedDay(ds);
-                              if (!ev) {
-                                setModalTime(timeStr);
-                                setModalOpen(true);
-                              }
-                            }}
-                            style={{
-                              minHeight: 22,
-                              borderRadius: 4,
-                              border: `1px solid ${borderCol}`,
-                              background: bgCol,
-                              fontSize: 10,
-                              padding: "2px 4px",
-                              overflow: "hidden",
-                              whiteSpace: "nowrap",
-                              textOverflow: "ellipsis",
-                              cursor: "pointer",
-                              color: ev ? "var(--text, #e6e8f0)" : "inherit"
-                            }}
-                          >
-                            {ev ? ev.title : ""}
-                          </div>
-                        );
-                      })}
+              <div style={{ display: "flex", gap: 2, touchAction: "none", userSelect: "none" }}>
+                <div style={{ width: 36, display: "flex", flexDirection: "column" }}>
+                  {HOURS.map(h => (
+                    <div key={h} style={{ height: SLOT_H, fontSize: 10, color: "var(--text3, #5a6080)", textAlign: "right", paddingRight: 4, paddingTop: 3, boxSizing: "border-box" }}>
+                      {String(h).padStart(2,"0")}:00
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
+                {weekDays.map(ds => (
+                  <SlotsColumn
+                    key={ds}
+                    day={ds}
+                    events={getEventsForDay(ds)}
+                    slotDrag={slotDrag}
+                    onEmptyClick={() => setSelectedDay(ds)}
+                    style={{ flex: 1 }}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -680,52 +866,22 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
               Розклад
             </div>
-            {HOURS.map(h => {
-              const timeStr = String(h).padStart(2,"0") + ":00";
-              const event = dayEvents.find(e => e.time && e.time.startsWith(String(h).padStart(2,"0")));
-              const isConflict = event && conflicts.find(c => c.id === event.id);
-
-              return (
-                <div key={h} style={{ display: "flex", gap: 5, marginBottom: 2, alignItems: "flex-start" }}>
-                  <span style={{ fontSize: 10, color: "var(--text3, #5a6080)", width: 30, flexShrink: 0, paddingTop: 5 }}>
-                    {timeStr}
-                  </span>
-                  {event ? (
-                    <div style={{
-                      flex: 1,
-                      borderRadius: 5,
-                      border: `1px solid ${isConflict ? "#e74c3c" : event.type === "hearing" ? "#4f7cff" : "#f39c12"}`,
-                      background: isConflict ? "rgba(231,76,60,.1)" : event.type === "hearing" ? "rgba(79,124,255,.1)" : "rgba(243,156,18,.1)",
-                      padding: "3px 7px",
-                      fontSize: 11
-                    }}>
-                      <div style={{ fontWeight: 600 }}>{event.title}</div>
-                      {(event.court || event.duration) && (
-                        <div style={{ fontSize: 10, color: "var(--text3, #5a6080)" }}>
-                          {[event.court, event.duration ? event.duration + " хв" : null].filter(Boolean).join(" · ")}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      onClick={() => { setModalTime(timeStr); setModalOpen(true); }}
-                      style={{
-                        flex: 1,
-                        minHeight: 26,
-                        borderRadius: 5,
-                        border: "1px dashed var(--border, #2e3148)",
-                        padding: "3px 7px",
-                        cursor: "pointer",
-                        fontSize: 11,
-                        color: "var(--text3, #5a6080)"
-                      }}
-                    >
-                      + {timeStr}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            <div style={{ display: "flex", gap: 4, touchAction: "none", userSelect: "none" }}>
+              <div style={{ width: 36, display: "flex", flexDirection: "column" }}>
+                {HOURS.map(h => (
+                  <div key={h} style={{ height: SLOT_H, fontSize: 10, color: "var(--text3, #5a6080)", textAlign: "right", paddingRight: 4, paddingTop: 3, boxSizing: "border-box" }}>
+                    {String(h).padStart(2,"0")}:00
+                  </div>
+                ))}
+              </div>
+              <SlotsColumn
+                day={selectedDay}
+                events={dayEvents.filter(e => e.time)}
+                slotDrag={slotDrag}
+                conflicts={conflicts}
+                style={{ flex: 1 }}
+              />
+            </div>
           </div>
 
           {/* Дедлайни без часу */}
@@ -773,34 +929,32 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
             }}
           >
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>
-              Нова подія — {formatDayTitle(selectedDay)} о {modalTime}
+              Нова подія — {formatDayTitle(modalDate || selectedDay)}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ display: "flex", gap: 6 }}>
-                <button
-                  onClick={() => setModalType("hearing")}
-                  style={{
-                    flex: 1, padding: "6px", borderRadius: 5, fontSize: 11, cursor: "pointer",
-                    background: modalType === "hearing" ? "var(--accent, #4f7cff)" : "var(--surface2, #222536)",
-                    color: modalType === "hearing" ? "#fff" : "var(--text, #e6e8f0)",
-                    border: "1px solid var(--border, #2e3148)"
-                  }}
-                >Засідання</button>
-                <button
-                  onClick={() => setModalType("meeting")}
-                  style={{
-                    flex: 1, padding: "6px", borderRadius: 5, fontSize: 11, cursor: "pointer",
-                    background: modalType === "meeting" ? "var(--accent, #4f7cff)" : "var(--surface2, #222536)",
-                    color: modalType === "meeting" ? "#fff" : "var(--text, #e6e8f0)",
-                    border: "1px solid var(--border, #2e3148)"
-                  }}
-                >Зустріч</button>
+                {[
+                  { val: "hearing", label: "Засідання" },
+                  { val: "deadline", label: "Дедлайн" },
+                  { val: "event", label: "Подія" },
+                ].map(t => (
+                  <button
+                    key={t.val}
+                    onClick={() => setModalType(t.val)}
+                    style={{
+                      flex: 1, padding: "6px", borderRadius: 5, fontSize: 11, cursor: "pointer",
+                      background: modalType === t.val ? "var(--accent, #4f7cff)" : "var(--surface2, #222536)",
+                      color: modalType === t.val ? "#fff" : "var(--text, #e6e8f0)",
+                      border: "1px solid var(--border, #2e3148)"
+                    }}
+                  >{t.label}</button>
+                ))}
               </div>
               <input
                 type="text"
                 value={modalTitle}
                 onChange={e => setModalTitle(e.target.value)}
-                placeholder="Назва"
+                placeholder="Назва події"
                 style={{
                   background: "var(--surface, #1a1d27)",
                   border: "1px solid var(--border, #2e3148)",
@@ -808,17 +962,40 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                   padding: "6px 8px", fontSize: 12
                 }}
               />
-              <input
-                type="time"
-                value={modalTime}
-                onChange={e => setModalTime(e.target.value)}
-                style={{
-                  background: "var(--surface, #1a1d27)",
-                  border: "1px solid var(--border, #2e3148)",
-                  borderRadius: 5, color: "var(--text, #e6e8f0)",
-                  padding: "6px 8px", fontSize: 12
-                }}
-              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Початок</div>
+                  <input
+                    type="time"
+                    step="1800"
+                    value={modalStart}
+                    onChange={e => setModalStart(e.target.value)}
+                    style={{
+                      width: "100%", boxSizing: "border-box",
+                      background: "var(--surface, #1a1d27)",
+                      border: "1px solid var(--border, #2e3148)",
+                      borderRadius: 5, color: "var(--text, #e6e8f0)",
+                      padding: "6px 8px", fontSize: 12
+                    }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Кінець</div>
+                  <input
+                    type="time"
+                    step="1800"
+                    value={modalEnd}
+                    onChange={e => setModalEnd(e.target.value)}
+                    style={{
+                      width: "100%", boxSizing: "border-box",
+                      background: "var(--surface, #1a1d27)",
+                      border: "1px solid var(--border, #2e3148)",
+                      borderRadius: 5, color: "var(--text, #e6e8f0)",
+                      padding: "6px 8px", fontSize: 12
+                    }}
+                  />
+                </div>
+              </div>
               <input
                 type="text"
                 value={modalCourt}
@@ -831,6 +1008,39 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                   padding: "6px 8px", fontSize: 12
                 }}
               />
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setModalShowTravel(v => !v)}
+                  style={{
+                    width: "100%",
+                    padding: "6px 8px", borderRadius: 5, fontSize: 11, cursor: "pointer",
+                    background: modalShowTravel ? "var(--surface2, #222536)" : "transparent",
+                    color: "var(--text2, #9aa0b8)",
+                    border: "1px dashed var(--border, #2e3148)",
+                    textAlign: "left"
+                  }}
+                >🚗 {modalShowTravel ? "Прибрати час на дорогу" : "Додати час на дорогу"}</button>
+                {modalShowTravel && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Хвилин на дорогу</div>
+                    <input
+                      type="number"
+                      step="30"
+                      min="0"
+                      value={modalTravelMin}
+                      onChange={e => setModalTravelMin(parseInt(e.target.value, 10) || 0)}
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        background: "var(--surface, #1a1d27)",
+                        border: "1px solid var(--border, #2e3148)",
+                        borderRadius: 5, color: "var(--text, #e6e8f0)",
+                        padding: "6px 8px", fontSize: 12
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
               <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
                 <button
                   onClick={() => setModalOpen(false)}
