@@ -488,7 +488,12 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                       }}
                     >
                       <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", fontWeight: 600 }}>{WDAYS[i]}</div>
-                      <div style={{ fontSize: 13, fontWeight: isToday ? 700 : 500, color: isToday ? "var(--accent, #4f7cff)" : "inherit" }}>
+                      <div style={{
+                        fontSize: 13,
+                        fontWeight: isToday || isSelected ? 700 : 500,
+                        color: isSelected || isToday ? "var(--accent, #4f7cff)" : "inherit",
+                        textDecoration: isSelected ? "underline" : "none"
+                      }}>
                         {d.getDate()}
                       </div>
                     </div>
@@ -506,21 +511,34 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                       {weekDays.map(ds => {
                         const evs = getEventsForDay(ds);
                         const ev = evs.find(e => e.time && e.time.startsWith(String(h).padStart(2,"0")));
+                        const borderCol = ev
+                          ? (ev.type === "hearing" ? "#4f7cff" : "#f39c12")
+                          : "var(--border, #2e3148)";
+                        const bgCol = ev
+                          ? (ev.type === "hearing" ? "rgba(79,124,255,.2)" : "rgba(243,156,18,.2)")
+                          : "var(--surface, #1a1d27)";
                         return (
                           <div
                             key={ds+h}
-                            onClick={() => setSelectedDay(ds)}
+                            onClick={() => {
+                              setSelectedDay(ds);
+                              if (!ev) {
+                                setModalTime(timeStr);
+                                setModalOpen(true);
+                              }
+                            }}
                             style={{
                               minHeight: 22,
                               borderRadius: 4,
-                              border: "1px solid var(--border, #2e3148)",
-                              background: ev ? (ev.type === "hearing" ? "rgba(79,124,255,.15)" : "rgba(243,156,18,.15)") : "var(--surface, #1a1d27)",
+                              border: `1px solid ${borderCol}`,
+                              background: bgCol,
                               fontSize: 10,
                               padding: "2px 4px",
                               overflow: "hidden",
                               whiteSpace: "nowrap",
                               textOverflow: "ellipsis",
-                              cursor: "pointer"
+                              cursor: "pointer",
+                              color: ev ? "var(--text, #e6e8f0)" : "inherit"
                             }}
                           >
                             {ev ? ev.title : ""}
