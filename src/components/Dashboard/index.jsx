@@ -386,7 +386,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
       </div>
 
       {/* ── CALENDAR ── */}
-      <div style={{ flex: 2, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
+      <div style={{ flex: 2, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0, height: "100%", overflow: "hidden" }}>
         <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border, #2e3148)", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
           <button onClick={goPrev} style={navBtnStyle}>←</button>
           <h2 style={{ fontSize: 13, fontWeight: 600, flex: 1, textAlign: "center", margin: 0 }}>
@@ -401,17 +401,19 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
           </div>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 8 }}>
-          {calView === "month" ? (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
-                {WDAYS.map(w => (
-                  <div key={w} style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textAlign: "center", textTransform: "uppercase", padding: "4px 0" }}>
-                    {w}
-                  </div>
-                ))}
+        {calView === "month" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, padding: "4px 8px 0", flexShrink: 0 }}>
+            {WDAYS.map(w => (
+              <div key={w} style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textAlign: "center", textTransform: "uppercase", padding: "4px 0" }}>
+                {w}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 }}>
+            ))}
+          </div>
+        )}
+
+        <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: calView === "month" ? "4px 8px 8px" : 8 }}>
+          {calView === "month" ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, height: "100%", gridAutoRows: "1fr" }}>
                 {cells.map(cell => {
                   const events = getEventsForDay(cell.dateStr);
                   const hearings = events.filter(e => e.type === "hearing");
@@ -443,8 +445,9 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                         flexDirection: "column",
                         alignItems: "center",
                         gap: 1,
-                        minHeight: 46,
-                        opacity: cell.other ? 0.3 : 1
+                        minHeight: 0,
+                        opacity: cell.other ? 0.3 : 1,
+                        overflow: "hidden"
                       }}
                     >
                       <span style={{ fontSize: 12, fontWeight: isToday ? 700 : 500, color: isToday ? "var(--accent, #4f7cff)" : "inherit" }}>
@@ -463,7 +466,6 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
                   );
                 })}
               </div>
-            </>
           ) : (
             <div>
               <div style={{ display: "grid", gridTemplateColumns: "40px repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
@@ -560,19 +562,19 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
             return (
               <>
                 <div style={{
-                  display: "flex", height: 8, borderRadius: 4, overflow: "hidden",
+                  display: "flex", width: "100%", height: 8, borderRadius: 4, overflow: "hidden",
                   background: "var(--surface, #1a1d27)",
                   border: "1px solid var(--border, #2e3148)"
                 }}>
-                  {catSegs.map(s => s.val > 0 && (
+                  {catSegs.filter(s => s.val > 0).map(s => (
                     <div key={s.label} style={{ flex: s.val, background: s.color }} />
                   ))}
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, gap: 6, flexWrap: "wrap" }}>
-                  {catSegs.map(s => (
-                    <span key={s.label} style={{ color: s.color, fontWeight: 600 }}>
-                      {s.label}: <span style={{ color: "var(--text, #e6e8f0)" }}>{s.val}</span>
-                    </span>
+                <div style={{ display: "flex", width: "100%" }}>
+                  {catSegs.filter(s => s.val > 0).map(s => (
+                    <div key={s.label} style={{ flex: s.val, textAlign: "center", fontSize: 10, color: s.color, fontWeight: 600 }}>
+                      {s.label} {s.val}
+                    </div>
                   ))}
                 </div>
               </>
