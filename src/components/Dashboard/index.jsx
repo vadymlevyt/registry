@@ -5,17 +5,41 @@ const MONTHS_UK = [
   "Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"
 ];
 const WDAYS = ["Пн","Вт","Ср","Чт","Пт","Сб","Нд"];
-const HOURS = [8,9,10,11,12,13,14,15,16,17,18,19];
-const SLOT_H = 36;
+const SLOTS = [
+  '08:00','08:30','09:00','09:30','10:00','10:30',
+  '11:00','11:30','12:00','12:30','13:00','13:30',
+  '14:00','14:30','15:00','15:30','16:00','16:30',
+  '17:00','17:30','18:00','18:30','19:00'
+];
+const SLOT_H = 28;
+const SLOT_MIN = 30;
+
+function parseTimeMin(t) {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+const SLOTS_START_MIN = parseTimeMin(SLOTS[0]);
+const SLOTS_END_MIN = parseTimeMin(SLOTS[SLOTS.length - 1]) + SLOT_MIN;
+
+function addMinutesToTime(t, min) {
+  const total = parseTimeMin(t) + min;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
 
 function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) {
   const evsInRange = events.filter(e => {
     if (!e.time) return false;
-    const h = parseInt(e.time.slice(0, 2), 10);
-    return h >= HOURS[0] && h <= HOURS[HOURS.length - 1];
+    const t = parseTimeMin(e.time);
+    return t >= SLOTS_START_MIN && t < SLOTS_END_MIN;
   });
 
   const conflictIds = new Set((conflicts || []).map(c => c.id));
+
+  const [pressedSlot, setPressedSlot] = useState(null);
+  const pressTimerRef = useRef(null);
+  const halfPressTimerRef = useRef(null);
 
   function colorsFor(type, isConflict) {
     if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)" };
@@ -27,29 +51,86 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
 
   const isDraggingHere = slotDrag.isDragging && slotDrag.dragContext === day;
 
+  function clearTimers() {
+    if (halfPressTimerRef.current) { clearTimeout(halfPressTimerRef.current); halfPressTimerRef.current = null; }
+    if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
+    setPressedSlot(null);
+  }
+
+  function handleTouchStart(slotIdx) {
+    halfPressTimerRef.current = setTimeout(() => setPressedSlot(slotIdx), 200);
+    pressTimerRef.current = setTimeout(() => {
+      slotDrag.startDrag(slotIdx, day);
+      setPressedSlot(null);
+      if (navigator.vibrate) { try { navigator.vibrate(50); } catch {} }
+    }, 400);
+  }
+
+  function handleTouchMove(e) {
+    if (!slotDrag.isDragging) {
+      clearTimers();
+      return;
+    }
+    e.preventDefault();
+    slotDrag.handleTouchMove(e);
+  }
+
+  function handleTouchEnd() {
+    clearTimers();
+    if (slotDrag.isDragging) slotDrag.endDrag();
+  }
+
+  function handleMouseDown(e, slotIdx) {
+    const startY = e.clientY;
+    let active = false;
+    slotDrag.startDrag(slotIdx, day);
+    active = true;
+    function onMove(ev) {
+      if (!active) return;
+      const el = document.elementFromPoint(ev.clientX, ev.clientY);
+      const slotEl = el?.closest('[data-slot-idx]');
+      if (slotEl) {
+        const idx = parseInt(slotEl.dataset.slotIdx, 10);
+        const ctx = slotEl.dataset.ctx || null;
+        slotDrag.updateDrag(idx, ctx);
+      }
+      void startY;
+    }
+    function onUp() {
+      active = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (slotDrag.isDraggingNow()) slotDrag.endDrag();
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", ...style }}>
-      {HOURS.map(h => {
-        const inDrag = isDraggingHere && h >= slotDrag.rangeMin && h <= slotDrag.rangeMax;
+      {SLOTS.map((slotTime, idx) => {
+        const inDrag = isDraggingHere && idx >= slotDrag.rangeMin && idx <= slotDrag.rangeMax;
+        const isPressed = pressedSlot === idx && !inDrag;
+        const isHalfHour = slotTime.endsWith(':30');
         return (
           <div
-            key={h}
-            data-hour={h}
+            key={slotTime}
+            data-slot-idx={idx}
+            data-slot={slotTime}
             data-ctx={day}
-            onMouseDown={() => slotDrag.startDrag(h, day)}
-            onMouseEnter={() => slotDrag.updateDrag(h, day)}
-            onMouseUp={() => slotDrag.endDrag()}
-            onTouchStart={(e) => { e.preventDefault(); slotDrag.startDrag(h, day); }}
-            onTouchMove={(e) => { e.preventDefault(); slotDrag.handleTouchMove(e); }}
-            onTouchEnd={() => slotDrag.endDrag()}
+            onMouseDown={(e) => handleMouseDown(e, idx)}
+            onTouchStart={() => handleTouchStart(idx)}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchEnd}
             onClick={onEmptyClick}
             style={{
               height: SLOT_H,
-              borderTop: "1px dashed var(--border, #2e3148)",
+              borderTop: isHalfHour ? "1px dotted rgba(46,49,72,.5)" : "1px dashed var(--border, #2e3148)",
               borderLeft: "1px dashed var(--border, #2e3148)",
               borderRight: "1px dashed var(--border, #2e3148)",
-              borderBottom: h === HOURS[HOURS.length - 1] ? "1px dashed var(--border, #2e3148)" : "none",
-              background: inDrag ? "rgba(79,124,255,0.25)" : "transparent",
+              borderBottom: idx === SLOTS.length - 1 ? "1px dashed var(--border, #2e3148)" : "none",
+              background: inDrag ? "rgba(79,124,255,0.25)" : (isPressed ? "rgba(79,124,255,0.1)" : "transparent"),
               cursor: "pointer",
               boxSizing: "border-box"
             }}
@@ -57,17 +138,12 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
         );
       })}
       {evsInRange.map(ev => {
-        const startH = parseInt(ev.time.slice(0, 2), 10);
-        const startM = parseInt(ev.time.slice(3, 5), 10);
+        const t = parseTimeMin(ev.time);
         const dur = ev.duration || 60;
-        const top = (startH - HOURS[0]) * SLOT_H + (startM / 60) * SLOT_H;
-        const height = Math.max(18, (dur / 60) * SLOT_H - 1);
+        const top = ((t - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
+        const height = Math.max(SLOT_H - 2, (dur / SLOT_MIN) * SLOT_H - 1);
         const c = colorsFor(ev.type, conflictIds.has(ev.id));
-        const endTime = ev.endTime || (() => {
-          const total = startH * 60 + startM + dur;
-          const eh = Math.floor(total / 60), em = total % 60;
-          return String(eh).padStart(2, "0") + ":" + String(em).padStart(2, "0");
-        })();
+        const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
         return (
           <div
             key={ev.id}
@@ -125,12 +201,13 @@ function useSlotDrag(onSelect) {
     const touch = e.touches[0];
     if (!touch) return;
     const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const slotEl = el?.closest("[data-hour]");
+    const slotEl = el?.closest("[data-slot-idx]");
     if (!slotEl) return;
-    const h = parseInt(slotEl.dataset.hour, 10);
+    const idx = parseInt(slotEl.dataset.slotIdx, 10);
     const c = slotEl.dataset.ctx || null;
-    updateDrag(h, c);
+    updateDrag(idx, c);
   }
+  function isDraggingNow() { return isDraggingRef.current; }
   function endDrag() {
     const { start, end, ctx } = stateRef.current;
     if (isDraggingRef.current && start !== null && end !== null) {
@@ -162,7 +239,7 @@ function useSlotDrag(onSelect) {
   return {
     dragStart, dragEnd, dragContext, isDragging,
     rangeMin, rangeMax,
-    startDrag, updateDrag, handleTouchMove, endDrag
+    startDrag, updateDrag, handleTouchMove, endDrag, isDraggingNow
   };
 }
 const MONTHS_GEN = [
@@ -325,8 +402,9 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [calView, setCalView] = useState("month");
   const [agentInput, setAgentInput] = useState("");
-  const [agentResponse, setAgentResponse] = useState("");
+  const [chatHistory, setChatHistory] = useState([]); // [{role:'user'|'assistant', content:string}]
   const [agentLoading, setAgentLoading] = useState(false);
+  const chatScrollRef = useRef(null);
   const [isListening, setIsListening] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalDate, setModalDate] = useState(null);
@@ -589,13 +667,19 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
   async function handleAgentSend(inputOverride) {
     const input = (typeof inputOverride === "string" ? inputOverride : agentInput).trim();
     if (!input || agentLoading) return;
+
+    const userMsg = { role: "user", content: input };
+    // максимум 10 повідомлень у вікні контексту (5 пар user/assistant)
+    const trimmed = chatHistory.slice(-10);
+    const newHistory = [...trimmed, userMsg];
+    setChatHistory(newHistory);
+    setAgentInput("");
     setAgentLoading(true);
-    setAgentResponse("⏳ Аналізую...");
 
     try {
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
-        setAgentResponse("⚙️ Налаштуйте API ключ в Quick Input");
+        setChatHistory(h => [...h, { role: "assistant", content: "⚙️ Налаштуйте API ключ в Quick Input" }]);
         setAgentLoading(false);
         return;
       }
@@ -614,32 +698,39 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
           model: "claude-haiku-4-5-20251001",
           max_tokens: 500,
           system: systemPrompt,
-          messages: [{ role: "user", content: input }]
+          messages: newHistory
         })
       });
 
       if (!response.ok) {
         const err = await response.text();
-        setAgentResponse(`❌ API помилка ${response.status}: ${err.slice(0, 200)}`);
+        setChatHistory(h => [...h, { role: "assistant", content: `❌ API помилка ${response.status}: ${err.slice(0, 200)}` }]);
         setAgentLoading(false);
         return;
       }
 
       const data = await response.json();
       const rawText = data.content?.[0]?.text || "Не вдалося отримати відповідь";
-      setAgentResponse(handleAgentResponse(rawText));
+      const cleanText = handleAgentResponse(rawText);
+      setChatHistory(h => [...h, { role: "assistant", content: cleanText }]);
     } catch (e) {
-      setAgentResponse("❌ Помилка: " + e.message);
+      setChatHistory(h => [...h, { role: "assistant", content: "❌ Помилка: " + e.message }]);
     }
 
-    setAgentInput("");
     setAgentLoading(false);
   }
+
+  // Автоскрол чату донизу
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatHistory, agentLoading]);
 
   function startVoiceInput() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      setAgentResponse("❌ Голосовий ввід не підтримується в цьому браузері");
+      setChatHistory(h => [...h, { role: "assistant", content: "❌ Голосовий ввід не підтримується в цьому браузері" }]);
       return;
     }
     const recognition = new SpeechRecognition();
@@ -653,18 +744,20 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
       setIsListening(false);
       handleAgentSend(text);
     };
-    recognition.onerror = () => { setAgentResponse("❌ Помилка розпізнавання голосу"); setIsListening(false); };
+    recognition.onerror = () => { setChatHistory(h => [...h, { role: "assistant", content: "❌ Помилка розпізнавання голосу" }]); setIsListening(false); };
     recognition.onend = () => setIsListening(false);
     recognition.start();
     setIsListening(true);
   }
 
-  function openModalWithRange(startHour, endHour, dateStr) {
+  function openModalWithRange(startSlotIdx, endSlotIdx, dateStr) {
     const day = dateStr || selectedDay;
     setModalDate(day);
     if (day !== selectedDay) setSelectedDay(day);
-    setModalStart(String(startHour).padStart(2, "0") + ":00");
-    setModalEnd(String(endHour).padStart(2, "0") + ":00");
+    const startTime = SLOTS[startSlotIdx] || SLOTS[0];
+    const endTime = SLOTS[endSlotIdx] || addMinutesToTime(SLOTS[SLOTS.length - 1], SLOT_MIN);
+    setModalStart(startTime);
+    setModalEnd(endTime);
     setModalTitle("");
     setModalCourt("");
     setModalType("hearing");
@@ -886,13 +979,25 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                   );
                 })}
               </div>
-              <div style={{ display: "flex", gap: 2, touchAction: "none", userSelect: "none" }}>
+              <div style={{ display: "flex", gap: 2, touchAction: slotDrag.isDragging ? "none" : "pan-y", userSelect: "none" }}>
                 <div style={{ width: 36, display: "flex", flexDirection: "column" }}>
-                  {HOURS.map(h => (
-                    <div key={h} style={{ height: SLOT_H, fontSize: 10, color: "var(--text3, #5a6080)", textAlign: "right", paddingRight: 4, paddingTop: 3, boxSizing: "border-box" }}>
-                      {String(h).padStart(2,"0")}:00
-                    </div>
-                  ))}
+                  {SLOTS.map(slotTime => {
+                    const isHalf = slotTime.endsWith(':30');
+                    return (
+                      <div key={slotTime} style={{
+                        height: SLOT_H,
+                        fontSize: isHalf ? 9 : 10,
+                        color: isHalf ? "var(--text3, #5a6080)" : "var(--text2, #9aa0b8)",
+                        opacity: isHalf ? 0.5 : 1,
+                        textAlign: "right",
+                        paddingRight: 4,
+                        paddingTop: 2,
+                        boxSizing: "border-box"
+                      }}>
+                        {slotTime}
+                      </div>
+                    );
+                  })}
                 </div>
                 {weekDays.map(ds => (
                   <SlotsColumn
@@ -1045,21 +1150,52 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                 →
               </button>
             </div>
-            {agentResponse && (
-              <div style={{
-                marginTop: 6,
-                padding: 6,
-                background: "rgba(79,124,255,0.08)",
-                border: "1px solid rgba(79,124,255,0.2)",
-                borderRadius: 5,
-                fontSize: 11,
-                whiteSpace: "pre-wrap",
-                color: "var(--text, #e6e8f0)",
-                maxHeight: 60,
-                overflow: "auto",
-                lineHeight: 1.4
-              }}>
-                {agentResponse}
+            {(chatHistory.length > 0 || agentLoading) && (
+              <div
+                ref={chatScrollRef}
+                style={{
+                  marginTop: 6,
+                  height: 170,
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  padding: 6,
+                  background: "rgba(79,124,255,0.04)",
+                  border: "1px solid var(--border, #2e3148)",
+                  borderRadius: 5,
+                }}
+              >
+                {chatHistory.map((m, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                      maxWidth: "85%",
+                      background: m.role === "user" ? "rgba(79,124,255,0.15)" : "var(--surface2, #222536)",
+                      borderRadius: 6,
+                      padding: "5px 8px",
+                      fontSize: 11,
+                      lineHeight: 1.4,
+                      color: "var(--text, #e6e8f0)",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {m.content}
+                  </div>
+                ))}
+                {agentLoading && (
+                  <div style={{
+                    alignSelf: "flex-start",
+                    background: "var(--surface2, #222536)",
+                    borderRadius: 6,
+                    padding: "5px 8px",
+                    fontSize: 11,
+                    color: "var(--text3, #5a6080)",
+                    fontStyle: "italic",
+                  }}>⏳ Аналізую...</div>
+                )}
               </div>
             )}
           </div>
@@ -1069,13 +1205,25 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
               Розклад
             </div>
-            <div style={{ display: "flex", gap: 4, touchAction: "none", userSelect: "none" }}>
+            <div style={{ display: "flex", gap: 4, touchAction: slotDrag.isDragging ? "none" : "pan-y", userSelect: "none" }}>
               <div style={{ width: 36, display: "flex", flexDirection: "column" }}>
-                {HOURS.map(h => (
-                  <div key={h} style={{ height: SLOT_H, fontSize: 10, color: "var(--text3, #5a6080)", textAlign: "right", paddingRight: 4, paddingTop: 3, boxSizing: "border-box" }}>
-                    {String(h).padStart(2,"0")}:00
-                  </div>
-                ))}
+                {SLOTS.map(slotTime => {
+                  const isHalf = slotTime.endsWith(':30');
+                  return (
+                    <div key={slotTime} style={{
+                      height: SLOT_H,
+                      fontSize: isHalf ? 9 : 10,
+                      color: isHalf ? "var(--text3, #5a6080)" : "var(--text2, #9aa0b8)",
+                      opacity: isHalf ? 0.5 : 1,
+                      textAlign: "right",
+                      paddingRight: 4,
+                      paddingTop: 2,
+                      boxSizing: "border-box"
+                    }}>
+                      {slotTime}
+                    </div>
+                  );
+                })}
               </div>
               <SlotsColumn
                 day={selectedDay}
