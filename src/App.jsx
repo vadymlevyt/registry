@@ -577,6 +577,107 @@ function saveNoteToStorage(text, resultPayload) {
   } catch(e) {}
 }
 
+function buildSystemContext(cases) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  function daysFrom(dateStr) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    if (isNaN(d)) return null;
+    d.setHours(0, 0, 0, 0);
+    return Math.round((d - today) / 86400000);
+  }
+
+  function formatDate(dateStr, timeStr) {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    if (isNaN(d)) return dateStr;
+    const day = d.getDate();
+    const months = ['січ','лют','бер','кві','тра','чер','лип','сер','вер','жов','лис','гру'];
+    const m = months[d.getMonth()];
+    const days = daysFrom(dateStr);
+    const suffix = days === 0 ? ' (сьогодні)' : days === 1 ? ' (завтра)' :
+                   days > 0 ? ` (через ${days} дн)` : ` (${Math.abs(days)} дн тому)`;
+    return `${day} ${m}${timeStr ? ' о ' + timeStr : ''}${suffix}`;
+  }
+
+  const catMap = { civil: 'Цивільна', criminal: 'Кримінальна', military: 'Військова', administrative: 'Адміністративна' };
+
+  const active = cases.filter(c => c.status === 'active' || !c.status);
+  const paused = cases.filter(c => c.status === 'paused');
+  const closed = cases.filter(c => c.status === 'closed');
+
+  const hot = active.filter(c => {
+    const dd = daysFrom(c.deadline);
+    const hd = daysFrom(c.hearing_date);
+    return (dd !== null && dd >= 0 && dd <= 3) || (hd !== null && hd >= 0 && hd <= 3);
+  });
+
+  let ctx = `КОНТЕКСТ СИСТЕМИ — АБ Левицького (${today.toLocaleDateString('uk-UA')})\n`;
+  ctx += `Всього справ: ${cases.length} | Активних: ${active.length} | Призупинених: ${paused.length} | Закритих: ${closed.length}\n`;
+
+  if (hot.length > 0) {
+    ctx += `\n⚡ ГАРЯЧІ (дедлайн або засідання ≤ 3 дні):\n`;
+    hot.forEach(c => {
+      const dd = daysFrom(c.deadline);
+      const hd = daysFrom(c.hearing_date);
+      ctx += `  • ${c.name}`;
+      if (hd !== null && hd >= 0 && hd <= 3) ctx += ` | Засідання: ${formatDate(c.hearing_date, c.hearing_time)}`;
+      if (dd !== null && dd >= 0 && dd <= 3) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
+      if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
+      ctx += '\n';
+    });
+  }
+
+  ctx += `\nАКТИВНІ СПРАВИ:\n`;
+
+  const totalActive = active.length;
+  const detail = totalActive <= 15 ? 'full' : totalActive <= 30 ? 'medium' : 'compact';
+
+  active.forEach(c => {
+    if (detail === 'full') {
+      ctx += `• ${c.name}`;
+      if (c.case_no) ctx += ` [${c.case_no}]`;
+      ctx += ` | ${catMap[c.category] || c.category || '—'}`;
+      if (c.court) ctx += ` | ${c.court}`;
+      if (c.client) ctx += ` | Клієнт: ${c.client}`;
+      if (c.hearing_date) ctx += ` | Засідання: ${formatDate(c.hearing_date, c.hearing_time)}`;
+      if (c.deadline) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
+      if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
+      ctx += '\n';
+    } else if (detail === 'medium') {
+      ctx += `• ${c.name}`;
+      if (c.case_no) ctx += ` [${c.case_no}]`;
+      if (c.hearing_date) ctx += ` | Зас: ${formatDate(c.hearing_date, c.hearing_time)}`;
+      if (c.deadline) ctx += ` | Дед: ${formatDate(c.deadline)}`;
+      if (c.next_action) ctx += ` | ${c.next_action}`;
+      ctx += '\n';
+    } else {
+      ctx += `• ${c.name}`;
+      const nearest = c.hearing_date || c.deadline;
+      if (nearest) ctx += ` (${formatDate(nearest, c.hearing_date ? c.hearing_time : null)})`;
+      ctx += '\n';
+    }
+  });
+
+  if (detail !== 'full') {
+    ctx += `\n[Показано стислий формат. Для деталей по конкретній справі — запитай окремо]\n`;
+  }
+
+  if (paused.length > 0) {
+    ctx += `\nПРИЗУПИНЕНІ СПРАВИ:\n`;
+    paused.forEach(c => {
+      ctx += `• ${c.name}`;
+      if (c.court) ctx += ` | ${c.court}`;
+      if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
+      ctx += '\n';
+    });
+  }
+
+  return ctx;
+}
+
 function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const [text, setText]                   = useState('');
   const [loading, setLoading]             = useState(false);
@@ -1149,115 +1250,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   // ── Chat (follow-up commands) ───────────────────────────────────────────────
-  function buildSystemContext(cases) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    function daysFrom(dateStr) {
-      if (!dateStr) return null;
-      const d = new Date(dateStr);
-      if (isNaN(d)) return null;
-      d.setHours(0, 0, 0, 0);
-      return Math.round((d - today) / 86400000);
-    }
-
-    function formatDate(dateStr, timeStr) {
-      if (!dateStr) return null;
-      const d = new Date(dateStr);
-      if (isNaN(d)) return dateStr;
-      const day = d.getDate();
-      const months = ['січ','лют','бер','кві','тра','чер','лип','сер','вер','жов','лис','гру'];
-      const m = months[d.getMonth()];
-      const days = daysFrom(dateStr);
-      const suffix = days === 0 ? ' (сьогодні)' : days === 1 ? ' (завтра)' :
-                     days > 0 ? ` (через ${days} дн)` : ` (${Math.abs(days)} дн тому)`;
-      return `${day} ${m}${timeStr ? ' о ' + timeStr : ''}${suffix}`;
-    }
-
-    const catMap = { civil: 'Цивільна', criminal: 'Кримінальна', military: 'Військова', administrative: 'Адміністративна' };
-    const statusMap = { active: 'Активна', paused: 'Призупинена', closed: 'Закрита' };
-
-    const active = cases.filter(c => c.status === 'active' || !c.status);
-    const paused = cases.filter(c => c.status === 'paused');
-    const closed = cases.filter(c => c.status === 'closed');
-
-    // Знайти гарячі — дедлайн або засідання ≤ 3 дні
-    const hot = active.filter(c => {
-      const dd = daysFrom(c.deadline);
-      const hd = daysFrom(c.hearing_date);
-      return (dd !== null && dd >= 0 && dd <= 3) || (hd !== null && hd >= 0 && hd <= 3);
-    });
-
-    let ctx = `КОНТЕКСТ СИСТЕМИ — АБ Левицького (${today.toLocaleDateString('uk-UA')})\n`;
-    ctx += `Всього справ: ${cases.length} | Активних: ${active.length} | Призупинених: ${paused.length} | Закритих: ${closed.length}\n`;
-
-    if (hot.length > 0) {
-      ctx += `\n⚡ ГАРЯЧІ (дедлайн або засідання ≤ 3 дні):\n`;
-      hot.forEach(c => {
-        const dd = daysFrom(c.deadline);
-        const hd = daysFrom(c.hearing_date);
-        ctx += `  • ${c.name}`;
-        if (hd !== null && hd >= 0 && hd <= 3) ctx += ` | Засідання: ${formatDate(c.hearing_date, c.hearing_time)}`;
-        if (dd !== null && dd >= 0 && dd <= 3) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
-        if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
-        ctx += '\n';
-      });
-    }
-
-    ctx += `\nАКТИВНІ СПРАВИ:\n`;
-
-    // Визначити рівень деталізації залежно від кількості справ
-    const totalActive = active.length;
-    const detail = totalActive <= 15 ? 'full' : totalActive <= 30 ? 'medium' : 'compact';
-
-    active.forEach(c => {
-      if (detail === 'full') {
-        // Повна інформація
-        ctx += `• ${c.name}`;
-        if (c.case_no) ctx += ` [${c.case_no}]`;
-        ctx += ` | ${catMap[c.category] || c.category || '—'}`;
-        if (c.court) ctx += ` | ${c.court}`;
-        if (c.client) ctx += ` | Клієнт: ${c.client}`;
-        if (c.hearing_date) ctx += ` | Засідання: ${formatDate(c.hearing_date, c.hearing_time)}`;
-        if (c.deadline) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
-        if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
-        ctx += '\n';
-
-      } else if (detail === 'medium') {
-        // Середній — без клієнта і суду якщо немає дат
-        ctx += `• ${c.name}`;
-        if (c.case_no) ctx += ` [${c.case_no}]`;
-        if (c.hearing_date) ctx += ` | Зас: ${formatDate(c.hearing_date, c.hearing_time)}`;
-        if (c.deadline) ctx += ` | Дед: ${formatDate(c.deadline)}`;
-        if (c.next_action) ctx += ` | ${c.next_action}`;
-        ctx += '\n';
-
-      } else {
-        // Compact — тільки назва і найближча дата
-        ctx += `• ${c.name}`;
-        const nearest = c.hearing_date || c.deadline;
-        if (nearest) ctx += ` (${formatDate(nearest, c.hearing_date ? c.hearing_time : null)})`;
-        ctx += '\n';
-      }
-    });
-
-    // Підказка агенту що можна запитати деталі
-    if (detail !== 'full') {
-      ctx += `\n[Показано стислий формат. Для деталей по конкретній справі — запитай окремо]\n`;
-    }
-
-    if (paused.length > 0) {
-      ctx += `\nПРИЗУПИНЕНІ СПРАВИ:\n`;
-      paused.forEach(c => {
-        ctx += `• ${c.name}`;
-        if (c.court) ctx += ` | ${c.court}`;
-        if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
-        ctx += '\n';
-      });
-    }
-
-    return ctx;
-  }
+  // buildSystemContext is declared at module scope (below) so Dashboard can use it too.
 
   const sendChat = async () => {
     if (!chatInput.trim() || chatLoading) return;
