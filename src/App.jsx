@@ -5,6 +5,25 @@ import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import './App.css';
 
+const Notebook = React.lazy(() => import('./components/Notebook'));
+
+class ModuleErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center', color: '#9aa0b8' }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
+          <div>Модуль тимчасово недоступний</div>
+          <div style={{ fontSize: 12, marginTop: 8 }}>Решта системи працює</div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 
@@ -568,11 +587,20 @@ function findCaseForAction(caseName, cases) {
 }
 
 // Helper: save note to localStorage
-function saveNoteToStorage(text, resultPayload) {
+function saveNoteToStorage(text, resultPayload, caseId, caseName, source, category) {
   try {
     const notes = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
-    notes.push({ text, result: resultPayload || null, ts: new Date().toISOString() });
-    if (notes.length > 200) notes.splice(0, notes.length - 200);
+    notes.unshift({
+      id: Date.now(),
+      text: text || '',
+      result: resultPayload || null,
+      category: category || 'general',
+      caseId: caseId || null,
+      caseName: caseName || null,
+      source: source || 'manual',
+      ts: new Date().toISOString(),
+    });
+    if (notes.length > 500) notes.splice(500);
     localStorage.setItem('levytskyi_notes', JSON.stringify(notes));
   } catch(e) {}
 }
@@ -2618,6 +2646,7 @@ function App() {
         {[
           {id:'dashboard', label:'📊 Дашборд'},
           {id:'cases',     label:`📁 Справи (${cases.filter(c=>c.status==='active').length})`},
+          {id:'notebook',  label:'📓 Книжка'},
           {id:'add',       label:'➕ Нова справа'},
           {id:'analysis',  label:'🔍 Аналіз системи'},
         ].map(t => (
@@ -2674,6 +2703,13 @@ function App() {
               </div>
             )}
             {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
+            {tab === 'notebook' && (
+              <ModuleErrorBoundary>
+                <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
+                  <Notebook cases={cases} notes={notes} addNote={addNote} deleteNote={deleteNote} />
+                </React.Suspense>
+              </ModuleErrorBoundary>
+            )}
             {tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
           </div>
 
@@ -2755,6 +2791,15 @@ function App() {
               onCancel={() => { setEditingCase(null); setTab('cases'); }}
               initialData={editingCase}
             />
+          )}
+
+          {/* ── NOTEBOOK ── */}
+          {tab === 'notebook' && (
+            <ModuleErrorBoundary>
+              <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
+                <Notebook cases={cases} notes={notes} addNote={addNote} deleteNote={deleteNote} />
+              </React.Suspense>
+            </ModuleErrorBoundary>
           )}
 
           {/* ── ANALYSIS ── */}
