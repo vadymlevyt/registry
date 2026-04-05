@@ -207,7 +207,12 @@ function CaseModal({ c, onClose, onEdit, onDelete }) {
         <div className="modal-section">
           <div className="modal-section-title">Поточний стан</div>
           <div className="modal-field"><span className="modal-field-label">Наступна дія</span><span className="modal-field-val">{c.next_action}</span></div>
-          {c.notes && <div className="modal-field"><span className="modal-field-label">Нотатки</span><span className="modal-field-val">{c.notes}</span></div>}
+          {(() => {
+            const text = Array.isArray(c.notes)
+              ? c.notes.map(n => n.text).filter(Boolean).join('\n')
+              : (typeof c.notes === 'string' ? c.notes : '');
+            return text ? <div className="modal-field"><span className="modal-field-label">Нотатки</span><span className="modal-field-val">{text}</span></div> : null;
+          })()}
         </div>
 
         <div className="modal-actions">
@@ -1007,7 +1012,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       setCases(prev => {
         const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
         if (existing) return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
-        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearing_date: data.hearing_date||'', hearing_time: data.hearing_time||'', deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes||'' }];
+        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearing_date: data.hearing_date||'', hearing_time: data.hearing_time||'', deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes ? [{id:Date.now(), text:data.notes, category:'case', source:'form', ts:new Date().toISOString()}] : [] }];
       });
       alert(`Дані внесено: ${caseName}`);
       onClose();
@@ -1176,7 +1181,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         deadline: '',
         deadline_type: '',
         next_action: '',
-        notes: '',
+        notes: [],
       };
 
       // Показати підтвердження з даними
@@ -1406,7 +1411,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
               case_no: ext.case_number || '',
               hearing_date: ext.hearing_date || '',
               hearing_time: ext.hearing_time || '',
-              deadline: '', deadline_type: '', next_action: '', notes: '',
+              deadline: '', deadline_type: '', next_action: '', notes: [],
             };
 
             setCases(prev => [...prev, newCase]);
@@ -1908,6 +1913,20 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
 // ── INTAKE / ADD CASE FORM ────────────────────────────────────────────────────
 function AddCaseForm({ onSave, onCancel, initialData }) {
+  // Nотатки справи тримаємо як масив — форма редагує текст "form-source" нотатки,
+  // решта (з Notebook тощо) зберігаються без змін.
+  const extractFormNoteText = (notes) => {
+    if (!Array.isArray(notes)) return typeof notes === 'string' ? notes : '';
+    const formNote = notes.find(n => n.source === 'form');
+    if (formNote) return formNote.text || '';
+    return notes.map(n => n.text).filter(Boolean).join('\n');
+  };
+  const initialNotesArr = Array.isArray(initialData?.notes)
+    ? initialData.notes
+    : (typeof initialData?.notes === 'string' && initialData.notes
+        ? [{ id: Date.now(), text: initialData.notes, category: 'case', source: 'form', ts: new Date().toISOString() }]
+        : []);
+
   const [form, setForm] = useState(initialData ? {
     name: initialData.name || '',
     client: initialData.client || '',
@@ -1920,12 +1939,13 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
     deadline: initialData.deadline || '',
     deadline_type: initialData.deadline_type || '',
     next_action: initialData.next_action || '',
-    notes: initialData.notes || ''
+    notes: extractFormNoteText(initialData.notes),
   } : {
     name:'', client:'', category:'civil', status:'active',
     court:'', case_no:'', hearing_date:'', hearing_time:'', deadline:'',
     deadline_type:'', next_action:'', notes:''
   });
+  const originalNotes = initialNotesArr;
   const set = (k,v) => setForm(f => ({...f,[k]:v}));
   const [msgs, setMsgs] = useState([
     {role:'ai', txt:'Доброго дня! Допоможу заповнити картку справи. Розкажіть про клієнта і ситуацію — або одразу заповніть поля. Можете сфотографувати документи і завантажити — розпізнаю текст автоматично.'}
@@ -2040,7 +2060,26 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
         </div>
       </div>
       <div className="form-actions">
-        <button className="btn-lg primary" onClick={() => { if(form.name) onSave(initialData ? {...form, id: initialData.id} : form); }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
+        <button className="btn-lg primary" onClick={() => {
+          if(!form.name) return;
+          const nonFormNotes = originalNotes.filter(n => n.source !== 'form');
+          const formText = (form.notes || '').trim();
+          const existingFormNote = originalNotes.find(n => n.source === 'form');
+          const formNoteArr = formText
+            ? [{
+                id: existingFormNote?.id || Date.now(),
+                text: formText,
+                category: 'case',
+                source: 'form',
+                ts: existingFormNote?.ts || new Date().toISOString(),
+              }]
+            : [];
+          const mergedNotes = [...formNoteArr, ...nonFormNotes];
+          const payload = initialData
+            ? { ...form, id: initialData.id, notes: mergedNotes }
+            : { ...form, notes: mergedNotes };
+          onSave(payload);
+        }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
         <button className="btn-lg secondary" onClick={onCancel}>Скасувати</button>
         <button className="btn-sm btn-ghost" style={{marginLeft:'auto'}}>💡 Ідея для контенту</button>
       </div>
@@ -2241,8 +2280,9 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
         const parsed = JSON.parse(e.target.result);
         if (!Array.isArray(parsed)) { alert('Невірний формат файлу. Очікується масив справ.'); return; }
         if (!confirm(`Буде завантажено ${parsed.length} справ. Поточні дані будуть замінені. Продовжити?`)) return;
-        setCases(parsed);
-        localStorage.setItem('levytskyi_cases', JSON.stringify(parsed));
+        const normalized = normalizeCases(parsed);
+        setCases(normalized);
+        localStorage.setItem('levytskyi_cases', JSON.stringify(normalized));
         alert(`Імпортовано ${parsed.length} справ.`);
       } catch(err) { alert('Помилка читання файлу: ' + err.message); }
     };
@@ -2258,7 +2298,7 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
       const driveCases = await driveService.readCases(token);
       if (driveCases && Array.isArray(driveCases)) {
         if (confirm(`На Google Drive знайдено ${driveCases.length} справ. Завантажити і замінити поточні?`)) {
-          setCases(driveCases);
+          setCases(normalizeCases(driveCases));
         }
       }
     } catch(err) { alert('Помилка підключення: ' + err.message); }
@@ -2393,6 +2433,28 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
   );
 }
 
+// Нормалізує cases[].notes → завжди масив нотаток
+// (підтримує стару версію де notes був рядком)
+function normalizeCases(cases) {
+  if (!Array.isArray(cases)) return [];
+  return cases.map(c => {
+    if (Array.isArray(c.notes)) return c;
+    if (typeof c.notes === 'string' && c.notes.trim()) {
+      return {
+        ...c,
+        notes: [{
+          id: Date.now() + Math.random(),
+          text: c.notes,
+          category: 'case',
+          source: 'form',
+          ts: new Date().toISOString(),
+        }],
+      };
+    }
+    return { ...c, notes: [] };
+  });
+}
+
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 function App() {
   const [tab, setTab] = useState('dashboard');
@@ -2401,10 +2463,10 @@ function App() {
       const saved = localStorage.getItem('levytskyi_cases');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) return normalizeCases(parsed);
       }
     } catch(e) {}
-    return INITIAL_CASES;
+    return normalizeCases(INITIAL_CASES);
   });
   const [calendarEvents, setCalendarEvents] = useState(() => {
     try {
@@ -2453,7 +2515,7 @@ function App() {
     if (!token) return;
     driveService.readCases(token).then(driveCases => {
       if (driveCases && Array.isArray(driveCases) && driveCases.length > 0) {
-        setCases(driveCases);
+        setCases(normalizeCases(driveCases));
       }
     }).catch(() => {});
   }, []); // eslint-disable-line
@@ -2635,7 +2697,7 @@ function App() {
           <button className="btn-sm btn-ghost" onClick={() => {
             if(confirm('Скинути всі дані і повернути тестові справи?')) {
               localStorage.removeItem('levytskyi_cases');
-              setCases(INITIAL_CASES);
+              setCases(normalizeCases(INITIAL_CASES));
             }
           }} style={{fontSize:11,opacity:0.5}} title="Скинути дані">↺</button>
         </div>
@@ -2706,7 +2768,7 @@ function App() {
             {tab === 'notebook' && (
               <ModuleErrorBoundary>
                 <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-                  <Notebook cases={cases} notes={notes} addNote={addNote} deleteNote={deleteNote} />
+                  <Notebook cases={cases} onUpdateCase={updateCase} />
                 </React.Suspense>
               </ModuleErrorBoundary>
             )}
@@ -2797,7 +2859,7 @@ function App() {
           {tab === 'notebook' && (
             <ModuleErrorBoundary>
               <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-                <Notebook cases={cases} notes={notes} addNote={addNote} deleteNote={deleteNote} />
+                <Notebook cases={cases} onUpdateCase={updateCase} />
               </React.Suspense>
             </ModuleErrorBoundary>
           )}

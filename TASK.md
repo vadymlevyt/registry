@@ -1,185 +1,125 @@
-# TASK: Модуль Записна книжка
+# TASK: Notebook — підключення спільного банку нотаток
 
 Work directly on main branch. Do not create separate branches.
 
 ---
 
-## Крок 1 — Перевір поточний стан
+## Концепція (прочитай перед виконанням)
 
-Прочитай App.jsx і знайди:
-- де знаходиться `notes` в стані (useState)
-- де знаходяться `addNote` і `deleteNote`
-- де знаходиться `saveNoteToStorage`
-- як підключений Dashboard (щоб зробити аналогічно)
+Notebook — агрегатор. Він нічого не зберігає сам.
+Він читає нотатки з двох джерел і показує єдиним списком.
+
+**Джерело 1 — справи (Drive):**
+`cases[].notes` — масив нотаток всередині кожної справи.
+Категорія: `case`. Критичні дані — живуть з справою в registry_data.json.
+
+**Джерело 2 — localStorage:**
+- `levytskyi_notes` — general нотатки (особисті, без прив'язки)
+- `levytskyi_system_notes` — нотатки модуля "Аналіз системи"
+- `levytskyi_content_ideas` — ідеї Content Hub (майбутнє, може бути порожнім)
+
+Фільтр "По справах" — показує тільки з `cases[].notes`.
+Фільтр "Ідеї" — показує з `levytskyi_content_ideas`.
+Фільтр "Система" — показує з `levytskyi_system_notes`.
+Фільтр "Загальні" — показує з `levytskyi_notes`.
+Фільтр "Всі" — все разом, сортування за датою.
 
 ---
 
-## Крок 2 — Оновити saveNoteToStorage в App.jsx
+## Крок 1 — Перевір поточну структуру даних
 
-Знайди функцію `saveNoteToStorage` і заміни на нову версію з розширеними полями:
+Відкрий App.jsx і знайди:
+- як виглядає об'єкт справи `cases[]` — чи є в ньому поле `notes`
+- якщо `notes` є — який формат: рядок чи масив об'єктів
+- як Notebook отримує props (що передається зараз)
+
+Відкрий src/components/Notebook/index.jsx і знайди:
+- де зараз читаються нотатки
+- як побудована функція агрегації нотаток
+
+---
+
+## Крок 2 — Забезпечити поле notes в кожній справі
+
+В App.jsx знайди місце де завантажуються справи з Drive.
+При завантаженні — переконатись що кожна справа має поле `notes` як масив:
 
 ```js
-function saveNoteToStorage(text, resultPayload, caseId, caseName, source, category) {
-  const notes = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
-  notes.unshift({
-    id: Date.now(),
-    text: text || '',
-    category: category || 'general',
-    caseId: caseId || null,
-    caseName: caseName || null,
-    source: source || 'manual',
-    ts: new Date().toISOString(),
+cases = cases.map(c => ({
+  ...c,
+  notes: Array.isArray(c.notes) ? c.notes : []
+}));
+```
+
+Якщо `notes` в справі — рядок (стара версія), конвертувати:
+```js
+notes: typeof c.notes === 'string' && c.notes
+  ? [{ id: Date.now(), text: c.notes, category: 'case', source: 'manual', ts: new Date().toISOString() }]
+  : Array.isArray(c.notes) ? c.notes : []
+```
+
+---
+
+## Крок 3 — Оновити функцію агрегації в Notebook/index.jsx
+
+Замінити або додати функцію `getAllNotes()` яка збирає нотатки з усіх джерел:
+
+```js
+function getAllNotes(cases) {
+  // Джерело 1: нотатки зі справ
+  const caseNotes = [];
+  (cases || []).forEach(c => {
+    (c.notes || []).forEach(n => {
+      caseNotes.push({
+        ...n,
+        category: 'case',
+        caseId: c.id,
+        caseName: c.name || c.client || 'Справа',
+      });
+    });
   });
-  if (notes.length > 500) notes.splice(500);
-  localStorage.setItem('levytskyi_notes', JSON.stringify(notes));
+
+  // Джерело 2: localStorage
+  const readLS = (key) => {
+    try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+    catch { return []; }
+  };
+
+  const generalNotes = readLS('levytskyi_notes').map(n => ({ ...n, category: n.category || 'general' }));
+  const systemNotes = readLS('levytskyi_system_notes').map(n => ({ ...n, category: 'system' }));
+  const contentNotes = readLS('levytskyi_content_ideas').map(n => ({ ...n, category: 'content' }));
+
+  // Об'єднати і відсортувати за датою (нові зверху)
+  return [...caseNotes, ...generalNotes, ...systemNotes, ...contentNotes]
+    .sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
 }
 ```
 
-Всі існуючі виклики `saveNoteToStorage(text, result)` залишають старий синтаксис — вони сумісні (нові параметри опціональні).
-
 ---
 
-## Крок 3 — Додати вкладку в навігацію App.jsx
+## Крок 4 — Оновити відображення по справах в сайдбарі
 
-Знайди масив вкладок навігації (де є "dashboard", "cases" тощо) і додай:
+В сайдбарі "По справах" — показувати унікальні справи з яких є нотатки.
+Лічильник — кількість нотаток по цій справі.
+
 ```js
-{ id: 'notebook', label: '📓 Книжка' }
-```
-
----
-
-## Крок 4 — Підключити Notebook в App.jsx
-
-### 4а. Lazy імпорт (ОБОВ'ЯЗКОВО — захист від blank page):
-```js
-const Notebook = React.lazy(() => import('./components/Notebook'));
-```
-
-### 4б. ErrorBoundary клас (додати в App.jsx перед компонентом App):
-```js
-class ModuleErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { hasError: false }; }
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ padding: 40, textAlign: 'center', color: '#9aa0b8' }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>⚠️</div>
-          <div>Модуль тимчасово недоступний</div>
-          <div style={{ fontSize: 12, marginTop: 8 }}>Решта системи працює</div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-```
-
-### 4в. Рендер з захистом:
-```jsx
-{tab === 'notebook' && (
-  <ModuleErrorBoundary>
-    <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-      <Notebook cases={cases} notes={notes} addNote={addNote} deleteNote={deleteNote} />
-    </React.Suspense>
-  </ModuleErrorBoundary>
-)}
-```
-
-Якщо `notes`, `addNote`, `deleteNote` ще не існують в App.jsx — додай їх:
-```js
-const [notes, setNotes] = React.useState(() => {
-  try { return JSON.parse(localStorage.getItem('levytskyi_notes') || '[]'); }
-  catch { return []; }
+const casesWithNotes = {};
+allNotes.filter(n => n.category === 'case' && n.caseName).forEach(n => {
+  casesWithNotes[n.caseName] = (casesWithNotes[n.caseName] || 0) + 1;
 });
-function addNote(note) {
-  const updated = [note, ...notes];
-  setNotes(updated);
-  localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
-}
-function deleteNote(id) {
-  const updated = notes.filter(n => n.id !== id);
-  setNotes(updated);
-  localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
-}
 ```
 
 ---
 
-## Крок 5 — Створити src/components/Notebook/index.jsx
+## Крок 5 — Додавання нотатки
 
-Повний компонент. Структура:
+Кнопка "+ Нотатка" при активному фільтрі "По справах" або конкретній справі:
+- показує select для вибору справи (з props.cases)
+- після збереження — додає нотатку в `cases[caseId].notes[]`
+- викликає функцію оновлення справи яка вже є в App.jsx (ту саму що використовується в картках)
+- зберігає на Drive через існуючий механізм sync
 
-```
-Notebook
-├── inner tabs: [📋 Нотатки] [✏️ Записи]
-│
-├── Вкладка "Нотатки":
-│   ├── Sidebar (200px):
-│   │   ├── Пошук (input)
-│   │   ├── Категорії: Всі / ⚖️ По справах / 💡 Ідеї / ⚙️ Система / 📝 Загальні
-│   │   └── По справах: список унікальних caseName з нотаток
-│   └── Список нотаток:
-│       ├── Тулбар: назва фільтра + кнопка "+ Нотатка"
-│       └── Картки: badge категорії + caseName + source + час + текст + кнопка ✕
-│
-└── Вкладка "Записи":
-    ├── Список зліва (220px): "+ Новий запис" + список записів
-    └── Редактор справа:
-        ├── Header: назва (input) + 🎤 мікрофон + 🗑 видалити
-        ├── textarea (flex:1, НЕ фіксована висота — це редактор, не QI)
-        └── Footer: лічильник символів + кнопка "📋 В Quick Input →"
-```
-
-### Модель даних:
-
-Нотатки читаються з props.notes.
-Вільні записи — localStorage 'levytskyi_free_notes':
-```js
-{ id: Date.now(), title: string, text: string, createdAt: ISO, updatedAt: ISO }
-```
-
-### Мікрофон у "Записах":
-
-Використати Web Speech API напряму (не через App.jsx):
-```js
-const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-recognition.lang = 'uk-UA';
-recognition.onresult = (e) => {
-  const transcript = e.results[0][0].transcript;
-  // додати до тексту поточного запису
-};
-recognition.start();
-```
-Кнопка: 🎤 Надиктувати → при записі: ⏹ Стоп (червона)
-
-### Автозбереження записів:
-onBlur на textarea → зберегти в localStorage.
-
-### Стиль:
-Темна тема, CSS-змінні узгоджені з App.css:
-```css
---bg: #0f1117
---surface: #1a1d27
---surface2: #222536
---border: #2e3148
---accent: #4f7cff
---text: #e8eaf0
---text2: #9aa0b8
---text3: #5a6080
-```
-
-### Кнопка "+ Нотатка":
-Відкриває просту форму (modal або inline):
-- textarea для тексту (height: 120px, фіксована)
-- select для категорії (general / case / content / system)
-- select для справи (якщо category === 'case') — з props.cases
-- кнопки Зберегти / Скасувати
-
-При збереженні — викликати props.addNote з об'єктом:
-```js
-{ id: Date.now(), text, category, caseId, caseName, source: 'manual', ts: new Date().toISOString() }
-```
+При активному фільтрі general/system/content — зберігати в відповідний localStorage ключ.
 
 ---
 
@@ -188,7 +128,7 @@ onBlur на textarea → зберегти в localStorage.
 ```bash
 npm run build
 git add -A
-git commit -m "Add Notebook module with ErrorBoundary protection"
+git commit -m "Notebook: aggregate notes from cases and localStorage"
 git push origin main
 ```
 
@@ -198,12 +138,12 @@ git push origin main
 
 ## Перевірка після виконання (для адвоката):
 
-1. Відкрити vadymlevyt.github.io/registry/ — система відкривається (не синій екран)
-2. В навігації з'явилась вкладка 📓 Книжка
-3. Клікнути "Книжка" — відкривається модуль (не порожньо, не помилка)
-4. Вкладка "Нотатки" — якщо є нотатки в localStorage, вони відображаються
-5. Кнопка "+ Нотатка" → заповнити → Зберегти → нотатка з'явилась в списку
-6. Фільтри зліва — перемикання між категоріями працює
-7. Вкладка "Записи" → "+ Новий запис" → написати текст → перейти в інший запис → текст зберігся
-8. Мікрофон 🎤 → при натисканні починає запис (або показує помилку якщо немає дозволу)
-9. Перейти на вкладку "Справи" — реєстр працює як раніше (модуль не поламав систему)
+1. Відкрити vadymlevyt.github.io/registry/ — система відкривається нормально
+2. Перейти в Книжку → вкладка Нотатки → фільтр "Всі" — показує нотатки
+3. Фільтр "По справах" — показує нотатки з карток справ (не 0)
+4. В сайдбарі "По справах" — видно назви справ з лічильниками
+5. Клікнути на конкретну справу в сайдбарі — показує тільки її нотатки
+6. Кнопка "+ Нотатка" → вибрати справу → зберегти → нотатка з'явилась
+7. Перейти в картку цієї справи — нотатка там теж є (спільні дані)
+8. Фільтр "Загальні" — показує нотатки без прив'язки до справ
+9. Решта системи (Дашборд, Справи) — працює як раніше

@@ -18,7 +18,44 @@ function formatTs(ts) {
   } catch { return ''; }
 }
 
-export default function Notebook({ cases, notes, addNote, deleteNote }) {
+const LS_KEYS = {
+  general: 'levytskyi_notes',
+  system:  'levytskyi_system_notes',
+  content: 'levytskyi_content_ideas',
+};
+
+function readLS(key) {
+  try { return JSON.parse(localStorage.getItem(key) || '[]'); }
+  catch { return []; }
+}
+function writeLS(key, arr) {
+  try { localStorage.setItem(key, JSON.stringify(arr)); } catch {}
+}
+
+function getAllNotes(cases) {
+  // Джерело 1: нотатки зі справ
+  const caseNotes = [];
+  (cases || []).forEach(c => {
+    (c.notes || []).forEach(n => {
+      caseNotes.push({
+        ...n,
+        category: 'case',
+        caseId: c.id,
+        caseName: c.name || c.client || 'Справа',
+      });
+    });
+  });
+
+  // Джерело 2: localStorage
+  const generalNotes = readLS(LS_KEYS.general).map(n => ({ ...n, category: n.category || 'general' }));
+  const systemNotes  = readLS(LS_KEYS.system).map(n  => ({ ...n, category: 'system' }));
+  const contentNotes = readLS(LS_KEYS.content).map(n => ({ ...n, category: 'content' }));
+
+  return [...caseNotes, ...generalNotes, ...systemNotes, ...contentNotes]
+    .sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+}
+
+export default function Notebook({ cases, onUpdateCase }) {
   const [innerTab, setInnerTab] = useState('notes');
 
   return (
@@ -50,7 +87,7 @@ export default function Notebook({ cases, notes, addNote, deleteNote }) {
       </div>
 
       {innerTab === 'notes' && (
-        <NotesTab cases={cases} notes={notes} addNote={addNote} deleteNote={deleteNote} />
+        <NotesTab cases={cases} onUpdateCase={onUpdateCase} />
       )}
       {innerTab === 'records' && <RecordsTab />}
     </div>
@@ -58,21 +95,27 @@ export default function Notebook({ cases, notes, addNote, deleteNote }) {
 }
 
 // ── NOTES TAB ───────────────────────────────────────────────────────────────
-function NotesTab({ cases, notes, addNote, deleteNote }) {
+function NotesTab({ cases, onUpdateCase }) {
   const [search, setSearch] = useState('');
   const [filterCat, setFilterCat] = useState('all'); // all | general | case | content | system
   const [filterCaseName, setFilterCaseName] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const bump = () => setRefresh(r => r + 1);
 
-  const byCaseNames = useMemo(() => {
-    const set = new Set();
-    (notes || []).forEach(n => { if (n.caseName) set.add(n.caseName); });
-    return Array.from(set).sort();
-  }, [notes]);
+  const allNotes = useMemo(() => getAllNotes(cases), [cases, refresh]);
+
+  const casesWithNotes = useMemo(() => {
+    const map = {};
+    allNotes.filter(n => n.category === 'case' && n.caseName).forEach(n => {
+      map[n.caseName] = (map[n.caseName] || 0) + 1;
+    });
+    return map;
+  }, [allNotes]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
-    return (notes || []).filter(n => {
+    return allNotes.filter(n => {
       if (filterCaseName) {
         if (n.caseName !== filterCaseName) return false;
       } else if (filterCat !== 'all') {
@@ -84,7 +127,52 @@ function NotesTab({ cases, notes, addNote, deleteNote }) {
       }
       return true;
     });
-  }, [notes, search, filterCat, filterCaseName]);
+  }, [allNotes, search, filterCat, filterCaseName]);
+
+  function handleAddNote(payload) {
+    // payload: {text, category, caseId, caseName}
+    const ts = new Date().toISOString();
+    const baseNote = {
+      id: Date.now(),
+      text: payload.text,
+      source: 'manual',
+      ts,
+    };
+    if (payload.category === 'case' && payload.caseId != null) {
+      const c = (cases || []).find(x => String(x.id) === String(payload.caseId));
+      if (!c) return;
+      const note = { ...baseNote, category: 'case' };
+      const updatedNotes = [note, ...(Array.isArray(c.notes) ? c.notes : [])];
+      onUpdateCase && onUpdateCase(c.id, 'notes', updatedNotes);
+    } else {
+      const key = LS_KEYS[payload.category] || LS_KEYS.general;
+      const note = { ...baseNote, category: payload.category || 'general' };
+      writeLS(key, [note, ...readLS(key)]);
+    }
+    bump();
+    setModalOpen(false);
+  }
+
+  function handleDeleteNote(note) {
+    if (note.category === 'case' && note.caseId != null) {
+      const c = (cases || []).find(x => String(x.id) === String(note.caseId));
+      if (!c) return;
+      const updated = (c.notes || []).filter(n => n.id !== note.id);
+      onUpdateCase && onUpdateCase(c.id, 'notes', updated);
+    } else {
+      const key = LS_KEYS[note.category] || LS_KEYS.general;
+      writeLS(key, readLS(key).filter(n => n.id !== note.id));
+    }
+    bump();
+  }
+
+  // Вибір категорії для кнопки "+ Нотатка" — відповідає поточному фільтру.
+  const defaultCatForAdd = filterCaseName
+    ? 'case'
+    : (filterCat === 'all' ? 'general' : filterCat);
+  const defaultCaseIdForAdd = filterCaseName
+    ? (cases || []).find(c => (c.name || c.client || 'Справа') === filterCaseName)?.id
+    : null;
 
   const titleLabel = filterCaseName
     ? `⚖️ ${filterCaseName}`
@@ -119,16 +207,16 @@ function NotesTab({ cases, notes, addNote, deleteNote }) {
           </div>
         </div>
 
-        {byCaseNames.length > 0 && (
+        {Object.keys(casesWithNotes).length > 0 && (
           <div>
             <div style={{ fontSize: 10, fontWeight: 600, color: '#5a6080', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               По справах
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {byCaseNames.map(name => (
+              {Object.entries(casesWithNotes).sort((a, b) => a[0].localeCompare(b[0])).map(([name, count]) => (
                 <SidebarItem
                   key={name}
-                  label={name}
+                  label={`${name} (${count})`}
                   active={filterCaseName === name}
                   onClick={() => { setFilterCaseName(name); setFilterCat('all'); }}
                 />
@@ -163,7 +251,7 @@ function NotesTab({ cases, notes, addNote, deleteNote }) {
             </div>
           )}
           {filtered.map(n => (
-            <NoteCard key={n.id || n.ts} note={n} onDelete={() => deleteNote(n.id)} />
+            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} onDelete={() => handleDeleteNote(n)} />
           ))}
         </div>
       </div>
@@ -171,8 +259,10 @@ function NotesTab({ cases, notes, addNote, deleteNote }) {
       {modalOpen && (
         <AddNoteModal
           cases={cases}
+          defaultCategory={defaultCatForAdd}
+          defaultCaseId={defaultCaseIdForAdd}
           onCancel={() => setModalOpen(false)}
-          onSave={(payload) => { addNote(payload); setModalOpen(false); }}
+          onSave={handleAddNote}
         />
       )}
     </div>
@@ -245,10 +335,10 @@ function NoteCard({ note, onDelete }) {
   );
 }
 
-function AddNoteModal({ cases, onCancel, onSave }) {
+function AddNoteModal({ cases, onCancel, onSave, defaultCategory, defaultCaseId }) {
   const [text, setText] = useState('');
-  const [category, setCategory] = useState('general');
-  const [caseId, setCaseId] = useState('');
+  const [category, setCategory] = useState(defaultCategory || 'general');
+  const [caseId, setCaseId] = useState(defaultCaseId != null ? String(defaultCaseId) : '');
 
   const selectedCase = (cases || []).find(c => String(c.id) === String(caseId));
 
@@ -256,13 +346,10 @@ function AddNoteModal({ cases, onCancel, onSave }) {
     const trimmed = text.trim();
     if (!trimmed) return;
     onSave({
-      id: Date.now(),
       text: trimmed,
       category,
-      caseId: category === 'case' ? (selectedCase?.id || null) : null,
+      caseId: category === 'case' ? (selectedCase?.id ?? null) : null,
       caseName: category === 'case' ? (selectedCase?.name || null) : null,
-      source: 'manual',
-      ts: new Date().toISOString(),
     });
   }
 
