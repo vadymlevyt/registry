@@ -170,6 +170,75 @@ const MONTHS_GEN = [
   "липня","серпня","вересня","жовтня","листопада","грудня"
 ];
 
+function findConflicts(cases, calendarEvents) {
+  const byDate = {};
+  cases.forEach(c => {
+    if (c.hearing_date && c.hearing_time) {
+      if (!byDate[c.hearing_date]) byDate[c.hearing_date] = [];
+      byDate[c.hearing_date].push({ name: c.name, time: c.hearing_time, id: c.id });
+    }
+  });
+  (calendarEvents || []).forEach(e => {
+    if (e.date && e.time && e.type === "hearing") {
+      if (!byDate[e.date]) byDate[e.date] = [];
+      byDate[e.date].push({ name: e.title, time: e.time });
+    }
+  });
+  return Object.entries(byDate)
+    .filter(([, items]) => items.length > 1)
+    .map(([date, items]) => ({ date, items: items.map(i => `${i.name} ${i.time}`) }));
+}
+
+function buildDashboardContext(cases, calendarEvents) {
+  const today = new Date().toISOString().slice(0, 10);
+  const casesText = cases.map(c => {
+    const parts = [`[id:${c.id}] ${c.name}`];
+    if (c.court) parts.push(c.court);
+    if (c.hearing_date) parts.push(`засідання ${c.hearing_date}${c.hearing_time ? " " + c.hearing_time : ""}`);
+    if (c.deadline) parts.push(`дедлайн ${c.deadline}${c.deadline_type ? " (" + c.deadline_type + ")" : ""}`);
+    if (c.status) parts.push(c.status);
+    if (c.next_action) parts.push(`→ ${c.next_action}`);
+    return parts.join(" | ");
+  }).join("\n");
+
+  const eventsText = (calendarEvents && calendarEvents.length)
+    ? calendarEvents.map(e => `${e.date} ${e.time || ""} ${e.title} (${e.type})`).join("\n")
+    : "немає";
+
+  const conflicts = findConflicts(cases, calendarEvents);
+  const conflictsText = conflicts.length
+    ? conflicts.map(c => `⚠️ ${c.date}: ${c.items.join(" і ")}`).join("\n")
+    : "немає";
+
+  return `Ти — календарний асистент АБ Левицького.
+Сьогодні: ${today}.
+Твоя роль: відповідати на питання про розклад, справи, дедлайни. Керувати календарем (навігація, пошук подій). Змінювати дати засідань і дедлайнів якщо адвокат просить.
+
+ВАЖЛИВО: Якщо адвокат просить змінити дату засідання — поверни JSON з командою:
+{"action":"update_hearing","caseId":"...","hearing_date":"YYYY-MM-DD","hearing_time":"HH:MM"}
+
+Якщо просить перегорнути календар:
+{"action":"navigate_calendar","year":2026,"month":3}
+
+Якщо просить показати тиждень:
+{"action":"navigate_week","date":"YYYY-MM-DD"}
+
+Інакше — відповідай текстом українською, коротко і по суті.
+
+// ШАР 1 — Поточні дані системи:
+СПРАВИ (${cases.length}):
+${casesText}
+
+ДОДАТКОВІ ПОДІЇ:
+${eventsText}
+
+НАКЛАДКИ:
+${conflictsText}
+
+// ШАР 2 — Досьє (не реалізовано, підключити коли буде модуль Досьє)
+// ШАР 3 — Google Drive документи (не реалізовано, підключити через Drive API)`;
+}
+
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -252,6 +321,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
   const [agentInput, setAgentInput] = useState("");
   const [agentResponse, setAgentResponse] = useState("");
   const [agentLoading, setAgentLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalDate, setModalDate] = useState(null);
   const [modalStart, setModalStart] = useState("10:00");
@@ -341,6 +411,8 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
     const short = ["січ","лют","бер","кві","тра","чер","лип","сер","вер","жов","лис","гру"];
     return `${first.getDate()} ${short[first.getMonth()]} — ${last.getDate()} ${short[last.getMonth()]}`;
   }
+
+  const allConflicts = findConflicts(cases, calendarEvents);
 
   const stats = {
     active: cases.filter(c => c.status === "active" || !c.status).length,
@@ -447,46 +519,107 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
     ? (conflicts.length ? parts.join(" · ") + " · накладка!" : parts.join(" · "))
     : "Вільний день";
 
-  async function handleAgentSend() {
-    if (!agentInput.trim() || agentLoading) return;
+  function handleAgentResponse(text) {
+    const jsonMatch = text.match(/\{[\s\S]*?"action"[\s\S]*?\}/);
+    if (jsonMatch) {
+      try {
+        const cmd = JSON.parse(jsonMatch[0]);
+        if (cmd.action === "update_hearing") {
+          setCases(prev => prev.map(c =>
+            c.id === cmd.caseId || String(c.id) === String(cmd.caseId)
+              ? { ...c, hearing_date: cmd.hearing_date, hearing_time: cmd.hearing_time || c.hearing_time }
+              : c
+          ));
+          return `✅ Дату засідання оновлено: ${cmd.hearing_date}${cmd.hearing_time ? " о " + cmd.hearing_time : ""}`;
+        }
+        if (cmd.action === "navigate_calendar") {
+          setCurMonth(new Date(cmd.year, cmd.month - 1, 1));
+          setCalView("month");
+          return `📅 Календар перегорнуто на ${cmd.year}-${String(cmd.month).padStart(2,"0")}`;
+        }
+        if (cmd.action === "navigate_week") {
+          setSelectedDay(cmd.date);
+          setCalView("week");
+          return `📅 Показую тиждень з ${cmd.date}`;
+        }
+      } catch (e) {
+        // JSON не розпарсився — показати як текст
+      }
+    }
+    return text;
+  }
+
+  async function handleAgentSend(inputOverride) {
+    const input = (typeof inputOverride === "string" ? inputOverride : agentInput).trim();
+    if (!input || agentLoading) return;
     setAgentLoading(true);
     setAgentResponse("⏳ Аналізую...");
 
     try {
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
-        setAgentResponse("❌ API ключ не налаштований");
+        setAgentResponse("⚙️ Налаштуйте API ключ в Quick Input");
         setAgentLoading(false);
         return;
       }
 
-      const ctxText = buildSystemContext ? buildSystemContext(cases) : "";
-      const sysPrompt = sonnetPrompt || "";
+      const systemPrompt = buildDashboardContext(cases, calendarEvents);
 
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01"
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5-20251022",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 500,
-          system: `${sysPrompt}\n\nОбраний день: ${selectedDay} (${formatDayTitle(selectedDay)})\nПоточні події дня: ${JSON.stringify(dayEvents)}\nСправи системи: ${ctxText}`,
-          messages: [{ role: "user", content: agentInput }]
+          system: systemPrompt,
+          messages: [{ role: "user", content: input }]
         })
       });
 
+      if (!response.ok) {
+        const err = await response.text();
+        setAgentResponse(`❌ API помилка ${response.status}: ${err.slice(0, 200)}`);
+        setAgentLoading(false);
+        return;
+      }
+
       const data = await response.json();
-      const text = data.content?.[0]?.text || "Не вдалося отримати відповідь";
-      setAgentResponse(text);
+      const rawText = data.content?.[0]?.text || "Не вдалося отримати відповідь";
+      setAgentResponse(handleAgentResponse(rawText));
     } catch (e) {
       setAgentResponse("❌ Помилка: " + e.message);
     }
 
     setAgentInput("");
     setAgentLoading(false);
+  }
+
+  function startVoiceInput() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setAgentResponse("❌ Голосовий ввід не підтримується в цьому браузері");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = "uk-UA";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onresult = (e) => {
+      const text = e.results[0][0].transcript;
+      setAgentInput(text);
+      setIsListening(false);
+      handleAgentSend(text);
+    };
+    recognition.onerror = () => { setAgentResponse("❌ Помилка розпізнавання голосу"); setIsListening(false); };
+    recognition.onend = () => setIsListening(false);
+    recognition.start();
+    setIsListening(true);
   }
 
   function openModalWithRange(startHour, endHour, dateStr) {
@@ -755,6 +888,18 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
             <span>·</span>
             <span>Закритих: <b style={{ color: "var(--text, #e6e8f0)" }}>{stats.closed}</b></span>
           </div>
+          {allConflicts.length > 0 && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "4px 8px",
+              background: "rgba(231,76,60,0.1)",
+              border: "1px solid rgba(231,76,60,0.3)",
+              borderRadius: 6,
+              fontSize: 11, color: "#e74c3c"
+            }}>
+              ⚠️ Накладки: {allConflicts.length} — {allConflicts.map(c => c.date).join(", ")}
+            </div>
+          )}
           {(() => {
             const catSegs = [
               { label: "Цивільні", val: stats.civil, color: "#4f7cff" },
@@ -807,54 +952,75 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
               Агент
             </div>
-            <textarea
-              value={agentInput}
-              onChange={e => setAgentInput(e.target.value)}
-              placeholder="Запитай про цей день..."
-              style={{
-                width: "100%",
-                height: 50,
-                background: "var(--surface, #1a1d27)",
-                border: "1px solid var(--border, #2e3148)",
-                borderRadius: 5,
-                color: "var(--text, #e6e8f0)",
-                padding: 6,
-                fontSize: 11,
-                fontFamily: "inherit",
-                resize: "none",
-                boxSizing: "border-box"
-              }}
-            />
-            <button
-              onClick={handleAgentSend}
-              disabled={agentLoading || !agentInput.trim()}
-              style={{
-                marginTop: 4,
-                width: "100%",
-                background: "var(--accent, #4f7cff)",
-                color: "#fff",
-                border: "none",
-                borderRadius: 5,
-                padding: "6px",
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: agentLoading ? "default" : "pointer",
-                opacity: agentLoading || !agentInput.trim() ? 0.5 : 1
-              }}
-            >
-              {agentLoading ? "Обробка..." : "Надіслати"}
-            </button>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <input
+                type="text"
+                value={agentInput}
+                onChange={e => setAgentInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAgentSend(); } }}
+                placeholder="Запитай про розклад, справи..."
+                style={{
+                  flex: 1, minWidth: 0,
+                  background: "var(--surface, #1a1d27)",
+                  border: "1px solid var(--border, #2e3148)",
+                  borderRadius: 5,
+                  color: "var(--text, #e6e8f0)",
+                  padding: "6px 8px",
+                  fontSize: 11,
+                  fontFamily: "inherit",
+                  boxSizing: "border-box"
+                }}
+              />
+              <button
+                onClick={startVoiceInput}
+                disabled={isListening || agentLoading}
+                title="Голосовий ввід"
+                style={{
+                  background: isListening ? "rgba(231,76,60,.2)" : "var(--surface2, #222536)",
+                  border: "1px solid var(--border, #2e3148)",
+                  borderRadius: 5,
+                  color: "var(--text, #e6e8f0)",
+                  padding: "6px 8px",
+                  fontSize: 13,
+                  cursor: isListening || agentLoading ? "default" : "pointer",
+                  flexShrink: 0
+                }}
+              >
+                {isListening ? "🔴" : "🎤"}
+              </button>
+              <button
+                onClick={() => handleAgentSend()}
+                disabled={agentLoading || !agentInput.trim()}
+                title="Надіслати"
+                style={{
+                  background: "var(--accent, #4f7cff)",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 5,
+                  padding: "6px 10px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: agentLoading ? "default" : "pointer",
+                  opacity: agentLoading || !agentInput.trim() ? 0.5 : 1,
+                  flexShrink: 0
+                }}
+              >
+                →
+              </button>
+            </div>
             {agentResponse && (
               <div style={{
                 marginTop: 6,
                 padding: 6,
-                background: "var(--surface2, #222536)",
+                background: "rgba(79,124,255,0.08)",
+                border: "1px solid rgba(79,124,255,0.2)",
                 borderRadius: 5,
                 fontSize: 11,
                 whiteSpace: "pre-wrap",
-                color: "var(--text2, #9aa0b8)",
-                maxHeight: 150,
-                overflow: "auto"
+                color: "var(--text, #e6e8f0)",
+                maxHeight: 60,
+                overflow: "auto",
+                lineHeight: 1.4
               }}>
                 {agentResponse}
               </div>
