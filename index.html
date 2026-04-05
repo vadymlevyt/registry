@@ -791,7 +791,7 @@ Return this exact JSON structure:
     "deadlines": [],
     "person": "string or null"
   },
-  "recommended_actions": ["update_case_date", "update_deadline", "save_to_drive", "create_case", "save_note", "update_case_status"],
+  "recommended_actions": ["update_case_date", "update_deadline", "update_case_field", "save_to_drive", "create_case", "save_note", "update_case_status"],
   "human_message": "Short Ukrainian-language summary for the lawyer",
   "warnings": [],
   "confidence": 0.0 to 1.0,
@@ -829,10 +829,26 @@ Current year: ${new Date().getFullYear()}. Today: ${new Date().toISOString().spl
 When the user gives you a command:
 - Respond conversationally in Ukrainian (1-3 sentences)
 - If a system action is needed, append on a NEW LINE: ACTION_JSON: {"recommended_actions": ["action_id"], "extracted": {"case_name": "...", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}}
-- Available action_ids: update_case_date, update_deadline, save_note, create_case, update_case_status
+- Available action_ids: update_case_date, update_deadline, save_note, create_case, update_case_status, update_case_field, delete_case
 - update_case_date: for hearing dates (засідання)
 - update_deadline: for procedural deadlines (дедлайни подачі документів, строки)
 - For update_deadline use: ACTION_JSON: {"recommended_actions": ["update_deadline"], "extracted": {"case_name": "...", "deadline_date": "YYYY-MM-DD", "deadline_type": "..."}}
+- update_case_field: change any case field (status, category, court, case_no, next_action, notes, hearing_time)
+  ACTION_JSON: {"recommended_actions": ["update_case_field"], "extracted": {"case_name": "...", "field": "field_name", "value": "new_value"}}
+
+  Available fields and values:
+  - status: "active" | "paused" | "closed"
+  - category: "civil" | "criminal" | "military" | "administrative"
+  - court: string
+  - case_no: string
+  - next_action: string
+  - notes: string
+  - hearing_time: "HH:MM"
+
+- update_case_status is an alias for update_case_field with field=status
+- delete_case: delete a case from registry (requires confirmation)
+  ACTION_JSON: {"recommended_actions": ["delete_case"], "extracted": {"case_name": "..."}}
+- IMPORTANT: Only propose delete_case if user explicitly asks to DELETE. Always warn: this cannot be undone.
 - Execute intent immediately — do NOT ask for confirmation for adding/updating hearing dates
 - Only ask confirmation for: changing status to closed, deleting cases
 - If case not found in the list: ask which case the user means
@@ -880,11 +896,13 @@ const QI_ERROR_MESSAGES = {
 const QI_ACTION_LABELS = {
   update_case_date:     '📅 Оновити дату засідання',
   update_deadline:      '⚡ Встановити дедлайн',
+  update_case_field:    '✏️ Оновити дані справи',
   save_to_drive:        '☁️ Зберегти в Drive',
   update_case_status:   '🔄 Змінити статус',
   create_case:          '➕ Створити справу',
   create_drive_folder:  '📁 Створити папку',
   save_note:            '📝 Зберегти нотатку',
+  delete_case:          '🗑 Видалити справу',
 };
 
 // Extracted field display labels
@@ -1822,6 +1840,77 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
               setConversationHistory(prev => [...prev, {
                 role: 'assistant',
                 content: `✅ Дедлайн у справі "${matched.name}" встановлено: ${deadline_date}${typeStr}`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+          if (action === 'update_case_field' || action === 'update_case_status') {
+            const caseName = actionResult.case_match?.case_name
+              || actionResult.extracted?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+
+            // Для update_case_status — field завжди 'status'
+            const field = action === 'update_case_status'
+              ? 'status'
+              : actionResult.extracted?.field;
+            const value = actionResult.extracted?.value
+              || actionResult.extracted?.status; // fallback для статусу
+
+            // Дозволені поля (не чіпаємо hearing_date і deadline — у них свої обробники)
+            const allowedFields = ['status', 'category', 'court', 'case_no',
+              'next_action', 'notes', 'hearing_time'];
+
+            if (matched && field && value && allowedFields.includes(field)) {
+              setCases(prev => prev.map(c =>
+                c.id === matched.id ? { ...c, [field]: value } : c
+              ));
+
+              const fieldLabels = {
+                status: 'Статус',
+                category: 'Категорія',
+                court: 'Суд',
+                case_no: 'Номер справи',
+                next_action: 'Наступна дія',
+                notes: 'Нотатки',
+                hearing_time: 'Час засідання',
+              };
+              const statusLabels = {
+                active: 'Активна', paused: 'Призупинена', closed: 'Закрита'
+              };
+              const displayValue = field === 'status'
+                ? (statusLabels[value] || value)
+                : value;
+
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ ${fieldLabels[field] || field} справи "${matched.name}" змінено на "${displayValue}"`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+
+            // Якщо не знайшли справу або поле — fallback на текстову відповідь
+          }
+          if (action === 'delete_case') {
+            const caseName = actionResult.case_match?.case_name
+              || actionResult.extracted?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+
+            if (matched) {
+              // Для видалення — залишаємо confirm() як захист
+              if (!window.confirm(`Видалити справу "${matched.name}"? Цю дію не можна скасувати.`)) {
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `Видалення справи "${matched.name}" скасовано.`
+                }]);
+                setChatLoading(false);
+                return;
+              }
+              setCases(prev => prev.filter(c => c.id !== matched.id));
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Справу "${matched.name}" видалено з реєстру.`
               }]);
               setChatLoading(false);
               return;
