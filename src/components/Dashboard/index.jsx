@@ -152,12 +152,42 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
     return hearings;
   }
 
-  function prevMonth() {
-    setCurMonth(new Date(curMonth.getFullYear(), curMonth.getMonth() - 1, 1));
+  function shiftWeek(deltaDays) {
+    const d = new Date(selectedDay);
+    d.setDate(d.getDate() + deltaDays);
+    const dow = d.getDay() === 0 ? 6 : d.getDay() - 1;
+    const firstOfWeek = new Date(d);
+    firstOfWeek.setDate(d.getDate() - dow);
+    const iso = firstOfWeek.toISOString().slice(0, 10);
+    setSelectedDay(iso);
+    setCurMonth(new Date(firstOfWeek.getFullYear(), firstOfWeek.getMonth(), 1));
   }
-  function nextMonth() {
-    setCurMonth(new Date(curMonth.getFullYear(), curMonth.getMonth() + 1, 1));
+
+  function goPrev() {
+    if (calView === "week") shiftWeek(-7);
+    else setCurMonth(new Date(curMonth.getFullYear(), curMonth.getMonth() - 1, 1));
   }
+  function goNext() {
+    if (calView === "week") shiftWeek(7);
+    else setCurMonth(new Date(curMonth.getFullYear(), curMonth.getMonth() + 1, 1));
+  }
+
+  function formatWeekRange(days) {
+    const first = new Date(days[0]);
+    const last = new Date(days[6]);
+    const short = ["січ","лют","бер","кві","тра","чер","лип","сер","вер","жов","лис","гру"];
+    return `${first.getDate()} ${short[first.getMonth()]} — ${last.getDate()} ${short[last.getMonth()]}`;
+  }
+
+  const stats = {
+    active: cases.filter(c => c.status === "active" || !c.status).length,
+    paused: cases.filter(c => c.status === "paused").length,
+    closed: cases.filter(c => c.status === "closed").length,
+    civil: cases.filter(c => c.category === "civil").length,
+    criminal: cases.filter(c => c.category === "criminal").length,
+    military: cases.filter(c => c.category === "military").length,
+    admin: cases.filter(c => c.category === "admin" || c.category === "administrative").length,
+  };
 
   const allEvents = getAllEvents().filter(e => e.date).sort((a,b) => a.date.localeCompare(b.date));
   const hotCount = allEvents.filter(e => daysUntil(e.date) <= 1 && daysUntil(e.date) >= 0).length;
@@ -358,11 +388,13 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
       {/* ── CALENDAR ── */}
       <div style={{ flex: 2, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0 }}>
         <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border, #2e3148)", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          <button onClick={prevMonth} style={navBtnStyle}>←</button>
+          <button onClick={goPrev} style={navBtnStyle}>←</button>
           <h2 style={{ fontSize: 13, fontWeight: 600, flex: 1, textAlign: "center", margin: 0 }}>
-            {MONTHS_UK[curMonth.getMonth()]} {curMonth.getFullYear()}
+            {calView === "week"
+              ? formatWeekRange(weekDays)
+              : `${MONTHS_UK[curMonth.getMonth()]} ${curMonth.getFullYear()}`}
           </h2>
-          <button onClick={nextMonth} style={navBtnStyle}>→</button>
+          <button onClick={goNext} style={navBtnStyle}>→</button>
           <div style={{ display: "flex", background: "var(--surface2, #222536)", borderRadius: 5, padding: 2 }}>
             <button onClick={() => setCalView("month")} style={{ ...vBtnStyle, ...(calView === "month" ? vBtnActive : {}) }}>Місяць</button>
             <button onClick={() => setCalView("week")} style={{ ...vBtnStyle, ...(calView === "week" ? vBtnActive : {}) }}>Тиждень</button>
@@ -499,6 +531,48 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
               </div>
             </div>
           )}
+        </div>
+
+        {/* ── STATS PANEL ── */}
+        <div style={{
+          borderTop: "1px solid var(--border, #2e3148)",
+          padding: "6px 10px",
+          flexShrink: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4
+        }}>
+          <div style={{ display: "flex", gap: 10, fontSize: 11, color: "var(--text3, #5a6080)" }}>
+            <span>Активних: <b style={{ color: "var(--text, #e6e8f0)" }}>{stats.active}</b></span>
+            <span>·</span>
+            <span>Призупинених: <b style={{ color: "var(--text, #e6e8f0)" }}>{stats.paused}</b></span>
+            <span>·</span>
+            <span>Закритих: <b style={{ color: "var(--text, #e6e8f0)" }}>{stats.closed}</b></span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
+            {[
+              { label: "Цивільні", val: stats.civil },
+              { label: "Кримінальні", val: stats.criminal },
+              { label: "Військові", val: stats.military },
+              { label: "Адміністративні", val: stats.admin },
+            ].map(s => (
+              <div key={s.label} style={{
+                background: "var(--surface, #1a1d27)",
+                border: "1px solid var(--border, #2e3148)",
+                borderRadius: 5,
+                padding: "3px 6px",
+                textAlign: "center"
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text, #e6e8f0)" }}>{s.val}</div>
+                <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".04em" }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text3, #5a6080)", opacity: 0.6 }}>
+            <span>💳 Білінг</span>
+            <span>·</span>
+            <span style={{ fontStyle: "italic" }}>Незабаром</span>
+          </div>
         </div>
       </div>
 
