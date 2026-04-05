@@ -1,256 +1,265 @@
-# ПОТОЧНЕ ЗАВДАННЯ
+# TASK: Спільний стан + повноваження агента дашборду
 
-Прочитай CLAUDE.md перед початком.
-Працюємо в гілці main. Після змін — npm run build, потім git push.
-
----
-
-## Завдання — Повноцінний агент в Dashboard
-
-### Контекст архітектури
-
-Агент має три шари знань (зараз реалізуємо Шар 1, закладаємо структуру для 2 і 3):
-
-```
-// ШАР 1 (зараз): React стан — всі справи, дати, події
-// ШАР 2 (майбутнє): Досьє — PositionPack, матеріали справи
-// ШАР 3 (майбутнє): Google Drive — реальні документи справи
-```
+## Контекст
+Два завдання в одному запуску. Разом вони роблять дашборд повноцінним стільником
+і готують архітектуру для всіх наступних модулів (Notebook, CaseDossier).
 
 ---
 
-### Шар 1 — Системний промпт агента
+## ЧАСТИНА 1 — Спільний стан App.jsx
 
-Функція `buildDashboardContext(cases, calendarEvents)` формує контекст:
+### Крок 1 — Аудит updateCase
 
+Знайди всі місця в App.jsx де відбувається пряма зміна `cases` через `setCases`.
+Переконайся що всі вони йдуть через єдину функцію `updateCase(caseId, field, value)`.
+
+Функція має виглядати так:
 ```js
-function buildDashboardContext(cases, calendarEvents) {
-  const today = new Date().toISOString().slice(0, 10);
-  
-  // Стиснений формат — кожна справа в одному рядку
-  const casesText = cases.map(c => {
-    const parts = [c.name];
-    if (c.court) parts.push(c.court);
-    if (c.hearing_date) parts.push(`засідання ${c.hearing_date}${c.hearing_time ? ' ' + c.hearing_time : ''}`);
-    if (c.deadline) parts.push(`дедлайн ${c.deadline}${c.deadline_type ? ' (' + c.deadline_type + ')' : ''}`);
-    if (c.status) parts.push(c.status);
-    if (c.next_action) parts.push(`→ ${c.next_action}`);
-    return parts.join(' | ');
-  }).join('\n');
-
-  // Кастомні події з localStorage
-  const eventsText = calendarEvents.length
-    ? calendarEvents.map(e => `${e.date} ${e.time || ''} ${e.title} (${e.type})`).join('\n')
-    : 'немає';
-
-  // Накладки
-  const conflicts = findConflicts(cases, calendarEvents);
-  const conflictsText = conflicts.length
-    ? conflicts.map(c => `⚠️ ${c.date}: ${c.items.join(' і ')}`).join('\n')
-    : 'немає';
-
-  return `Ти — календарний асистент АБ Левицького.
-Сьогодні: ${today}.
-Твоя роль: відповідати на питання про розклад, справи, дедлайни. Керувати календарем (навігація, пошук подій). Змінювати дати засідань і дедлайнів якщо адвокат просить.
-
-ВАЖЛИВО: Якщо адвокат просить змінити дату засідання — поверни JSON з командою:
-{"action":"update_hearing","caseId":"...","hearing_date":"YYYY-MM-DD","hearing_time":"HH:MM"}
-
-Якщо просить перегорнути календар:
-{"action":"navigate_calendar","year":2026,"month":3}
-
-Якщо просить показати тиждень:
-{"action":"navigate_week","date":"YYYY-MM-DD"}
-
-Інакше — відповідай текстом українською, коротко і по суті.
-
-// ШАР 1 — Поточні дані системи:
-СПРАВИ (${cases.length}):
-${casesText}
-
-ДОДАТКОВІ ПОДІЇ:
-${eventsText}
-
-НАКЛАДКИ:
-${conflictsText}
-
-// ШАР 2 — Досьє (не реалізовано, підключити коли буде модуль Досьє)
-// ШАР 3 — Google Drive документи (не реалізовано, підключити через Drive API)`;
-}
+const updateCase = (caseId, field, value) => {
+  setCases(prev => prev.map(c =>
+    c.id === caseId ? { ...c, [field]: value } : c
+  ));
+  // після оновлення стану — зберегти в Drive (викликати існуючу функцію sync)
+};
 ```
+
+Якщо є розкидані `setCases(...)` напряму в UI-обробниках — замінити на `updateCase`.
+Логіку агента (sendChat, ACTION_JSON парсинг) не чіпати — вона вже правильна.
 
 ---
 
-### Функція пошуку накладок
+### Крок 2 — Підняти calendarEvents з Dashboard в App.jsx
 
+#### 2а. В App.jsx додати стан:
 ```js
-function findConflicts(cases, calendarEvents) {
-  const byDate = {};
-  
-  cases.forEach(c => {
-    if (c.hearing_date && c.hearing_time) {
-      if (!byDate[c.hearing_date]) byDate[c.hearing_date] = [];
-      byDate[c.hearing_date].push({ name: c.name, time: c.hearing_time, id: c.id });
-    }
-  });
-  
-  calendarEvents.forEach(e => {
-    if (e.date && e.time && e.type === 'hearing') {
-      if (!byDate[e.date]) byDate[e.date] = [];
-      byDate[e.date].push({ name: e.title, time: e.time });
-    }
-  });
-
-  return Object.entries(byDate)
-    .filter(([_, items]) => items.length > 1)
-    .map(([date, items]) => ({ date, items: items.map(i => `${i.name} ${i.time}`) }));
-}
+const [calendarEvents, setCalendarEvents] = useState([]);
 ```
 
----
-
-### Обробка відповіді агента
-
-Після отримання відповіді від Claude API — перевірити чи є JSON команда:
-
+#### 2б. Додати функції управління подіями:
 ```js
-async function handleAgentResponse(text, cases, setCases, setCurMonth, setSelectedDay) {
-  // Спробувати знайти JSON в відповіді
-  const jsonMatch = text.match(/\{[\s\S]*"action"[\s\S]*\}/);
-  
-  if (jsonMatch) {
-    try {
-      const cmd = JSON.parse(jsonMatch[0]);
-      
-      if (cmd.action === 'update_hearing') {
-        // Оновити картку справи
-        setCases(prev => prev.map(c =>
-          c.id === cmd.caseId
-            ? { ...c, hearing_date: cmd.hearing_date, hearing_time: cmd.hearing_time || c.hearing_time }
-            : c
-        ));
-        // Зберегти в Google Drive (викликати driveService.save якщо доступний)
-        return `✅ Дату засідання оновлено: ${cmd.hearing_date}${cmd.hearing_time ? ' о ' + cmd.hearing_time : ''}`;
-      }
-      
-      if (cmd.action === 'navigate_calendar') {
-        setCurMonth(new Date(cmd.year, cmd.month - 1, 1));
-        return `📅 Календар перегорнуто на ${cmd.year}-${cmd.month}`;
-      }
-      
-      if (cmd.action === 'navigate_week') {
-        setSelectedDay(cmd.date);
-        // Також перемкнути на тижневий вигляд
-        return `📅 Показую тиждень з ${cmd.date}`;
-      }
-      
-    } catch (e) {
-      // JSON не розпарсився — показати як текст
-    }
-  }
-  
-  return text; // Звичайна текстова відповідь
-}
+const addCalendarEvent = (event) => {
+  setCalendarEvents(prev => [...prev, { ...event, id: Date.now().toString() }]);
+  // зберегти в localStorage під ключем 'levytskyi_calendar_events'
+};
+
+const updateCalendarEvent = (eventId, updates) => {
+  setCalendarEvents(prev => prev.map(e =>
+    e.id === eventId ? { ...e, ...updates } : e
+  ));
+};
+
+const deleteCalendarEvent = (eventId) => {
+  setCalendarEvents(prev => prev.filter(e => e.id !== eventId));
+};
 ```
 
----
-
-### Голосовий ввід (Web Speech API)
-
-Додати кнопку мікрофону поряд з полем вводу агента.
-Скопіювати механізм з Quick Input (він вже реалізований там).
-
+#### 2в. Завантажувати події при старті:
+Поряд з існуючим завантаженням cases — додати:
 ```js
-function startVoiceInput() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    setAgentResponse('❌ Голосовий ввід не підтримується в цьому браузері');
-    return;
-  }
-  
-  const recognition = new SpeechRecognition();
-  recognition.lang = 'uk-UA';
-  recognition.continuous = false;
-  recognition.interimResults = false;
-  
-  recognition.onresult = (e) => {
-    const text = e.results[0][0].transcript;
-    setAgentInput(text);
-    // Автоматично надіслати після розпізнавання
-    handleAgentSend(text);
-  };
-  
-  recognition.onerror = () => setAgentResponse('❌ Помилка розпізнавання голосу');
-  recognition.start();
-  setIsListening(true);
-}
+const saved = localStorage.getItem('levytskyi_calendar_events');
+if (saved) setCalendarEvents(JSON.parse(saved));
 ```
 
-Стан: `const [isListening, setIsListening] = useState(false)`
-Кнопка мікрофону: 🎤 (звичайний стан) / 🔴 (слухає)
-
----
-
-### Виправлення "Failed to fetch"
-
-Проблема: API ключ не передається в Dashboard компонент.
-
-Рішення: читати з localStorage напряму в компоненті:
-```js
-const apiKey = localStorage.getItem('claude_api_key');
-```
-
-Модель агента: `claude-haiku-4-5-20251001` (швидка, дешева для коротких відповідей)
-
-Якщо ключа немає → показати: "⚙️ Налаштуйте API ключ в Quick Input"
-
----
-
-### UI агента
-
-```
-[Запитай про розклад, справи...    ] [🎤] [→]
-[Відповідь агента тут              ]
-```
-
-- Поле вводу: flex:1, placeholder українською
-- Кнопка мікрофону: 🎤 / 🔴 під час запису  
-- Кнопка надіслати: →
-- Відповідь: блок нижче, синій фон rgba(79,124,255,0.08), 11px
-- Максимум 3 рядки відповіді, решта за скролом
-
----
-
-### Накладки в панелі статистики
-
-Додати в блок статистики під календарем (після рядка Активних/Призупинених):
-
+#### 2г. Передати в Dashboard через props — включаючи updateCase:
 ```jsx
-{conflicts.length > 0 && (
-  <div style={{
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    padding: '4px 8px',
-    background: 'rgba(231,76,60,0.1)',
-    border: '1px solid rgba(231,76,60,0.3)',
-    borderRadius: 6,
-    fontSize: 11,
-    color: '#e74c3c',
-    marginTop: 4
-  }}>
-    ⚠️ Накладки: {conflicts.length} — {conflicts.map(c => c.date).join(', ')}
-  </div>
-)}
+<Dashboard
+  cases={cases}
+  calendarEvents={calendarEvents}
+  onUpdateCase={updateCase}
+  onAddEvent={addCalendarEvent}
+  onUpdateEvent={updateCalendarEvent}
+  onDeleteEvent={deleteCalendarEvent}
+/>
 ```
 
-`conflicts` = результат `findConflicts(cases, calendarEvents)` — рахується один раз при рендері.
+#### 2д. В Dashboard/index.jsx:
+- Прибрати локальний `useState` для calendarEvents
+- Отримувати через props: `function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEvent, onUpdateEvent, onDeleteEvent })`
+- Замінити всі `setCalendarEvents(...)` на виклики відповідних props-функцій
+- Вся інша логіка і UI Dashboard залишаються без змін
 
 ---
 
-## Після виконання
+### Крок 3 — Додати notes[] як спільний стан
 
-npm run build
-git add -A
-git commit -m "feat: dashboard agent — full context + voice + calendar commands + conflict alerts"
-git push origin main
+#### 3а. В App.jsx додати стан:
+```js
+const [notes, setNotes] = useState([]);
+```
+
+#### 3б. Додати функції:
+```js
+const addNote = (note) => {
+  const newNote = {
+    id: Date.now().toString(),
+    text: note.text,
+    category: note.category || 'general', // case | content | system | general
+    caseId: note.caseId || null,
+    createdAt: new Date().toISOString(),
+  };
+  setNotes(prev => {
+    const updated = [...prev, newNote];
+    localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
+    return updated;
+  });
+};
+
+const deleteNote = (noteId) => {
+  setNotes(prev => {
+    const updated = prev.filter(n => n.id !== noteId);
+    localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
+    return updated;
+  });
+};
+```
+
+#### 3в. Завантажувати нотатки при старті:
+```js
+const savedNotes = localStorage.getItem('levytskyi_notes');
+if (savedNotes) setNotes(JSON.parse(savedNotes));
+```
+
+---
+
+### Крок 4 — Оновити CLAUDE.md
+
+Додати в кінець файлу CLAUDE.md:
+
+```markdown
+## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
+
+Єдине джерело правди для всіх модулів — App.jsx.
+
+НЕ можна:
+- Тримати cases[], notes[], calendarEvents[] всередині компонента
+- Викликати setCases() напряму з компонента
+- Дублювати дані між модулями
+
+МОЖНА і ТРЕБА:
+- Отримувати дані через props
+- Змінювати дані через функції що прийшли через props
+- Тримати всередині компонента тільки UI-стан (активна вкладка, текст в полі)
+
+Функції зміни спільних даних живуть ТІЛЬКИ в App.jsx:
+- updateCase(caseId, field, value)
+- addNote(note) / deleteNote(noteId)
+- addCalendarEvent(event) / updateCalendarEvent(id, updates) / deleteCalendarEvent(id)
+```
+
+---
+
+## ЧАСТИНА 2 — Повноваження агента дашборду
+
+### Крок 5 — ACTION_JSON в агенті дашборду
+
+Агент дашборду зараз читає дані але не може їх змінювати. Треба додати йому
+підтримку ACTION_JSON команд — за тим самим принципом що в головному QI.
+
+#### 5а. В системному промпті агента дашборду додати:
+
+Після основного тексту промпту додати блок:
+
+```
+Якщо користувач просить змінити дату засідання, час, дедлайн або інше поле справи —
+відповідай текстом І додавай в кінці ACTION_JSON блок.
+
+Формат ACTION_JSON:
+ACTION_JSON: {"action": "update_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}
+ACTION_JSON: {"action": "update_deadline", "case_name": "назва справи", "deadline": "YYYY-MM-DD"}
+ACTION_JSON: {"action": "navigate_calendar", "direction": "prev" | "next"}
+ACTION_JSON: {"action": "navigate_week", "direction": "prev" | "next"}
+
+Правила:
+- case_name має точно співпадати з назвою справи зі списку
+- hearing_date і deadline завжди у форматі YYYY-MM-DD
+- hearing_time у форматі HH:MM (24-годинний)
+- Якщо не можеш визначити справу або дату — запитай уточнення ОДИН РАЗ, не більше
+- Не ухиляйся від виконання — або виконуй або чітко кажи що не вистачає даних
+```
+
+#### 5б. В Dashboard/index.jsx додати обробку ACTION_JSON:
+
+Після отримання відповіді від агента — парсити ACTION_JSON тим самим методом
+що використовується в головному QI (depth counter, не regex):
+
+```js
+const idx = responseText.indexOf('ACTION_JSON:');
+if (idx !== -1) {
+  const start = responseText.indexOf('{', idx);
+  let depth = 0, end = -1;
+  for (let i = start; i < responseText.length; i++) {
+    if (responseText[i] === '{') depth++;
+    else if (responseText[i] === '}') {
+      depth--;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  if (end !== -1) {
+    const action = JSON.parse(responseText.slice(start, end + 1));
+    handleDashboardAction(action);
+  }
+}
+```
+
+#### 5в. Додати функцію handleDashboardAction в Dashboard/index.jsx:
+
+```js
+const handleDashboardAction = (action) => {
+  const findCase = (name) => cases.find(c =>
+    c.name === name ||
+    c.name.toLowerCase().includes(name.toLowerCase()) ||
+    c.client?.toLowerCase().includes(name.toLowerCase())
+  );
+
+  switch (action.action) {
+    case 'update_hearing': {
+      const c = findCase(action.case_name);
+      if (!c) return;
+      if (action.hearing_date) onUpdateCase(c.id, 'hearing_date', action.hearing_date);
+      if (action.hearing_time) onUpdateCase(c.id, 'hearing_time', action.hearing_time);
+      break;
+    }
+    case 'update_deadline': {
+      const c = findCase(action.case_name);
+      if (!c) return;
+      if (action.deadline) onUpdateCase(c.id, 'deadline', action.deadline);
+      break;
+    }
+    case 'navigate_calendar': {
+      // викликати існуючу функцію навігації місячного календаря
+      if (action.direction === 'prev') handlePrevMonth();
+      if (action.direction === 'next') handleNextMonth();
+      break;
+    }
+    case 'navigate_week': {
+      // викликати існуючу функцію навігації тижневого календаря
+      if (action.direction === 'prev') handlePrevWeek();
+      if (action.direction === 'next') handleNextWeek();
+      break;
+    }
+  }
+};
+```
+
+Назви функцій навігації (handlePrevMonth і т.д.) — взяти з існуючого коду Dashboard,
+не вигадувати нові.
+
+---
+
+## Перевірка після виконання
+
+- [ ] Dashboard працює як раніше — Activity Feed, обидва календарі, Day Panel, drag
+- [ ] Події в Day Panel зберігаються після перезавантаження сторінки
+- [ ] Агент дашборду: «Перенеси засідання Бабенко на 20 квітня» — дата змінюється в картці
+- [ ] Агент дашборду: «Наступний тиждень» — календар перегортається
+- [ ] Агент дашборду: «Наступний місяць» — місячний календар перегортається
+- [ ] В App.jsx є notes[] стан і функції addNote / deleteNote
+- [ ] В CLAUDE.md з'явився блок про архітектурне правило
+- [ ] Немає помилок в консолі браузера після деплою
+- [ ] Сайт не показує білу сторінку
+
+## Важливо
+Не чіпати логіку головного QI і його агента — тільки Dashboard.
+Не перейменовувати існуючі функції — тільки додавати або уніфіковувати.
+Після виконання:
+git add -A && git commit -m "Shared state + dashboard agent actions" && git push origin main

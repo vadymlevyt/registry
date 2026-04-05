@@ -2378,6 +2378,26 @@ function App() {
     } catch(e) {}
     return INITIAL_CASES;
   });
+  const [calendarEvents, setCalendarEvents] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_calendar_events');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch(e) {}
+    return [];
+  });
+  const [notes, setNotes] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_notes');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch(e) {}
+    return [];
+  });
   const [lastSaved, setLastSaved] = useState(null);
   const [driveConnected, setDriveConnected] = useState(() => driveService.isConnected());
   const [driveSyncStatus, setDriveSyncStatus] = useState('idle');
@@ -2499,11 +2519,68 @@ function App() {
     setTab('cases');
   };
 
-  const updateCase = (form) => {
+  const saveCaseEdit = (form) => {
     setCases(prev => prev.map(c => c.id === form.id ? { ...form } : c));
     setEditingCase(null);
     setSelected({ ...form });
     setTab('cases');
+  };
+
+  // Field-level updater — єдина точка входу для зміни окремого поля справи.
+  const updateCase = (caseId, field, value) => {
+    setCases(prev => prev.map(c =>
+      c.id === caseId ? { ...c, [field]: value } : c
+    ));
+    // Drive sync виконається автоматично через useEffect на [cases].
+  };
+
+  // ── calendarEvents CRUD ────────────────────────────────────────────────────
+  const addCalendarEvent = (event) => {
+    setCalendarEvents(prev => {
+      const updated = [...prev, { ...event, id: event.id != null ? event.id : Date.now().toString() }];
+      try { localStorage.setItem('levytskyi_calendar_events', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
+  };
+
+  const updateCalendarEvent = (eventId, updates) => {
+    setCalendarEvents(prev => {
+      const updated = prev.map(e => e.id === eventId ? { ...e, ...updates } : e);
+      try { localStorage.setItem('levytskyi_calendar_events', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
+  };
+
+  const deleteCalendarEvent = (eventId) => {
+    setCalendarEvents(prev => {
+      const updated = prev.filter(e => e.id !== eventId);
+      try { localStorage.setItem('levytskyi_calendar_events', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
+  };
+
+  // ── notes CRUD ─────────────────────────────────────────────────────────────
+  const addNote = (note) => {
+    const newNote = {
+      id: Date.now().toString(),
+      text: note.text,
+      category: note.category || 'general', // case | content | system | general
+      caseId: note.caseId || null,
+      createdAt: new Date().toISOString(),
+    };
+    setNotes(prev => {
+      const updated = [...prev, newNote];
+      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
+  };
+
+  const deleteNote = (noteId) => {
+    setNotes(prev => {
+      const updated = prev.filter(n => n.id !== noteId);
+      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
   };
 
   const handleEdit = (c) => {
@@ -2562,7 +2639,11 @@ function App() {
             {tab === 'dashboard' && (
               <Dashboard
                 cases={cases}
-                setCases={setCases}
+                calendarEvents={calendarEvents}
+                onUpdateCase={updateCase}
+                onAddEvent={addCalendarEvent}
+                onUpdateEvent={updateCalendarEvent}
+                onDeleteEvent={deleteCalendarEvent}
                 sonnetPrompt={SONNET_CHAT_PROMPT}
                 buildSystemContext={buildSystemContext}
               />
@@ -2592,7 +2673,7 @@ function App() {
                 <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={setSelected} />)}</div>
               </div>
             )}
-            {tab === 'add' && <AddCaseForm onSave={editingCase ? updateCase : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
+            {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
             {tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
           </div>
 
@@ -2616,7 +2697,11 @@ function App() {
           {tab === 'dashboard' && (
             <Dashboard
               cases={cases}
-              setCases={setCases}
+              calendarEvents={calendarEvents}
+              onUpdateCase={updateCase}
+              onAddEvent={addCalendarEvent}
+              onUpdateEvent={updateCalendarEvent}
+              onDeleteEvent={deleteCalendarEvent}
               sonnetPrompt={SONNET_CHAT_PROMPT}
               buildSystemContext={buildSystemContext}
             />
@@ -2666,7 +2751,7 @@ function App() {
           {/* ── ADD CASE ── */}
           {tab === 'add' && (
             <AddCaseForm
-              onSave={editingCase ? updateCase : addCase}
+              onSave={editingCase ? saveCaseEdit : addCase}
               onCancel={() => { setEditingCase(null); setTab('cases'); }}
               initialData={editingCase}
             />

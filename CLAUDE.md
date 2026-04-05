@@ -101,3 +101,22 @@ Token: localStorage 'levytskyi_drive_token'.
 ## ПОТОЧНИЙ СТАН
 Фаза 1 завершена. Фаза 2 в процесі.
 Наступний крок: перехід на Vite (потрібен десктоп).
+
+## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
+
+Єдине джерело правди для всіх модулів — App.jsx.
+
+НЕ можна:
+- Тримати cases[], notes[], calendarEvents[] всередині компонента
+- Викликати setCases() напряму з компонента
+- Дублювати дані між модулями
+
+МОЖНА і ТРЕБА:
+- Отримувати дані через props
+- Змінювати дані через функції що прийшли через props
+- Тримати всередині компонента тільки UI-стан (активна вкладка, текст в полі)
+
+Функції зміни спільних даних живуть ТІЛЬКИ в App.jsx:
+- updateCase(caseId, field, value)
+- addNote(note) / deleteNote(noteId)
+- addCalendarEvent(event) / updateCalendarEvent(id, updates) / deleteCalendarEvent(id)

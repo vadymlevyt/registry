@@ -214,14 +214,20 @@ function buildDashboardContext(cases, calendarEvents) {
 Сьогодні: ${today}.
 Твоя роль: відповідати на питання про розклад, справи, дедлайни. Керувати календарем (навігація, пошук подій). Змінювати дати засідань і дедлайнів якщо адвокат просить.
 
-ВАЖЛИВО: Якщо адвокат просить змінити дату засідання — поверни JSON з командою:
-{"action":"update_hearing","caseId":"...","hearing_date":"YYYY-MM-DD","hearing_time":"HH:MM"}
+Якщо користувач просить змінити дату засідання, час, дедлайн або інше поле справи — відповідай текстом І додавай в кінці ACTION_JSON блок.
 
-Якщо просить перегорнути календар:
-{"action":"navigate_calendar","year":2026,"month":3}
+Формат ACTION_JSON:
+ACTION_JSON: {"action": "update_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}
+ACTION_JSON: {"action": "update_deadline", "case_name": "назва справи", "deadline": "YYYY-MM-DD"}
+ACTION_JSON: {"action": "navigate_calendar", "direction": "prev" | "next"}
+ACTION_JSON: {"action": "navigate_week", "direction": "prev" | "next"}
 
-Якщо просить показати тиждень:
-{"action":"navigate_week","date":"YYYY-MM-DD"}
+Правила:
+- case_name має точно співпадати з назвою справи зі списку
+- hearing_date і deadline завжди у форматі YYYY-MM-DD
+- hearing_time у форматі HH:MM (24-годинний)
+- Якщо не можеш визначити справу або дату — запитай уточнення ОДИН РАЗ, не більше
+- Не ухиляйся від виконання — або виконуй або чітко кажи що не вистачає даних
 
 Інакше — відповідай текстом українською, коротко і по суті.
 
@@ -314,7 +320,7 @@ const vBtnActive = {
   color: "#fff"
 };
 
-export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemContext }) {
+export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEvent, onUpdateEvent, onDeleteEvent, sonnetPrompt, buildSystemContext }) {
   const [curMonth, setCurMonth] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [calView, setCalView] = useState("month");
@@ -331,19 +337,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
   const [modalCourt, setModalCourt] = useState("");
   const [modalShowTravel, setModalShowTravel] = useState(false);
   const [modalTravelMin, setModalTravelMin] = useState(60);
-  const [calendarEvents, setCalendarEvents] = useState([]);
   const [expandedGroups, setExpandedGroups] = useState({});
-
-  useEffect(() => {
-    const saved = localStorage.getItem("levytskyi_calendar_events");
-    if (saved) {
-      try { setCalendarEvents(JSON.parse(saved)); } catch (e) {}
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem("levytskyi_calendar_events", JSON.stringify(calendarEvents));
-  }, [calendarEvents]);
 
   function getAllEvents() {
     const events = [];
@@ -519,34 +513,77 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
     ? (conflicts.length ? parts.join(" · ") + " · накладка!" : parts.join(" · "))
     : "Вільний день";
 
+  function handleDashboardAction(action) {
+    const findCase = (name) => {
+      if (!name) return null;
+      const n = name.toLowerCase();
+      return cases.find(c =>
+        c.name === name ||
+        c.name.toLowerCase().includes(n) ||
+        (c.client && c.client.toLowerCase().includes(n))
+      );
+    };
+
+    switch (action.action) {
+      case "update_hearing": {
+        const c = findCase(action.case_name);
+        if (!c) return null;
+        if (action.hearing_date) onUpdateCase(c.id, "hearing_date", action.hearing_date);
+        if (action.hearing_time) onUpdateCase(c.id, "hearing_time", action.hearing_time);
+        return `✅ Засідання "${c.name}": ${action.hearing_date || ""}${action.hearing_time ? " о " + action.hearing_time : ""}`;
+      }
+      case "update_deadline": {
+        const c = findCase(action.case_name);
+        if (!c) return null;
+        if (action.deadline) onUpdateCase(c.id, "deadline", action.deadline);
+        return `✅ Дедлайн "${c.name}": ${action.deadline}`;
+      }
+      case "navigate_calendar": {
+        setCalView("month");
+        if (action.direction === "prev") {
+          setCurMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+          return "📅 Попередній місяць";
+        }
+        if (action.direction === "next") {
+          setCurMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+          return "📅 Наступний місяць";
+        }
+        return null;
+      }
+      case "navigate_week": {
+        setCalView("week");
+        if (action.direction === "prev") { shiftWeek(-7); return "📅 Попередній тиждень"; }
+        if (action.direction === "next") { shiftWeek(7); return "📅 Наступний тиждень"; }
+        return null;
+      }
+      default:
+        return null;
+    }
+  }
+
   function handleAgentResponse(text) {
-    const jsonMatch = text.match(/\{[\s\S]*?"action"[\s\S]*?\}/);
-    if (jsonMatch) {
-      try {
-        const cmd = JSON.parse(jsonMatch[0]);
-        if (cmd.action === "update_hearing") {
-          setCases(prev => prev.map(c =>
-            c.id === cmd.caseId || String(c.id) === String(cmd.caseId)
-              ? { ...c, hearing_date: cmd.hearing_date, hearing_time: cmd.hearing_time || c.hearing_time }
-              : c
-          ));
-          return `✅ Дату засідання оновлено: ${cmd.hearing_date}${cmd.hearing_time ? " о " + cmd.hearing_time : ""}`;
-        }
-        if (cmd.action === "navigate_calendar") {
-          setCurMonth(new Date(cmd.year, cmd.month - 1, 1));
-          setCalView("month");
-          return `📅 Календар перегорнуто на ${cmd.year}-${String(cmd.month).padStart(2,"0")}`;
-        }
-        if (cmd.action === "navigate_week") {
-          setSelectedDay(cmd.date);
-          setCalView("week");
-          return `📅 Показую тиждень з ${cmd.date}`;
-        }
-      } catch (e) {
-        // JSON не розпарсився — показати як текст
+    const idx = text.indexOf("ACTION_JSON:");
+    if (idx === -1) return text;
+    const start = text.indexOf("{", idx);
+    if (start === -1) return text;
+    let depth = 0, end = -1;
+    for (let i = start; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") {
+        depth--;
+        if (depth === 0) { end = i; break; }
       }
     }
-    return text;
+    if (end === -1) return text;
+    try {
+      const action = JSON.parse(text.slice(start, end + 1));
+      const actionMsg = handleDashboardAction(action);
+      const preface = text.slice(0, idx).trim();
+      if (actionMsg) return preface ? `${preface}\n\n${actionMsg}` : actionMsg;
+      return preface || text;
+    } catch (e) {
+      return text;
+    }
   }
 
   async function handleAgentSend(inputOverride) {
@@ -690,7 +727,7 @@ export default function Dashboard({ cases, setCases, sonnetPrompt, buildSystemCo
       });
     }
 
-    setCalendarEvents(prev => [...prev, ...newEvents]);
+    newEvents.forEach(e => onAddEvent(e));
     setModalOpen(false);
     setModalTitle("");
     setModalCourt("");
