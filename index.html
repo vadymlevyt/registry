@@ -1063,6 +1063,44 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = async (file) => {
     if (!file) return;
+    let workingFile = file;
+    try {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 5000)
+      );
+      const blob = await Promise.race([file.arrayBuffer(), timeoutPromise]);
+      workingFile = new File([blob], file.name, { type: file.type || 'application/octet-stream' });
+    } catch(e) {
+      workingFile = file;
+    }
+    let ext = (workingFile.name || '').split('.').pop().toLowerCase();
+    if (!ext || ext === workingFile.name.toLowerCase()) {
+      const mime = workingFile.type || '';
+      if (mime.includes('pdf')) ext = 'pdf';
+      else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
+      else if (mime.includes('png')) ext = 'png';
+      else if (mime.includes('webp')) ext = 'webp';
+      else if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
+      else if (mime.includes('word') || mime.includes('docx')) ext = 'docx';
+      else if (mime.includes('text')) ext = 'txt';
+    }
+    if (ext === 'txt' || ext === 'md') {
+      const reader = new FileReader();
+      reader.onload = (e) => setText(e.target.result);
+      reader.onerror = () => { setErrorCategory('extraction_failed'); setErrorDetail('Не вдалось прочитати файл'); };
+      reader.readAsText(workingFile);
+    } else if (ext === 'pdf') {
+      extractPdfText(workingFile);
+    } else if (['jpg','jpeg','png','webp'].includes(ext)) {
+      readImageAsBase64(workingFile);
+    } else if (ext === 'heic' || ext === 'heif') {
+      convertHeicToJpeg(workingFile);
+    } else if (ext === 'docx') {
+      extractDocxText(workingFile);
+    } else {
+      setErrorCategory('unsupported_format');
+      setErrorDetail(`Файл: ${workingFile.name}`);
+    }
   };
 
   const extractPdfText = (file) => {
