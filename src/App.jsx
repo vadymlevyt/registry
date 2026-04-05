@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
+import Dashboard from './components/Dashboard';
 import './App.css';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -2566,34 +2567,12 @@ function App() {
           <div className="main" style={{ flex: 1 - ratio, overflow: 'auto', minWidth: 0, minHeight: 0 }}>
             {/* ── DASHBOARD ── */}
             {tab === 'dashboard' && (
-              <div>
-                {hotCases.length > 0 && stats.hot > 0 && (
-                  <div className="urgency-banner">
-                    <span className="urgency-banner-icon">🔴</span>
-                    <span><strong>{stats.hot} справ</strong> з дедлайном найближчі 3 дні</span>
-                  </div>
-                )}
-                <div className="stats-row">
-                  <div className="stat-chip blue"><div className="stat-chip-val">{stats.total}</div><div className="stat-chip-label">Активних справ</div></div>
-                  <div className="stat-chip red"><div className="stat-chip-val">{stats.hot}</div><div className="stat-chip-label">Горять (≤3 дні)</div></div>
-                  <div className="stat-chip orange"><div className="stat-chip-val">{stats.thisWeek}</div><div className="stat-chip-label">Засідань цього тижня</div></div>
-                  <div className="stat-chip green"><div className="stat-chip-val">{stats.noDeadline}</div><div className="stat-chip-label">Без дедлайну</div></div>
-                </div>
-                <div className="dash-grid">
-                  <div>
-                    <div className="section-title">Гарячі справи</div>
-                    {hotCases.length === 0 && <div className="empty"><div className="empty-icon">✅</div><div className="empty-text">Немає термінових справ</div></div>}
-                    {hotCases.map(c => (
-                      <div key={c.id} className="hot-case" onClick={() => setSelected(c)}>
-                        <div className="hot-case-dot" style={{background: c.category==='civil'?'var(--accent)':c.category==='criminal'?'var(--red)':c.category==='military'?'var(--orange)':'var(--green)'}} />
-                        <div style={{flex:1}}><div className="hot-case-name">{c.name}</div><div className="hot-case-meta">{c.next_action}</div></div>
-                        <span className={`hot-case-days ${daysChipClass(c.minDays)}`}>{daysLabel(c.minDays)}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div><div className="section-title">Календар</div><Calendar cases={cases} onSelectCase={setSelected} /></div>
-                </div>
-              </div>
+              <Dashboard
+                cases={cases}
+                setCases={setCases}
+                sonnetPrompt={SONNET_CHAT_PROMPT}
+                buildSystemContext={buildSystemContext}
+              />
             )}
             {tab === 'cases' && (
               <div>
@@ -2642,41 +2621,12 @@ function App() {
 
           {/* ── DASHBOARD ── */}
           {tab === 'dashboard' && (
-            <div>
-              {hotCases.length > 0 && stats.hot > 0 && (
-                <div className="urgency-banner">
-                  <span className="urgency-banner-icon">🔴</span>
-                  <span><strong>{stats.hot} справ</strong> з дедлайном найближчі 3 дні</span>
-                </div>
-              )}
-              <div className="stats-row">
-                <div className="stat-chip blue"><div className="stat-chip-val">{stats.total}</div><div className="stat-chip-label">Активних справ</div></div>
-                <div className="stat-chip red"><div className="stat-chip-val">{stats.hot}</div><div className="stat-chip-label">Горять (≤3 дні)</div></div>
-                <div className="stat-chip orange"><div className="stat-chip-val">{stats.thisWeek}</div><div className="stat-chip-label">Засідань цього тижня</div></div>
-                <div className="stat-chip green"><div className="stat-chip-val">{stats.noDeadline}</div><div className="stat-chip-label">Без дедлайну</div></div>
-              </div>
-
-              <div className="dash-grid">
-                <div>
-                  <div className="section-title">Гарячі справи</div>
-                  {hotCases.length === 0 && <div className="empty"><div className="empty-icon">✅</div><div className="empty-text">Немає термінових справ</div></div>}
-                  {hotCases.map(c => (
-                    <div key={c.id} className="hot-case" onClick={() => setSelected(c)}>
-                      <div className="hot-case-dot" style={{background: c.category==='civil'?'var(--accent)':c.category==='criminal'?'var(--red)':c.category==='military'?'var(--orange)':'var(--green)'}} />
-                      <div style={{flex:1}}>
-                        <div className="hot-case-name">{c.name}</div>
-                        <div className="hot-case-meta">{c.next_action}</div>
-                      </div>
-                      <span className={`hot-case-days ${daysChipClass(c.minDays)}`}>{daysLabel(c.minDays)}</span>
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <div className="section-title">Календар</div>
-                  <Calendar cases={cases} onSelectCase={setSelected} />
-                </div>
-              </div>
-            </div>
+            <Dashboard
+              cases={cases}
+              setCases={setCases}
+              sonnetPrompt={SONNET_CHAT_PROMPT}
+              buildSystemContext={buildSystemContext}
+            />
           )}
 
           {/* ── CASES ── */}
