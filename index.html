@@ -1361,8 +1361,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       if (!caseName)     { alert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
       if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
-      const timeStr = hearing_time ? ` о ${hearing_time}` : '';
-      if (!confirm(`Встановити дату засідання ${hearing_date}${timeStr} для справи "${matched.name}"?`)) return;
       setCases(prev => prev.map(c =>
         c.id === matched.id ? { ...c, hearing_date, ...(hearing_time ? { hearing_time } : {}) } : c
       ));
@@ -1378,8 +1376,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       if (!caseName) { alert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
       if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
-      const typeStr = deadline_type ? ` (${deadline_type})` : '';
-      if (!confirm(`Встановити дедлайн ${deadline_date}${typeStr} для справи "${matched.name}"?`)) return;
       setCases(prev => prev.map(c =>
         c.id === matched.id
           ? { ...c, deadline: deadline_date, ...(deadline_type ? { deadline_type } : {}) }
@@ -1455,15 +1451,12 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         `Категорія: ${category === 'criminal' ? 'Кримінальна' : 'Цивільна'}`,
       ].filter(Boolean).join('\n');
 
-      if (confirm(`Створити нову справу?\n\n${preview}`)) {
-        setCases(prev => [...prev, newCase]);
-        markDone();
-        // Показати повідомлення про успіх в чаті
-        setConversationHistory(prev => [...prev, {
-          role: 'assistant',
-          content: `✅ Справу "${newCase.name}" створено. Ви можете знайти її в реєстрі і доповнити деталі.`
-        }]);
-      }
+      setCases(prev => [...prev, newCase]);
+      markDone();
+      setConversationHistory(prev => [...prev, {
+        role: 'assistant',
+        content: `✅ Справу "${newCase.name}" створено. Знайдіть її в реєстрі і доповніть деталі.`
+      }]);
       return;
     }
 
