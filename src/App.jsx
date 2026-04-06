@@ -2817,7 +2817,7 @@ function App() {
                 </div>
                 <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
                 {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
-                <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={c => setDossierCase(c)} />)}</div>
+                <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={() => setDossierCase(c)} />)}</div>
               </div>
             )}
             {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
@@ -2897,7 +2897,7 @@ function App() {
               <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
               {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
               <div className="cases-grid">
-                {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={c => setDossierCase(c)} />)}
+                {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={() => setDossierCase(c)} />)}
               </div>
             </div>
           )}
