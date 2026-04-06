@@ -1,175 +1,142 @@
-# ПОТОЧНЕ ЗАВДАННЯ
+# TASK: Notebook — фікси після першого тестування
 
-Прочитай CLAUDE.md перед початком.
-Працюємо в гілці main. Після змін — npm run build, потім git push.
+Work directly on main branch. Do not create separate branches.
 
 ---
 
-## Блок А — Агент пам'ятає контекст розмови
+## Крок 1 — Перевір поточний стан
 
-**Проблема:** кожне повідомлення відправляється без історії — агент не пам'ятає попередніх повідомлень.
+Перед змінами прочитай:
+- src/components/Notebook/index.jsx — як зараз реалізовано відображення і видалення нотаток
+- App.jsx — як реалізована дія `save_note` в sendChat (обробник ACTION_JSON)
 
-**Рішення:** додати стан chatHistory і передавати його в кожен запит.
+---
 
+## Крок 2 — QI save_note: додавати нову картку, не перезаписувати
+
+Знайди в App.jsx обробник дії `save_note` (всередині sendChat або handleChatAction).
+
+Поточна логіка швидше за все перезаписує або замінює нотатку.
+Змінити на: **завжди додавати новий запис** в масив нотаток справи.
+
+Якщо є `caseId` — додати в `cases[caseId].notes[]`:
 ```js
-const [chatHistory, setChatHistory] = useState([]);
+const newNote = {
+  id: Date.now(),
+  text: action.text || action.note || '',
+  category: 'case',
+  source: 'chat',
+  ts: new Date().toISOString(),
+};
+// Знайти справу і додати нотатку в її масив notes
+const updatedCases = cases.map(c =>
+  c.id === targetCase.id
+    ? { ...c, notes: [...(c.notes || []), newNote] }
+    : c
+);
+setCases(updatedCases);
+// Зберегти на Drive через існуючий механізм sync
+```
 
-// При відправці:
-async function handleAgentSend(text) {
-  const userMsg = { role: "user", content: text };
-  const newHistory = [...chatHistory, userMsg];
-  
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    ...
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 500,
-      system: buildDashboardContext(cases, calendarEvents),
-      messages: newHistory  // ← вся історія, не одне повідомлення
-    })
-  });
-  
-  const assistantMsg = { role: "assistant", content: responseText };
-  setChatHistory([...newHistory, assistantMsg]);
+Якщо немає `caseId` (загальна нотатка) — додати в localStorage `levytskyi_notes`:
+```js
+const general = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
+general.unshift({ id: Date.now(), text: action.text || '', category: 'general', source: 'chat', ts: new Date().toISOString() });
+localStorage.setItem('levytskyi_notes', JSON.stringify(general));
+```
+
+---
+
+## Крок 3 — Редагування нотаток в Notebook
+
+В кожній картці нотатки додати кнопку ✏️ (редагувати).
+
+При натисканні — текст нотатки стає редагованим textarea:
+- textarea з поточним текстом
+- кнопки: ✓ Зберегти / ✕ Скасувати
+
+При збереженні:
+- якщо `category === 'case'` — оновити в `cases[caseId].notes[]` через props.updateCase або аналогічну функцію
+- якщо інша категорія — оновити в відповідному localStorage ключі
+
+textarea для редагування: фіксована висота 120px (правило системи).
+
+---
+
+## Крок 4 — Підтвердження перед видаленням нотаток зі справ
+
+Знайди функцію видалення нотатки в Notebook/index.jsx.
+
+Для нотаток з `category === 'case'` — перед видаленням показати підтвердження:
+```js
+if (note.category === 'case') {
+  const confirmed = window.confirm(`Видалити нотатку по справі ${note.caseName}?`);
+  if (!confirmed) return;
 }
 ```
 
-Обмеження: зберігати максимум останні 10 повідомлень (5 пар user/assistant).
-Якщо більше — обрізати найстаріші але завжди залишати системний контекст.
+Для інших категорій (general, system, content) — видаляти без підтвердження.
 
 ---
 
-## Блок Б — Збільшити вікно чату агента
+## Крок 5 — Мікрофон "Надиктувати" у вкладці Записи
 
-Зараз відповідь агента показується в маленькому блоці — незручно читати.
+Знайди кнопку "Надиктувати" в редакторі Записів (вкладка ✏️ Записи).
 
-**Що зробити:**
-Область відповідей агента — збільшити до 150-180px висотою з overflow-y:auto.
-Показувати всю історію розмови (як чат): повідомлення користувача справа, відповіді агента зліва.
-
-Стиль повідомлень:
-- Користувач: синій фон rgba(79,124,255,0.15), текст справа, 11px
-- Агент: темний фон var(--surface2), текст зліва, 11px
-- Відступи між повідомленнями: 4px
-- Автоскрол донизу після кожної відповіді
-
----
-
-## Блок В — Слоти по 30 хвилин
-
-Замінити годинні слоти на півгодинні в Day Panel і тижневому вигляді.
+Перевір чи використовується Web Speech API. Якщо реалізація неповна — замінити на:
 
 ```js
-// Замість:
-const HOURS = [8,9,10,11,12,13,14,15,16,17,18,19];
-
-// Зробити:
-const SLOTS = [
-  '08:00','08:30','09:00','09:30','10:00','10:30',
-  '11:00','11:30','12:00','12:30','13:00','13:30',
-  '14:00','14:30','15:00','15:30','16:00','16:30',
-  '17:00','17:30','18:00','18:30','19:00'
-];
-```
-
-Висота одного слоту: 28px (щоб зручно тапати пальцем).
-Підпис часу — тільки для цілих годин (08:00, 09:00...), півгодинні без підпису або маленький (08:30 → сірим 9px).
-
-Перевірка події в слоті: event.time починається з цього часу.
-Наприклад подія "11:30" → потрапляє в слот '11:30'.
-
----
-
-## Блок Г — Long press для drag виділення
-
-**Проблема:** виділення починається одразу при торканні — конфліктує зі скролом.
-
-**Рішення:** виділення починається тільки після утримання 400мс (long press).
-Якщо відпустив раніше — це скрол, виділення не починається.
-
-```js
-const longPressTimer = useRef(null);
-const [dragActive, setDragActive] = useState(false);
-
-function handleTouchStart(e, slotTime) {
-  // Запустити таймер
-  longPressTimer.current = setTimeout(() => {
-    setDragActive(true);
-    startDrag(slotTime);
-    // Вібрація якщо доступна (тактильний відгук)
-    if (navigator.vibrate) navigator.vibrate(50);
-  }, 400);
-}
-
-function handleTouchMove(e) {
-  if (!dragActive) {
-    // Ще не активований — скасувати таймер, дати скролу працювати
-    clearTimeout(longPressTimer.current);
+function startDictation(onResult) {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert('Ваш браузер не підтримує розпізнавання мови. Використовуйте Chrome.');
     return;
   }
-  // Активований — виділяти слоти
-  e.preventDefault();
-  const touch = e.touches[0];
-  const el = document.elementFromPoint(touch.clientX, touch.clientY);
-  const slot = el?.closest('[data-slot]')?.dataset?.slot;
-  if (slot) updateDrag(slot);
-}
-
-function handleTouchEnd() {
-  clearTimeout(longPressTimer.current);
-  if (dragActive) {
-    setDragActive(false);
-    endDrag();
-  }
-}
-```
-
-**На мишці (десктоп):**
-```js
-function handleMouseDown(e, slotTime) {
-  // Миша — одразу починати drag при русі
-  // Але відрізняти від простого кліку
-  const startPos = { x: e.clientX, y: e.clientY };
-  
-  function handleMouseMove(e) {
-    const moved = Math.abs(e.clientY - startPos.y) > 5;
-    if (moved && !dragActive) {
-      setDragActive(true);
-      startDrag(slotTime);
+  const recognition = new SpeechRecognition();
+  recognition.lang = 'uk-UA';
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.onresult = (e) => {
+    const transcript = e.results[0][0].transcript;
+    onResult(transcript);
+  };
+  recognition.onerror = (e) => {
+    if (e.error === 'not-allowed') {
+      alert('Дозвольте доступ до мікрофона в налаштуваннях браузера.');
     }
-    if (dragActive) updateDrag(getSlotFromY(e.clientY));
-  }
-  
-  function handleMouseUp() {
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', handleMouseUp);
-    if (dragActive) { setDragActive(false); endDrag(); }
-  }
-  
-  document.addEventListener('mousemove', handleMouseMove);
-  document.addEventListener('mouseup', handleMouseUp);
+  };
+  recognition.start();
 }
 ```
 
-**Візуальний відгук під час long press:**
-Слот під пальцем злегка підсвічується через 200мс (половина таймера) — показує що система "чує" натискання.
-
+При натисканні "Надиктувати":
+- кнопка міняє вигляд: ⏹ Стоп (червона)
+- після розпізнавання — текст **додається** до існуючого тексту запису (не замінює):
 ```js
-const [pressedSlot, setPressedSlot] = useState(null);
-// Через 200мс після touchstart → setPressedSlot(slotTime)
-// Стиль: background rgba(79,124,255,0.1) — слабке підсвічення
-// Через 400мс → повне виділення і drag починається
+setCurrentText(prev => prev + (prev ? ' ' : '') + transcript);
 ```
-
-**Контейнер слотів:**
-- touchAction: 'pan-y' в звичайному стані (дозволяє скрол)
-- touchAction: 'none' тільки коли dragActive === true
+- кнопка повертається в стан 🎤 Надиктувати
 
 ---
 
-## Після виконання
+## Крок 6 — Build і деплой
 
+```bash
 npm run build
 git add -A
-git commit -m "fix: agent chat history + larger chat window + 30min slots + long press drag"
+git commit -m "Notebook: edit notes, confirm delete, fix dictation, QI appends notes"
 git push origin main
+```
+
+Переконайся що build пройшов без помилок перед push.
+
+---
+
+## Перевірка після виконання (для адвоката):
+
+1. Система відкривається нормально — не синій екран
+2. QI: написати "Додай нотатку по справі Рубан — клієнт передзвонив" → нова окрема картка з'явилась, стара не зникла
+3. Notebook: навести на нотатку → з'явилась кнопка ✏️ → натиснути → текст став редагованим → змінити → Зберегти → текст оновився
+4. Видалення нотатки зі справи → з'явилось питання "Видалити нотатку по справі X?" → підтвердити → видалилась
+5. Вкладка Записи → "+ Новий запис" → написати текст → натиснути "Надиктувати" → продиктувати слово → текст додався до існуючого (не замінив)
+6. Решта системи (Дашборд, Справи, QI) — працює як раніше

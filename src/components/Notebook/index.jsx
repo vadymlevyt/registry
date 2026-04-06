@@ -154,6 +154,10 @@ function NotesTab({ cases, onUpdateCase }) {
   }
 
   function handleDeleteNote(note) {
+    if (note.category === 'case') {
+      const confirmed = window.confirm(`Видалити нотатку по справі ${note.caseName || 'без назви'}?`);
+      if (!confirmed) return;
+    }
     if (note.category === 'case' && note.caseId != null) {
       const c = (cases || []).find(x => String(x.id) === String(note.caseId));
       if (!c) return;
@@ -162,6 +166,21 @@ function NotesTab({ cases, onUpdateCase }) {
     } else {
       const key = LS_KEYS[note.category] || LS_KEYS.general;
       writeLS(key, readLS(key).filter(n => n.id !== note.id));
+    }
+    bump();
+  }
+
+  function handleEditNote(note, newText) {
+    if (note.category === 'case' && note.caseId != null) {
+      const c = (cases || []).find(x => String(x.id) === String(note.caseId));
+      if (!c) return;
+      const updated = (c.notes || []).map(n =>
+        n.id === note.id ? { ...n, text: newText } : n
+      );
+      onUpdateCase && onUpdateCase(c.id, 'notes', updated);
+    } else {
+      const key = LS_KEYS[note.category] || LS_KEYS.general;
+      writeLS(key, readLS(key).map(n => n.id === note.id ? { ...n, text: newText } : n));
     }
     bump();
   }
@@ -251,7 +270,7 @@ function NotesTab({ cases, onUpdateCase }) {
             </div>
           )}
           {filtered.map(n => (
-            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} onDelete={() => handleDeleteNote(n)} />
+            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} onDelete={() => handleDeleteNote(n)} onEdit={handleEditNote} />
           ))}
         </div>
       </div>
@@ -294,9 +313,19 @@ function SidebarItem({ label, active, onClick }) {
   );
 }
 
-function NoteCard({ note, onDelete }) {
+function NoteCard({ note, onDelete, onEdit }) {
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(note.text || '');
   const cat = note.category || 'general';
   const meta = CAT_META[cat] || CAT_META.general;
+
+  function handleSaveEdit() {
+    const trimmed = editText.trim();
+    if (!trimmed) return;
+    onEdit && onEdit(note, trimmed);
+    setEditing(false);
+  }
+
   return (
     <div style={{
       background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 8,
@@ -317,6 +346,18 @@ function NoteCard({ note, onDelete }) {
         <span style={{ fontSize: 10, color: '#5a6080', marginLeft: 'auto' }}>
           {note.source ? `${note.source} · ` : ''}{formatTs(note.ts)}
         </span>
+        {!editing && (
+          <button
+            onClick={() => { setEditText(note.text || ''); setEditing(true); }}
+            title="Редагувати"
+            style={{
+              background: 'transparent', border: 'none', color: '#5a6080',
+              cursor: 'pointer', fontSize: 13, padding: '0 4px',
+            }}
+          >
+            ✏️
+          </button>
+        )}
         <button
           onClick={onDelete}
           title="Видалити"
@@ -328,9 +369,47 @@ function NoteCard({ note, onDelete }) {
           ✕
         </button>
       </div>
-      <div style={{ fontSize: 13, color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {note.text}
-      </div>
+      {editing ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <textarea
+            value={editText}
+            onChange={e => setEditText(e.target.value)}
+            style={{
+              height: 120, resize: 'none',
+              background: '#0f1117', color: '#e8eaf0',
+              border: '1px solid #2e3148', borderRadius: 6,
+              padding: '8px 10px', fontSize: 13, outline: 'none',
+              fontFamily: 'inherit',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={handleSaveEdit}
+              style={{
+                background: '#4f7cff', color: '#fff', border: 'none',
+                borderRadius: 6, padding: '5px 12px', fontSize: 12, fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              ✓ Зберегти
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              style={{
+                background: 'transparent', color: '#9aa0b8',
+                border: '1px solid #2e3148', borderRadius: 6,
+                padding: '5px 12px', fontSize: 12, cursor: 'pointer',
+              }}
+            >
+              ✕ Скасувати
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {note.text}
+        </div>
+      )}
     </div>
   );
 }
@@ -541,7 +620,12 @@ function RecordsTab() {
       setText(next);
       persist(title, next);
     };
-    recognition.onerror = () => { setIsListening(false); };
+    recognition.onerror = (e) => {
+      if (e.error === 'not-allowed') {
+        alert("Дозвольте доступ до мікрофона в налаштуваннях браузера.");
+      }
+      setIsListening(false);
+    };
     recognition.onend = () => { setIsListening(false); };
     recognitionRef.current = recognition;
     try { recognition.start(); setIsListening(true); } catch { setIsListening(false); }

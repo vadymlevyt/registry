@@ -1091,7 +1091,26 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     const _analysisResult = effectiveResult;
 
     if (action === 'save_note') {
-      saveNoteToStorage(text, _analysisResult);
+      const caseName = _analysisResult.case_match?.case_name;
+      const matched = caseName ? findCaseForAction(caseName, cases) : null;
+      if (matched) {
+        const newNote = {
+          id: Date.now(),
+          text: text || '',
+          category: 'case',
+          source: 'chat',
+          ts: new Date().toISOString(),
+        };
+        setCases(prev => prev.map(c =>
+          c.id === matched.id
+            ? { ...c, notes: [newNote, ...(Array.isArray(c.notes) ? c.notes : [])] }
+            : c
+        ));
+      } else {
+        const general = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
+        general.unshift({ id: Date.now(), text: text || '', category: 'general', source: 'chat', ts: new Date().toISOString() });
+        localStorage.setItem('levytskyi_notes', JSON.stringify(general));
+      }
       markDone();
       return;
     }
