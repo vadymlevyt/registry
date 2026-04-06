@@ -26,13 +26,14 @@ class ModuleErrorBoundary extends React.Component {
 }
 
 class ErrorBoundary extends React.Component {
-  state = { hasError: false };
-  static getDerivedStateFromError() { return { hasError: true }; }
+  state = { hasError: false, error: null };
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
   render() {
     if (this.state.hasError) return (
       <div style={{padding:20,color:"#e74c3c",fontSize:13}}>
-        ⚠️ Модуль тимчасово недоступний
-        <button onClick={()=>this.setState({hasError:false})}>Спробувати знову</button>
+        ⚠️ Помилка: {this.state.error?.message}
+        <pre style={{fontSize:10,marginTop:8}}>{this.state.error?.stack?.slice(0,300)}</pre>
+        <button onClick={()=>this.setState({hasError:false,error:null})}>Спробувати знову</button>
       </div>
     );
     return this.props.children;
