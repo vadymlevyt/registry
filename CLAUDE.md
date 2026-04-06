@@ -98,6 +98,56 @@ Token: localStorage 'levytskyi_drive_token'.
 - Google Picker API для Drive файлів
 - Семантична перевірка дублів документів
 
+## ШАБЛОН НОВОГО КОМПОНЕНТА
+
+Кожен модуль в src/components/[Name]/index.jsx будується за цим шаблоном.
+Принцип стільника: автономний, loose coupling, падіння не руйнує систему.
+
+export default function ModuleName({
+  cases,        // читає — не зберігає всередині
+  updateCase,   // змінює через App.jsx
+  onClose       // виходить через App.jsx
+}) {
+  // Локальний стан — тільки UI (що відкрито, що виділено)
+  // НІКОЛИ: const [cases, setCases] = useState([]) всередині компонента
+  // API ключ: localStorage.getItem("claude_api_key") напряму
+}
+
+## ERRORBOUNDARY — ПРИНЦИП СТІЛЬНИКА В КОДІ
+
+Один клас в App.jsx. Обгортає кожен великий модуль при рендері.
+Якщо модуль падає — решта системи працює.
+
+class ErrorBoundary extends React.Component {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) return (
+      <div style={{padding:20,color:"#e74c3c",fontSize:13}}>
+        ⚠️ Модуль тимчасово недоступний
+        <button onClick={()=>this.setState({hasError:false})}>Спробувати знову</button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
+Використання: <ErrorBoundary><CaseDossier .../></ErrorBoundary>
+
+## AGENT HISTORY — ПРАВИЛО
+
+Зараз: agentHistory: [] — порожній масив в об'єкті справи в registry_data.json.
+В майбутньому: окремий файл agent_history.json в Google Drive.
+Структура майбутнього файлу:
+  { "Брановський": [...останні 10 повідомлень], "Манолюк": [...] }
+НЕ розширювати registry_data.json history-даними агента.
+
+## IDEAS — ПРАВИЛО
+
+ideas[] живе в App.jsx state і зберігається в registry_data.json.
+Кожна ідея: { id, text, caseId, caseName, type, status, createdAt }
+Кнопка 💡 доступна з будь-якого модуля — стандарт системи як 🎤.
+
 ## ПОТОЧНИЙ СТАН
 Фаза 1 завершена. Фаза 2 в процесі.
 Наступний крок: перехід на Vite (потрібен десктоп).

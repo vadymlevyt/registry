@@ -1,166 +1,3 @@
-виконай завдання з # TASK.md — Модуль Досьє справи (під-сесія 1)
-# Дата: 06.04.2026
-# Репо: github.com/vadymlevyt/registry | Гілка: main
-
----
-
-## КРОК 0 — ПРОЧИТАТИ ПОТОЧНИЙ КОД
-
-```bash
-cat CLAUDE.md
-grep -n "selectedCase\|openCase\|onClick.*case\|setSelected" src/App.jsx | head -20
-grep -n "useState\|import" src/App.jsx | head -30
-grep -n "Брановськ" src/App.jsx | head -10
-```
-
----
-
-## КРОК 1 — ОНОВИТИ CLAUDE.md
-
-Знайти рядок `## ПІСЛЯ VITE (не зараз)` і додати після нього через str_replace:
-
-```
-## ШАБЛОН НОВОГО КОМПОНЕНТА
-
-Кожен модуль в src/components/[Name]/index.jsx будується за цим шаблоном.
-Принцип стільника: автономний, loose coupling, падіння не руйнує систему.
-
-export default function ModuleName({
-  cases,        // читає — не зберігає всередині
-  updateCase,   // змінює через App.jsx
-  onClose       // виходить через App.jsx
-}) {
-  // Локальний стан — тільки UI (що відкрито, що виділено)
-  // НІКОЛИ: const [cases, setCases] = useState([]) всередині компонента
-  // API ключ: localStorage.getItem("claude_api_key") напряму
-}
-
-## ERRORBOUNDARY — ПРИНЦИП СТІЛЬНИКА В КОДІ
-
-Один клас в App.jsx. Обгортає кожен великий модуль при рендері.
-Якщо модуль падає — решта системи працює.
-
-class ErrorBoundary extends React.Component {
-  state = { hasError: false };
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() {
-    if (this.state.hasError) return (
-      <div style={{padding:20,color:"#e74c3c",fontSize:13}}>
-        ⚠️ Модуль тимчасово недоступний
-        <button onClick={()=>this.setState({hasError:false})}>Спробувати знову</button>
-      </div>
-    );
-    return this.props.children;
-  }
-}
-
-Використання: <ErrorBoundary><CaseDossier .../></ErrorBoundary>
-
-## AGENT HISTORY — ПРАВИЛО
-
-Зараз: agentHistory: [] — порожній масив в об'єкті справи в registry_data.json.
-В майбутньому: окремий файл agent_history.json в Google Drive.
-Структура майбутнього файлу:
-  { "Брановський": [...останні 10 повідомлень], "Манолюк": [...] }
-НЕ розширювати registry_data.json history-даними агента.
-
-## IDEAS — ПРАВИЛО
-
-ideas[] живе в App.jsx state і зберігається в registry_data.json.
-Кожна ідея: { id, text, caseId, caseName, type, status, createdAt }
-Кнопка 💡 доступна з будь-якого модуля — стандарт системи як 🎤.
-```
-
----
-
-## КРОК 2 — ДОДАТИ ErrorBoundary В App.jsx
-
-Знайти місце перед `function App()` і додати клас:
-
-```jsx
-class ErrorBoundary extends React.Component {
-  state = { hasError: false };
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() {
-    if (this.state.hasError) return (
-      <div style={{padding:20,color:"#e74c3c",fontSize:13}}>
-        ⚠️ Модуль тимчасово недоступний
-        <button onClick={()=>this.setState({hasError:false})}>Спробувати знову</button>
-      </div>
-    );
-    return this.props.children;
-  }
-}
-```
-
----
-
-## КРОК 3 — ДОДАТИ STATE В App.jsx
-
-В блок useState додати:
-
-```jsx
-const [dossierCase, setDossierCase] = useState(null);
-const [ideas, setIdeas] = useState([]);
-```
-
-Перевірити чи є функція updateCase. Якщо немає — додати:
-
-```jsx
-function updateCase(caseId, field, value) {
-  setCases(prev => prev.map(c => c.id === caseId ? {...c, [field]: value} : c));
-}
-```
-
----
-
-## КРОК 4 — ТЕСТОВІ ДАНІ БРАНОВСЬКОГО
-
-Знайти справу Брановського в initialCases або localStorage fallback і додати поля:
-
-```js
-agentHistory: [],
-proceedings: [
-  {
-    id: "proc_main",
-    type: "first",
-    title: "Основне провадження",
-    court: "Пустомитівський районний суд Львівської обл.",
-    status: "paused",
-    parentProcId: null,
-    parentEventId: null
-  },
-  {
-    id: "proc_appeal_1",
-    type: "appeal",
-    title: "Апеляція: ухвала 03.2024",
-    court: "Київський апеляційний суд",
-    status: "active",
-    parentProcId: "proc_main",
-    parentEventId: "event_4"
-  }
-],
-documents: [
-  { id: 1, procId: "proc_main", name: "Позовна заява", icon: "📄", date: "березень 2023", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-  { id: 2, procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", date: "березень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-  { id: 3, procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", date: "грудень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-  { id: 4, procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", date: "лютий 2024", category: "pleading", author: "opponent", tags: [], notes: "" },
-  { id: 5, procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", date: "лютий 2024", category: "motion", author: "opponent", tags: [], notes: "" },
-  { id: 6, procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", date: "березень 2024", category: "court_act", author: "court", tags: ["key"], notes: "" },
-  { id: 7, procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", date: "квітень 2024", category: "court_act", author: "court", tags: [], notes: "" },
-  { id: 8, procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", date: "квітень 2024", category: "pleading", author: "opponent", tags: ["key"], notes: "" },
-  { id: 9, procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", date: "квітень 2024", category: "other", author: "opponent", tags: [], notes: "" },
-  { id: 10, procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", date: "травень 2024", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-  { id: 11, procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", date: "червень 2024", category: "pleading", author: "opponent", tags: [], notes: "⚠️ Лікарняний лист — перевірити автентичність" },
-  { id: 12, procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
-]
-```
-
----
-
-## КРОК 5 — СТВОРИТИ src/components/CaseDossier/index.jsx
-
-```jsx
 import { useState } from "react";
 
 const CATEGORY_LABELS = {
@@ -248,7 +85,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
         {/* Поля справи — inline редагування */}
         <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>Інформація про справу</div>
+          <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Інформація про справу"}</div>
           {[
             { label: "Суд", field: "court", value: caseData.court },
             { label: "Номер справи", field: "case_no", value: caseData.case_no },
@@ -267,7 +104,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 onFocus={e => e.target.style.borderColor = "#4f7cff"}
                 onBlurCapture={e => e.target.style.borderColor = "transparent"}
                 style={{ flex: 1, fontSize: 12, color: row.value ? "#e8eaf0" : "#3a3f58", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 4, border: "1px solid transparent", cursor: "text", transition: "border-color .15s" }}
-              >{row.value || "—"}</div>
+              >{row.value || "\u2014"}</div>
             </div>
           ))}
         </div>
@@ -275,13 +112,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         {/* Провадження */}
         {proceedings.length > 0 && (
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>Провадження</div>
+            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>{"Провадження"}</div>
             {proceedings.map(proc => (
               <div key={proc.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "#222536", borderRadius: 7, marginBottom: 6, borderLeft: `3px solid ${PROC_COLORS[proc.type] || "#2e3148"}` }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, fontWeight: 500 }}>{proc.title}</div>
                   <div style={{ fontSize: 10, color: "#5a6080", marginTop: 2 }}>{proc.court}</div>
-                  {proc.parentProcId && <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 2 }}>← з {proceedings.find(p => p.id === proc.parentProcId)?.title}</div>}
+                  {proc.parentProcId && <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 2 }}>{"\u2190 з "}{proceedings.find(p => p.id === proc.parentProcId)?.title}</div>}
                 </div>
                 <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 3, fontWeight: 600, background: proc.status === "active" ? "rgba(46,204,113,.15)" : "rgba(243,156,18,.15)", color: proc.status === "active" ? "#2ecc71" : "#f39c12" }}>
                   {proc.status === "active" ? "Активне" : "На паузі"}
@@ -294,21 +131,21 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         {/* Нотатки */}
         <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em" }}>Нотатки по справі</div>
+            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em" }}>{"Нотатки по справі"}</div>
             <div style={{ display: "flex", gap: 6 }}>
               {notes.length > 1 && (
                 <button onClick={() => setNotesExpanded(!notesExpanded)} style={iconBtn}>
-                  {notesExpanded ? "∧ Згорнути" : `∨ ще ${notes.length - 1}`}
+                  {notesExpanded ? "\u2227 Згорнути" : `\u2228 ще ${notes.length - 1}`}
                 </button>
               )}
               <button onClick={addNote} style={iconBtn}>+ Додати</button>
             </div>
           </div>
           {notes.length === 0 ? (
-            <div style={{ fontSize: 12, color: "#3a3f58" }}>Нотаток поки немає</div>
+            <div style={{ fontSize: 12, color: "#3a3f58" }}>{"Нотаток поки немає"}</div>
           ) : (notesExpanded ? notes : [pinnedNote]).filter(Boolean).map(note => (
             <div key={note.id} style={{ padding: "8px 10px", background: "#222536", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6 }}>
-              {note.pinned && <span style={{ fontSize: 9, color: "#4f7cff", marginRight: 6 }}>📌</span>}
+              {note.pinned && <span style={{ fontSize: 9, color: "#4f7cff", marginRight: 6 }}>{"📌"}</span>}
               {note.text}
               <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{new Date(note.ts).toLocaleDateString("uk-UA")}</div>
             </div>
@@ -322,9 +159,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           onMouseEnter={e => e.currentTarget.style.borderColor = "#4f7cff"}
           onMouseLeave={e => e.currentTarget.style.borderColor = "#2e3148"}
         >
-          <div style={{ fontSize: 28, marginBottom: 8, opacity: .4 }}>📎</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#9aa0b8", marginBottom: 4 }}>Завантажити документи</div>
-          <div style={{ fontSize: 11, color: "#5a6080" }}>PDF, JPEG, PNG, HEIC, Word — будь-яка кількість</div>
+          <div style={{ fontSize: 28, marginBottom: 8, opacity: .4 }}>{"📎"}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#9aa0b8", marginBottom: 4 }}>{"Завантажити документи"}</div>
+          <div style={{ fontSize: 11, color: "#5a6080" }}>{"PDF, JPEG, PNG, HEIC, Word — будь-яка кількість"}</div>
           <input id="dossierFileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx" style={{ display: "none" }} />
         </div>
 
@@ -357,7 +194,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 const indent = proc.parentProcId ? 12 : 0;
                 return (
                   <div key={proc.id} style={{ marginBottom: 12, marginLeft: indent }}>
-                    {proc.parentProcId && <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 4, paddingLeft: 4 }}>└─</div>}
+                    {proc.parentProcId && <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 4, paddingLeft: 4 }}>{"\u2514\u2500"}</div>}
                     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 6, background: "#222536", borderLeft: `3px solid ${PROC_COLORS[proc.type] || "#2e3148"}`, marginBottom: 4 }}>
                       <span style={{ fontSize: 11, fontWeight: 600, color: PROC_COLORS[proc.type] || "#9aa0b8", flex: 1 }}>{proc.title}</span>
                       <span style={{ fontSize: 9, color: "#5a6080" }}>{procDocs.length}</span>
@@ -369,7 +206,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                           <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>
                           <div style={{ fontSize: 10, color: "#5a6080" }}>{doc.date}</div>
                         </div>
-                        {doc.tags?.includes("key") && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(79,124,255,.2)", color: "#4f7cff", flexShrink: 0 }}>ключовий</span>}
+                        {doc.tags?.includes("key") && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(79,124,255,.2)", color: "#4f7cff", flexShrink: 0 }}>{"ключовий"}</span>}
                       </div>
                     ))}
                   </div>
@@ -385,7 +222,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
                 {/* Фільтр провадження */}
                 <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-                  <button onClick={() => setDocFilters(f => ({ ...f, proc: "all" }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, border: "1px solid", borderColor: docFilters.proc === "all" ? "#4f7cff" : "#2e3148", color: docFilters.proc === "all" ? "#4f7cff" : "#9aa0b8", background: docFilters.proc === "all" ? "rgba(79,124,255,.08)" : "none", cursor: "pointer" }}>Всі</button>
+                  <button onClick={() => setDocFilters(f => ({ ...f, proc: "all" }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, border: "1px solid", borderColor: docFilters.proc === "all" ? "#4f7cff" : "#2e3148", color: docFilters.proc === "all" ? "#4f7cff" : "#9aa0b8", background: docFilters.proc === "all" ? "rgba(79,124,255,.08)" : "none", cursor: "pointer" }}>{"Всі"}</button>
                   {proceedings.map(proc => (
                     <button key={proc.id} onClick={() => setDocFilters(f => ({ ...f, proc: f.proc === proc.id ? "all" : proc.id }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, border: "1px solid", borderColor: docFilters.proc === proc.id ? PROC_COLORS[proc.type] : "#2e3148", color: docFilters.proc === proc.id ? PROC_COLORS[proc.type] : "#9aa0b8", background: docFilters.proc === proc.id ? `${PROC_COLORS[proc.type]}22` : "none", cursor: "pointer" }}>
                       {proc.type === "first" ? "Перша" : proc.type === "appeal" ? "Апеляція" : "Касація"}
@@ -414,7 +251,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
               <div style={{ flex: 1, overflowY: "auto", padding: 6 }}>
                 {filteredDocs.length === 0 ? (
-                  <div style={{ padding: 20, textAlign: "center", color: "#3a3f58", fontSize: 12 }}>Немає документів</div>
+                  <div style={{ padding: 20, textAlign: "center", color: "#3a3f58", fontSize: 12 }}>{"Немає документів"}</div>
                 ) : filteredDocs.map(doc => {
                   const proc = proceedings.find(p => p.id === doc.procId);
                   return (
@@ -423,7 +260,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>
                         <div style={{ fontSize: 10, color: "#5a6080" }}>
-                          {doc.date} · {proc?.type === "first" ? "[П]" : proc?.type === "appeal" ? "[А]" : "[К]"}
+                          {doc.date}{" \u00b7 "}{proc?.type === "first" ? "[П]" : proc?.type === "appeal" ? "[А]" : "[К]"}
                         </div>
                         {doc.tags?.length > 0 && (
                           <div style={{ display: "flex", gap: 3, marginTop: 2, flexWrap: "wrap" }}>
@@ -445,8 +282,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {!selectedDoc ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 8 }}>
-              <div style={{ fontSize: 36, opacity: .2 }}>📄</div>
-              <div style={{ fontSize: 12 }}>Оберіть документ зі списку</div>
+              <div style={{ fontSize: 36, opacity: .2 }}>{"📄"}</div>
+              <div style={{ fontSize: 12 }}>{"Оберіть документ зі списку"}</div>
             </div>
           ) : (
             <>
@@ -466,7 +303,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                   <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: "center", marginBottom: 4 }}>{selectedDoc.name}</h3>
                   <div style={{ fontSize: 11, color: "#5a6080", textAlign: "center", marginBottom: 16 }}>{selectedDoc.date}</div>
                   {selectedDoc.notes && <div style={{ background: "rgba(231,76,60,.08)", border: "1px solid rgba(231,76,60,.3)", padding: "8px 12px", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "#e74c3c" }}>{selectedDoc.notes}</div>}
-                  <p style={{ fontSize: 13, color: "#9aa0b8" }}>Для перегляду повного тексту прикріпіть файл з Google Drive.</p>
+                  <p style={{ fontSize: 13, color: "#9aa0b8" }}>{"Для перегляду повного тексту прикріпіть файл з Google Drive."}</p>
                 </div>
               </div>
             </>
@@ -490,18 +327,18 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* ШАПКА */}
       <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#1a1d27" }}>
-        <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>← Реєстр</button>
+        <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>{"\u2190 Реєстр"}</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{caseData.name}</div>
           <div style={{ fontSize: 11, color: "#5a6080", marginTop: 2 }}>
-            {categoryLabel}{caseData.court ? ` · ${caseData.court}` : ""}{caseData.case_no ? ` · №${caseData.case_no}` : ""}
+            {categoryLabel}{caseData.court ? ` \u00b7 ${caseData.court}` : ""}{caseData.case_no ? ` \u00b7 \u2116${caseData.case_no}` : ""}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
-          {caseData.hearing_date && <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>📅 {caseData.hearing_date}</span>}
-          <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>💡</button>
-          <button style={{ background: "#4f7cff", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>🤖 Агент</button>
+          {caseData.hearing_date && <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{caseData.hearing_date}</span>}
+          <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>{"💡"}</button>
+          <button style={{ background: "#4f7cff", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{"🤖 Агент"}</button>
         </div>
       </div>
 
@@ -523,7 +360,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 12 }}>
             <div style={{ fontSize: 48, opacity: .2 }}>{activeTab === "position" ? "⚖️" : "📄"}</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "#9aa0b8" }}>{activeTab === "position" ? "Позиція" : "Шаблони"}</div>
-            <div style={{ fontSize: 12 }}>Буде реалізовано в наступній під-сесії</div>
+            <div style={{ fontSize: 12 }}>{"Буде реалізовано в наступній під-сесії"}</div>
           </div>
         )}
       </div>
@@ -532,8 +369,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       {ideaOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 360 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>💡 Ідея для контенту</div>
-            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 12 }}>Справа: {caseData.name}</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{"💡 Ідея для контенту"}</div>
+            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 12 }}>{"Справа: "}{caseData.name}</div>
             <textarea
               value={ideaText}
               onChange={e => setIdeaText(e.target.value)}
@@ -542,8 +379,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               autoFocus
             />
             <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
-              <button onClick={() => { setIdeaOpen(false); setIdeaText(""); }} style={iconBtn}>Скасувати</button>
-              <button onClick={saveIdea} style={primaryBtn}>Зберегти ідею</button>
+              <button onClick={() => { setIdeaOpen(false); setIdeaText(""); }} style={iconBtn}>{"Скасувати"}</button>
+              <button onClick={saveIdea} style={primaryBtn}>{"Зберегти ідею"}</button>
             </div>
           </div>
         </div>
@@ -552,74 +389,3 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     </div>
   );
 }
-```
-
----
-
-## КРОК 6 — ПІДКЛЮЧИТИ В App.jsx
-
-### 6.1 Імпорт на початку файлу:
-```jsx
-import CaseDossier from './components/CaseDossier';
-```
-
-### 6.2 Знайти де відкривається картка справи:
-```bash
-grep -n "setSelectedCase\|selectedCase\|openCase\|caseDetail" src/App.jsx | head -20
-```
-Замінити або доповнити клік на картку: `onClick={() => setDossierCase(caseItem)}`
-
-### 6.3 Рендер — додати перед закриваючим тегом return в App:
-```jsx
-{dossierCase && (
-  <ErrorBoundary>
-    <CaseDossier
-      caseData={dossierCase}
-      cases={cases}
-      updateCase={updateCase}
-      onClose={() => setDossierCase(null)}
-      onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
-    />
-  </ErrorBoundary>
-)}
-```
-
----
-
-## КРОК 7 — ЗБІРКА І ДЕПЛОЙ
-
-```bash
-npm run build
-git add -A && git commit -m "Add CaseDossier: overview inline edit, materials tree/registry, idea capture, ErrorBoundary" && git push origin main
-```
-
----
-
-## КРИТЕРІЇ ЗАВЕРШЕННЯ
-
-- [ ] CLAUDE.md оновлено: шаблон компонента, ErrorBoundary, agentHistory, ideas
-- [ ] ErrorBoundary клас є в App.jsx
-- [ ] `dossierCase` і `ideas` state є в App.jsx
-- [ ] `updateCase` функція є в App.jsx
-- [ ] Тестові дані Брановського: `proceedings[]`, `documents[]`, `agentHistory: []`
-- [ ] Клік на справу → відкривається CaseDossier overlay
-- [ ] "← Реєстр" → повертає в реєстр
-- [ ] Огляд: поля з inline редагуванням, провадження, нотатки (згорнути/розгорнути), зона файлів
-- [ ] Матеріали → Дерево: документи по провадженнях з відступом
-- [ ] Матеріали → Реєстр: фільтри по провадженню + типу + автору
-- [ ] Viewer: назва, дата, нотатка якщо є, кнопки дій
-- [ ] 💡 кнопка → модалка → зберегти ідею в `ideas[]`
-- [ ] Позиція / Шаблони → заглушка
-- [ ] `npm run build` без помилок
-
----
-
-## ЯКЩО ЩОСЬ НЕ ТАК
-
-**Blank page:** перевірити GitHub Actions логи. Апострофи в українському тексті — завжди подвійні лапки.
-
-**contentEditable warning:** `suppressContentEditableWarning` вже є в коді.
-
-**Нотатки порожні:** перевірити localStorage `levytskyi_notes` — чи є записи з `caseId` або `caseName` цієї справи.
-
-**Компонент не відкривається:** перевірити `dossierCase` в state і `setDossierCase` в onClick картки справи.

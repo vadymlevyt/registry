@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
+import CaseDossier from './components/CaseDossier';
 import './App.css';
 
 const Notebook = React.lazy(() => import('./components/Notebook'));
@@ -24,6 +25,20 @@ class ModuleErrorBoundary extends React.Component {
   }
 }
 
+class ErrorBoundary extends React.Component {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) return (
+      <div style={{padding:20,color:"#e74c3c",fontSize:13}}>
+        ⚠️ Модуль тимчасово недоступний
+        <button onClick={()=>this.setState({hasError:false})}>Спробувати знову</button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 
@@ -39,7 +54,27 @@ const INITIAL_CASES = [
   { id:1,  name:'Салун',            client:'Салун Ж./Салун І.',  category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/2241/24', hearing_date:d(2),  deadline:d(1),  deadline_type:'Заява про витрати (ст.141)',  next_action:'Подати заяву про судові витрати', notes:'' },
   { id:2,  name:'Корева',           client:'Корева М.В.',        category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearing_date:d(5),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'' },
   { id:3,  name:'Рубан',            client:'Рубан О.П.',         category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/3312/23', hearing_date:d(8),  deadline:d(6),  deadline_type:'Відповідь на позов',          next_action:'Підготувати заперечення',         notes:'' },
-  { id:4,  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearing_date:d(12), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'' },
+  { id:4,  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearing_date:d(12), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'',
+    agentHistory: [],
+    proceedings: [
+      { id: "proc_main", type: "first", title: "Основне провадження", court: "Пустомитівський районний суд Львівської обл.", status: "paused", parentProcId: null, parentEventId: null },
+      { id: "proc_appeal_1", type: "appeal", title: "Апеляція: ухвала 03.2024", court: "Київський апеляційний суд", status: "active", parentProcId: "proc_main", parentEventId: "event_4" }
+    ],
+    documents: [
+      { id: 1, procId: "proc_main", name: "Позовна заява", icon: "📄", date: "березень 2023", category: "pleading", author: "ours", tags: ["key"], notes: "" },
+      { id: 2, procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", date: "березень 2023", category: "court_act", author: "court", tags: [], notes: "" },
+      { id: 3, procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", date: "грудень 2023", category: "court_act", author: "court", tags: [], notes: "" },
+      { id: 4, procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", date: "лютий 2024", category: "pleading", author: "opponent", tags: [], notes: "" },
+      { id: 5, procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", date: "лютий 2024", category: "motion", author: "opponent", tags: [], notes: "" },
+      { id: 6, procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", date: "березень 2024", category: "court_act", author: "court", tags: ["key"], notes: "" },
+      { id: 7, procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", date: "квітень 2024", category: "court_act", author: "court", tags: [], notes: "" },
+      { id: 8, procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", date: "квітень 2024", category: "pleading", author: "opponent", tags: ["key"], notes: "" },
+      { id: 9, procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", date: "квітень 2024", category: "other", author: "opponent", tags: [], notes: "" },
+      { id: 10, procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", date: "травень 2024", category: "pleading", author: "ours", tags: ["key"], notes: "" },
+      { id: 11, procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", date: "червень 2024", category: "pleading", author: "opponent", tags: [], notes: "⚠️ Лікарняний лист — перевірити автентичність" },
+      { id: 12, procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
+    ]
+  },
   { id:5,  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearing_date:d(15), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'' },
   { id:6,  name:'Голобля',          client:'Голобля Т.В.',       category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/2109/25', hearing_date:d(18), deadline:d(16), deadline_type:'Процесуальна заява',          next_action:'Надіслати заяву',                 notes:'' },
   { id:7,  name:'Манолюк',          client:'Манолюк В.О.',       category:'admin',    status:'active',  court:'Рівненський окружний адмінсуд',case_no:'460/5543/24',hearing_date:d(20), deadline:null,  deadline_type:null,                          next_action:'Чекаємо на ухвалу суду',          notes:'' },
@@ -2512,6 +2547,8 @@ function App() {
   const [driveSyncStatus, setDriveSyncStatus] = useState('idle');
   const [selected, setSelected] = useState(null);
   const openCase = (c) => { usageLog.log('open_case', {name: c.name}); setSelected(c); };
+  const [dossierCase, setDossierCase] = useState(null);
+  const [ideas, setIdeas] = useState([]);
   const [showQI, setShowQI] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editingCase, setEditingCase] = useState(null);
@@ -2780,7 +2817,7 @@ function App() {
                 </div>
                 <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
                 {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
-                <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={setSelected} />)}</div>
+                <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={c => setDossierCase(c)} />)}</div>
               </div>
             )}
             {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
@@ -2860,7 +2897,7 @@ function App() {
               <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
               {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
               <div className="cases-grid">
-                {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={setSelected} />)}
+                {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={c => setDossierCase(c)} />)}
               </div>
             </div>
           )}
@@ -2893,6 +2930,19 @@ function App() {
 
       {/* MODALS */}
       {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={deleteCase} />}
+
+      {/* DOSSIER */}
+      {dossierCase && (
+        <ErrorBoundary>
+          <CaseDossier
+            caseData={dossierCase}
+            cases={cases}
+            updateCase={updateCase}
+            onClose={() => setDossierCase(null)}
+            onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
+          />
+        </ErrorBoundary>
+      )}
 
       {/* FAB — hidden when QI panel is open */}
       {!showQI && <button className="fab" onClick={() => setShowQI(true)} title="Quick Input">⚡</button>}
