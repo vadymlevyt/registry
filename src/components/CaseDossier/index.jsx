@@ -146,8 +146,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           ) : (notesExpanded ? notes : [pinnedNote]).filter(Boolean).map(note => (
             <div key={note.id} style={{ padding: "8px 10px", background: "#222536", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6 }}>
               {note.pinned && <span style={{ fontSize: 9, color: "#4f7cff", marginRight: 6 }}>{"📌"}</span>}
-              {note.text}
-              <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{new Date(note.ts).toLocaleDateString("uk-UA")}</div>
+              {String(note.text || "")}
+              <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{note.ts ? new Date(note.ts).toLocaleDateString("uk-UA") : ""}</div>
             </div>
           ))}
         </div>
