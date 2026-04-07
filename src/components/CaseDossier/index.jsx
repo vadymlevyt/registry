@@ -344,8 +344,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             { label: "Категорія", field: "category", value: categoryLabel },
             { label: "Наступна дія", field: "next_action", value: caseData.next_action },
             { label: "Дата засідання", field: "hearing_date", value: caseData.hearing_date },
-            { label: "Дедлайн", field: "deadline", value: caseData.deadline },
-            { label: "Нотатки до справи", field: "notes", value: Array.isArray(caseData.notes) ? caseData.notes.map(n => n.text).filter(Boolean).join('\n') : (typeof caseData.notes === 'string' ? caseData.notes : '') }
+            { label: "Дедлайн", field: "deadline", value: caseData.deadline }
           ].map(row => (
             <div key={row.field} style={{ display: "flex", gap: 12, marginBottom: 10, alignItems: "flex-start" }}>
               <div style={{ width: 130, fontSize: 11, color: "#5a6080", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
@@ -359,6 +358,39 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               >{row.value || "\u2014"}</div>
             </div>
           ))}
+
+          {/* Нотатки до справи */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 4 }}>{"Нотатки до справи"}</div>
+            {caseNotes.filter(n => n.pinned).length > 0 ? (
+              <div style={{
+                background: "#1a1d2e", borderRadius: 6, padding: "8px 10px",
+                fontSize: 12, color: "#c8cce0", lineHeight: 1.6,
+                borderLeft: "3px solid #4f7cff"
+              }}>
+                {caseNotes.filter(n => n.pinned).map((note, i) => (
+                  <div key={note.id || i} style={{ marginBottom: i < caseNotes.filter(n => n.pinned).length - 1 ? 8 : 0 }}>
+                    <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 2 }}>
+                      {"📌 "}{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}
+                    </div>
+                    <div>{String(note.text || "")}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <textarea
+                value={caseData.notes || ""}
+                onChange={e => updateCase && updateCase(caseData.id, "notes", e.target.value)}
+                placeholder="Вільні нотатки по справі..."
+                style={{
+                  width: "100%", minHeight: 60, background: "#1a1d2e",
+                  border: "1px solid #2e3148", borderRadius: 6,
+                  color: "#e8eaf0", padding: "8px 10px", fontSize: 12,
+                  resize: "vertical", outline: "none", boxSizing: "border-box"
+                }}
+              />
+            )}
+          </div>
         </div>
 
         {/* Провадження */}
@@ -381,30 +413,6 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               onClick={() => setProcModalOpen(true)}
               style={{ width: '100%', padding: '7px', background: 'none', border: '1px dashed #2e3148', borderRadius: 7, color: '#5a6080', cursor: 'pointer', fontSize: 12, marginTop: 6 }}
             >+ Додати провадження</button>
-          </div>
-        )}
-
-        {/* Закріплені нотатки */}
-        {caseNotes.filter(n => n.pinned).length > 0 && (
-          <div style={{
-            background: 'rgba(79,124,255,.06)', border: '1px solid rgba(79,124,255,.2)',
-            borderRadius: 8, padding: '10px 12px', marginBottom: 10
-          }}>
-            <div style={{ fontSize: 10, color: '#4f7cff', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
-              {"📌 Закріплені нотатки"}
-            </div>
-            {caseNotes.filter(n => n.pinned).map((note, i) => (
-              <div key={note.id} style={{
-                fontSize: 12, color: '#9aa0b8', lineHeight: 1.65,
-                paddingTop: i > 0 ? 8 : 0, marginTop: i > 0 ? 8 : 0,
-                borderTop: i > 0 ? '1px solid #2e3148' : 'none'
-              }}>
-                <div style={{ fontSize: 10, color: '#5a6080', marginBottom: 3 }}>
-                  {(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString('uk-UA') : ''}
-                </div>
-                {String(note.text || '')}
-              </div>
-            ))}
           </div>
         )}
 
