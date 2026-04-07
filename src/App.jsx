@@ -143,7 +143,7 @@ function CaseCard({ c, onClick }) {
   const urg = urgencyClass(deadlineDays) || urgencyClass(hearingDays);
 
   return (
-    <div className={`case-card cat-${c.category}`} onClick={() => onClick(c)}>
+    <div className={`case-card cat-${c.category}`} onClick={() => onClick()}>
       <div className="case-card-top">
         <div className="case-card-name">{c.name}</div>
         <div className="case-card-badges">
