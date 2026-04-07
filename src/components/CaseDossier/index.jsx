@@ -41,7 +41,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
   const [agentWidth, setAgentWidth] = useState(320);
-  const [agentMessages, setAgentMessages] = useState([]);
+  const [agentMessages, setAgentMessages] = useState(() => {
+    const history = caseData.agentHistory || [];
+    return history.slice(-20);
+  });
   const [agentInput, setAgentInput] = useState('');
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
@@ -109,10 +112,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const driveConnected = !!localStorage.getItem("levytskyi_drive_token");
 
-  // Agent auto-open on overview, closed on other tabs
-  useEffect(() => {
-    setAgentOpen(activeTab === 'overview');
-  }, [activeTab]);
+  // Agent stays open/closed as user toggled — no auto-close on tab change
 
   // Agent panel drag resize
   useEffect(() => {
@@ -197,8 +197,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     async function sendAgentMessage() {
       if (!agentInput.trim() || agentLoading) return;
       const userMsg = agentInput.trim();
+      const userTs = new Date().toISOString();
       setAgentInput('');
-      setAgentMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+      const userEntry = { role: 'user', content: userMsg, ts: userTs };
+      setAgentMessages(prev => [...prev, userEntry]);
       setAgentLoading(true);
       try {
         const apiKey = localStorage.getItem('claude_api_key');
@@ -212,6 +214,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 - Документів: ${(caseData.documents || []).length}
 Відповідай українською. Допомагай з аналізом і тактикою по справі.`;
 
+        // Send last 10 messages as context for API (token economy)
+        const historyForAPI = agentMessages
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .slice(-10)
+          .map(m => ({ role: m.role, content: m.content }));
+
         const response = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: {
@@ -224,14 +232,26 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             model: 'claude-sonnet-4-20250514',
             max_tokens: 1024,
             system: systemPrompt,
-            messages: [...agentMessages, { role: 'user', content: userMsg }]
+            messages: [...historyForAPI, { role: 'user', content: userMsg }]
           })
         });
         const data = await response.json();
         const reply = data.content?.[0]?.text || "Помилка відповіді";
-        setAgentMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+        const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };
+        setAgentMessages(prev => {
+          const updated = [...prev, assistantEntry];
+          const trimmed = updated.slice(-50);
+          updateCase && updateCase(caseData.id, 'agentHistory', trimmed);
+          return updated;
+        });
       } catch (err) {
-        setAgentMessages(prev => [...prev, { role: 'assistant', content: "Помилка з'єднання з агентом." }]);
+        const errEntry = { role: 'assistant', content: "Помилка з'єднання з агентом.", ts: new Date().toISOString() };
+        setAgentMessages(prev => {
+          const updated = [...prev, errEntry];
+          const trimmed = updated.slice(-50);
+          updateCase && updateCase(caseData.id, 'agentHistory', trimmed);
+          return updated;
+        });
       }
       setAgentLoading(false);
     }
@@ -244,7 +264,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
             <div style={{ fontSize: 10, color: '#5a6080' }}>{"Sonnet · знає справу"}</div>
           </div>
-          <button onClick={() => setAgentMessages([])} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"Очистити"}</button>
+          <button onClick={() => {
+            if (window.confirm("Почати нову розмову? Поточна історія буде очищена.")) {
+              setAgentMessages([]);
+              updateCase && updateCase(caseData.id, 'agentHistory', []);
+            }
+          }} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {agentMessages.length === 0 && (
@@ -252,16 +277,28 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               {"Запитайте про справу, тактику або документи"}
             </div>
           )}
-          {agentMessages.map((msg, i) => (
-            <div key={i} style={{
-              padding: '8px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.6, maxWidth: '90%',
-              alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              background: msg.role === 'user' ? 'rgba(79,124,255,.2)' : '#222536',
-              color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word'
-            }}>
-              {msg.content}
-            </div>
-          ))}
+          {agentMessages.map((msg, i) => {
+            const showDate = msg.ts && (i === 0 ||
+              new Date(msg.ts).toDateString() !== new Date(agentMessages[i - 1]?.ts).toDateString()
+            );
+            return (
+              <div key={i}>
+                {showDate && (
+                  <div style={{ textAlign: 'center', fontSize: 10, color: '#3a3f58', margin: '8px 0' }}>
+                    {new Date(msg.ts).toLocaleDateString('uk-UA')}
+                  </div>
+                )}
+                <div style={{
+                  padding: '8px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.6, maxWidth: '90%',
+                  alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                  background: msg.role === 'user' ? 'rgba(79,124,255,.2)' : '#222536',
+                  color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word'
+                }}>
+                  {msg.content}
+                </div>
+              </div>
+            );
+          })}
           {agentLoading && (
             <div style={{ padding: '8px 10px', borderRadius: 8, background: '#222536', fontSize: 12, color: '#5a6080' }}>{"⏳ Думаю..."}</div>
           )}
@@ -710,7 +747,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"🗑 Видалити назавжди"}</button>
           )}
           <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>{"💡"}</button>
-          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{"🤖 Агент"}</button>
+          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{agentOpen ? "🤖 Сховати агента" : "🤖 Агент"}</button>
         </div>
       </div>
 

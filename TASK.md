@@ -1,69 +1,45 @@
-# TASK.md — Досьє під-сесія 2Г
+# TASK.md — Досьє агент: фікси + пам'ять
 # Дата: 07.04.2026
 # Гілка: main
 
 ## КРИТИЧНЕ ПРАВИЛО
-Після успішного npm run build — ЗАВЖДИ виконати без запитань:
-git add -A && git commit -m "feat: dossier agent split panel, QI z-index fix, notes pin fix" && git push origin main
-Не питати підтвердження. Просто виконати.
+Після успішного npm run build — ЗАВЖДИ без запитань:
+git add -A && git commit -m "feat: dossier agent memory, QI draggable, agent button fixes" && git push origin main
 
 ---
 
 ## МЕТА
 
-1. Агент досьє — реалізувати як split панель (кнопка "Агент" зараз не працює)
-2. Огляд досьє — агент відкритий одразу при вході
-3. QI z-index фікс — QI і головний агент поверх досьє завжди
-4. 📌 в Записній книжці — додати кнопку закріплення
-5. Поле "Нотатки до справи" — показувати текст закріплених нотаток
-6. Рухома межа між деревом і viewer у вкладці Матеріали
-7. Файли при додаванні документа — зафіксувати стан і що відбувається
+1. Кнопка "🤖 Агент" — повернути на всі вкладки, toggle відкрити/сховати
+2. Кнопка QI і кнопка Агента не накладаються
+3. Кнопка QI — рухома (drag по екрану)
+4. Пам'ять агента — зберігається між сесіями в agentHistory[] справи
+5. Кнопка "Нова розмова" — очищає тільки по явному натисканню
 
 ---
 
 ## КРОК 0 — ДІАГНОСТИКА
 
 ```bash
-# Перевірити стан кнопки Агент
-grep -n "агент\|Агент\|agentOpen\|agentPanel\|toggleAgent" src/components/CaseDossier/index.jsx | head -20
-
-# Перевірити z-index QI
-grep -n "zIndex\|z-index\|showQI\|QuickInput" src/App.jsx | head -20
-
-# Перевірити split панель в QI як референс
-grep -n "split\|resiz\|isDragging\|isLandscape" src/App.jsx | head -20
+grep -n "agentOpen\|agentMessages\|agentHistory\|Агент" src/components/CaseDossier/index.jsx | head -20
+grep -n "showQI\|QuickInput\|floating\|drag.*QI\|QI.*drag" src/App.jsx | head -20
 ```
 
 ---
 
-## КРОК 1 — АГЕНТ ДОСЬЄ (split панель)
+## КРОК 1 — КНОПКА АГЕНТА НА ВСІХ ВКЛАДКАХ
 
-### 1.1 Додати state для агента
+### 1.1 Знайти де рендерується шапка досьє
 
-В src/components/CaseDossier/index.jsx додати:
-
-```jsx
-const [agentOpen, setAgentOpen] = useState(true); // відкритий одразу на Огляді
-const [agentWidth, setAgentWidth] = useState(320); // ширина панелі агента
-const [agentMessages, setAgentMessages] = useState([]);
-const [agentInput, setAgentInput] = useState('');
-const [agentLoading, setAgentLoading] = useState(false);
-const agentDragRef = useRef(false);
+```bash
+grep -n "шапка\|header\|hdr\|← Реєстр" src/components/CaseDossier/index.jsx | head -10
 ```
 
-### 1.2 Логіка відкриття агента
+### 1.2 Кнопка Агента в шапці — toggle
 
-```jsx
-// Агент відкритий одразу тільки на вкладці Огляд
-// На інших вкладках — по кнопці
-useEffect(() => {
-  setAgentOpen(activeTab === 'overview');
-}, [activeTab]);
-```
+Кнопка має бути в шапці поруч з "← Реєстр".
+Вона відкриває і закриває панель агента на БУДЬ-ЯКІЙ вкладці:
 
-### 1.3 Кнопка Агент в шапці
-
-Знайти кнопку "🤖 Агент" в шапці і виправити onClick:
 ```jsx
 <button
   onClick={() => setAgentOpen(prev => !prev)}
@@ -73,457 +49,284 @@ useEffect(() => {
     border: '1px solid',
     borderColor: agentOpen ? '#4f7cff' : '#2e3148',
     padding: '6px 14px', borderRadius: 7,
-    cursor: 'pointer', fontSize: 12, fontWeight: 500
+    cursor: 'pointer', fontSize: 12, fontWeight: 500,
+    transition: 'all .2s'
   }}
 >
-  🤖 Агент
+  {agentOpen ? '🤖 Сховати агента' : '🤖 Агент'}
 </button>
 ```
 
-### 1.4 Split layout з агентом
+### 1.3 Початковий стан агента
 
-Замінити основний body (div з flex: 1) на split layout:
+На вкладці Огляд — агент відкритий одразу.
+На інших вкладках — закритий, відкривається кнопкою.
 
 ```jsx
-<div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+// Змінити useState:
+const [agentOpen, setAgentOpen] = useState(activeTab === 'overview');
 
-  {/* Основний вміст вкладки */}
-  <div style={{
-    flex: 1, display: 'flex', flexDirection: 'column',
-    minHeight: 0, overflow: 'hidden',
-    minWidth: 0
-  }}>
-    {activeTab === 'overview' && renderOverview()}
-    {activeTab === 'materials' && renderMaterials()}
-    {['position', 'templates'].includes(activeTab) && renderPlaceholder(activeTab)}
-  </div>
-
-  {/* Рухома межа */}
-  {agentOpen && (
-    <div
-      onMouseDown={() => { agentDragRef.current = true; }}
-      onTouchStart={() => { agentDragRef.current = true; }}
-      style={{
-        width: 6, cursor: 'col-resize', flexShrink: 0,
-        background: '#2e3148',
-        transition: 'background .15s'
-      }}
-      onMouseEnter={e => e.currentTarget.style.background = '#4f7cff'}
-      onMouseLeave={e => e.currentTarget.style.background = '#2e3148'}
-    />
-  )}
-
-  {/* Панель агента */}
-  {agentOpen && (
-    <div style={{
-      width: agentWidth, flexShrink: 0,
-      borderLeft: '1px solid #2e3148',
-      display: 'flex', flexDirection: 'column',
-      overflow: 'hidden', background: '#1a1d27'
-    }}>
-      {renderAgentPanel()}
-    </div>
-  )}
-
-</div>
+// АБО useEffect при зміні вкладки:
+// НЕ скидати agentOpen при зміні вкладки — хай залишається як є
+// Тільки при першому відкритті досьє — відкрити на Огляді
+const [agentOpen, setAgentOpen] = useState(true); // відкритий одразу
 ```
 
-### 1.5 Drag для межі агента
+---
 
-Додати useEffect для drag resize:
+## КРОК 2 — КНОПКА QI НЕ НАКЛАДАЄТЬСЯ З АГЕНТОМ
+
+### Проблема
+
+Floating кнопка QI (⚡ внизу екрана) накладається на панель агента досьє.
+
+### Рішення — рухома кнопка QI
+
+В App.jsx знайти floating кнопку QI і зробити її draggable:
+
+```bash
+grep -n "floating\|fab\|fixed.*bottom\|bottom.*right\|Quick.*button\|QI.*btn" src/App.jsx | head -20
+```
+
+Замінити статичну кнопку на рухому:
+
+```jsx
+// Додати state для позиції кнопки QI:
+const [qiBtnPos, setQiBtnPos] = useState({ x: null, y: null });
+const qiDragRef = useRef(false);
+const qiStartRef = useRef({ x: 0, y: 0, btnX: 0, btnY: 0 });
+
+// Визначити позицію: якщо не переміщували — дефолтна (правий нижній кут)
+const qiBtnStyle = qiBtnPos.x !== null ? {
+  position: 'fixed',
+  left: qiBtnPos.x,
+  top: qiBtnPos.y,
+  zIndex: 1000
+} : {
+  position: 'fixed',
+  right: 20,
+  bottom: 20,
+  zIndex: 1000
+};
+```
+
+Додати drag handlers на кнопку QI:
+
+```jsx
+<button
+  style={{
+    ...qiBtnStyle,
+    width: 48, height: 48, borderRadius: '50%',
+    background: '#4f7cff', border: 'none', color: '#fff',
+    cursor: qiDragRef.current ? 'grabbing' : 'grab',
+    fontSize: 20, boxShadow: '0 4px 20px rgba(79,124,255,.4)',
+    touchAction: 'none'
+  }}
+  onMouseDown={e => {
+    qiDragRef.current = true;
+    const rect = e.currentTarget.getBoundingClientRect();
+    qiStartRef.current = {
+      x: e.clientX, y: e.clientY,
+      btnX: rect.left, btnY: rect.top
+    };
+    e.preventDefault();
+  }}
+  onTouchStart={e => {
+    qiDragRef.current = true;
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    qiStartRef.current = {
+      x: touch.clientX, y: touch.clientY,
+      btnX: rect.left, btnY: rect.top
+    };
+  }}
+  onClick={e => {
+    // Клік тільки якщо не перетягували
+    if (!qiDragRef.current) setShowQI(true);
+  }}
+>
+  ⚡
+</button>
+```
+
+Додати глобальні listeners для drag:
 
 ```jsx
 useEffect(() => {
-  function onMouseMove(e) {
-    if (!agentDragRef.current) return;
-    const containerWidth = window.innerWidth;
-    const newWidth = containerWidth - e.clientX;
-    if (newWidth > 200 && newWidth < containerWidth * 0.6) {
-      setAgentWidth(newWidth);
-    }
-  }
-  function onMouseUp() { agentDragRef.current = false; }
-  function onTouchMove(e) {
-    if (!agentDragRef.current) return;
-    const touch = e.touches[0];
-    const newWidth = window.innerWidth - touch.clientX;
-    if (newWidth > 200 && newWidth < window.innerWidth * 0.6) {
-      setAgentWidth(newWidth);
-    }
+  function onMove(e) {
+    if (!qiDragRef.current) return;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const dx = clientX - qiStartRef.current.x;
+    const dy = clientY - qiStartRef.current.y;
+    const newX = Math.max(0, Math.min(window.innerWidth - 48, qiStartRef.current.btnX + dx));
+    const newY = Math.max(0, Math.min(window.innerHeight - 48, qiStartRef.current.btnY + dy));
+    setQiBtnPos({ x: newX, y: newY });
   }
 
-  window.addEventListener('mousemove', onMouseMove);
-  window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('touchmove', onTouchMove);
-  window.addEventListener('touchend', onMouseUp);
+  function onUp() {
+    // Якщо майже не рухалась — це клік
+    setTimeout(() => { qiDragRef.current = false; }, 50);
+  }
+
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  window.addEventListener('touchmove', onMove, { passive: false });
+  window.addEventListener('touchend', onUp);
 
   return () => {
-    window.removeEventListener('mousemove', onMouseMove);
-    window.removeEventListener('mouseup', onMouseUp);
-    window.removeEventListener('touchmove', onTouchMove);
-    window.removeEventListener('touchend', onMouseUp);
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('touchend', onUp);
   };
 }, []);
 ```
 
-### 1.6 renderAgentPanel — чат агента досьє
-
-```jsx
-function renderAgentPanel() {
-  const apiKey = localStorage.getItem('claude_api_key');
-
-  async function sendAgentMessage() {
-    if (!agentInput.trim() || agentLoading) return;
-    const userMsg = agentInput.trim();
-    setAgentInput('');
-    setAgentMessages(prev => [...prev, { role: 'user', content: userMsg }]);
-    setAgentLoading(true);
-
-    try {
-      const systemPrompt = `Ти агент справи "${caseData.name}".
-Знаєш про справу:
-- Суд: ${caseData.court || 'не вказано'}
-- Номер: ${caseData.case_no || 'не вказано'}
-- Категорія: ${caseData.category || 'не вказано'}
-- Статус: ${caseData.status || 'не вказано'}
-- Провадження: ${JSON.stringify(caseData.proceedings || [])}
-- Документів: ${(caseData.documents || []).length}
-Відповідай українською. Допомагай з аналізом і тактикою по справі.`;
-
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1024,
-          system: systemPrompt,
-          messages: [
-            ...agentMessages,
-            { role: 'user', content: userMsg }
-          ]
-        })
-      });
-
-      const data = await response.json();
-      const reply = data.content?.[0]?.text || 'Помилка відповіді';
-      setAgentMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    } catch (err) {
-      setAgentMessages(prev => [...prev, {
-        role: 'assistant',
-        content: 'Помилка з\'єднання з агентом.'
-      }]);
-    }
-    setAgentLoading(false);
-  }
-
-  return (
-    <>
-      {/* Заголовок панелі */}
-      <div style={{
-        padding: '10px 12px', borderBottom: '1px solid #2e3148',
-        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0
-      }}>
-        <span style={{ fontSize: 14 }}>🤖</span>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 12, fontWeight: 600 }}>Агент досьє</div>
-          <div style={{ fontSize: 10, color: '#5a6080' }}>Sonnet · знає справу</div>
-        </div>
-        <button
-          onClick={() => setAgentMessages([])}
-          style={{
-            background: 'none', border: 'none',
-            color: '#5a6080', cursor: 'pointer', fontSize: 10
-          }}
-        >Очистити</button>
-      </div>
-
-      {/* Повідомлення */}
-      <div style={{
-        flex: 1, overflowY: 'auto', padding: 10,
-        display: 'flex', flexDirection: 'column', gap: 8
-      }}>
-        {agentMessages.length === 0 && (
-          <div style={{ fontSize: 11, color: '#3a3f58', textAlign: 'center', marginTop: 20 }}>
-            Запитайте про справу, тактику або документи
-          </div>
-        )}
-        {agentMessages.map((msg, i) => (
-          <div key={i} style={{
-            padding: '8px 10px', borderRadius: 8, fontSize: 12,
-            lineHeight: 1.6, maxWidth: '90%',
-            alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-            background: msg.role === 'user'
-              ? 'rgba(79,124,255,.2)'
-              : '#222536',
-            color: '#e8eaf0'
-          }}>
-            {msg.content}
-          </div>
-        ))}
-        {agentLoading && (
-          <div style={{
-            padding: '8px 10px', borderRadius: 8,
-            background: '#222536', fontSize: 12, color: '#5a6080'
-          }}>⏳ Думаю...</div>
-        )}
-      </div>
-
-      {/* Поле вводу */}
-      <div style={{
-        padding: 8, borderTop: '1px solid #2e3148',
-        display: 'flex', gap: 6, flexShrink: 0
-      }}>
-        <textarea
-          value={agentInput}
-          onChange={e => setAgentInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              sendAgentMessage();
-            }
-          }}
-          placeholder="Запитати агента..."
-          rows={2}
-          style={{
-            flex: 1, background: '#222536',
-            border: '1px solid #2e3148', color: '#e8eaf0',
-            padding: '6px 8px', borderRadius: 6,
-            fontSize: 12, resize: 'none', outline: 'none',
-            lineHeight: 1.5
-          }}
-        />
-        <button
-          onClick={sendAgentMessage}
-          disabled={agentLoading || !agentInput.trim()}
-          style={{
-            background: '#4f7cff', border: 'none', color: '#fff',
-            padding: '0 12px', borderRadius: 6,
-            cursor: agentLoading ? 'default' : 'pointer',
-            fontSize: 16, opacity: agentLoading ? 0.5 : 1
-          }}
-        >→</button>
-      </div>
-    </>
-  );
-}
-```
-
 ---
 
-## КРОК 2 — QI Z-INDEX ФІКс
+## КРОК 3 — ПАМ'ЯТЬ АГЕНТА МІЖ СЕСІЯМИ
 
-### 2.1 Знайти z-index QuickInput
+### Концепція
 
-```bash
-grep -n "zIndex\|QuickInput\|showQI" src/App.jsx | head -30
-```
+Агент пам'ятає розмову між сесіями через `agentHistory[]` в об'єкті справи.
+При відкритті досьє — завантажує останні N повідомлень.
+Очищається тільки кнопкою "Нова розмова".
 
-### 2.2 Переконатись що QI має найвищий z-index
+### 3.1 Завантаження історії при відкритті
 
-QI і головний агент повинні бути поверх ВСЬОГО включно з досьє (z-index: 100).
-
-В App.jsx де рендериться QuickInput — перевірити що wrapper має:
-```jsx
-style={{ zIndex: 1000 }} // більше ніж у CaseDossier (100)
-```
-
-В CaseDossier overlay:
-```jsx
-// Замінити z-index з 100 на нижчий щоб QI був поверх:
-style={{ position: 'fixed', inset: 0, zIndex: 50, ... }}
-```
-
-Ієрархія z-index:
-```
-CaseDossier overlay:  z-index: 50
-Модалки в досьє:      z-index: 60
-QI панель:            z-index: 1000
-Головний агент:       z-index: 1000
-```
-
-### 2.3 Поведінка при виклику QI поверх досьє
-
-Коли QI відкривається поверх досьє — досьє з агентом стискається
-у простір що залишився. Це відбувається автоматично якщо QI
-використовує `position: fixed` з правильним z-index.
-Досьє нічого спеціально робити не треба.
-
----
-
-## КРОК 3 — РУХОМА МЕЖА У МАТЕРІАЛАХ
-
-У renderMaterials() замінити статичну ліву панель на split з drag:
+В компоненті CaseDossier при ініціалізації:
 
 ```jsx
-function renderMaterials() {
-  const [matWidth, setMatWidth] = useState(300);
-  const matDragRef = useRef(false);
-
-  // useEffect для drag (аналогічний агенту)
-  useEffect(() => {
-    function onMove(e) {
-      if (!matDragRef.current) return;
-      const newWidth = e.clientX;
-      if (newWidth > 150 && newWidth < window.innerWidth * 0.5) {
-        setMatWidth(newWidth);
-      }
-    }
-    function onUp() { matDragRef.current = false; }
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-
-  return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      {/* Ліва панель — фіксована ширина з drag */}
-      <div style={{
-        width: matWidth, flexShrink: 0,
-        borderRight: '1px solid #2e3148',
-        display: 'flex', flexDirection: 'column',
-        overflow: 'hidden'
-      }}>
-        {/* існуючий вміст лівої панелі */}
-      </div>
-
-      {/* Рухома межа */}
-      <div
-        onMouseDown={() => { matDragRef.current = true; }}
-        style={{
-          width: 6, cursor: 'col-resize', flexShrink: 0,
-          background: '#2e3148'
-        }}
-        onMouseEnter={e => e.currentTarget.style.background = '#4f7cff'}
-        onMouseLeave={e => e.currentTarget.style.background = '#2e3148'}
-      />
-
-      {/* Viewer */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {/* існуючий viewer */}
-      </div>
-    </div>
-  );
-}
+// Завантажити збережену історію з справи
+const [agentMessages, setAgentMessages] = useState(() => {
+  const history = caseData.agentHistory || [];
+  // Показати останні 20 повідомлень
+  return history.slice(-20);
+});
 ```
 
----
+### 3.2 Збереження після кожного повідомлення
 
-## КРОК 4 — 📌 В ЗАПИСНІЙ КНИЖЦІ
-
-```bash
-grep -n "pinNote\|onPinNote\|pinned\|pin" src/components/Notebook/index.jsx | head -20
-```
-
-Знайти де рендеруються нотатки в Notebook і додати кнопку 📌:
+Після отримання відповіді від агента — зберегти в справі:
 
 ```jsx
-// В картці нотатки додати кнопку поруч з іншими діями:
+// Після setAgentMessages(prev => [...prev, { role: 'assistant', content: reply }]):
+const updatedHistory = [...agentMessages, 
+  { role: 'user', content: userMsg },
+  { role: 'assistant', content: reply, ts: new Date().toISOString() }
+];
+
+// Зберегти в справу (останні 50 повідомлень)
+const trimmed = updatedHistory.slice(-50);
+updateCase && updateCase(caseData.id, 'agentHistory', trimmed);
+```
+
+### 3.3 Передавати збережену історію в API
+
+При відправці запиту до Claude API — включати збережену історію як контекст:
+
+```jsx
+// В sendAgentMessage():
+const historyForAPI = agentMessages
+  .filter(m => m.role === 'user' || m.role === 'assistant')
+  .slice(-10) // останні 10 для контексту (економія токенів)
+  .map(m => ({ role: m.role, content: m.content }));
+
+const response = await fetch('https://api.anthropic.com/v1/messages', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages: [
+      ...historyForAPI,
+      { role: 'user', content: userMsg }
+    ]
+  })
+});
+```
+
+### 3.4 Кнопка "Нова розмова"
+
+Замінити кнопку "Очистити" на "Нова розмова":
+
+```jsx
 <button
-  onClick={() => onPinNote && onPinNote(note.id)}
-  title={note.pinned ? 'Зняти закріплення' : 'Закріпити як основну'}
+  onClick={() => {
+    if (window.confirm('Почати нову розмову? Поточна історія буде очищена.')) {
+      setAgentMessages([]);
+      updateCase && updateCase(caseData.id, 'agentHistory', []);
+    }
+  }}
   style={{
     background: 'none', border: 'none',
-    cursor: 'pointer', fontSize: 12,
-    color: note.pinned ? '#4f7cff' : '#3a3f58',
-    padding: '2px 4px'
+    color: '#5a6080', cursor: 'pointer',
+    fontSize: 11, padding: '2px 6px',
+    borderRadius: 4
   }}
->📌</button>
+>+ Нова розмова</button>
 ```
 
----
+### 3.5 Показувати дату в повідомленнях
 
-## КРОК 5 — ПОЛЕ "НОТАТКИ ДО СПРАВИ" — ТЕКСТ ЗАКРІПЛЕНИХ
-
-В renderOverview() знайти блок "НОТАТКИ ПО СПРАВІ".
-
-Поле `case.notes` в блоці "ІНФОРМАЦІЯ ПРО СПРАВУ" — окреме поле для ручного опису.
-НЕ чіпати його автоматично.
-
-Замість цього — в блоці "НОТАТКИ ПО СПРАВІ" показувати закріплені нотатки
-окремо від списку, у вигляді зведеного тексту:
+Для повідомлень з попередніх сесій показувати дату:
 
 ```jsx
-{/* Закріплені нотатки — зведений текст */}
-{caseNotes.filter(n => n.pinned).length > 0 && (
-  <div style={{
-    background: 'rgba(79,124,255,.06)',
-    border: '1px solid rgba(79,124,255,.2)',
-    borderRadius: 8, padding: '10px 12px', marginBottom: 10
-  }}>
-    <div style={{
-      fontSize: 10, color: '#4f7cff',
-      textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8
-    }}>
-      📌 Закріплені нотатки
-    </div>
-    {caseNotes.filter(n => n.pinned).map((note, i) => (
-      <div key={note.id} style={{
-        fontSize: 12, color: '#9aa0b8', lineHeight: 1.65,
-        paddingTop: i > 0 ? 8 : 0,
-        marginTop: i > 0 ? 8 : 0,
-        borderTop: i > 0 ? '1px solid #2e3148' : 'none'
-      }}>
-        <div style={{ fontSize: 10, color: '#5a6080', marginBottom: 3 }}>
-          {new Date(note.ts).toLocaleDateString('uk-UA')}
+{agentMessages.map((msg, i) => {
+  // Показати дату якщо це перше повідомлення або новий день
+  const showDate = msg.ts && (i === 0 ||
+    new Date(msg.ts).toDateString() !==
+    new Date(agentMessages[i-1]?.ts).toDateString()
+  );
+
+  return (
+    <div key={i}>
+      {showDate && (
+        <div style={{
+          textAlign: 'center', fontSize: 10,
+          color: '#3a3f58', margin: '8px 0'
+        }}>
+          {new Date(msg.ts).toLocaleDateString('uk-UA')}
         </div>
-        {String(note.text || '')}
+      )}
+      <div style={{
+        padding: '8px 10px', borderRadius: 8,
+        fontSize: 12, lineHeight: 1.6,
+        maxWidth: '90%',
+        alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+        background: msg.role === 'user'
+          ? 'rgba(79,124,255,.2)' : '#222536',
+        color: '#e8eaf0'
+      }}>
+        {msg.content}
       </div>
-    ))}
-  </div>
-)}
+    </div>
+  );
+})}
 ```
 
 ---
 
-## КРОК 6 — ФАЙЛИ ПРИ ДОДАВАННІ ДОКУМЕНТА (діагностика)
+## КРОК 4 — ЗБІРКА І ДЕПЛОЙ
 
 ```bash
-grep -n "uploadFileToDrive\|driveId\|driveUrl" src/components/CaseDossier/index.jsx | head -20
-```
-
-Перевірити чи функція uploadFileToDrive викликається і що повертає.
-Додати console.log для діагностики:
-
-```jsx
-async function uploadFileToDrive(file, caseData) {
-  console.log('uploadFileToDrive called:', file.name, file.size);
-  const token = localStorage.getItem('levytskyi_drive_token');
-  console.log('Drive token exists:', !!token);
-  // ... решта функції
-}
-```
-
-Якщо token відсутній або driveConnected false — показувати повідомлення:
-"Файл збережено локально. Підключіть Google Drive для збереження в хмарі."
-
-І зберігати документ без driveId — тільки метадані. Це нормальна поведінка
-поки Drive не підключений.
-
----
-
-## КРОК 7 — ЗБІРКА І ДЕПЛОЙ
-
-```bash
-npm run build 2>&1 | tail -20
-git add -A && git commit -m "feat: dossier agent split panel, QI z-index fix, notes pin in notebook, resizable materials" && git push origin main
+npm run build 2>&1 | tail -5
+git add -A && git commit -m "feat: dossier agent memory persistent, QI draggable button, agent toggle all tabs" && git push origin main
 ```
 
 ---
 
 ## КРИТЕРІЇ ЗАВЕРШЕННЯ
 
-- [ ] Кнопка "🤖 Агент" в шапці досьє відкриває/закриває панель
+- [ ] Кнопка "🤖 Агент" є в шапці досьє на всіх вкладках
+- [ ] Кнопка toggle — натиснув ще раз → агент зникає
+- [ ] Текст кнопки змінюється: "🤖 Агент" / "🤖 Сховати агента"
 - [ ] На вкладці Огляд агент відкритий одразу
-- [ ] На інших вкладках агент закритий, відкривається кнопкою
-- [ ] Панель агента справа з рухомою межею
-- [ ] Агент відповідає (Sonnet API)
-- [ ] QI відкривається поверх досьє (не ховається під ним)
-- [ ] 📌 є в Записній книжці
-- [ ] Закріплені нотатки показуються в блоці "Закріплені нотатки" в Огляді
-- [ ] Кілька закріплених нотаток — текст іде один за одним з датами
-- [ ] Рухома межа між деревом і viewer у вкладці Матеріали
-- [ ] Документ без файлу зберігається нормально (тільки метадані)
+- [ ] Кнопка QI можна перетягувати по екрану
+- [ ] Кнопка QI і панель агента не накладаються
+- [ ] Після закриття і повторного відкриття досьє — повідомлення агента збереглись
+- [ ] Кнопка "Нова розмова" з підтвердженням очищає все
+- [ ] Дати між повідомленнями різних сесій
 - [ ] npm run build без помилок

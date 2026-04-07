@@ -2568,6 +2568,10 @@ function App() {
   const [dossierCase, setDossierCase] = useState(null);
   const [ideas, setIdeas] = useState([]);
   const [showQI, setShowQI] = useState(false);
+  const [qiBtnPos, setQiBtnPos] = useState({ x: null, y: null });
+  const qiDragRef = useRef(false);
+  const qiDragMoved = useRef(false);
+  const qiStartRef = useRef({ x: 0, y: 0, btnX: 0, btnY: 0 });
   const [showAdd, setShowAdd] = useState(false);
   const [editingCase, setEditingCase] = useState(null);
   const [search, setSearch] = useState('');
@@ -2581,6 +2585,34 @@ function App() {
   const containerRef = useRef(null);
   const isLandscapeRef = useRef(isLandscape);
   const ratio = qiRatio !== null ? qiRatio : (isLandscape ? 0.33 : 0.60);
+
+  // ── QI FAB drag ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    function onMove(e) {
+      if (!qiDragRef.current) return;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const dx = clientX - qiStartRef.current.x;
+      const dy = clientY - qiStartRef.current.y;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) qiDragMoved.current = true;
+      const newX = Math.max(0, Math.min(window.innerWidth - 52, qiStartRef.current.btnX + dx));
+      const newY = Math.max(0, Math.min(window.innerHeight - 52, qiStartRef.current.btnY + dy));
+      setQiBtnPos({ x: newX, y: newY });
+    }
+    function onUp() {
+      setTimeout(() => { qiDragRef.current = false; }, 50);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []); // eslint-disable-line
 
   // Load from Drive on mount if connected
   useEffect(() => {
@@ -3084,8 +3116,30 @@ function App() {
         </ErrorBoundary>
       )}
 
-      {/* FAB — hidden when QI panel is open */}
-      {!showQI && <button className="fab" onClick={() => setShowQI(true)} title="Quick Input">⚡</button>}
+      {/* FAB — hidden when QI panel is open, draggable */}
+      {!showQI && <button
+        className="fab"
+        title="Quick Input"
+        style={qiBtnPos.x !== null ? { position: 'fixed', left: qiBtnPos.x, top: qiBtnPos.y, right: 'auto', bottom: 'auto', touchAction: 'none' } : { touchAction: 'none' }}
+        onMouseDown={e => {
+          qiDragRef.current = true;
+          qiDragMoved.current = false;
+          const rect = e.currentTarget.getBoundingClientRect();
+          qiStartRef.current = { x: e.clientX, y: e.clientY, btnX: rect.left, btnY: rect.top };
+          e.preventDefault();
+        }}
+        onTouchStart={e => {
+          qiDragRef.current = true;
+          qiDragMoved.current = false;
+          const touch = e.touches[0];
+          const rect = e.currentTarget.getBoundingClientRect();
+          qiStartRef.current = { x: touch.clientX, y: touch.clientY, btnX: rect.left, btnY: rect.top };
+        }}
+        onClick={e => {
+          if (qiDragMoved.current) { e.preventDefault(); return; }
+          setShowQI(true);
+        }}
+      >⚡</button>}
     </div>
   );
 }
