@@ -195,7 +195,7 @@ function CaseCard({ c, onClick }) {
   );
 }
 
-function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase }) {
+function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
   const hearingDays = daysUntil(c.hearing_date);
   const deadlineDays = daysUntil(c.deadline);
   return (
@@ -265,7 +265,10 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase }) {
             }}>📦 Закрити справу</button>
           )}
           {c.status === 'closed' && (
-            <button className="btn-lg danger" onClick={() => onDelete(c)}>🗑 Видалити назавжди</button>
+            <>
+              <button className="btn-lg secondary" onClick={() => { onRestore(c.id); onClose(); }} style={{color:'#2ecc71',borderColor:'rgba(46,204,113,.3)'}}>↩ Відновити</button>
+              <button className="btn-lg danger" onClick={() => onDelete(c)}>🗑 Видалити назавжди</button>
+            </>
           )}
         </div>
       </div>
@@ -2767,6 +2770,13 @@ function App() {
     setSelected(null);
   };
 
+  const restoreCase = (id) => {
+    setCases(prev => prev.map(c =>
+      c.id === id ? { ...c, status: 'active' } : c
+    ));
+    setSelected(null);
+  };
+
   const deleteDriveFolder = async (folderId) => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token || !folderId) return;
@@ -2894,11 +2904,16 @@ function App() {
                   <div key={c.id} style={{position:'relative'}}>
                     <CaseCard c={c} onClick={() => setDossierCase(c)} />
                     {c.status === 'closed' && (
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
-                        position:'absolute', bottom:8, right:8, color:'#e74c3c',
-                        background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
-                        padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
-                      }}>Видалити назавжди</button>
+                      <div style={{position:'absolute', bottom:8, right:8, display:'flex', gap:4}}>
+                        <button onClick={(e) => { e.stopPropagation(); restoreCase(c.id); }} style={{
+                          color:'#2ecc71', background:'rgba(46,204,113,.1)', border:'1px solid rgba(46,204,113,.3)',
+                          padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
+                        }}>Відновити</button>
+                        <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
+                          color:'#e74c3c', background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
+                          padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
+                        }}>Видалити назавжди</button>
+                      </div>
                     )}
                   </div>
                 ))}</div>
@@ -2985,11 +3000,16 @@ function App() {
                   <div key={c.id} style={{position:'relative'}}>
                     <CaseCard c={c} onClick={() => setDossierCase(c)} />
                     {c.status === 'closed' && (
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
-                        position:'absolute', bottom:8, right:8, color:'#e74c3c',
-                        background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
-                        padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
-                      }}>Видалити назавжди</button>
+                      <div style={{position:'absolute', bottom:8, right:8, display:'flex', gap:4}}>
+                        <button onClick={(e) => { e.stopPropagation(); restoreCase(c.id); }} style={{
+                          color:'#2ecc71', background:'rgba(46,204,113,.1)', border:'1px solid rgba(46,204,113,.3)',
+                          padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
+                        }}>Відновити</button>
+                        <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
+                          color:'#e74c3c', background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
+                          padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
+                        }}>Видалити назавжди</button>
+                      </div>
                     )}
                   </div>
                 ))}
@@ -3024,7 +3044,7 @@ function App() {
       )}
 
       {/* MODALS */}
-      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} />}
+      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} onRestore={restoreCase} />}
 
       {/* DOSSIER */}
       {dossierCase && (

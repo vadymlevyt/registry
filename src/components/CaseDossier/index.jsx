@@ -29,7 +29,22 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [ideaOpen, setIdeaOpen] = useState(false);
   const [ideaText, setIdeaText] = useState("");
 
-  const proceedings = caseData.proceedings || [];
+  const [procModalOpen, setProcModalOpen] = useState(false);
+  const [newProc, setNewProc] = useState({ title: '', court: '', type: 'appeal' });
+  const [docModalOpen, setDocModalOpen] = useState(false);
+  const [newDoc, setNewDoc] = useState({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [] });
+
+  const proceedings = (caseData.proceedings && caseData.proceedings.length > 0)
+    ? caseData.proceedings
+    : [{
+        id: 'proc_main',
+        type: 'first',
+        title: 'Основне провадження',
+        court: caseData.court || '',
+        status: 'active',
+        parentProcId: null,
+        parentEventId: null
+      }];
   const documents = caseData.documents || [];
 
   const notes = JSON.parse(localStorage.getItem("levytskyi_notes") || "[]")
@@ -125,6 +140,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 </span>
               </div>
             ))}
+            <button
+              onClick={() => setProcModalOpen(true)}
+              style={{ width: '100%', padding: '7px', background: 'none', border: '1px dashed #2e3148', borderRadius: 7, color: '#5a6080', cursor: 'pointer', fontSize: 12, marginTop: 6 }}
+            >+ Додати провадження</button>
           </div>
         )}
 
@@ -184,6 +203,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 {label}
               </button>
             ))}
+          </div>
+          <div style={{ padding: "6px 8px", borderBottom: "1px solid #2e3148", flexShrink: 0 }}>
+            <button
+              onClick={() => { setNewDoc(d => ({ ...d, procId: proceedings[0]?.id || 'proc_main' })); setDocModalOpen(true); }}
+              style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, width: '100%' }}
+            >+ Додати документ</button>
           </div>
 
           {/* ДЕРЕВО */}
@@ -392,6 +417,121 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
               <button onClick={() => { setIdeaOpen(false); setIdeaText(""); }} style={iconBtn}>{"Скасувати"}</button>
               <button onClick={saveIdea} style={primaryBtn}>{"Зберегти ідею"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛКА + ПРОВАДЖЕННЯ */}
+      {procModalOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
+          <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 360 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Нове провадження</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Тип</div>
+                <select value={newProc.type} onChange={e => setNewProc(p => ({ ...p, type: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                  <option value="appeal">{"Апеляційне провадження"}</option>
+                  <option value="cassation">{"Касація"}</option>
+                  <option value="first">{"Перша інстанція (додаткова)"}</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Назва</div>
+                <input value={newProc.title} onChange={e => setNewProc(p => ({ ...p, title: e.target.value }))} placeholder="напр. Апеляція: ухвала 03.2024" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Суд</div>
+                <input value={newProc.court} onChange={e => setNewProc(p => ({ ...p, court: e.target.value }))} placeholder="напр. Київський апеляційний суд" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setProcModalOpen(false); setNewProc({ title: '', court: '', type: 'appeal' }); }} style={{ background: 'none', border: '1px solid #2e3148', color: '#9aa0b8', padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Скасувати</button>
+              <button onClick={() => {
+                if (!newProc.title.trim()) return;
+                const proc = { id: 'proc_' + Date.now(), type: newProc.type, title: newProc.title.trim(), court: newProc.court.trim(), status: 'active', parentProcId: 'proc_main', parentEventId: null };
+                const updated = [...proceedings, proc];
+                updateCase && updateCase(caseData.id, 'proceedings', updated);
+                setProcModalOpen(false);
+                setNewProc({ title: '', court: '', type: 'appeal' });
+              }} style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Додати</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛКА + ДОКУМЕНТ */}
+      {docModalOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
+          <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 400 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Новий документ</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>{"Назва *"}</div>
+                <input value={newDoc.name} onChange={e => setNewDoc(d => ({ ...d, name: e.target.value }))} placeholder="напр. Ухвала про відкриття провадження" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} autoFocus />
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Дата</div>
+                  <input value={newDoc.date} onChange={e => setNewDoc(d => ({ ...d, date: e.target.value }))} placeholder="напр. березень 2023" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Провадження</div>
+                  <select value={newDoc.procId} onChange={e => setNewDoc(d => ({ ...d, procId: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                    {proceedings.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Тип</div>
+                  <select value={newDoc.category} onChange={e => setNewDoc(d => ({ ...d, category: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                    <option value="court_act">{"Судовий акт"}</option>
+                    <option value="pleading">{"Заява по суті"}</option>
+                    <option value="motion">{"Клопотання"}</option>
+                    <option value="evidence">{"Докази"}</option>
+                    <option value="correspondence">{"Листування"}</option>
+                    <option value="other">{"Інше"}</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>{"Від кого"}</div>
+                  <select value={newDoc.author} onChange={e => setNewDoc(d => ({ ...d, author: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                    <option value="court">Суд</option>
+                    <option value="ours">Наш</option>
+                    <option value="opponent">Опонент</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={newDoc.tags.includes('key')} onChange={e => setNewDoc(d => ({ ...d, tags: e.target.checked ? [...d.tags, 'key'] : d.tags.filter(t => t !== 'key') }))} />
+                  <span style={{ fontSize: 12, color: '#9aa0b8' }}>{"Позначити як ключовий"}</span>
+                </label>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setDocModalOpen(false); setNewDoc({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [] }); }} style={{ background: 'none', border: '1px solid #2e3148', color: '#9aa0b8', padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Скасувати</button>
+              <button onClick={() => {
+                if (!newDoc.name.trim()) return;
+                const ICONS = { court_act: '📋', pleading: '📄', motion: '📝', evidence: '📎', correspondence: '✉️', other: '📁' };
+                const doc = {
+                  id: Date.now(),
+                  procId: newDoc.procId || proceedings[0]?.id || 'proc_main',
+                  name: newDoc.name.trim(),
+                  icon: ICONS[newDoc.category] || '📄',
+                  date: newDoc.date.trim() || new Date().toLocaleDateString('uk-UA'),
+                  category: newDoc.category,
+                  author: newDoc.author,
+                  tags: newDoc.tags,
+                  driveId: null,
+                  notes: ''
+                };
+                const updated = [...(caseData.documents || []), doc];
+                updateCase && updateCase(caseData.id, 'documents', updated);
+                setDocModalOpen(false);
+                setNewDoc({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [] });
+              }} style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>{"Додати документ"}</button>
             </div>
           </div>
         </div>
