@@ -20,7 +20,7 @@ const PROC_COLORS = {
   cassation: "#f39c12"
 };
 
-export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase }) {
+export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -28,6 +28,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [notesExpanded, setNotesExpanded] = useState(false);
   const [ideaOpen, setIdeaOpen] = useState(false);
   const [ideaText, setIdeaText] = useState("");
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [noteText, setNoteText] = useState("");
 
   const [procModalOpen, setProcModalOpen] = useState(false);
   const [newProc, setNewProc] = useState({ title: '', court: '', type: 'appeal' });
@@ -49,10 +51,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       }];
   const documents = caseData.documents || [];
 
-  const notes = JSON.parse(localStorage.getItem("levytskyi_notes") || "[]")
-    .filter(n => n.caseId === caseData.id || n.caseName === caseData.name)
-    .sort((a, b) => new Date(b.ts) - new Date(a.ts));
-  const pinnedNote = notes.find(n => n.pinned) || notes[0];
+  const caseNotes = (notesProp || []).slice().sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+  const pinnedNote = caseNotes.find(n => n.pinned) || caseNotes[0];
 
   const filteredDocs = documents.filter(d => {
     if (docFilters.proc !== "all" && d.procId !== docFilters.proc) return false;
@@ -84,12 +84,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setIdeaOpen(false);
   }
 
-  function addNote() {
-    const text = prompt("Нова нотатка:");
-    if (!text) return;
-    const all = JSON.parse(localStorage.getItem("levytskyi_notes") || "[]");
-    all.push({ id: Date.now(), text, category: "case", caseId: caseData.id, caseName: caseData.name, source: "manual", ts: new Date().toISOString() });
-    localStorage.setItem("levytskyi_notes", JSON.stringify(all));
+  function handleAddNote(text) {
+    if (!text.trim()) return;
+    onAddNote && onAddNote({
+      text: text.trim(),
+      caseId: caseData.id,
+      caseName: caseData.name,
+      category: "case",
+      source: "manual"
+    });
   }
 
   const driveConnected = !!localStorage.getItem("levytskyi_drive_token");
@@ -189,21 +192,30 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
             <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em" }}>{"Нотатки по справі"}</div>
             <div style={{ display: "flex", gap: 6 }}>
-              {notes.length > 1 && (
+              {caseNotes.length > 1 && (
                 <button onClick={() => setNotesExpanded(!notesExpanded)} style={iconBtn}>
-                  {notesExpanded ? "\u2227 Згорнути" : `\u2228 ще ${notes.length - 1}`}
+                  {notesExpanded ? "\u2227 Згорнути" : `\u2228 ще ${caseNotes.length - 1}`}
                 </button>
               )}
-              <button onClick={addNote} style={iconBtn}>+ Додати</button>
+              <button onClick={() => setNoteModalOpen(true)} style={iconBtn}>+ Додати</button>
             </div>
           </div>
-          {notes.length === 0 ? (
+          {caseNotes.length === 0 ? (
             <div style={{ fontSize: 12, color: "#3a3f58" }}>{"Нотаток поки немає"}</div>
-          ) : (notesExpanded ? notes : [pinnedNote]).filter(Boolean).map(note => (
+          ) : (notesExpanded ? caseNotes : [pinnedNote]).filter(Boolean).map(note => (
             <div key={note.id} style={{ padding: "8px 10px", background: "#222536", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6 }}>
-              {note.pinned && <span style={{ fontSize: 9, color: "#4f7cff", marginRight: 6 }}>{"📌"}</span>}
-              {String(note.text || "")}
-              <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{note.ts ? new Date(note.ts).toLocaleDateString("uk-UA") : ""}</div>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                <div style={{ flex: 1 }}>
+                  {note.pinned && <span style={{ fontSize: 9, color: "#4f7cff", marginRight: 6 }}>{"📌"}</span>}
+                  {String(note.text || "")}
+                </div>
+                <button
+                  onClick={() => onPinNote && onPinNote(note.id)}
+                  title={note.pinned ? "Зняти закріплення" : "Закріпити"}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: note.pinned ? "#4f7cff" : "#3a3f58", padding: "0 2px", flexShrink: 0 }}
+                >{"📌"}</button>
+              </div>
+              <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
             </div>
           ))}
         </div>
@@ -548,6 +560,33 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
               <button onClick={() => { setIdeaOpen(false); setIdeaText(""); }} style={iconBtn}>{"Скасувати"}</button>
               <button onClick={saveIdea} style={primaryBtn}>{"Зберегти ідею"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛКА НОТАТКИ */}
+      {noteModalOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
+          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 400 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{"+ Нова нотатка"}</div>
+            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 8 }}>{"Справа: "}{caseData.name}</div>
+            <textarea
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
+              placeholder="Текст нотатки..."
+              rows={5}
+              style={{ width: "100%", background: "#222536", border: "1px solid #2e3148", color: "#e8eaf0", padding: 10, borderRadius: 7, fontSize: 12, resize: "vertical", outline: "none", lineHeight: 1.6, boxSizing: "border-box" }}
+              autoFocus
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+              <button onClick={() => { setNoteModalOpen(false); setNoteText(""); }} style={iconBtn}>{"Скасувати"}</button>
+              <button onClick={() => {
+                if (!noteText.trim()) return;
+                handleAddNote(noteText.trim());
+                setNoteModalOpen(false);
+                setNoteText("");
+              }} style={primaryBtn}>{"Зберегти"}</button>
             </div>
           </div>
         </div>

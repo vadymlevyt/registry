@@ -1,509 +1,429 @@
-# TASK.md — Досьє під-сесія 2Б
+# TASK.md — Досьє під-сесія 2В
 # Дата: 07.04.2026
 # Гілка: main
 
 ## МЕТА
 
 Чотири речі:
-1. Повернути нотатки в вкладку Огляд
-2. Файл при "+ Документ" — завантажити на Drive + viewer показує реальний файл
-3. Drop zone в Огляді — завантаження файлів
-4. Базові файлові операції: конвертація HEIC/JPEG→PDF, стиснення
+1. notes[] підняти в спільний стан App.jsx (Досьє і Notebook читають з одного місця)
+2. Фікс: нова нотатка не перезаписує поле `notes` справи
+3. Inline модалка для додавання нотатки замість prompt()
+4. Закріплення нотатки (📌) — закріплена показується в полі "Нотатки до справи"
+
+---
+
+## ВАЖЛИВО — ДВА РІЗНИХ ПОЛЯ
+
+Зараз в системі плутаються два різних місця:
+
+**Поле `case.notes`** (рядок в моделі справи) — короткий опис справи.
+Показується в картці реєстру і в блоці "ІНФОРМАЦІЯ ПРО СПРАВУ" в Огляді досьє.
+Редагується inline як інші поля справи.
+НЕ є списком нотаток.
+
+**`levytskyi_notes[]`** (масив в localStorage/App.jsx) — список окремих нотаток.
+Кожна нотатка: { id, text, caseId, caseName, category, source, ts, pinned }.
+Показується в блоці "НОТАТКИ ПО СПРАВІ" в Огляді досьє і в Записній книжці.
+НЕ перезаписує `case.notes`.
 
 ---
 
 ## КРОК 0 — ДІАГНОСТИКА
 
 ```bash
-grep -n "notes\|levytskyi_notes\|pinnedNote\|notesExpanded" src/components/CaseDossier/index.jsx | head -20
-grep -n "driveConnected\|drive_token\|uploadFile\|createFile" src/App.jsx | head -20
-grep -n "driveFolderId\|driveFolder" src/App.jsx | head -10
+grep -n "levytskyi_notes\|notes\[\|saveNoteToStorage" src/App.jsx | head -30
+grep -n "notes\|addNote\|onAddNote\|onUpdateNote" src/components/CaseDossier/index.jsx | head -20
+grep -n "notes\|addNote\|onAddNote" src/components/Notebook/index.jsx | head -20
 ```
+
+Зрозуміти:
+- Де зараз зберігаються нотатки (localStorage чи useState в App.jsx)
+- Чи є notes[] в спільному стані App.jsx
+- Як Notebook отримує нотатки зараз
 
 ---
 
-## КРОК 1 — ПОВЕРНУТИ НОТАТКИ В ОГЛЯД
+## КРОК 1 — notes[] В СПІЛЬНИЙ СТАН App.jsx
 
-В src/components/CaseDossier/index.jsx знайти функцію renderOverview().
-Нотатки були там раніше але зникли. Відновити блок після секції "Провадження".
-
-Логіка нотаток:
-- Читати з localStorage('levytskyi_notes')
-- Фільтрувати по caseId або caseName
-- Сортувати по даті (нові зверху)
-- Показувати закріплену або першу нотатку
-- Кнопка "∨ ще N" розгортає всі
+### 1.1 Додати state в App.jsx
 
 ```jsx
-// Додати в тіло компонента (після useState блоку):
-const notes = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]')
-  .filter(n => n.caseId === caseData.id || n.caseName === caseData.name)
-  .sort((a, b) => new Date(b.ts) - new Date(a.ts));
-const pinnedNote = notes.find(n => n.pinned) || notes[0];
-
-// Додати useState:
-const [notesExpanded, setNotesExpanded] = useState(false);
-```
-
-Блок нотаток в renderOverview() після блоку проваджень:
-
-```jsx
-{/* Нотатки */}
-<div style={{
-  background: '#1a1d27', border: '1px solid #2e3148',
-  borderRadius: 10, padding: 16, marginBottom: 16
-}}>
-  <div style={{
-    display: 'flex', alignItems: 'center',
-    justifyContent: 'space-between', marginBottom: 10
-  }}>
-    <div style={{
-      fontSize: 10, color: '#5a6080',
-      textTransform: 'uppercase', letterSpacing: '.06em'
-    }}>Нотатки по справі</div>
-    <div style={{ display: 'flex', gap: 6 }}>
-      {notes.length > 1 && (
-        <button
-          onClick={() => setNotesExpanded(!notesExpanded)}
-          style={{
-            background: 'none', border: '1px solid #2e3148',
-            color: '#9aa0b8', padding: '3px 8px',
-            borderRadius: 5, cursor: 'pointer', fontSize: 11
-          }}
-        >
-          {notesExpanded ? '∧ Згорнути' : `∨ ще ${notes.length - 1}`}
-        </button>
-      )}
-      <button
-        onClick={addNote}
-        style={{
-          background: 'none', border: '1px solid #2e3148',
-          color: '#9aa0b8', padding: '3px 8px',
-          borderRadius: 5, cursor: 'pointer', fontSize: 11
-        }}
-      >+ Додати</button>
-    </div>
-  </div>
-
-  {notes.length === 0 ? (
-    <div style={{ fontSize: 12, color: '#3a3f58' }}>Нотаток поки немає</div>
-  ) : (notesExpanded ? notes : [pinnedNote]).filter(Boolean).map(note => (
-    <div key={note.id} style={{
-      padding: '8px 10px', background: '#222536',
-      borderRadius: 7, marginBottom: 6,
-      fontSize: 12, color: '#9aa0b8', lineHeight: 1.6
-    }}>
-      {note.pinned && (
-        <span style={{ fontSize: 9, color: '#4f7cff', marginRight: 6 }}>📌</span>
-      )}
-      {String(note.text || '')}
-      <div style={{ fontSize: 10, color: '#3a3f58', marginTop: 4 }}>
-        {new Date(note.ts).toLocaleDateString('uk-UA')}
-      </div>
-    </div>
-  ))}
-</div>
-```
-
-Переконатись що функція addNote існує в компоненті:
-```jsx
-function addNote() {
-  const text = prompt('Нова нотатка:');
-  if (!text) return;
-  const all = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
-  all.push({
-    id: Date.now(),
-    text,
-    category: 'case',
-    caseId: caseData.id,
-    caseName: caseData.name,
-    source: 'manual',
-    ts: new Date().toISOString()
-  });
-  localStorage.setItem('levytskyi_notes', JSON.stringify(all));
-}
-```
-
----
-
-## КРОК 2 — ФАЙЛ ПРИ "+ ДОКУМЕНТ"
-
-### 2.1 Додати поле файлу в модалку документа
-
-В модалці "+ Документ" після поля "Ключовий документ" додати:
-
-```jsx
-<div>
-  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>
-    Файл (необов'язково)
-  </div>
-  <input
-    type="file"
-    accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx"
-    onChange={e => setNewDoc(d => ({ ...d, file: e.target.files[0] || null }))}
-    style={{
-      width: '100%', background: '#222536',
-      border: '1px solid #2e3148', color: '#9aa0b8',
-      padding: '6px 10px', borderRadius: 6, fontSize: 11
-    }}
-  />
-</div>
-```
-
-Додати file в початковий стан:
-```jsx
-const [newDoc, setNewDoc] = useState({
-  name: '', date: '', category: 'court_act',
-  author: 'court', procId: '', tags: [], file: null
+// Ініціалізація з localStorage
+const [notes, setNotes] = useState(() => {
+  try {
+    return JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
+  } catch {
+    return [];
+  }
 });
 ```
 
-### 2.2 Завантаження файлу на Drive при збереженні документа
-
-Знайти функцію збереження документа (onClick кнопки "Додати документ").
-Перед додаванням в documents[] — завантажити файл на Drive якщо є:
+### 1.2 Функції роботи з нотатками (живуть тільки в App.jsx)
 
 ```jsx
-onClick={async () => {
-  if (!newDoc.name.trim()) return;
-
-  let driveId = null;
-
-  // Завантажити файл на Drive якщо є
-  if (newDoc.file && driveConnected) {
-    try {
-      driveId = await uploadFileToDrive(newDoc.file, caseData);
-    } catch (err) {
-      console.error('Drive upload error:', err);
-      // Продовжити без Drive — зберегти метадані
-    }
-  }
-
-  const ICONS = {
-    court_act: '📋', pleading: '📄', motion: '📝',
-    evidence: '📎', correspondence: '✉️', other: '📁'
-  };
-
-  const doc = {
+function addNote(noteData) {
+  const note = {
     id: Date.now(),
-    procId: newDoc.procId || proceedings[0]?.id || 'proc_main',
-    name: newDoc.name.trim(),
-    icon: ICONS[newDoc.category] || '📄',
-    date: newDoc.date.trim() || new Date().toLocaleDateString('uk-UA'),
-    category: newDoc.category,
-    author: newDoc.author,
-    tags: newDoc.tags,
-    driveId,           // ID файлу на Drive або null
-    driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-    notes: ''
+    text: noteData.text || '',
+    category: noteData.category || 'general',
+    caseId: noteData.caseId || null,
+    caseName: noteData.caseName || null,
+    source: noteData.source || 'manual',
+    pinned: noteData.pinned || false,
+    ts: new Date().toISOString()
   };
+  const updated = [...notes, note];
+  setNotes(updated);
+  localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
+  return note;
+}
 
-  const updated = [...(caseData.documents || []), doc];
-  updateCase && updateCase(caseData.id, 'documents', updated);
-  setDocModalOpen(false);
-  setNewDoc({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null });
-}}
-```
-
-### 2.3 Функція uploadFileToDrive
-
-Додати в src/components/CaseDossier/index.jsx або в App.jsx:
-
-```jsx
-async function uploadFileToDrive(file, caseData) {
-  const token = localStorage.getItem('levytskyi_drive_token');
-  if (!token) throw new Error('No Drive token');
-
-  // Знайти або створити папку справи
-  // Спочатку шукаємо існуючу папку
-  const folderName = `${caseData.name}_${caseData.case_no || caseData.id}`;
-
-  // Метадані файлу
-  const metadata = {
-    name: file.name,
-    // Якщо є folderId справи — кладемо туди
-    ...(caseData.driveFolderId ? { parents: [caseData.driveFolderId] } : {})
-  };
-
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', file);
-
-  const response = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-    {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}` },
-      body: form
-    }
+function updateNote(noteId, changes) {
+  const updated = notes.map(n =>
+    n.id === noteId ? { ...n, ...changes } : n
   );
+  setNotes(updated);
+  localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
+}
 
-  if (!response.ok) throw new Error(`Drive upload failed: ${response.status}`);
+function deleteNote(noteId) {
+  const updated = notes.filter(n => n.id !== noteId);
+  setNotes(updated);
+  localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
+}
 
-  const data = await response.json();
-  return data.id; // driveId файлу
+function pinNote(noteId) {
+  // Знімаємо закріплення з усіх нотаток цієї справи
+  // і закріплюємо тільки вибрану
+  const targetNote = notes.find(n => n.id === noteId);
+  const updated = notes.map(n => {
+    if (n.caseId === targetNote?.caseId || n.caseName === targetNote?.caseName) {
+      return { ...n, pinned: n.id === noteId ? !n.pinned : false };
+    }
+    return n;
+  });
+  setNotes(updated);
+  localStorage.setItem('levytskyi_notes', JSON.stringify(updated));
 }
 ```
 
-### 2.4 Viewer — показати реальний файл з Drive
-
-В renderMaterials() знайти де рендериться viewer (права панель).
-Якщо у вибраного документа є driveId — показати посилання на файл:
+### 1.3 Передати в компоненти через props
 
 ```jsx
-{selectedDoc.driveId ? (
-  <div style={{ padding: 20 }}>
-    <div style={{
-      background: '#1a1d27', border: '1px solid #2e3148',
-      borderRadius: 10, padding: 24, maxWidth: 680, margin: '0 auto'
-    }}>
-      <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: 'center', marginBottom: 16 }}>
-        {selectedDoc.name}
-      </h3>
-
-      {/* Embed Google Drive viewer */}
-      <iframe
-        src={`https://drive.google.com/file/d/${selectedDoc.driveId}/preview`}
-        style={{
-          width: '100%', height: 500,
-          border: 'none', borderRadius: 8
-        }}
-        allow="autoplay"
-        title={selectedDoc.name}
-      />
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'center' }}>
-        <a
-          href={`https://drive.google.com/file/d/${selectedDoc.driveId}/view`}
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            background: '#4f7cff', color: '#fff',
-            padding: '6px 14px', borderRadius: 6,
-            fontSize: 12, textDecoration: 'none'
-          }}
-        >Відкрити в Drive</a>
-        <a
-          href={`https://drive.google.com/uc?export=download&id=${selectedDoc.driveId}`}
-          style={{
-            background: '#222536', color: '#9aa0b8',
-            border: '1px solid #2e3148',
-            padding: '6px 14px', borderRadius: 6,
-            fontSize: 12, textDecoration: 'none'
-          }}
-        >Завантажити</a>
-      </div>
-    </div>
-  </div>
-) : (
-  // Існуючий placeholder якщо файлу немає
-  <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
-    <div style={{
-      background: '#1a1d27', border: '1px solid #2e3148',
-      borderRadius: 10, padding: 24, maxWidth: 680,
-      margin: '0 auto', lineHeight: 1.8
-    }}>
-      <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: 'center', marginBottom: 4 }}>
-        {selectedDoc.name}
-      </h3>
-      <div style={{ fontSize: 11, color: '#5a6080', textAlign: 'center', marginBottom: 16 }}>
-        {selectedDoc.date}
-      </div>
-      {selectedDoc.notes && (
-        <div style={{
-          background: 'rgba(231,76,60,.08)', border: '1px solid rgba(231,76,60,.3)',
-          padding: '8px 12px', borderRadius: 6, marginBottom: 12,
-          fontSize: 11, color: '#e74c3c'
-        }}>{selectedDoc.notes}</div>
+// CaseDossier:
+{dossierCase && (
+  <ErrorBoundary>
+    <CaseDossier
+      caseData={dossierCase}
+      cases={cases}
+      updateCase={updateCase}
+      onClose={() => setDossierCase(null)}
+      onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
+      notes={notes.filter(n =>
+        n.caseId === dossierCase.id || n.caseName === dossierCase.name
       )}
-      <p style={{ fontSize: 13, color: '#9aa0b8' }}>
-        Для перегляду повного тексту прикріпіть файл з Google Drive.
-      </p>
-    </div>
-  </div>
+      onAddNote={addNote}
+      onUpdateNote={updateNote}
+      onDeleteNote={deleteNote}
+      onPinNote={pinNote}
+    />
+  </ErrorBoundary>
+)}
+
+// Notebook:
+{tab === 'notebook' && (
+  <ModuleErrorBoundary>
+    <React.Suspense fallback={...}>
+      <Notebook
+        cases={cases}
+        notes={notes}
+        onAddNote={addNote}
+        onUpdateNote={updateNote}
+        onDeleteNote={deleteNote}
+        onPinNote={pinNote}
+      />
+    </React.Suspense>
+  </ModuleErrorBoundary>
 )}
 ```
 
----
+### 1.4 Видалити читання з localStorage в компонентах
 
-## КРОК 3 — DROP ZONE В ОГЛЯДІ
-
-В renderOverview() знайти блок завантаження файлів (зона з іконкою 📎).
-Оновити щоб підтримував drag-and-drop і показував чергу:
-
+В CaseDossier/index.jsx знайти і видалити:
 ```jsx
-const [dropQueue, setDropQueue] = useState([]);
-const [isDragOver, setIsDragOver] = useState(false);
+// ВИДАЛИТИ це:
+const notes = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]')
+  .filter(...)
+  .sort(...);
+```
 
-// Drop zone
-<div
-  onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
-  onDragLeave={() => setIsDragOver(false)}
-  onDrop={e => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const files = Array.from(e.dataTransfer.files);
-    setDropQueue(prev => [...prev, ...files.map(f => ({ file: f, status: 'pending' }))]);
-  }}
-  onClick={() => document.getElementById('dossierDropInput').click()}
-  style={{
-    background: isDragOver ? 'rgba(79,124,255,.05)' : '#1a1d27',
-    border: `2px dashed ${isDragOver ? '#4f7cff' : '#2e3148'}`,
-    borderRadius: 10, padding: 20, textAlign: 'center',
-    cursor: 'pointer', transition: 'all .2s', marginBottom: 12
-  }}
->
-  <div style={{ fontSize: 28, marginBottom: 8, opacity: .4 }}>📎</div>
-  <div style={{ fontSize: 13, fontWeight: 600, color: '#9aa0b8', marginBottom: 4 }}>
-    {isDragOver ? 'Відпустіть файли' : 'Перетягніть або натисніть'}
-  </div>
-  <div style={{ fontSize: 11, color: '#5a6080' }}>
-    PDF, JPEG, PNG, HEIC, Word — будь-яка кількість
-  </div>
-  <input
-    id="dossierDropInput"
-    type="file"
-    multiple
-    accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx"
-    style={{ display: 'none' }}
-    onChange={e => {
-      const files = Array.from(e.target.files);
-      setDropQueue(prev => [...prev, ...files.map(f => ({ file: f, status: 'pending' }))]);
-    }}
-  />
-</div>
-
-{/* Черга файлів */}
-{dropQueue.length > 0 && (
-  <div style={{
-    background: '#1a1d27', border: '1px solid #2e3148',
-    borderRadius: 8, overflow: 'hidden', marginBottom: 12
-  }}>
-    {dropQueue.map((item, i) => (
-      <div key={i} style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '8px 12px', borderBottom: '1px solid #2e3148'
-      }}>
-        <span style={{ fontSize: 13 }}>
-          {item.file.name.match(/\.(jpg|jpeg|png|heic)$/i) ? '🖼' : '📄'}
-        </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{
-            fontSize: 11, fontWeight: 500,
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-          }}>{item.file.name}</div>
-          <div style={{ fontSize: 10, color: '#5a6080' }}>
-            {(item.file.size / 1024 / 1024).toFixed(1)} МБ
-          </div>
-        </div>
-        <span style={{
-          fontSize: 10, fontWeight: 600,
-          color: item.status === 'done' ? '#2ecc71' :
-                 item.status === 'error' ? '#e74c3c' : '#9aa0b8'
-        }}>
-          {item.status === 'done' ? '✓' :
-           item.status === 'error' ? '✗' : '⏳'}
-        </span>
-      </div>
-    ))}
-    <div style={{ padding: 8, display: 'flex', gap: 6 }}>
-      <button
-        onClick={() => setDropQueue([])}
-        style={{
-          flex: 1, background: 'none', border: '1px solid #2e3148',
-          color: '#9aa0b8', padding: '5px', borderRadius: 5,
-          cursor: 'pointer', fontSize: 11
-        }}
-      >Очистити</button>
-      <button
-        onClick={async () => {
-          // Завантажити кожен файл на Drive
-          for (let i = 0; i < dropQueue.length; i++) {
-            setDropQueue(prev => prev.map((item, idx) =>
-              idx === i ? { ...item, status: 'uploading' } : item
-            ));
-            try {
-              if (driveConnected) {
-                await uploadFileToDrive(dropQueue[i].file, caseData);
-              }
-              setDropQueue(prev => prev.map((item, idx) =>
-                idx === i ? { ...item, status: 'done' } : item
-              ));
-            } catch {
-              setDropQueue(prev => prev.map((item, idx) =>
-                idx === i ? { ...item, status: 'error' } : item
-              ));
-            }
-          }
-        }}
-        style={{
-          flex: 2, background: '#4f7cff', border: 'none',
-          color: '#fff', padding: '5px', borderRadius: 5,
-          cursor: 'pointer', fontSize: 11, fontWeight: 600
-        }}
-      >▶ Завантажити на Drive</button>
-    </div>
-  </div>
-)}
+Замінити на використання props:
+```jsx
+// Нотатки приходять через props вже відфільтровані по справі
+// props.notes — вже відфільтровані для цієї справи
+const caseNotes = (props.notes || []).sort((a, b) =>
+  new Date(b.ts) - new Date(a.ts)
+);
+const pinnedNote = caseNotes.find(n => n.pinned) || caseNotes[0];
 ```
 
 ---
 
-## КРОК 4 — КОНВЕРТАЦІЯ HEIC → PDF (базова)
+## КРОК 2 — ФІКС: НОВА НОТАТКА НЕ ПЕРЕЗАПИСУЄ case.notes
 
-При завантаженні HEIC файлу через drop zone або форму документа —
-автоматично конвертувати через heic2any якщо бібліотека є:
+### 2.1 Знайти де відбувається баг
 
 ```bash
-grep -n "heic2any\|heic" src/App.jsx | head -10
+grep -n "addNote\|saveNote\|notes.*case\|case.*notes" src/components/CaseDossier/index.jsx | head -20
 ```
 
-Якщо heic2any вже є — додати конвертацію перед uploadFileToDrive:
+Знайти місце де при додаванні нотатки оновлюється поле `case.notes`.
+Це неправильно — `case.notes` і `levytskyi_notes[]` це різні речі.
 
+### 2.2 Виправити функцію addNote в CaseDossier
+
+Стара (неправильна) логіка:
 ```jsx
-async function prepareFile(file) {
-  // Конвертувати HEIC в JPEG
-  if (file.name.match(/\.heic$/i) || file.type === 'image/heic') {
-    try {
-      const heic2any = (await import('heic2any')).default;
-      const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
-      return new File([blob], file.name.replace(/\.heic$/i, '.jpg'), { type: 'image/jpeg' });
-    } catch (err) {
-      console.error('HEIC conversion failed:', err);
-      return file; // повернути оригінал якщо не вдалось
-    }
-  }
-  return file;
+// НЕПРАВИЛЬНО — не робити так:
+function addNote() {
+  const text = prompt('...');
+  updateCase(caseData.id, 'notes', text); // перезаписує поле справи!
 }
 ```
 
-Викликати перед uploadFileToDrive:
+Правильна логіка:
 ```jsx
-const preparedFile = await prepareFile(newDoc.file);
-driveId = await uploadFileToDrive(preparedFile, caseData);
+// ПРАВИЛЬНО — додавати в масив нотаток:
+function handleAddNote(text) {
+  onAddNote({
+    text,
+    caseId: caseData.id,
+    caseName: caseData.name,
+    category: 'case',
+    source: 'manual'
+  });
+}
+```
+
+### 2.3 Поле "Нотатки до справи" в Огляді
+
+Поле `case.notes` в блоці "ІНФОРМАЦІЯ ПРО СПРАВУ" — це окремий рядок
+що редагується inline як і інші поля (Суд, Номер справи тощо).
+Воно залишається як є — короткий опис справи.
+
+Блок "НОТАТКИ ПО СПРАВІ" — це окремий список нотаток з `levytskyi_notes[]`.
+Ці два блоки незалежні і не впливають один на одного.
+
+---
+
+## КРОК 3 — INLINE МОДАЛКА ДЛЯ НОТАТКИ
+
+Замінити prompt() на модалку. Додати state:
+
+```jsx
+const [noteModalOpen, setNoteModalOpen] = useState(false);
+const [noteText, setNoteText] = useState('');
+```
+
+Кнопка "+ Додати" відкриває модалку:
+```jsx
+<button
+  onClick={() => setNoteModalOpen(true)}
+  style={{
+    background: 'none', border: '1px solid #2e3148',
+    color: '#9aa0b8', padding: '3px 8px',
+    borderRadius: 5, cursor: 'pointer', fontSize: 11
+  }}
+>+ Додати</button>
+```
+
+Модалка нотатки:
+```jsx
+{noteModalOpen && (
+  <div style={{
+    position: 'fixed', inset: 0,
+    background: 'rgba(0,0,0,.6)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 300
+  }}>
+    <div style={{
+      background: '#1a1d27', border: '1px solid #2e3148',
+      borderRadius: 12, padding: 20, width: 400
+    }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
+        + Нова нотатка
+      </div>
+      <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 8 }}>
+        Справа: {caseData.name}
+      </div>
+      <textarea
+        value={noteText}
+        onChange={e => setNoteText(e.target.value)}
+        placeholder="Текст нотатки..."
+        rows={5}
+        style={{
+          width: '100%', background: '#222536',
+          border: '1px solid #2e3148', color: '#e8eaf0',
+          padding: 10, borderRadius: 7, fontSize: 12,
+          resize: 'vertical', outline: 'none',
+          lineHeight: 1.6, boxSizing: 'border-box'
+        }}
+        autoFocus
+      />
+      <div style={{
+        display: 'flex', gap: 8, marginTop: 12,
+        justifyContent: 'flex-end'
+      }}>
+        <button
+          onClick={() => { setNoteModalOpen(false); setNoteText(''); }}
+          style={{
+            background: 'none', border: '1px solid #2e3148',
+            color: '#9aa0b8', padding: '5px 12px',
+            borderRadius: 6, cursor: 'pointer', fontSize: 12
+          }}
+        >Скасувати</button>
+        <button
+          onClick={() => {
+            if (!noteText.trim()) return;
+            handleAddNote(noteText.trim());
+            setNoteModalOpen(false);
+            setNoteText('');
+          }}
+          style={{
+            background: '#4f7cff', color: '#fff', border: 'none',
+            padding: '5px 14px', borderRadius: 6,
+            cursor: 'pointer', fontSize: 12
+          }}
+        >Зберегти</button>
+      </div>
+    </div>
+  </div>
+)}
 ```
 
 ---
 
-## КРОК 5 — ЗБІРКА І ДЕПЛОЙ
+## КРОК 4 — ЗАКРІПЛЕННЯ НОТАТКИ (📌)
+
+### 4.1 Кнопка закріплення в картці нотатки
+
+В блоці рендеру нотаток додати кнопку 📌 для кожної нотатки:
+
+```jsx
+{caseNotes.map(note => (
+  <div key={note.id} style={{
+    padding: '8px 10px', background: '#222536',
+    borderRadius: 7, marginBottom: 6,
+    fontSize: 12, color: '#9aa0b8', lineHeight: 1.6,
+    position: 'relative'
+  }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+      <div style={{ flex: 1 }}>
+        {note.pinned && (
+          <span style={{ fontSize: 9, color: '#4f7cff', marginRight: 6 }}>📌</span>
+        )}
+        {String(note.text || '')}
+      </div>
+      <button
+        onClick={() => onPinNote(note.id)}
+        title={note.pinned ? 'Зняти закріплення' : 'Закріпити'}
+        style={{
+          background: 'none', border: 'none',
+          cursor: 'pointer', fontSize: 12,
+          color: note.pinned ? '#4f7cff' : '#3a3f58',
+          padding: '0 2px', flexShrink: 0
+        }}
+      >📌</button>
+    </div>
+    <div style={{ fontSize: 10, color: '#3a3f58', marginTop: 4 }}>
+      {new Date(note.ts).toLocaleDateString('uk-UA')}
+    </div>
+  </div>
+))}
+```
+
+### 4.2 Що показується в "Нотатки до справи"
+
+Закріплена нотатка (pinned: true) показується першою в списку.
+Якщо жодна не закріплена — показується остання додана.
+Кнопка "∨ ще N" розгортає всі.
+
+---
+
+## КРОК 5 — ОНОВИТИ NOTEBOOK
+
+В src/components/Notebook/index.jsx:
+
+### 5.1 Замінити читання з localStorage на props
+
+```bash
+grep -n "localStorage\|levytskyi_notes\|useState.*notes" src/components/Notebook/index.jsx | head -20
+```
+
+Знайти де Notebook читає нотатки і замінити на:
+```jsx
+// Було:
+const [notes, setNotes] = useState(() =>
+  JSON.parse(localStorage.getItem('levytskyi_notes') || '[]')
+);
+
+// Стало — використовувати props:
+// notes, onAddNote, onUpdateNote, onDeleteNote, onPinNote приходять через props
+```
+
+### 5.2 Редагування нотаток в Notebook
+
+Notebook повинен вміти редагувати будь-яку нотатку незалежно звідки вона створена.
+При редагуванні викликати onUpdateNote(noteId, { text: newText }).
+
+```bash
+grep -n "onEdit\|editNote\|updateNote\|onChange.*note" src/components/Notebook/index.jsx | head -10
+```
+
+Якщо редагування не реалізоване — додати inline редагування:
+при кліку на нотатку textarea стає редагованою, по blur — onUpdateNote.
+
+---
+
+## КРОК 6 — ПЕРЕВІРИТИ saveNoteToStorage
+
+```bash
+grep -n "saveNoteToStorage" src/App.jsx | head -10
+```
+
+Якщо функція є — оновити щоб вона також оновлювала notes[] state:
+```jsx
+function saveNoteToStorage(text, resultPayload, caseId, caseName, source, category) {
+  addNote({ text, caseId, caseName, source, category });
+}
+```
+
+Або замінити всі виклики saveNoteToStorage на addNote.
+
+---
+
+## КРОК 7 — ЗБІРКА І ДЕПЛОЙ
 
 ```bash
 npm run build
-git add -A && git commit -m "feat: restore notes, file upload to Drive, drop zone, HEIC conversion" && git push origin main
+git add -A && git commit -m "feat: shared notes state, inline note modal, pin note, fix case.notes field" && git push origin main
 ```
 
 ---
 
 ## КРИТЕРІЇ ЗАВЕРШЕННЯ
 
-- [ ] Нотатки показуються в Огляді (закріплена + розгортаються)
-- [ ] Кнопка "+ Додати" в нотатках працює
-- [ ] Форма "+ Документ" має поле файлу
-- [ ] Файл завантажується на Drive при збереженні документа
-- [ ] Документ з driveId показує iframe viewer з Drive
-- [ ] Документ без driveId показує placeholder
-- [ ] Drop zone в Огляді приймає файли drag-and-drop і через кнопку
-- [ ] Черга файлів показує назву, розмір, статус
-- [ ] Кнопка "▶ Завантажити на Drive" завантажує файли з черги
-- [ ] HEIC конвертується в JPEG перед завантаженням
+- [ ] notes[] є в App.jsx state і синхронізується з localStorage
+- [ ] addNote / updateNote / deleteNote / pinNote живуть тільки в App.jsx
+- [ ] CaseDossier отримує notes через props і не читає localStorage напряму
+- [ ] Notebook отримує notes через props і не читає localStorage напряму
+- [ ] Нова нотатка в Досьє НЕ перезаписує поле case.notes
+- [ ] case.notes в "ІНФОРМАЦІЯ ПРО СПРАВУ" редагується inline як раніше
+- [ ] Блок "НОТАТКИ ПО СПРАВІ" показує список нотаток з notes[]
+- [ ] Кнопка "+ Додати" відкриває inline модалку (не prompt)
+- [ ] Textarea в модалці багаторядкова
+- [ ] Кнопка 📌 закріплює нотатку
+- [ ] Закріплена нотатка показується першою
+- [ ] Нотатки створені в Досьє видно і редагуються в Notebook
+- [ ] Нотатки створені в Notebook видно в Досьє
 - [ ] npm run build без помилок

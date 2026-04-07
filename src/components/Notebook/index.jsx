@@ -32,30 +32,19 @@ function writeLS(key, arr) {
   try { localStorage.setItem(key, JSON.stringify(arr)); } catch {}
 }
 
-function getAllNotes(cases) {
-  // Джерело 1: нотатки зі справ
-  const caseNotes = [];
-  (cases || []).forEach(c => {
-    (c.notes || []).forEach(n => {
-      caseNotes.push({
-        ...n,
-        category: 'case',
-        caseId: c.id,
-        caseName: c.name || c.client || 'Справа',
-      });
-    });
-  });
+function getAllNotes(cases, notesProp) {
+  // Джерело 1: нотатки зі спільного стану App.jsx (levytskyi_notes)
+  const sharedNotes = (notesProp || []).map(n => ({ ...n, category: n.category || 'general' }));
 
-  // Джерело 2: localStorage
-  const generalNotes = readLS(LS_KEYS.general).map(n => ({ ...n, category: n.category || 'general' }));
+  // Джерело 2: системні та контент нотатки з localStorage
   const systemNotes  = readLS(LS_KEYS.system).map(n  => ({ ...n, category: 'system' }));
   const contentNotes = readLS(LS_KEYS.content).map(n => ({ ...n, category: 'content' }));
 
-  return [...caseNotes, ...generalNotes, ...systemNotes, ...contentNotes]
+  return [...sharedNotes, ...systemNotes, ...contentNotes]
     .sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
 }
 
-export default function Notebook({ cases, onUpdateCase }) {
+export default function Notebook({ cases, onUpdateCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote }) {
   const [innerTab, setInnerTab] = useState('notes');
 
   return (
@@ -87,7 +76,7 @@ export default function Notebook({ cases, onUpdateCase }) {
       </div>
 
       {innerTab === 'notes' && (
-        <NotesTab cases={cases} onUpdateCase={onUpdateCase} />
+        <NotesTab cases={cases} onUpdateCase={onUpdateCase} notesProp={notesProp} onAddNote={onAddNote} onUpdateNote={onUpdateNote} onDeleteNote={onDeleteNote} onPinNote={onPinNote} />
       )}
       {innerTab === 'records' && <RecordsTab />}
     </div>
@@ -95,15 +84,15 @@ export default function Notebook({ cases, onUpdateCase }) {
 }
 
 // ── NOTES TAB ───────────────────────────────────────────────────────────────
-function NotesTab({ cases, onUpdateCase }) {
+function NotesTab({ cases, onUpdateCase, notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote }) {
   const [search, setSearch] = useState('');
-  const [filterCat, setFilterCat] = useState('all'); // all | general | case | content | system
+  const [filterCat, setFilterCat] = useState('all');
   const [filterCaseName, setFilterCaseName] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const bump = () => setRefresh(r => r + 1);
 
-  const allNotes = useMemo(() => getAllNotes(cases), [cases, refresh]);
+  const allNotes = useMemo(() => getAllNotes(cases, notesProp), [cases, notesProp, refresh]);
 
   const casesWithNotes = useMemo(() => {
     const map = {};
@@ -130,23 +119,18 @@ function NotesTab({ cases, onUpdateCase }) {
   }, [allNotes, search, filterCat, filterCaseName]);
 
   function handleAddNote(payload) {
-    // payload: {text, category, caseId, caseName}
-    const ts = new Date().toISOString();
-    const baseNote = {
-      id: Date.now(),
-      text: payload.text,
-      source: 'manual',
-      ts,
-    };
-    if (payload.category === 'case' && payload.caseId != null) {
-      const c = (cases || []).find(x => String(x.id) === String(payload.caseId));
-      if (!c) return;
-      const note = { ...baseNote, category: 'case' };
-      const updatedNotes = [note, ...(Array.isArray(c.notes) ? c.notes : [])];
-      onUpdateCase && onUpdateCase(c.id, 'notes', updatedNotes);
+    if (onAddNote) {
+      onAddNote({
+        text: payload.text,
+        category: payload.category || 'general',
+        caseId: payload.caseId || null,
+        caseName: payload.caseName || null,
+        source: 'manual'
+      });
     } else {
+      // Fallback: write to localStorage directly
       const key = LS_KEYS[payload.category] || LS_KEYS.general;
-      const note = { ...baseNote, category: payload.category || 'general' };
+      const note = { id: Date.now(), text: payload.text, source: 'manual', ts: new Date().toISOString(), category: payload.category || 'general' };
       writeLS(key, [note, ...readLS(key)]);
     }
     bump();
@@ -154,15 +138,8 @@ function NotesTab({ cases, onUpdateCase }) {
   }
 
   function handleDeleteNote(note) {
-    if (note.category === 'case') {
-      const confirmed = window.confirm(`Видалити нотатку по справі ${note.caseName || 'без назви'}?`);
-      if (!confirmed) return;
-    }
-    if (note.category === 'case' && note.caseId != null) {
-      const c = (cases || []).find(x => String(x.id) === String(note.caseId));
-      if (!c) return;
-      const updated = (c.notes || []).filter(n => n.id !== note.id);
-      onUpdateCase && onUpdateCase(c.id, 'notes', updated);
+    if (onDeleteNote) {
+      onDeleteNote(note.id);
     } else {
       const key = LS_KEYS[note.category] || LS_KEYS.general;
       writeLS(key, readLS(key).filter(n => n.id !== note.id));
@@ -171,13 +148,8 @@ function NotesTab({ cases, onUpdateCase }) {
   }
 
   function handleEditNote(note, newText) {
-    if (note.category === 'case' && note.caseId != null) {
-      const c = (cases || []).find(x => String(x.id) === String(note.caseId));
-      if (!c) return;
-      const updated = (c.notes || []).map(n =>
-        n.id === note.id ? { ...n, text: newText } : n
-      );
-      onUpdateCase && onUpdateCase(c.id, 'notes', updated);
+    if (onUpdateNote) {
+      onUpdateNote(note.id, { text: newText });
     } else {
       const key = LS_KEYS[note.category] || LS_KEYS.general;
       writeLS(key, readLS(key).map(n => n.id === note.id ? { ...n, text: newText } : n));

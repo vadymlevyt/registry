@@ -1137,24 +1137,14 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     if (action === 'save_note') {
       const caseName = _analysisResult.case_match?.case_name;
       const matched = caseName ? findCaseForAction(caseName, cases) : null;
-      if (matched) {
-        const newNote = {
-          id: Date.now(),
-          text: text || '',
-          category: 'case',
-          source: 'chat',
-          ts: new Date().toISOString(),
-        };
-        setCases(prev => prev.map(c =>
-          c.id === matched.id
-            ? { ...c, notes: [newNote, ...(Array.isArray(c.notes) ? c.notes : [])] }
-            : c
-        ));
-      } else {
-        const general = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
-        general.unshift({ id: Date.now(), text: text || '', category: 'general', source: 'chat', ts: new Date().toISOString() });
-        localStorage.setItem('levytskyi_notes', JSON.stringify(general));
-      }
+      saveNoteToStorage(
+        text || '',
+        null,
+        matched?.id || null,
+        matched?.name || caseName || null,
+        'chat',
+        matched ? 'case' : 'general'
+      );
       markDone();
       return;
     }
@@ -2737,9 +2727,14 @@ function App() {
   const addNote = (note) => {
     const newNote = {
       id: Date.now().toString(),
-      text: note.text,
-      category: note.category || 'general', // case | content | system | general
+      text: note.text || '',
+      category: note.category || 'general',
       caseId: note.caseId || null,
+      caseName: note.caseName || null,
+      source: note.source || 'manual',
+      pinned: note.pinned || false,
+      result: note.result || null,
+      ts: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
     setNotes(prev => {
@@ -2747,11 +2742,34 @@ function App() {
       try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
       return updated;
     });
+    return newNote;
   };
 
   const deleteNote = (noteId) => {
     setNotes(prev => {
       const updated = prev.filter(n => n.id !== noteId);
+      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
+  };
+
+  const updateNote = (noteId, changes) => {
+    setNotes(prev => {
+      const updated = prev.map(n => n.id === noteId ? { ...n, ...changes } : n);
+      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      return updated;
+    });
+  };
+
+  const pinNote = (noteId) => {
+    setNotes(prev => {
+      const target = prev.find(n => String(n.id) === String(noteId));
+      const updated = prev.map(n => {
+        if (n.caseId === target?.caseId && n.caseName === target?.caseName) {
+          return { ...n, pinned: String(n.id) === String(noteId) ? !n.pinned : false };
+        }
+        return n;
+      });
       try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
       return updated;
     });
@@ -2923,7 +2941,7 @@ function App() {
             {tab === 'notebook' && (
               <ModuleErrorBoundary>
                 <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-                  <Notebook cases={cases} onUpdateCase={updateCase} />
+                  <Notebook cases={cases} onUpdateCase={updateCase} notes={notes} onAddNote={addNote} onUpdateNote={updateNote} onDeleteNote={deleteNote} onPinNote={pinNote} />
                 </React.Suspense>
               </ModuleErrorBoundary>
             )}
@@ -3030,7 +3048,7 @@ function App() {
           {tab === 'notebook' && (
             <ModuleErrorBoundary>
               <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-                <Notebook cases={cases} onUpdateCase={updateCase} />
+                <Notebook cases={cases} onUpdateCase={updateCase} notes={notes} onAddNote={addNote} onUpdateNote={updateNote} onDeleteNote={deleteNote} onPinNote={pinNote} />
               </React.Suspense>
             </ModuleErrorBoundary>
           )}
@@ -3057,6 +3075,11 @@ function App() {
             onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
             onCloseCase={closeCase}
             onDeleteCase={handleDeleteCase}
+            notes={notes.filter(n => n.caseId === dossierCase.id || n.caseName === dossierCase.name)}
+            onAddNote={addNote}
+            onUpdateNote={updateNote}
+            onDeleteNote={deleteNote}
+            onPinNote={pinNote}
           />
         </ErrorBoundary>
       )}
