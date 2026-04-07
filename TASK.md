@@ -1,241 +1,294 @@
-# TASK.md — CaseDossier багфікси + UI покращення
-Дата: 07.04.2026
+# TASK.md — Фікс z-index після resizable panels + LESSONS.md
+Дата: 08.04.2026
 
 ## СЕРЕДОВИЩЕ
 Репо: github.com/vadymlevyt/registry
-Компонент: src/components/CaseDossier/index.jsx
 Деплой: git add -A && git commit -m "..." && git push origin main
-Перевірка після деплою: git log --oneline -3
+Перевірка: git log --oneline -3
 
 ---
 
-## ОБОВ'ЯЗКОВО ПЕРЕД ПОЧАТКОМ
+## ОБОВ'ЯЗКОВО ПЕРЕД ПОЧАТКОМ — ПРОЧИТАТИ LESSONS.md
 
-Прочитати поточний стан компонента:
 ```bash
-wc -l src/components/CaseDossier/index.jsx
+cat LESSONS.md
 ```
 
 ---
 
-## БАГ 1 — АГЕНТ НЕ ПАМ'ЯТАЄ ПЕРЕПИСКУ (КРИТИЧНИЙ)
+## ДІАГНОСТИКА СПОЧАТКУ
 
-**Симптом:** Агент каже "не пам'ятаю жодної розмови яка була до цієї сесії".
-Переписка візуально зберігається і показується — але в API не передається.
-
-**ОБОВ'ЯЗКОВА ДІАГНОСТИКА СПОЧАТКУ:**
 ```bash
-grep -B5 -A30 "fetch.*anthropic\|api\.anthropic" src/components/CaseDossier/index.jsx
-```
-Знайти де формується масив `messages:` у fetch до api.anthropic.com.
-Показати що там зараз. Тільки після цього вносити зміни.
+# 1. Останні коміти
+git log --oneline -5
 
-**Що потрібно зробити:**
-Знайти fetch до api.anthropic.com. Знайти масив messages[]. Замінити на:
+# 2. z-index в CaseDossier
+grep -n "zIndex\|z-index\|position" src/components/CaseDossier/index.jsx | head -40
 
-```jsx
-const historyForAPI = agentMessages
-  .filter(m => m.role === 'user' || m.role === 'assistant')
-  .slice(-10)
-  .map(m => ({ role: m.role, content: m.content }));
-
-const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
-const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
-
-// У fetch body:
-messages: [
-  ...cleanHistory,
-  { role: 'user', content: userMessage }
-]
+# 3. z-index в App.jsx
+grep -n "zIndex\|z-index\|position.*fixed\|position.*absolute" src/App.jsx | head -40
 ```
 
-**Тест після виправлення:**
-1. Відкрити досьє будь-якої справи
-2. Написати агенту: "Мене звати Вадим"
-3. Закрити досьє (← Реєстр)
-4. Відкрити те саме досьє знову
-5. Написати: "Як мене звати?"
-6. Агент має відповісти "Вадим"
+Показати результати перед змінами.
 
 ---
 
-## БАГ 2 — QI ЗАНАДТО ШИРОКИЙ
+## БАГ 1 — КНОПКИ ДОСЬЄ ХОВАЮТЬСЯ ЗА ШАРАМИ
 
-**Симптом:** QI sidebar займає ~50% ширини замість 1/3.
+**Симптом:** Кнопка "← Реєстр", "Сховати агента", вкладки — зникли або з'являються тільки при скролі.
 
-**Рішення:** Знайти стилі QI sidebar і встановити:
-```jsx
-width: '33.33%',
-maxWidth: 480,
-minWidth: 320,
-```
-
----
-
-## БАГ 3 — РЕЄСТР ПРОСТУПАЄ ПІД ДОСЬЄ
-
-**Симптом:** Коли відкрите досьє — внизу екрану видно карточки справ з реєстру.
-
-**Рішення:** Знайти кореневий контейнер CaseDossier і встановити:
-```jsx
-position: 'fixed',
-top: 0,
-left: 0,
-right: 0,
-bottom: 0,
-background: '#0d0f1a',
-zIndex: 50,
-overflow: 'auto',
-```
-
----
-
-## БАГ 4 — ДОДАВАННЯ ПРОВАДЖЕННЯ БЕЗ ОНОВЛЕННЯ СТОРІНКИ
-
-**Симптом:** Після додавання нового провадження воно з'являється в UI тільки після F5.
-
-**Причина:** Локальний стан проваджень не оновлюється після збереження через updateCase().
+**Причина:** Resizable panels додали position:relative або transform що створило новий stacking context і перекрив шапку.
 
 **Рішення:**
-Знайти функцію що додає провадження (щось на кшталт handleAddProceeding або addProceeding).
 
-Після виклику updateCase() — додати примусове оновлення локального стану проваджень:
-
+Кореневий контейнер CaseDossier:
 ```jsx
-// Після updateCase(caseId, 'proceedings', newProceedings):
-setLocalProceedings(newProceedings); // або setCase({...case, proceedings: newProceedings})
+{
+  position: 'fixed',
+  top: 0, left: 0, right: 0, bottom: 0,
+  zIndex: 50,
+  background: '#0d0f1a',
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+}
 ```
 
-Якщо компонент бере proceedings напряму з props.caseData — переконатись що App.jsx оновлює об'єкт справи реактивно і компонент отримує нові props без перезавантаження.
-
-**Тест:**
-1. Відкрити досьє
-2. Натиснути "+ Додати провадження"
-3. Заповнити і зберегти
-4. Нове провадження має з'явитись ОДРАЗУ без F5
-
----
-
-## ПОКРАЩЕННЯ 1 — ПОЛЕ ЧАТУ АГЕНТА ОДРАЗУ ПІД РУКОЮ
-
-**Проблема:** Коли відкриваєш агента досьє — треба скролити щоб дістатись до поля вводу.
-
-**Рішення:** Панель агента має бути flex колонкою де:
-- Заголовок + кнопки управління — фіксована висота зверху
-- Переписка (messages) — flex: 1, overflow-y: auto (займає весь простір що лишився)
-- Поле вводу (textarea + кнопка надіслати) — фіксовано ЗНИЗУ панелі, flexShrink: 0
-
+Шапка (заголовок + кнопки + вкладки):
 ```jsx
-// Структура панелі агента:
-<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-  {/* Заголовок */}
-  <div style={{ flexShrink: 0 }}> ... кнопки, заголовок ... </div>
-  
-  {/* Переписка */}
-  <div style={{ flex: 1, overflowY: 'auto' }}> ... messages ... </div>
-  
-  {/* Поле вводу — ЗАВЖДИ ВНИЗУ */}
-  <div style={{ flexShrink: 0, padding: '8px', borderTop: '1px solid #2a2d3e' }}>
-    <textarea ... />
-    <button ...>→</button>
-  </div>
-</div>
+{
+  position: 'sticky',
+  top: 0,
+  zIndex: 100,
+  background: '#0d0f1a',
+  flexShrink: 0,
+}
 ```
 
-Аналогічно для QI sidebar.
-
----
-
-## ПОКРАЩЕННЯ 2 — ГОЛОСОВИЙ ВВІД В АГЕНТ ДОСЬЄ
-
-**Рішення:** Додати кнопку 🎤 поруч з полем вводу агента досьє.
-Використати той самий механізм що вже реалізований в QI (isRecordingRef, Web Speech API, uk-UA).
-Кнопки × і ✓ при активному записі — як в QI.
-
----
-
-## ПОКРАЩЕННЯ 3 — РУХОМІ МЕЖІ (RESIZABLE PANELS)
-
-Три рухомі межі:
-
-### 3А — Між QI sidebar і основним контентом досьє
-### 3Б — Між агентом досьє і контентом досьє  
-### 3В — Між деревом матеріалів і viewer'ом (вкладка Матеріали)
-
-**Реалізація для кожної межі:**
-
+Resizable контейнер (flex row з панелями):
 ```jsx
-// Компонент-розділювач
-<div
-  style={{
-    width: 8,           // або height: 8 для горизонтального
-    background: '#1e2130',
-    cursor: 'col-resize',
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    userSelect: 'none',
-  }}
-  onMouseDown={handleResizeStart}
-  onTouchStart={handleResizeTouchStart}
->
-  {/* Потовщення-ручка по центру */}
+{
+  flex: 1,
+  display: 'flex',
+  overflow: 'hidden',
+  position: 'relative',
+  zIndex: 1,
+}
+```
+
+---
+
+## БАГ 2 — QI НЕ ВИДНО ПІСЛЯ ВІДКРИТТЯ
+
+**Симптом:** Клавіатура з'являється але QI не видно — ніби під контентом.
+
+**Рішення:**
+
+QI sidebar:
+```jsx
+{
+  width: qiWidth,
+  minWidth: 280,
+  maxWidth: 480,
+  flexShrink: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  borderLeft: '1px solid #2a2d3e',
+  // НЕ position:absolute, НЕ transform
+}
+```
+
+---
+
+## БАГ 3 — АГЕНТ ВІДКРИТИЙ НА ВСІХ ВКЛАДКАХ, КНОПКА TOGGLE ЗНИКЛА
+
+**Діагностика:**
+```bash
+grep -n "showAgent\|setShowAgent\|Сховати агента" src/components/CaseDossier/index.jsx
+```
+
+**Відновити якщо зникло:**
+```jsx
+const [showAgent, setShowAgent] = useState(activeTab === 'overview');
+
+useEffect(() => {
+  setShowAgent(activeTab === 'overview');
+}, [activeTab]);
+
+// Кнопка
+<button onClick={() => setShowAgent(!showAgent)}>
+  {showAgent ? '🤖 Сховати агента' : '🤖 Показати агента'}
+</button>
+
+// Рендер агента тільки якщо showAgent
+{showAgent && <AgentPanel ... />}
+```
+
+---
+
+## БАГ 4 — РОЗДІЛЮВАЧ ПЕРЕКРИВАЄ КОНТЕНТ
+
+**Рішення:**
+```jsx
+<div style={{
+  width: 8,
+  flexShrink: 0,
+  background: '#1a1d2e',
+  cursor: 'col-resize',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 2,
+  position: 'relative',
+}} onMouseDown={handleResizeStart} onTouchStart={handleResizeTouchStart}>
   <div style={{
-    width: 4,
-    height: 40,
+    width: 4, height: 40,
     borderRadius: 2,
     background: '#3a3d5a',
+    pointerEvents: 'none',
   }} />
 </div>
 ```
-
-**Логіка drag для mouse і touch:**
-```jsx
-const handleResizeStart = (e) => {
-  e.preventDefault();
-  const startX = e.clientX;
-  const startWidth = currentPanelWidth;
-  
-  const onMove = (e) => {
-    const delta = e.clientX - startX;
-    const newWidth = Math.max(200, Math.min(600, startWidth + delta));
-    setPanelWidth(newWidth);
-  };
-  
-  const onUp = () => {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-  };
-  
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-};
-
-// Touch аналог — через e.touches[0].clientX
-```
-
-**Початкові розміри:**
-- QI: 33% (min 280, max 480)
-- Агент досьє: 35% (min 280, max 500)
-- Дерево матеріалів: 280px (min 200, max 400)
 
 ---
 
 ## ПОРЯДОК ВИКОНАННЯ
 
-1. Баг 1 (агент пам'ять) — СПОЧАТКУ grep діагностика
-2. Баг 2 (QI ширина)
-3. Баг 3 (реєстр проступає)
-4. Баг 4 (провадження без F5)
-5. Покращення 1 (поле вводу знизу)
-6. Покращення 2 (голос в агенті)
-7. Покращення 3 (рухомі межі)
+1. Діагностика grep (показати результати)
+2. Фікс кореневого контейнера
+3. Фікс шапки
+4. Фікс QI sidebar
+5. Відновити toggle агента
+6. Перевірити розділювачі
+7. Створити LESSONS.md
+8. Оновити CLAUDE.md
+
+---
+
+## СТВОРИТИ ФАЙЛ LESSONS.md В КОРЕНІ РЕПО
+
+```markdown
+# LESSONS.md — Інституційна пам'ять розробки
+# Legal BMS | АБ Левицького
+
+## ЯК КОРИСТУВАТИСЬ
+
+ВАЖЛИВО: цей файл — довідник при діагностиці, НЕ інструкція до дії.
+НЕ змінювати код на основі записів без явного завдання в TASK.md.
+
+КОЛИ звертатись:
+- Перша спроба вирішити проблему не дала результату
+- Бачиш схожий симптом але не знаєш причину
+- Збираєшся робити merge або переписувати великий блок коду
+- Щось "злетіло" після попереднього фіксу
+
+КОЛИ НЕ звертатись:
+- Прості зміни стилів
+- Новий функціонал з нуля
+- Очевидні правки одного поля
+
+ЯК ПОПОВНЮЄТЬСЯ:
+- Тільки за явною командою в TASK.md
+- НЕ дописувати самостійно
+
+---
+
+## УРОКИ
+
+### [2026-04-08] Після resizable panels зникають кнопки і QI
+**Компонент:** src/components/CaseDossier/index.jsx
+**Симптом:** Кнопки шапки зникають або ховаються при скролі. QI не видно. Агент на всіх вкладках.
+**Причина:** Resizable panels змінюють stacking context. position:relative або transform на контейнері перекриває елементи вище.
+**Правило:** Кореневий контейнер: position:fixed, overflow:hidden. Шапка: position:sticky, zIndex:100. Resizable контейнер: zIndex:1.
+**Після будь-яких змін layout — перевіряти чекліст:**
+1. Кнопка "← Реєстр" видима
+2. Кнопка "Сховати агента" видима і працює
+3. QI відкривається і видно
+4. Вкладки переключаються
+5. На не-overview вкладках агент закритий
+
+---
+
+### [2026-04-07] Агент досьє не передає історію в API
+**Компонент:** src/components/CaseDossier/index.jsx
+**Симптом:** Агент каже "не пам'ятаю попередніх розмов" — переписка візуально є але в API не передається
+**Причина:** У fetch до api.anthropic.com в messages[] — тільки поточне повідомлення
+**Рішення:**
+```js
+const historyForAPI = agentMessages
+  .filter(m => m.role === 'user' || m.role === 'assistant')
+  .slice(-10)
+  .map(m => ({ role: m.role, content: m.content }));
+const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
+const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
+messages: [...cleanHistory, { role: 'user', content: userMessage }]
+```
+**Правило:** API вимагає першим role:'user'. Перевіряти при будь-яких змінах fetch.
+**Діагностика:** grep -B5 -A30 "fetch.*anthropic" src/components/CaseDossier/index.jsx
+
+---
+
+### [2026-04-06] Merge конфлікт — два варіанти коду в одному файлі
+**Симптом:** Дублікати змінних, мертвий код після return, blank page
+**Діагностика:** grep -n "<<<<<<\|>>>>>>\|=======" src/components/CaseDossier/index.jsx
+**Правило:** Ніколи не залишати обидва варіанти. Вибрати один. Перевіряти після кожного merge.
+
+---
+
+### [2026-04-05] textarea в QI виштовхує кнопки за екран
+**Компонент:** QI в src/App.jsx
+**Симптом:** Кнопки ховаються за межі екрану на планшеті
+**Правило:** textarea ЗАВЖДИ height:120px фіксована. НЕ flex:1, НЕ min-height. Кнопки поза scrollable div з flexShrink:0.
+
+---
+
+### [2026-04-05] Апостроф в українському тексті ламає JS
+**Симптом:** Blank page без помилок
+**Правило:** Весь україномовний текст — подвійні лапки або шаблонні рядки. Ніколи одинарні.
+
+---
+
+### [2026-04-05] Haiku плутається в чат-командах
+**Правило:** Haiku — тільки аналіз документів і JSON. Sonnet — всі чат-команди і розмови з агентом. Не змішувати.
+```
+
+---
+
+## ОНОВИТИ CLAUDE.md — ДОДАТИ СЕКЦІЮ
+
+Додати після секції "КРИТИЧНЕ ПРАВИЛО №1":
+
+```markdown
+## LESSONS.md — ІНСТИТУЦІЙНА ПАМ'ЯТЬ
+
+Файл LESSONS.md в корені репо містить уроки з попередніх сесій.
+
+Звертатись ТІЛЬКИ коли:
+- Перша спроба не дала результату
+- Бачиш схожий симптом але не знаєш причину
+- Збираєшся робити merge або переписувати великий блок
+- Щось зникло після попереднього фіксу
+
+Читати: cat LESSONS.md
+НЕ змінювати код на основі LESSONS.md без явного завдання в TASK.md.
+```
+
+---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: dossier bugfixes + resizable panels + agent UX" && git push origin main
+git add -A && git commit -m "fix: dossier z-index after resizable panels, add LESSONS.md" && git push origin main
 ```
 
-Перевірити: git log --oneline -3
+## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
+
+- [ ] Кнопка "← Реєстр" видима
+- [ ] Кнопка "Сховати агента" видима і працює
+- [ ] QI відкривається і видно повністю
+- [ ] Вкладки переключаються
+- [ ] На Матеріалах/Позиції агент закритий за замовчуванням
+- [ ] Рухомі межі працюють
+- [ ] LESSONS.md є в репо (cat LESSONS.md)
+- [ ] CLAUDE.md оновлено

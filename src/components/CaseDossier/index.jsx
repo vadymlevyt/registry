@@ -880,10 +880,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   ];
 
   return (
-    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#0d0f1a", display: "flex", flexDirection: "column", zIndex: 50, overflow: "auto", color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#0d0f1a", display: "flex", flexDirection: "column", zIndex: 50, overflow: "hidden", color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
 
       {/* ШАПКА */}
-      <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#1a1d27" }}>
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#0d0f1a", position: "sticky", top: 0, zIndex: 100 }}>
         <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>{"\u2190 Реєстр"}</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{caseData.name}</div>
@@ -911,7 +911,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       </div>
 
       {/* ВКЛАДКИ */}
-      <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0, padding: "0 16px", gap: 2 }}>
+      <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0, padding: "0 16px", gap: 2, background: "#0d0f1a", position: "sticky", top: 0, zIndex: 99 }}>
         {tabs.map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: "8px 14px", border: "none", background: "none", color: activeTab === tab.id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${activeTab === tab.id ? "#9aa0b8" : "transparent"}`, fontWeight: activeTab === tab.id ? 500 : 400, whiteSpace: "nowrap", transition: "all .15s" }}>
             {tab.label}
@@ -921,7 +921,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       </div>
 
       {/* BODY */}
-      <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
+      <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
         {/* Основний вміст вкладки */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', minWidth: 0 }}>
           {activeTab === "overview" && renderOverview()}
@@ -940,7 +940,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <div
             onMouseDown={() => { agentDragRef.current = true; }}
             onTouchStart={() => { agentDragRef.current = true; }}
-            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s' }}
+            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s', zIndex: 2, position: 'relative' }}
             onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
             onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
           >
