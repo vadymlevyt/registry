@@ -240,10 +240,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 Відповідай українською. Допомагай з аналізом і тактикою по справі.`;
 
         // Send last 10 messages as context for API (token economy)
-        const historyForAPI = agentMessages
+        const historyRaw = agentMessages
           .filter(m => m.role === 'user' || m.role === 'assistant')
           .slice(-10)
           .map(m => ({ role: m.role, content: m.content }));
+
+        // API requires first message to be role:'user'
+        const firstUserIdx = historyRaw.findIndex(m => m.role === 'user');
+        const historyForAPI = firstUserIdx >= 0 ? historyRaw.slice(firstUserIdx) : [];
 
         const response = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',

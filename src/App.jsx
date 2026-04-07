@@ -2895,7 +2895,7 @@ function App() {
           {id:'add',       label:'➕ Нова справа'},
           {id:'analysis',  label:'🔍 Аналіз системи'},
         ].map(t => (
-          <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => { if (t.id !== 'add') setEditingCase(null); setTab(t.id); }}>
+          <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => { setDossierCase(null); if (t.id !== 'add') setEditingCase(null); setTab(t.id); }}>
             {t.label}
           </button>
         ))}
@@ -2904,10 +2904,10 @@ function App() {
       {/* MAIN + QI SIDEBAR */}
       <div
         ref={containerRef}
-        style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}
+        style={{ flex: 1, display: 'flex', flexDirection: isLandscape ? 'row' : 'column', overflow: 'hidden', minHeight: 0 }}
       >
         {/* Main content */}
-        <div className="main" style={{ flex: showQI ? (1 - ratio) : 1, overflow: 'auto', minWidth: 0, minHeight: 0, position: 'relative' }}>
+        <div className="main" style={{ flex: 1, overflow: 'auto', minWidth: 0, minHeight: 0, position: 'relative' }}>
           {tab === 'dashboard' && (
             <Dashboard
               cases={cases}
@@ -2999,19 +2999,17 @@ function App() {
           )}
         </div>
 
-        {/* QI Resizer */}
-        {showQI && (
-          <div
-            className="split-resizer split-resizer-vertical"
-            style={{ width: 7, cursor: 'col-resize' }}
-            onMouseDown={() => { isDragging.current = true; }}
-            onTouchStart={() => { isDragging.current = true; }}
-          />
-        )}
-
         {/* QI Sidebar */}
         {showQI && (
-          <div style={{ flex: ratio, overflow: 'hidden', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, borderLeft: '1px solid #2e3148', animation: 'splitPanelIn 0.2s ease' }}>
+          <div style={{
+            ...(isLandscape
+              ? { width: '33.33%', maxWidth: 480, minWidth: 320, height: '100%', borderLeft: '1px solid #2e3148' }
+              : { width: '100%', height: '33.33vh', maxHeight: 400, minHeight: 250, borderTop: '1px solid #2e3148' }
+            ),
+            display: 'flex', flexDirection: 'column',
+            background: '#141625', flexShrink: 0, overflow: 'hidden',
+            animation: 'splitPanelIn 0.2s ease'
+          }}>
             <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} driveConnected={driveConnected} />
           </div>
         )}
