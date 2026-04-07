@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -37,6 +37,18 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [newDoc, setNewDoc] = useState({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null });
   const [dropQueue, setDropQueue] = useState([]);
   const [isDragOver, setIsDragOver] = useState(false);
+
+  // Agent panel state
+  const [agentOpen, setAgentOpen] = useState(true);
+  const [agentWidth, setAgentWidth] = useState(320);
+  const [agentMessages, setAgentMessages] = useState([]);
+  const [agentInput, setAgentInput] = useState('');
+  const [agentLoading, setAgentLoading] = useState(false);
+  const agentDragRef = useRef(false);
+
+  // Materials resizer state
+  const [matWidth, setMatWidth] = useState(300);
+  const matDragRef = useRef(false);
 
   const proceedings = (caseData.proceedings && caseData.proceedings.length > 0)
     ? caseData.proceedings
@@ -97,6 +109,53 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const driveConnected = !!localStorage.getItem("levytskyi_drive_token");
 
+  // Agent auto-open on overview, closed on other tabs
+  useEffect(() => {
+    setAgentOpen(activeTab === 'overview');
+  }, [activeTab]);
+
+  // Agent panel drag resize
+  useEffect(() => {
+    function onMouseMove(e) {
+      if (!agentDragRef.current) return;
+      const newWidth = window.innerWidth - e.clientX;
+      if (newWidth > 200 && newWidth < window.innerWidth * 0.6) setAgentWidth(newWidth);
+    }
+    function onMouseUp() { agentDragRef.current = false; }
+    function onTouchMove(e) {
+      if (!agentDragRef.current) return;
+      const touch = e.touches[0];
+      const newWidth = window.innerWidth - touch.clientX;
+      if (newWidth > 200 && newWidth < window.innerWidth * 0.6) setAgentWidth(newWidth);
+    }
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('touchmove', onTouchMove);
+    window.addEventListener('touchend', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onMouseUp);
+    };
+  }, []);
+
+  // Materials panel drag resize
+  useEffect(() => {
+    function onMove(e) {
+      if (!matDragRef.current) return;
+      const newWidth = e.clientX;
+      if (newWidth > 150 && newWidth < window.innerWidth * 0.5) setMatWidth(newWidth);
+    }
+    function onUp() { matDragRef.current = false; }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
   async function uploadFileToDrive(file, cData) {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) throw new Error("No Drive token");
@@ -132,6 +191,107 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const iconBtn = { background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 };
   const primaryBtn = { background: "#4f7cff", color: "#fff", border: "none", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 };
+
+  // ── АГЕНТ ДОСЬЄ ────────────────────────────────────────────────────────────
+  function renderAgentPanel() {
+    async function sendAgentMessage() {
+      if (!agentInput.trim() || agentLoading) return;
+      const userMsg = agentInput.trim();
+      setAgentInput('');
+      setAgentMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+      setAgentLoading(true);
+      try {
+        const apiKey = localStorage.getItem('claude_api_key');
+        const systemPrompt = `Ти агент справи "${caseData.name}".
+Знаєш про справу:
+- Суд: ${caseData.court || "не вказано"}
+- Номер: ${caseData.case_no || "не вказано"}
+- Категорія: ${caseData.category || "не вказано"}
+- Статус: ${caseData.status || "не вказано"}
+- Провадження: ${JSON.stringify(caseData.proceedings || [])}
+- Документів: ${(caseData.documents || []).length}
+Відповідай українською. Допомагай з аналізом і тактикою по справі.`;
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 1024,
+            system: systemPrompt,
+            messages: [...agentMessages, { role: 'user', content: userMsg }]
+          })
+        });
+        const data = await response.json();
+        const reply = data.content?.[0]?.text || "Помилка відповіді";
+        setAgentMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+      } catch (err) {
+        setAgentMessages(prev => [...prev, { role: 'assistant', content: "Помилка з'єднання з агентом." }]);
+      }
+      setAgentLoading(false);
+    }
+
+    return (
+      <>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid #2e3148', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span style={{ fontSize: 14 }}>{"🤖"}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
+            <div style={{ fontSize: 10, color: '#5a6080' }}>{"Sonnet · знає справу"}</div>
+          </div>
+          <button onClick={() => setAgentMessages([])} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"Очистити"}</button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {agentMessages.length === 0 && (
+            <div style={{ fontSize: 11, color: '#3a3f58', textAlign: 'center', marginTop: 20 }}>
+              {"Запитайте про справу, тактику або документи"}
+            </div>
+          )}
+          {agentMessages.map((msg, i) => (
+            <div key={i} style={{
+              padding: '8px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.6, maxWidth: '90%',
+              alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+              background: msg.role === 'user' ? 'rgba(79,124,255,.2)' : '#222536',
+              color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word'
+            }}>
+              {msg.content}
+            </div>
+          ))}
+          {agentLoading && (
+            <div style={{ padding: '8px 10px', borderRadius: 8, background: '#222536', fontSize: 12, color: '#5a6080' }}>{"⏳ Думаю..."}</div>
+          )}
+        </div>
+        <div style={{ padding: 8, borderTop: '1px solid #2e3148', display: 'flex', gap: 6, flexShrink: 0 }}>
+          <textarea
+            value={agentInput}
+            onChange={e => setAgentInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAgentMessage(); } }}
+            placeholder="Запитати агента..."
+            rows={2}
+            style={{
+              flex: 1, background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0',
+              padding: '6px 8px', borderRadius: 6, fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5
+            }}
+          />
+          <button
+            onClick={sendAgentMessage}
+            disabled={agentLoading || !agentInput.trim()}
+            style={{
+              background: '#4f7cff', border: 'none', color: '#fff',
+              padding: '0 12px', borderRadius: 6,
+              cursor: agentLoading ? 'default' : 'pointer',
+              fontSize: 16, opacity: agentLoading ? 0.5 : 1
+            }}
+          >{"\u2192"}</button>
+        </div>
+      </>
+    );
+  }
 
   // ── ОГЛЯД ──────────────────────────────────────────────────────────────────
   function renderOverview() {
@@ -184,6 +344,30 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               onClick={() => setProcModalOpen(true)}
               style={{ width: '100%', padding: '7px', background: 'none', border: '1px dashed #2e3148', borderRadius: 7, color: '#5a6080', cursor: 'pointer', fontSize: 12, marginTop: 6 }}
             >+ Додати провадження</button>
+          </div>
+        )}
+
+        {/* Закріплені нотатки */}
+        {caseNotes.filter(n => n.pinned).length > 0 && (
+          <div style={{
+            background: 'rgba(79,124,255,.06)', border: '1px solid rgba(79,124,255,.2)',
+            borderRadius: 8, padding: '10px 12px', marginBottom: 10
+          }}>
+            <div style={{ fontSize: 10, color: '#4f7cff', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
+              {"📌 Закріплені нотатки"}
+            </div>
+            {caseNotes.filter(n => n.pinned).map((note, i) => (
+              <div key={note.id} style={{
+                fontSize: 12, color: '#9aa0b8', lineHeight: 1.65,
+                paddingTop: i > 0 ? 8 : 0, marginTop: i > 0 ? 8 : 0,
+                borderTop: i > 0 ? '1px solid #2e3148' : 'none'
+              }}>
+                <div style={{ fontSize: 10, color: '#5a6080', marginBottom: 3 }}>
+                  {(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString('uk-UA') : ''}
+                </div>
+                {String(note.text || '')}
+              </div>
+            ))}
           </div>
         )}
 
@@ -311,7 +495,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
 
         {/* Ліва панель */}
-        <div style={{ width: 300, flexShrink: 0, borderRight: "1px solid #2e3148", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ width: matWidth, flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
           {/* Перемикач Дерево / Реєстр */}
           <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0 }}>
@@ -420,6 +604,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           )}
         </div>
 
+        {/* Рухома межа */}
+        <div
+          onMouseDown={() => { matDragRef.current = true; }}
+          onTouchStart={() => { matDragRef.current = true; }}
+          style={{ width: 6, cursor: 'col-resize', flexShrink: 0, background: '#2e3148', transition: 'background .15s' }}
+          onMouseEnter={e => e.currentTarget.style.background = '#4f7cff'}
+          onMouseLeave={e => e.currentTarget.style.background = '#2e3148'}
+        />
+
         {/* Viewer */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {!selectedDoc ? (
@@ -491,7 +684,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   ];
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#0f1117", display: "flex", flexDirection: "column", zIndex: 100, color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
+    <div style={{ position: "fixed", inset: 0, background: "#0f1117", display: "flex", flexDirection: "column", zIndex: 50, color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
 
       {/* ШАПКА */}
       <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#1a1d27" }}>
@@ -517,7 +710,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"🗑 Видалити назавжди"}</button>
           )}
           <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>{"💡"}</button>
-          <button style={{ background: "#4f7cff", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{"🤖 Агент"}</button>
+          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{"🤖 Агент"}</button>
         </div>
       </div>
 
@@ -533,20 +726,44 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* BODY */}
       <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
-        {activeTab === "overview" && renderOverview()}
-        {activeTab === "materials" && renderMaterials()}
-        {["position", "templates"].includes(activeTab) && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 12 }}>
-            <div style={{ fontSize: 48, opacity: .2 }}>{activeTab === "position" ? "⚖️" : "📄"}</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#9aa0b8" }}>{activeTab === "position" ? "Позиція" : "Шаблони"}</div>
-            <div style={{ fontSize: 12 }}>{"Буде реалізовано в наступній під-сесії"}</div>
+        {/* Основний вміст вкладки */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', minWidth: 0 }}>
+          {activeTab === "overview" && renderOverview()}
+          {activeTab === "materials" && renderMaterials()}
+          {["position", "templates"].includes(activeTab) && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 12 }}>
+              <div style={{ fontSize: 48, opacity: .2 }}>{activeTab === "position" ? "⚖️" : "📄"}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#9aa0b8" }}>{activeTab === "position" ? "Позиція" : "Шаблони"}</div>
+              <div style={{ fontSize: 12 }}>{"Буде реалізовано в наступній під-сесії"}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Рухома межа агента */}
+        {agentOpen && (
+          <div
+            onMouseDown={() => { agentDragRef.current = true; }}
+            onTouchStart={() => { agentDragRef.current = true; }}
+            style={{ width: 6, cursor: 'col-resize', flexShrink: 0, background: '#2e3148', transition: 'background .15s' }}
+            onMouseEnter={e => e.currentTarget.style.background = '#4f7cff'}
+            onMouseLeave={e => e.currentTarget.style.background = '#2e3148'}
+          />
+        )}
+
+        {/* Панель агента */}
+        {agentOpen && (
+          <div style={{
+            width: agentWidth, flexShrink: 0, borderLeft: '1px solid #2e3148',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#1a1d27'
+          }}>
+            {renderAgentPanel()}
           </div>
         )}
       </div>
 
       {/* МОДАЛКА ІДЕЯ ДЛЯ КОНТЕНТУ */}
       {ideaOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 360 }}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{"💡 Ідея для контенту"}</div>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 12 }}>{"Справа: "}{caseData.name}</div>
@@ -567,7 +784,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* МОДАЛКА НОТАТКИ */}
       {noteModalOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 400 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{"+ Нова нотатка"}</div>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 8 }}>{"Справа: "}{caseData.name}</div>
@@ -594,7 +811,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* МОДАЛКА + ПРОВАДЖЕННЯ */}
       {procModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
           <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 360 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Нове провадження</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -632,7 +849,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* МОДАЛКА + ДОКУМЕНТ */}
       {docModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
           <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 400 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Новий документ</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

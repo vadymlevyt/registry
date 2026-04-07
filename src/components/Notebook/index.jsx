@@ -242,7 +242,7 @@ function NotesTab({ cases, onUpdateCase, notesProp, onAddNote, onUpdateNote, onD
             </div>
           )}
           {filtered.map(n => (
-            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} onDelete={() => handleDeleteNote(n)} onEdit={handleEditNote} />
+            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} onDelete={() => handleDeleteNote(n)} onEdit={handleEditNote} onPin={onPinNote} />
           ))}
         </div>
       </div>
@@ -285,7 +285,7 @@ function SidebarItem({ label, active, onClick }) {
   );
 }
 
-function NoteCard({ note, onDelete, onEdit }) {
+function NoteCard({ note, onDelete, onEdit, onPin }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(note.text || '');
   const cat = note.category || 'general';
@@ -318,6 +318,18 @@ function NoteCard({ note, onDelete, onEdit }) {
         <span style={{ fontSize: 10, color: '#5a6080', marginLeft: 'auto' }}>
           {note.source ? `${note.source} · ` : ''}{formatTs(note.ts)}
         </span>
+        {onPin && (
+          <button
+            onClick={() => onPin(note.id)}
+            title={note.pinned ? "Зняти закріплення" : "Закріпити як основну"}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', fontSize: 12,
+              color: note.pinned ? '#4f7cff' : '#3a3f58', padding: '2px 4px',
+            }}
+          >
+            {"📌"}
+          </button>
+        )}
         {!editing && (
           <button
             onClick={() => { setEditText(note.text || ''); setEditing(true); }}

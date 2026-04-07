@@ -2879,7 +2879,7 @@ function App() {
       {showQI ? (
         <div
           ref={containerRef}
-          style={{ flex: 1, display: 'flex', flexDirection: isLandscape ? 'row' : 'column', overflow: 'hidden', minHeight: 0 }}
+          style={{ flex: 1, display: 'flex', flexDirection: isLandscape ? 'row' : 'column', overflow: 'hidden', minHeight: 0, position: 'relative', zIndex: 1000 }}
         >
           {/* Main content panel */}
           <div className="main" style={{ flex: 1 - ratio, overflow: 'auto', minWidth: 0, minHeight: 0 }}>
