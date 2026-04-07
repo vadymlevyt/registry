@@ -112,7 +112,32 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const driveConnected = !!localStorage.getItem("levytskyi_drive_token");
 
-  // Agent stays open/closed as user toggled — no auto-close on tab change
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+
+  // Agent default: open on overview, closed on other tabs
+  useEffect(() => {
+    setAgentOpen(activeTab === 'overview');
+  }, [activeTab]);
+
+  // Migrate caseData.notes string to a proper note in notes[]
+  useEffect(() => {
+    if (caseData.notes && typeof caseData.notes === 'string' && caseData.notes.trim()) {
+      const alreadyExists = (notesProp || []).some(n =>
+        n.caseId === caseData.id && n.text === caseData.notes
+      );
+      if (!alreadyExists && onAddNote) {
+        onAddNote({
+          text: caseData.notes,
+          caseId: caseData.id,
+          caseName: caseData.name,
+          category: 'case',
+          pinned: true,
+          ts: new Date().toISOString()
+        });
+        updateCase && updateCase(caseData.id, 'notes', '');
+      }
+    }
+  }, [caseData.id]); // eslint-disable-line
 
   // Agent panel drag resize
   useEffect(() => {
@@ -264,12 +289,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
             <div style={{ fontSize: 10, color: '#5a6080' }}>{"Sonnet · знає справу"}</div>
           </div>
-          <button onClick={() => {
-            if (window.confirm("Почати нову розмову? Поточна історія буде очищена.")) {
-              setAgentMessages([]);
-              updateCase && updateCase(caseData.id, 'agentHistory', []);
-            }
-          }} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
+          <button onClick={() => setConfirmClearOpen(true)} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {agentMessages.length === 0 && (
@@ -326,6 +346,43 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             }}
           >{"\u2192"}</button>
         </div>
+        {confirmClearOpen && (
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 10,
+            borderRadius: 8
+          }}>
+            <div style={{
+              background: '#1e2138', borderRadius: 12, padding: '20px 24px',
+              maxWidth: 300, textAlign: 'center', border: '1px solid #2e3148'
+            }}>
+              <div style={{ fontSize: 14, color: '#e8eaf0', marginBottom: 16 }}>
+                {"Почати нову розмову? Поточна історія буде очищена."}
+              </div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <button
+                  onClick={() => setConfirmClearOpen(false)}
+                  style={{
+                    padding: '8px 20px', borderRadius: 6, border: '1px solid #2e3148',
+                    background: 'transparent', color: '#9aa0b8', cursor: 'pointer', fontSize: 13
+                  }}
+                >{"Скасувати"}</button>
+                <button
+                  onClick={() => {
+                    setAgentMessages([]);
+                    updateCase && updateCase(caseData.id, 'agentHistory', []);
+                    setConfirmClearOpen(false);
+                  }}
+                  style={{
+                    padding: '8px 20px', borderRadius: 6, border: 'none',
+                    background: '#e74c3c', color: '#fff', cursor: 'pointer', fontSize: 13
+                  }}
+                >{"Очистити"}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </>
     );
   }
@@ -362,34 +419,36 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           {/* Нотатки до справи */}
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 4 }}>{"Нотатки до справи"}</div>
-            {caseNotes.filter(n => n.pinned).length > 0 ? (
-              <div style={{
-                background: "#1a1d2e", borderRadius: 6, padding: "8px 10px",
-                fontSize: 12, color: "#c8cce0", lineHeight: 1.6,
-                borderLeft: "3px solid #4f7cff"
-              }}>
-                {caseNotes.filter(n => n.pinned).map((note, i) => (
-                  <div key={note.id || i} style={{ marginBottom: i < caseNotes.filter(n => n.pinned).length - 1 ? 8 : 0 }}>
-                    <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 2 }}>
-                      {"📌 "}{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}
-                    </div>
-                    <div>{String(note.text || "")}</div>
+            {(() => {
+              const pinned = caseNotes.filter(n => n.pinned);
+              if (pinned.length > 0) {
+                return (
+                  <div style={{
+                    background: "#1a1d2e", borderRadius: 6, padding: "8px 10px",
+                    fontSize: 12, color: "#c8cce0", lineHeight: 1.6,
+                    borderLeft: "3px solid #4f7cff"
+                  }}>
+                    {pinned.map((note, i) => (
+                      <div key={note.id || i} style={{
+                        marginBottom: i < pinned.length - 1 ? 8 : 0,
+                        paddingBottom: i < pinned.length - 1 ? 8 : 0,
+                        borderBottom: i < pinned.length - 1 ? "1px solid #2e3148" : "none"
+                      }}>
+                        <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 2 }}>
+                          {"📌 "}{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}
+                        </div>
+                        <div>{String(note.text || "")}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <textarea
-                value={caseData.notes || ""}
-                onChange={e => updateCase && updateCase(caseData.id, "notes", e.target.value)}
-                placeholder="Вільні нотатки по справі..."
-                style={{
-                  width: "100%", minHeight: 60, background: "#1a1d2e",
-                  border: "1px solid #2e3148", borderRadius: 6,
-                  color: "#e8eaf0", padding: "8px 10px", fontSize: 12,
-                  resize: "vertical", outline: "none", boxSizing: "border-box"
-                }}
-              />
-            )}
+                );
+              }
+              return (
+                <div style={{ fontSize: 12, color: "#5a6080", fontStyle: "italic", padding: "8px 10px" }}>
+                  {"Закріпіть нотатку 📌 зі списку нижче"}
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -432,16 +491,26 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           {caseNotes.length === 0 ? (
             <div style={{ fontSize: 12, color: "#3a3f58" }}>{"Нотаток поки немає"}</div>
           ) : (notesExpanded ? caseNotes : [pinnedNote]).filter(Boolean).map(note => (
-            <div key={note.id} style={{ padding: "8px 10px", background: "#222536", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6 }}>
+            <div key={note.id} style={{
+              padding: "8px 10px", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6,
+              background: note.pinned ? "rgba(79,124,255,0.08)" : "#222536",
+              borderLeft: note.pinned ? "2px solid #4f7cff" : "2px solid transparent",
+              transition: "all 0.2s"
+            }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                 <div style={{ flex: 1 }}>
-                  {note.pinned && <span style={{ fontSize: 9, color: "#4f7cff", marginRight: 6 }}>{"📌"}</span>}
                   {String(note.text || "")}
                 </div>
                 <button
                   onClick={() => onPinNote && onPinNote(note.id)}
-                  title={note.pinned ? "Зняти закріплення" : "Закріпити"}
-                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: note.pinned ? "#4f7cff" : "#3a3f58", padding: "0 2px", flexShrink: 0 }}
+                  title={note.pinned ? "Відкріпити" : "Закріпити"}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    fontSize: 16, padding: "2px 4px", flexShrink: 0,
+                    filter: note.pinned ? "none" : "grayscale(1) opacity(0.3)",
+                    transform: note.pinned ? "rotate(-45deg)" : "none",
+                    transition: "all 0.2s"
+                  }}
                 >{"📌"}</button>
               </div>
               <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
@@ -729,7 +798,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   ];
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#0f1117", display: "flex", flexDirection: "column", zIndex: 50, color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
+    <div style={{ position: "absolute", inset: 0, background: "#0f1117", display: "flex", flexDirection: "column", zIndex: 50, color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
 
       {/* ШАПКА */}
       <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#1a1d27" }}>

@@ -321,10 +321,13 @@ function NoteCard({ note, onDelete, onEdit, onPin }) {
         {onPin && (
           <button
             onClick={() => onPin(note.id)}
-            title={note.pinned ? "Зняти закріплення" : "Закріпити як основну"}
+            title={note.pinned ? "Відкріпити" : "Закріпити"}
             style={{
-              background: 'none', border: 'none', cursor: 'pointer', fontSize: 12,
-              color: note.pinned ? '#4f7cff' : '#3a3f58', padding: '2px 4px',
+              background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
+              padding: '2px 4px',
+              filter: note.pinned ? 'none' : 'grayscale(1) opacity(0.3)',
+              transform: note.pinned ? 'rotate(-45deg)' : 'none',
+              transition: 'all 0.2s'
             }}
           >
             {"📌"}

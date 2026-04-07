@@ -2657,10 +2657,8 @@ function App() {
     const onMove = (clientX, clientY) => {
       if (!isDragging.current || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
-      const r = isLandscapeRef.current
-        ? (rect.right - clientX) / rect.width
-        : (rect.bottom - clientY) / rect.height;
-      setQiRatio(Math.min(0.75, Math.max(0.25, r)));
+      const r = (rect.right - clientX) / rect.width;
+      setQiRatio(Math.min(0.75, Math.max(0.15, r)));
     };
     const onMouseMove = (e) => onMove(e.clientX, e.clientY);
     const onMouseUp   = () => { isDragging.current = false; };
@@ -2795,13 +2793,9 @@ function App() {
 
   const pinNote = (noteId) => {
     setNotes(prev => {
-      const target = prev.find(n => String(n.id) === String(noteId));
-      const updated = prev.map(n => {
-        if (n.caseId === target?.caseId && n.caseName === target?.caseName) {
-          return { ...n, pinned: String(n.id) === String(noteId) ? !n.pinned : false };
-        }
-        return n;
-      });
+      const updated = prev.map(n =>
+        String(n.id) === String(noteId) ? { ...n, pinned: !n.pinned } : n
+      );
       try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
       return updated;
     });
@@ -2907,96 +2901,13 @@ function App() {
         ))}
       </div>
 
-      {/* MAIN — split or full depending on showQI */}
-      {showQI ? (
-        <div
-          ref={containerRef}
-          style={{ flex: 1, display: 'flex', flexDirection: isLandscape ? 'row' : 'column', overflow: 'hidden', minHeight: 0, position: 'relative', zIndex: 1000 }}
-        >
-          {/* Main content panel */}
-          <div className="main" style={{ flex: 1 - ratio, overflow: 'auto', minWidth: 0, minHeight: 0 }}>
-            {/* ── DASHBOARD ── */}
-            {tab === 'dashboard' && (
-              <Dashboard
-                cases={cases}
-                calendarEvents={calendarEvents}
-                onUpdateCase={updateCase}
-                onAddEvent={addCalendarEvent}
-                onUpdateEvent={updateCalendarEvent}
-                onDeleteEvent={deleteCalendarEvent}
-                sonnetPrompt={SONNET_CHAT_PROMPT}
-                buildSystemContext={buildSystemContext}
-              />
-            )}
-            {tab === 'cases' && (
-              <div>
-                <div className="status-counter">
-                  <span>Активні: <strong style={{color:'var(--green)'}}>{cases.filter(c=>c.status==='active').length}</strong></span>
-                  <span className="status-counter-sep">|</span>
-                  <span>Призупинені: <strong style={{color:'var(--text2)'}}>{cases.filter(c=>c.status==='paused').length}</strong></span>
-                  <span className="status-counter-sep">|</span>
-                  <span>Закриті: <strong style={{color:'var(--text3)'}}>{cases.filter(c=>c.status==='closed').length}</strong></span>
-                </div>
-                <div className="cases-toolbar">
-                  <div className="search-box"><span style={{color:'var(--text3)'}}>🔍</span><input placeholder="Пошук..." value={search} onChange={e=>setSearch(e.target.value)} /></div>
-                  {['all','civil','criminal','military','admin'].map(cat => (
-                    <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>{cat==='all'?'Всі':CAT_LABELS[cat]}</button>
-                  ))}
-                </div>
-                <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
-                  {[{val:'active',label:`Активні (${cases.filter(c=>c.status==='active').length})`},{val:'paused',label:`Призупинені (${cases.filter(c=>c.status==='paused').length})`},{val:'closed',label:`Закриті (${cases.filter(c=>c.status==='closed').length})`},{val:'all',label:`Всі (${cases.length})`}].map(({val,label}) => (
-                    <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>{label}</button>
-                  ))}
-                </div>
-                <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
-                {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
-                <div className="cases-grid">{filteredCases.map(c => (
-                  <div key={c.id} style={{position:'relative'}}>
-                    <CaseCard c={c} onClick={() => setDossierCase(c)} />
-                    {c.status === 'closed' && (
-                      <div style={{position:'absolute', bottom:8, right:8, display:'flex', gap:4}}>
-                        <button onClick={(e) => { e.stopPropagation(); restoreCase(c.id); }} style={{
-                          color:'#2ecc71', background:'rgba(46,204,113,.1)', border:'1px solid rgba(46,204,113,.3)',
-                          padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
-                        }}>Відновити</button>
-                        <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
-                          color:'#e74c3c', background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
-                          padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
-                        }}>Видалити назавжди</button>
-                      </div>
-                    )}
-                  </div>
-                ))}</div>
-              </div>
-            )}
-            {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
-            {tab === 'notebook' && (
-              <ModuleErrorBoundary>
-                <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-                  <Notebook cases={cases} onUpdateCase={updateCase} notes={notes} onAddNote={addNote} onUpdateNote={updateNote} onDeleteNote={deleteNote} onPinNote={pinNote} />
-                </React.Suspense>
-              </ModuleErrorBoundary>
-            )}
-            {tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
-          </div>
-
-          {/* Resizer */}
-          <div
-            className={`split-resizer ${isLandscape ? 'split-resizer-vertical' : 'split-resizer-horizontal'}`}
-            style={{ width: isLandscape ? 7 : '100%', height: isLandscape ? '100%' : 7, cursor: isLandscape ? 'col-resize' : 'row-resize' }}
-            onMouseDown={() => { isDragging.current = true; }}
-            onTouchStart={() => { isDragging.current = true; }}
-          />
-
-          {/* Quick Input panel */}
-          <div style={{ flex: ratio, overflow: 'hidden', alignSelf: 'stretch', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, animation: 'splitPanelIn 0.2s ease' }}>
-            <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} driveConnected={driveConnected} />
-          </div>
-        </div>
-      ) : (
-        <div className="main">
-
-          {/* ── DASHBOARD ── */}
+      {/* MAIN + QI SIDEBAR */}
+      <div
+        ref={containerRef}
+        style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}
+      >
+        {/* Main content */}
+        <div className="main" style={{ flex: showQI ? (1 - ratio) : 1, overflow: 'auto', minWidth: 0, minHeight: 0, position: 'relative' }}>
           {tab === 'dashboard' && (
             <Dashboard
               cases={cases}
@@ -3009,8 +2920,6 @@ function App() {
               buildSystemContext={buildSystemContext}
             />
           )}
-
-          {/* ── CASES ── */}
           {tab === 'cases' && (
             <div>
               <div className="status-counter">
@@ -3021,14 +2930,9 @@ function App() {
                 <span>Закриті: <strong style={{color:'var(--text3)'}}>{cases.filter(c=>c.status==='closed').length}</strong></span>
               </div>
               <div className="cases-toolbar">
-                <div className="search-box">
-                  <span style={{color:'var(--text3)'}}>🔍</span>
-                  <input placeholder="Пошук за назвою, клієнтом, судом..." value={search} onChange={e=>setSearch(e.target.value)} />
-                </div>
+                <div className="search-box"><span style={{color:'var(--text3)'}}>🔍</span><input placeholder="Пошук за назвою, клієнтом, судом..." value={search} onChange={e=>setSearch(e.target.value)} /></div>
                 {['all','civil','criminal','military','admin'].map(cat => (
-                  <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>
-                    {cat==='all'?'Всі':CAT_LABELS[cat]}
-                  </button>
+                  <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>{cat==='all'?'Всі':CAT_LABELS[cat]}</button>
                 ))}
               </div>
               <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
@@ -3038,9 +2942,7 @@ function App() {
                   {val:'closed', label:`Закриті (${cases.filter(c=>c.status==='closed').length})`},
                   {val:'all',    label:`Всі (${cases.length})`},
                 ].map(({val,label}) => (
-                  <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>
-                    {label}
-                  </button>
+                  <button key={val} className={`filter-btn${filterStatus===val?' active':''}`} onClick={()=>setFilterStatus(val)}>{label}</button>
                 ))}
               </div>
               <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
@@ -3066,17 +2968,7 @@ function App() {
               </div>
             </div>
           )}
-
-          {/* ── ADD CASE ── */}
-          {tab === 'add' && (
-            <AddCaseForm
-              onSave={editingCase ? saveCaseEdit : addCase}
-              onCancel={() => { setEditingCase(null); setTab('cases'); }}
-              initialData={editingCase}
-            />
-          )}
-
-          {/* ── NOTEBOOK ── */}
+          {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
           {tab === 'notebook' && (
             <ModuleErrorBoundary>
               <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
@@ -3084,37 +2976,49 @@ function App() {
               </React.Suspense>
             </ModuleErrorBoundary>
           )}
+          {tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
 
-          {/* ── ANALYSIS ── */}
-          {tab === 'analysis' && (
-            <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />
+          {/* DOSSIER — inside main, position absolute to fill parent */}
+          {dossierCase && (
+            <ErrorBoundary>
+              <CaseDossier
+                caseData={dossierCase}
+                cases={cases}
+                updateCase={updateCase}
+                onClose={() => setDossierCase(null)}
+                onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
+                onCloseCase={closeCase}
+                onDeleteCase={handleDeleteCase}
+                notes={notes.filter(n => n.caseId === dossierCase.id || n.caseName === dossierCase.name)}
+                onAddNote={addNote}
+                onUpdateNote={updateNote}
+                onDeleteNote={deleteNote}
+                onPinNote={pinNote}
+              />
+            </ErrorBoundary>
           )}
-
         </div>
-      )}
+
+        {/* QI Resizer */}
+        {showQI && (
+          <div
+            className="split-resizer split-resizer-vertical"
+            style={{ width: 7, cursor: 'col-resize' }}
+            onMouseDown={() => { isDragging.current = true; }}
+            onTouchStart={() => { isDragging.current = true; }}
+          />
+        )}
+
+        {/* QI Sidebar */}
+        {showQI && (
+          <div style={{ flex: ratio, overflow: 'hidden', display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, borderLeft: '1px solid #2e3148', animation: 'splitPanelIn 0.2s ease' }}>
+            <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} driveConnected={driveConnected} />
+          </div>
+        )}
+      </div>
 
       {/* MODALS */}
       {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} onRestore={restoreCase} />}
-
-      {/* DOSSIER */}
-      {dossierCase && (
-        <ErrorBoundary>
-          <CaseDossier
-            caseData={dossierCase}
-            cases={cases}
-            updateCase={updateCase}
-            onClose={() => setDossierCase(null)}
-            onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
-            onCloseCase={closeCase}
-            onDeleteCase={handleDeleteCase}
-            notes={notes.filter(n => n.caseId === dossierCase.id || n.caseName === dossierCase.name)}
-            onAddNote={addNote}
-            onUpdateNote={updateNote}
-            onDeleteNote={deleteNote}
-            onPinNote={pinNote}
-          />
-        </ErrorBoundary>
-      )}
 
       {/* FAB — hidden when QI panel is open, draggable */}
       {!showQI && <button

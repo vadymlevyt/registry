@@ -5,66 +5,107 @@
 ## КРИТИЧНЕ ПРАВИЛО
 Після успішного npm run build — ЗАВЖДИ без запитань:
 ```bash
-git add -A && git commit -m "fix: dossier bugfixes — QI overlay, back button, agent toggle, notes pin" && git push origin main
+git add -A && git commit -m "fix: dossier bugfixes batch — QI sidebar, back button, agent toggle, notes system, agent memory API" && git push origin main
 ```
 
 ---
 
 ## КОНТЕКСТ
 
-Файл: src/components/CaseDossier/index.jsx
-Файл: src/App.jsx
-Файл: src/components/Notebook/index.jsx (якщо існує)
+Файли для редагування:
+- src/components/CaseDossier/index.jsx
+- src/App.jsx
+- src/components/Notebook/index.jsx (якщо існує)
 
-Компонент CaseDossier — overlay поверх реєстру.
+CaseDossier — overlay поверх реєстру.
 Props: caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDelete...
 Agent state: agentOpen (useState true), agentMessages (з caseData.agentHistory).
+Notes: notesProp передається з App.jsx, caseNotes фільтруються по caseId.
 
 ---
 
-## БАГ 1 — QI поверх досьє показує реєстр замість досьє
+## БАГ 1 — QI має відкриватись СПРАВА як sidebar, а не знизу
 
-### Симптом
-При відкритті Quick Input з вкладки Огляд досьє — під QI з'являється реєстр справ. Досьє зникає.
+### Симптом (підтверджений скріншотом)
+Зараз QI відкривається ЗНИЗУ екрана. Під ним проступають картки справ з реєстру. Досьє зникає.
+
+### Як має працювати
+QI — це sidebar СПРАВА. Коли він відкривається:
+- QI займає праву частину екрана
+- Все що було (досьє з агентом, або реєстр, або дашборд) СТИСКУЄТЬСЯ ВЛІВО
+- Вміст під QI НЕ зникає, НЕ підміняється — просто стає вужчим
+- Закрив QI — все розтягується назад на повну ширину
+
+```
+БЕЗ QI:
+┌──────────────────────────────┬──────────────────┐
+│    Досьє (інформація)        │   Агент досьє    │
+└──────────────────────────────┴──────────────────┘
+
+З QI (натиснули Quick Input):
+┌──────────────────┬──────────┬──────────────────┐
+│  Досьє (стисн.)  │ Агент    │   Quick Input     │
+│                  │ (стисн.) │   sidebar         │
+└──────────────────┴──────────┴──────────────────┘
+```
+
+Те саме з реєстру: QI справа, картки справ стискуються вліво.
 
 ### Діагностика
 ```bash
-grep -n "dossierCase\|setDossierCase\|showQI\|setShowQI\|openQI\|handleOpenQI" src/App.jsx | head -20
-grep -n "z-index\|zIndex.*100\|zIndex.*50\|zIndex.*999" src/App.jsx src/components/CaseDossier/index.jsx | head -20
+grep -n "showQI\|setShowQI\|QuickInput\|qi-panel\|qi-overlay\|qiOpen" src/App.jsx | head -25
+grep -n "position.*fixed\|position.*absolute\|bottom.*0\|top.*0" src/App.jsx | grep -i "qi\|quick" | head -10
 ```
 
-### Причина (ймовірна)
-setDossierCase(null) викликається при відкритті QI, або dossierCase скидається побічно.
-Або z-index конфлікт: QI і досьє на одному рівні.
-
 ### Рішення
-1. Знайти де dossierCase скидається і переконатись що відкриття QI НЕ скидає dossierCase
-2. z-index ієрархія (ЖОРСТКЕ ПРАВИЛО):
-   - Реєстр / Dashboard / Notebook: z-index НЕ задавати (нормальний потік)
-   - CaseDossier overlay: z-index: 50
-   - QI overlay: z-index: 1000
-   - QI floating кнопка: z-index: 999
-3. QI має відкриватись ПОВЕРХ досьє, досьє стискається або залишається під ним
-4. При закритті QI — досьє все ще має бути відкрите
 
-### Перевірка
-Переконатись що в коді відкриття QI (setShowQI(true) або аналог) НІДЕ не стоїть setDossierCase(null).
-Якщо стоїть — ВИДАЛИТИ.
+1. QI НЕ є overlay з position:fixed на весь екран. QI — це sidebar справа.
+
+2. Архітектура layout в App.jsx:
+
+```jsx
+<div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+  {/* Основний контент — стискується коли QI відкритий */}
+  <div style={{ flex: 1, overflow: 'auto', minWidth: 0 }}>
+    {/* Тут реєстр, або досьє, або дашборд, або notebook */}
+  </div>
+
+  {/* QI sidebar — з'являється справа */}
+  {showQI && (
+    <div style={{
+      width: 420, minWidth: 360, maxWidth: '50vw',
+      borderLeft: '1px solid #2e3148',
+      display: 'flex', flexDirection: 'column',
+      background: '#141625', flexShrink: 0
+    }}>
+      {/* Quick Input content */}
+    </div>
+  )}
+</div>
+```
+
+3. z-index НЕ потрібен для QI — він в нормальному потоці як flex sibling.
+   CaseDossier як overlay: position: fixed, z-index: 50. QI sidebar має бути ПОВЕРХ досьє або поруч — залежно від реалізації.
+
+4. Кнопка Quick Input в шапці (вже є) — toggle: відкрити/закрити sidebar.
+
+5. ПЕРЕКОНАТИСЬ що відкриття QI НЕ скидає dossierCase, НЕ змінює currentView. Знайти всі місця де setShowQI(true) і перевірити що поряд НЕМАЄ setDossierCase(null).
 
 ---
 
 ## БАГ 2 — Кнопка "← Реєстр" зникла
 
-### Симптом
+### Симптом (підтверджений)
 В шапці досьє немає кнопки повернення в реєстр.
 
 ### Діагностика
 ```bash
-grep -n "onClose\|← Реєстр\|Реєстр\|Назад\|header\|dossier-header" src/components/CaseDossier/index.jsx | head -15
+grep -n "onClose\|← Реєстр\|Реєстр\|Назад\|dossier-header" src/components/CaseDossier/index.jsx | head -15
 ```
 
 ### Рішення
-Знайти шапку досьє (header div) і додати кнопку "← Реєстр" на початку:
+Знайти шапку досьє (div з вкладками Огляд/Матеріали/Позиція/Шаблони).
+Додати кнопку "← Реєстр" ПЕРШИМ елементом зліва, ПЕРЕД вкладками:
 
 ```jsx
 <button
@@ -72,35 +113,43 @@ grep -n "onClose\|← Реєстр\|Реєстр\|Назад\|header\|dossier-he
   style={{
     background: 'none', border: 'none', color: '#9aa0b8',
     cursor: 'pointer', fontSize: 14, padding: '6px 12px',
-    display: 'flex', alignItems: 'center', gap: 6
+    marginRight: 16, whiteSpace: 'nowrap'
   }}
 >
   ← Реєстр
 </button>
 ```
 
-Кнопка має бути ПЕРШИМ елементом в шапці, зліва.
-
 ---
 
-## БАГ 3 — Кнопка "🤖 Агент" toggle
+## БАГ 3 — Кнопка "🤖 Агент" toggle відсутня
 
-### Симптом
-Перевірити чи кнопка toggle працює після коміту 263c87c.
+### Симптом (підтверджений)
+Агент досьє ЗАВЖДИ відкритий на всіх вкладках. Немає кнопки щоб його сховати.
+
+### Як має працювати
+Шапка досьє:
+```
+[← Реєстр]  [📋 Огляд] [📁 Матеріали] [⚖️ Позиція] [📝 Шаблони]    [🤖 Агент]
+```
+
+- Кнопка "🤖 Агент" — toggle, справа в шапці
+- Натиснув → панель агента зникає, вміст займає весь екран
+- Натиснув ще раз → панель повертається
+- Працює на ВСІХ вкладках однаково
+
+Поведінка по вкладках:
+- Огляд — агент відкритий за замовчуванням (але можна закрити кнопкою)
+- Матеріали, Позиція, Шаблони — агент закритий за замовчуванням (можна відкрити кнопкою)
 
 ### Діагностика
 ```bash
 grep -n "agentOpen\|setAgentOpen\|Агент\|Сховати" src/components/CaseDossier/index.jsx | head -15
 ```
 
-### Що має бути
-1. Кнопка "🤖 Агент" / "🤖 Сховати агента" в шапці досьє
-2. Натиснув → панель агента зникає, вміст займає весь екран
-3. Натиснув ще раз → панель повертається
-4. Працює на ВСІХ вкладках (Огляд, Матеріали, тощо)
+### Рішення
 
-### Якщо не працює
-Додати кнопку toggle в шапку (поряд з "← Реєстр"):
+1. Кнопка toggle в шапку (справа, після вкладок):
 
 ```jsx
 <button
@@ -111,157 +160,266 @@ grep -n "agentOpen\|setAgentOpen\|Агент\|Сховати" src/components/Cas
     border: '1px solid',
     borderColor: agentOpen ? '#4f7cff' : '#2e3148',
     padding: '4px 12px', borderRadius: 6,
-    cursor: 'pointer', fontSize: 12, fontWeight: 500
+    cursor: 'pointer', fontSize: 12, fontWeight: 500,
+    marginLeft: 'auto', whiteSpace: 'nowrap'
   }}
 >
   {agentOpen ? "🤖 Сховати агента" : "🤖 Агент"}
 </button>
 ```
 
-Панель агента рендериться тільки коли agentOpen === true.
-Без агента — контент займає 100% ширини.
+2. useEffect при зміні вкладки:
 
----
-
-## БАГ 4 — Пам'ять агента між сесіями
-
-### Симптом
-Перевірити чи працює після коміту 263c87c.
-
-### Діагностика
-```bash
-grep -n "agentHistory\|agentMessages\|updateCase.*agent\|Нова розмова\|Очистити" src/components/CaseDossier/index.jsx | head -15
-```
-
-### Що має бути
-1. При відкритті досьє — завантажуються повідомлення з caseData.agentHistory
-2. Після кожної пари user/assistant — зберігається через updateCase(id, 'agentHistory', ...)
-3. Кнопка "Нова розмова" — confirm → очищає state + agentHistory в справі
-4. Дати між повідомленнями різних днів
-
-### Якщо не працює — імплементація вже є в TASK.md попереднього чату (кроки 3.1-3.5), перевірити що:
-- agentMessages ініціалізується з caseData.agentHistory (рядок 44-46 — ОК)
-- Після відповіді API зберігається updateCase(caseData.id, 'agentHistory', trimmed)
-- Останні 10 повідомлень передаються в API як messages[]
-
----
-
-## БАГ 5 — QI кнопка накладається на панель агента
-
-### Симптом
-Перевірити чи працює drag після коміту 263c87c.
-
-### Діагностика
-```bash
-grep -n "qiBtnPos\|qiDrag\|draggable\|drag.*qi\|qi.*drag\|fab.*position\|floating" src/App.jsx | head -15
-```
-
-### Що має бути
-1. Floating кнопка ⚡ QI можна перетягнути по екрану (mouse + touch)
-2. Клік без переміщення — відкриває QI
-3. Якщо перетягнув далеко — це drag, не клік
-
-### Якщо не працює — реалізація вже є в попередньому TASK.md (крок 2).
-
----
-
-## БАГ 6 — Закріплені нотатки не відображаються
-
-### Симптом
-В блоці інформації на вкладці Огляд досьє є поле "Нотатки до справи".
-Воно має показувати текст закріплених нотаток.
-Якщо нічого не закріплено — поле редагується вручну.
-Окремий синій блок "📌 ЗАКРІПЛЕНІ НОТАТКИ" треба ВИДАЛИТИ (якщо є).
-
-### Діагностика
-```bash
-grep -n "pinnedNote\|pinned\|📌\|ЗАКРІПЛЕНІ\|case\.notes\|caseData\.notes" src/components/CaseDossier/index.jsx | head -15
-```
-
-### Контекст коду
-Рядок 69-70: caseNotes вже відсортовані, pinnedNote вже знаходиться:
 ```jsx
-const caseNotes = (notesProp || []).slice().sort(...)
-const pinnedNote = caseNotes.find(n => n.pinned) || caseNotes[0];
+useEffect(() => {
+  if (activeTab === 'overview') {
+    setAgentOpen(true);
+  } else {
+    setAgentOpen(false);
+  }
+}, [activeTab]);
+```
+
+3. Панель агента рендериться тільки коли agentOpen === true.
+   Без агента — контент займає 100% ширини.
+
+---
+
+## БАГ 4 — Агент не пам'ятає переписку між сесіями
+
+### Симптом (підтверджений скріншотом)
+Переписка візуально зберігається (agentHistory в даних справи — працює).
+При повторному відкритті досьє повідомлення видно на екрані.
+АЛЕ агент каже: "я не пам'ятаю попередню розмову".
+Причина: збережена історія НЕ передається в API як messages[].
+
+### Діагностика
+```bash
+grep -A 30 "fetch.*anthropic\|api\.anthropic" src/components/CaseDossier/index.jsx | head -40
+grep -n "messages" src/components/CaseDossier/index.jsx | head -10
 ```
 
 ### Рішення
-1. Знайти поле "Нотатки до справи" в секції інформації (вкладка Огляд)
-2. Якщо є закріплена нотатка (pinnedNote && pinnedNote.pinned) → показати її текст (тільки для читання):
+Знайти функцію відправки повідомлення агенту (fetch до api.anthropic.com).
+Змінити messages[] щоб включати збережену історію:
+
+```jsx
+// Перед fetch — підготувати історію:
+const historyForAPI = agentMessages
+  .filter(m => m.role === 'user' || m.role === 'assistant')
+  .slice(-10)
+  .map(m => ({ role: m.role, content: m.content }));
+
+// API вимагає щоб першим був role: 'user'
+const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
+const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
+
+// Передати в API:
+messages: [
+  ...cleanHistory,
+  { role: 'user', content: userMessage }
+]
+```
+
+ВАЖЛИВО: якщо перший елемент messages має role: 'assistant' — API поверне помилку. Фільтр firstUserIdx це вирішує.
+
+---
+
+## БАГ 5 — "Нова розмова" — замінити браузерний confirm на модалку
+
+### Симптом (підтверджений скріншотом)
+Кнопка "Нова розмова" показує стандартний браузерний confirm().
+Потрібна власна модалка в стилі системи.
+
+### Діагностика
+```bash
+grep -n "confirm\|Нова розмова\|Очистити\|clearAgent" src/components/CaseDossier/index.jsx | head -10
+```
+
+### Рішення
+
+1. Додати state:
+```jsx
+const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+```
+
+2. Кнопка відкриває модалку замість confirm:
+```jsx
+<button onClick={() => setConfirmClearOpen(true)} ...>
+  + Нова розмова
+</button>
+```
+
+3. Модалка всередині панелі агента:
+
+```jsx
+{confirmClearOpen && (
+  <div style={{
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    background: 'rgba(0,0,0,.6)', display: 'flex',
+    alignItems: 'center', justifyContent: 'center', zIndex: 10,
+    borderRadius: 8
+  }}>
+    <div style={{
+      background: '#1e2138', borderRadius: 12, padding: '20px 24px',
+      maxWidth: 300, textAlign: 'center', border: '1px solid #2e3148'
+    }}>
+      <div style={{ fontSize: 14, color: '#e8eaf0', marginBottom: 16 }}>
+        Почати нову розмову? Поточна історія буде очищена.
+      </div>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+        <button
+          onClick={() => setConfirmClearOpen(false)}
+          style={{
+            padding: '8px 20px', borderRadius: 6, border: '1px solid #2e3148',
+            background: 'transparent', color: '#9aa0b8', cursor: 'pointer', fontSize: 13
+          }}
+        >
+          Скасувати
+        </button>
+        <button
+          onClick={() => {
+            setAgentMessages([]);
+            updateCase && updateCase(caseData.id, 'agentHistory', []);
+            setConfirmClearOpen(false);
+          }}
+          style={{
+            padding: '8px 20px', borderRadius: 6, border: 'none',
+            background: '#e74c3c', color: '#fff', cursor: 'pointer', fontSize: 13
+          }}
+        >
+          Очистити
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+```
+
+---
+
+## БАГ 6 — Нотатки: [object Object], закріплення, візуальне виділення
+
+### Симптом (підтверджений скріншотами)
+1. Поле "Нотатки до справи" показує `[object Object]`
+2. Прикріплюється тільки одна нотатка (ексклюзивне замість toggle)
+3. Не видно які нотатки закріплені
+4. Текст з caseData.notes не є нотаткою в notes[] (відсутній в Записній книжці)
+
+### АРХІТЕКТУРНЕ ПРАВИЛО — ЄДИНЕ ДЖЕРЕЛО НОТАТОК
+
+Нотатки існують ТІЛЬКИ в масиві notes[] в App.jsx.
+Поле caseData.notes — НЕ використовується для нотаток.
+Створювати, редагувати, закріплювати, видаляти нотатки — однаково і в Досьє і в Записній книжці.
+Досьє показує нотатки відфільтровані по caseId.
+Записна книжка показує всі нотатки.
+
+### Діагностика
+```bash
+grep -n "pinnedNote\|pinned\|📌\|caseData\.notes\|case\.notes\|Нотатки до справи" src/components/CaseDossier/index.jsx | head -20
+grep -n "pinNote\|onPinNote\|\.pinned" src/App.jsx | head -10
+```
+
+### Рішення — крок 1: міграція caseData.notes
+
+Якщо в якихось справах є текст в caseData.notes — при першому завантаженні перетворити в звичайну нотатку:
+
+```jsx
+// В App.jsx або CaseDossier при ініціалізації:
+useEffect(() => {
+  if (caseData.notes && typeof caseData.notes === 'string' && caseData.notes.trim()) {
+    // Перевірити чи вже мігровано
+    const alreadyExists = (notesProp || []).some(n =>
+      n.caseId === caseData.id && n.text === caseData.notes
+    );
+    if (!alreadyExists && onAddNote) {
+      onAddNote({
+        text: caseData.notes,
+        caseId: caseData.id,
+        category: 'case',
+        pinned: true, // закріпити щоб показувалась де раніше
+        ts: new Date().toISOString()
+      });
+      // Очистити старе поле
+      updateCase && updateCase(caseData.id, 'notes', '');
+    }
+  }
+}, [caseData.id]);
+```
+
+### Рішення — крок 2: поле "Нотатки до справи" в Огляді
+
+Замінити поточний блок:
 
 ```jsx
 {/* Нотатки до справи */}
 <div style={{ marginBottom: 12 }}>
   <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Нотатки до справи</div>
-  {caseNotes.filter(n => n.pinned).length > 0 ? (
-    <div style={{
-      background: '#1a1d2e', borderRadius: 6, padding: '8px 10px',
-      fontSize: 12, color: '#c8cce0', lineHeight: 1.6,
-      borderLeft: '3px solid #4f7cff'
-    }}>
-      {caseNotes.filter(n => n.pinned).map((note, i) => (
-        <div key={note.id || i} style={{ marginBottom: i < caseNotes.filter(n => n.pinned).length - 1 ? 8 : 0 }}>
-          <div style={{ fontSize: 10, color: '#5a6080', marginBottom: 2 }}>
-            📌 {note.ts ? new Date(note.ts).toLocaleDateString('uk-UA') : ''}
-          </div>
-          <div>{note.text}</div>
+  {(() => {
+    const pinned = caseNotes.filter(n => n.pinned);
+    if (pinned.length > 0) {
+      return (
+        <div style={{
+          background: '#1a1d2e', borderRadius: 6, padding: '8px 10px',
+          fontSize: 12, color: '#c8cce0', lineHeight: 1.6,
+          borderLeft: '3px solid #4f7cff'
+        }}>
+          {pinned.map((note, i) => (
+            <div key={note.id || i} style={{
+              marginBottom: i < pinned.length - 1 ? 8 : 0,
+              paddingBottom: i < pinned.length - 1 ? 8 : 0,
+              borderBottom: i < pinned.length - 1 ? '1px solid #2e3148' : 'none'
+            }}>
+              <div style={{ fontSize: 10, color: '#5a6080', marginBottom: 2 }}>
+                📌 {note.ts ? new Date(note.ts).toLocaleDateString('uk-UA') : ''}
+              </div>
+              <div>{note.text}</div>
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
-  ) : (
-    <textarea
-      value={caseData.notes || ''}
-      onChange={e => updateCase && updateCase(caseData.id, 'notes', e.target.value)}
-      placeholder="Вільні нотатки по справі..."
-      style={{
-        width: '100%', minHeight: 60, background: '#1a1d2e',
-        border: '1px solid #2e3148', borderRadius: 6,
-        color: '#e8eaf0', padding: '8px 10px', fontSize: 12,
-        resize: 'vertical'
-      }}
-    />
-  )}
+      );
+    }
+    return (
+      <div style={{
+        fontSize: 12, color: '#5a6080', fontStyle: 'italic',
+        padding: '8px 10px'
+      }}>
+        Закріпіть нотатку 📌 зі списку нижче
+      </div>
+    );
+  })()}
 </div>
 ```
 
-3. Якщо є окремий синій блок "📌 ЗАКРІПЛЕНІ НОТАТКИ" як окрема секція — ВИДАЛИТИ його.
+НЕ textarea. Якщо немає закріплених — підказка. Нотатки створюються тільки через "+ Додати".
 
----
+### Рішення — крок 3: pinNote — toggle, не ексклюзивне
 
-## БАГ 8 — 📌 кнопка відсутня в Записній книжці
-
-### Симптом
-Кнопка закріплення нотатки є тільки в Досьє, а в Notebook відсутня.
-
-### Діагностика
-```bash
-grep -n "pinned\|📌\|pinNote\|onPinNote" src/components/Notebook/index.jsx | head -10
-```
-
-### Рішення
-1. Перевірити чи Notebook отримує props: onPinNote або pinNote
-2. Якщо ні — додати prop в App.jsx де рендериться Notebook:
+В App.jsx змінити pinNote:
 
 ```jsx
-// В App.jsx знайти <Notebook і додати:
-onPinNote={(noteId) => {
-  const updated = notes.map(n =>
+const pinNote = (noteId) => {
+  setNotes(prev => prev.map(n =>
     n.id === noteId ? { ...n, pinned: !n.pinned } : n
-  );
-  setNotes(updated);
-  // зберегти в Drive якщо потрібно
-}}
+  ));
+};
 ```
 
-3. В Notebook — додати кнопку 📌 на кожній картці нотатки:
+НЕ скидати pinned у інших нотаток. Кілька нотаток можуть бути закріплені одночасно.
+
+### Рішення — крок 4: візуальне виділення 📌
+
+В секції "НОТАТКИ ПО СПРАВІ" — кнопка 📌 показує стан:
 
 ```jsx
 <button
   onClick={() => onPinNote && onPinNote(note.id)}
   style={{
     background: 'none', border: 'none', cursor: 'pointer',
-    fontSize: 14, opacity: note.pinned ? 1 : 0.3,
-    padding: '2px 4px'
+    fontSize: 16, padding: '2px 4px',
+    filter: note.pinned ? 'none' : 'grayscale(1) opacity(0.3)',
+    transform: note.pinned ? 'rotate(-45deg)' : 'none',
+    transition: 'all 0.2s'
   }}
   title={note.pinned ? "Відкріпити" : "Закріпити"}
 >
@@ -269,19 +427,64 @@ onPinNote={(noteId) => {
 </button>
 ```
 
+Рядок закріпленої нотатки — виділити:
+
+```jsx
+<div style={{
+  background: note.pinned ? 'rgba(79,124,255,0.08)' : 'transparent',
+  borderLeft: note.pinned ? '2px solid #4f7cff' : '2px solid transparent',
+  padding: '8px 10px', borderRadius: 4,
+  transition: 'all 0.2s'
+}}>
+  {/* зміст нотатки */}
+</div>
+```
+
+### Рішення — крок 5: редагування нотаток в Досьє
+
+Нотатки мають редагуватись так само як в Записній книжці:
+- Кнопка редагування (✏️ або клік по тексту) → inline textarea
+- Зберегти / скасувати
+- Зміни через загальний onUpdateNote з App.jsx
+
+---
+
+## БАГ 8 — 📌 і повне редагування в Записній книжці
+
+### Діагностика
+```bash
+grep -n "pinned\|📌\|pinNote\|onPinNote\|onUpdateNote\|onEditNote" src/components/Notebook/index.jsx | head -10
+ls src/components/Notebook/
+```
+
+### Рішення
+
+1. В App.jsx — переконатись що Notebook отримує всі потрібні props:
+
+```jsx
+<Notebook
+  // існуючі props...
+  onPinNote={pinNote}
+  onUpdateNote={updateNote}
+/>
+```
+
+2. В Notebook — додати кнопку 📌 на кожній картці нотатки.
+   Стиль точно такий як в Досьє (grayscale для незакріплених, rotate -45° для закріплених, підсвітка фону).
+
+3. Редагування нотаток в Notebook має працювати ідентично Досьє.
+
 ---
 
 ## ПОРЯДОК ВИКОНАННЯ
 
-1. **БАГ 1** — QI overlay (найкритичніший, ламає UX)
-2. **БАГ 2** — кнопка "← Реєстр" (базова навігація)
-3. **БАГ 3** — перевірити toggle агента
-4. **БАГ 4** — перевірити пам'ять агента
-5. **БАГ 5** — перевірити drag QI
-6. **БАГ 6** — закріплені нотатки
-7. **БАГ 8** — 📌 в Notebook
-
-Баги 3, 4, 5 можуть вже працювати після коміту 263c87c — СПОЧАТКУ перевірити діагностикою, фіксити тільки якщо зламані.
+1. **БАГ 1** — QI sidebar справа (найкритичніший, змінює layout)
+2. **БАГ 2** — кнопка "← Реєстр"
+3. **БАГ 3** — toggle агента + поведінка по вкладках
+4. **БАГ 6** — нотатки: міграція caseData.notes, єдине джерело, pinned toggle, візуалізація
+5. **БАГ 4** — агент пам'ять: передати history в API messages[]
+6. **БАГ 5** — модалка "Нова розмова"
+7. **БАГ 8** — 📌 і редагування в Notebook
 
 ---
 
@@ -289,23 +492,31 @@ onPinNote={(noteId) => {
 
 ```bash
 npm run build 2>&1 | tail -5
-git add -A && git commit -m "fix: dossier bugfixes — QI overlay, back button, agent toggle, notes pin" && git push origin main
+git add -A && git commit -m "fix: dossier bugfixes batch — QI sidebar, back button, agent toggle, notes system, agent memory API" && git push origin main
 ```
 
 ---
 
 ## КРИТЕРІЇ ЗАВЕРШЕННЯ
 
-- [ ] QI відкривається поверх досьє, досьє НЕ зникає
-- [ ] При закритті QI досьє все ще відкрите
+- [ ] QI відкривається СПРАВА як sidebar
+- [ ] Основний контент (досьє/реєстр) стискується вліво при відкритті QI
+- [ ] Досьє НЕ зникає і реєстр НЕ проступає при відкритті QI
+- [ ] Закрив QI — контент розтягується назад
 - [ ] Кнопка "← Реєстр" є в шапці досьє зліва
-- [ ] Кнопка "🤖 Агент" toggle працює на всіх вкладках
-- [ ] Після закриття і відкриття досьє — повідомлення агента збережені
-- [ ] Кнопка "Нова розмова" очищає з підтвердженням
-- [ ] Дати між повідомленнями різних сесій
-- [ ] QI кнопка ⚡ можна перетягнути по екрану
-- [ ] Закріплені нотатки показуються в полі "Нотатки до справи"
-- [ ] Окремий блок "📌 ЗАКРІПЛЕНІ НОТАТКИ" видалений (якщо був)
-- [ ] 📌 кнопка є на нотатках в Записній книжці
+- [ ] Кнопка "🤖 Агент" toggle є в шапці досьє справа
+- [ ] На Огляді агент відкритий за замовчуванням (але можна закрити)
+- [ ] На інших вкладках агент закритий за замовчуванням (можна відкрити)
+- [ ] Поле "Нотатки до справи" показує ТЕКСТ закріплених нотаток (не [object Object])
+- [ ] Якщо немає закріплених — підказка "Закріпіть нотатку зі списку нижче"
+- [ ] НЕ textarea для вільного тексту — нотатки тільки через "+ Додати"
+- [ ] Текст з caseData.notes мігрований в звичайну нотатку
+- [ ] Можна закріпити КІЛЬКА нотаток одночасно (toggle)
+- [ ] Закріплені нотатки виділені: яскрава 📌 з rotate(-45deg), підсвітка фону
+- [ ] Незакріплені: сіра напівпрозора 📌, без підсвітки
+- [ ] Нотатки створюються і редагуються однаково в Досьє і Записній книжці
+- [ ] 📌 кнопка є в Записній книжці
+- [ ] Агент РЕАЛЬНО пам'ятає переписку (history передається в API messages[])
+- [ ] "Нова розмова" — власна модалка (НЕ браузерний confirm)
 - [ ] npm run build без помилок
 - [ ] git push origin main виконано
