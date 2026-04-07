@@ -1,208 +1,201 @@
-# TASK.md — Підключення CaseDossier в App.jsx
-# Дата: 06.04.2026
+# TASK.md — Закрити і видалити справу
+# Дата: 07.04.2026
 # Гілка: main
 
 ## МЕТА
-Компонент src/components/CaseDossier/index.jsx вже існує але не підключений.
-Треба зробити так щоб клік на справу в реєстрі відкривав досьє.
+
+Реалізувати двоетапне видалення справи:
+1. Закрити справу -> статус "closed" -> відображається у вкладці "Закриті"
+2. З вкладки "Закриті" -> видалити назавжди -> видалення з реєстру + папка Drive
 
 ---
 
-## КРОК 1 — ДІАГНОСТИКА
+## КРОК 0 — ДІАГНОСТИКА
 
 ```bash
-grep -n "dossierCase\|CaseDossier\|setDossierCase" src/App.jsx | head -20
+grep -n "status.*closed\|filterStatus\|Закрит" src/App.jsx | head -20
+grep -n "deleteCase\|delete.*case\|drive.*delete" src/App.jsx | head -20
+grep -n "driveConnected\|drive_token\|gapi\|deleteFile\|deleteFolder" src/App.jsx | head -20
 ```
 
-Якщо нічого не знайдено — компонент не підключений взагалі. Йдемо далі.
-
-```bash
-grep -n "import.*from" src/App.jsx | head -20
-```
-
-```bash
-grep -n "onClick.*case\|case.*onClick\|openCase\|selectedCase\|caseClick\|handleCase" src/App.jsx | head -20
-```
-
-Це покаже де зараз обробляється клік на справу.
+Зрозуміти:
+- Як зараз реалізована фільтрація по статусах (active/paused/closed)
+- Чи є вже функція видалення справи
+- Як підключений Drive API і чи є функції для видалення файлів/папок
 
 ---
 
-## КРОК 2 — ДОДАТИ ІМПОРТ
+## КРОК 1 — КНОПКА "ЗАКРИТИ СПРАВУ"
 
-На початку src/App.jsx після існуючих імпортів додати:
+Кнопка "Закрити справу" в двох місцях:
+- В картці справи в реєстрі (в меню дій або три крапки)
+- В шапці досьє поряд зі статусом
 
+Знайти де рендеряться дії по справі:
+```bash
+grep -n "handleEdit\|handleDelete\|onEdit\|onDel\|case.*action" src/App.jsx | head -20
+```
+
+Додати функцію закриття:
 ```jsx
-import CaseDossier from './components/CaseDossier';
+function closeCase(caseId) {
+  setCases(prev => prev.map(c =>
+    c.id === caseId ? { ...c, status: 'closed' } : c
+  ));
+  saveToDrive();
+}
 ```
 
----
-
-## КРОК 3 — ДОДАТИ STATE
-
-Знайти блок з useState в компоненті App і додати:
-
+Підтвердження — одне просте вікно:
 ```jsx
-const [dossierCase, setDossierCase] = useState(null);
-const [ideas, setIdeas] = useState([]);
-```
-
----
-
-## КРОК 4 — ДОДАТИ updateCase ЯКЩО НЕМАЄ
-
-```bash
-grep -n "function updateCase\|updateCase" src/App.jsx | head -5
-```
-
-Якщо немає — додати поруч з іншими функціями:
-
-```jsx
-function updateCase(caseId, field, value) {
-  setCases(prev => prev.map(c => c.id === caseId ? { ...c, [field]: value } : c));
+if (window.confirm('Закрити справу? Вона перейде в архів. Видалити можна буде звідти.')) {
+  closeCase(caseId);
 }
 ```
 
 ---
 
-## КРОК 5 — ЗНАЙТИ ДЕ РЕНДЕРЯТЬСЯ КАРТКИ СПРАВ
+## КРОК 2 — ВІДОБРАЖЕННЯ ЗАКРИТИХ СПРАВ
 
+Перевірити чи є вкладка "Закриті" у фільтрах статусів:
 ```bash
-grep -n "caseItem\|case\.name\|\.map.*case\|cases\.map" src/App.jsx | head -20
+grep -n "filterStatus\|Закрит\|closed" src/App.jsx | head -20
 ```
 
-Знайти місце де рендерується список справ і де є клік на картку.
-Замінити або доповнити обробник кліку:
+Якщо вкладка є — переконатись що закриті справи там відображаються.
+Якщо немає — додати кнопку фільтра поруч з існуючими.
 
+В закритих справах показувати червону кнопку — тільки для status === 'closed':
 ```jsx
-onClick={() => setDossierCase(caseItem)}
-```
-
-де `caseItem` — це об'єкт справи в циклі `.map()`. Назва змінної може бути інша — `case`, `c`, `item` тощо. Використати ту що є в коді.
-
-ВАЖЛИВО: якщо зараз клік відкриває якусь існуючу картку або модалку — НЕ видаляти цю логіку, а додати `setDossierCase` поруч. Або замінити якщо це просто `alert` або порожня функція.
-
----
-
-## КРОК 6 — ДОДАТИ ErrorBoundary ЯКЩО НЕМАЄ
-
-```bash
-grep -n "ErrorBoundary" src/App.jsx | head -5
-```
-
-Якщо немає — додати перед `function App()` або `export default function App()`:
-
-```jsx
-class ErrorBoundary extends React.Component {
-  state = { hasError: false };
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() {
-    if (this.state.hasError) return (
-      <div style={{ padding: 20, color: "#e74c3c", fontSize: 13 }}>
-        ⚠️ Модуль тимчасово недоступний
-        <button onClick={() => this.setState({ hasError: false })}>Спробувати знову</button>
-      </div>
-    );
-    return this.props.children;
-  }
-}
-```
-
----
-
-## КРОК 7 — ДОДАТИ РЕНДЕР ДОСЬЄ
-
-Знайти кінець return в компоненті App (перед останньою закриваючою дужкою JSX) і додати:
-
-```jsx
-{dossierCase && (
-  <ErrorBoundary>
-    <CaseDossier
-      caseData={dossierCase}
-      cases={cases}
-      updateCase={updateCase}
-      onClose={() => setDossierCase(null)}
-      onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
-    />
-  </ErrorBoundary>
+{c.status === 'closed' && (
+  <button
+    onClick={() => handleDeleteCase(c)}
+    style={{
+      color: '#e74c3c',
+      background: 'rgba(231,76,60,.1)',
+      border: '1px solid rgba(231,76,60,.3)',
+      padding: '4px 10px', borderRadius: 6,
+      cursor: 'pointer', fontSize: 11
+    }}
+  >
+    Видалити назавжди
+  </button>
 )}
 ```
 
+Для активних і призупинених справ цю кнопку НЕ показувати.
+
 ---
 
-## КРОК 8 — ТЕСТОВІ ДАНІ БРАНОВСЬКОГО
+## КРОК 3 — ФУНКЦІЯ ВИДАЛЕННЯ НАЗАВЖДИ
+
+Подвійне підтвердження — бо операція незворотна:
+```jsx
+async function handleDeleteCase(caseItem) {
+  const first = window.confirm(
+    `Видалити справу "${caseItem.name}"?\n\nСправа буде видалена з реєстру.`
+  );
+  if (!first) return;
+
+  const second = window.confirm(
+    `УВАГА! Незворотна операція!\n\n` +
+    `Буде видалено справу "${caseItem.name}" з реєстру\n` +
+    `та папку справи на Google Drive з усіма файлами.\n\n` +
+    `Це неможливо скасувати. Продовжити?`
+  );
+  if (!second) return;
+
+  await deleteCasePermanently(caseItem);
+}
+
+async function deleteCasePermanently(caseItem) {
+  try {
+    // 1. Видалити папку на Drive якщо є
+    if (caseItem.driveFolderId && driveConnected) {
+      await deleteDriveFolder(caseItem.driveFolderId);
+    } else if (!caseItem.driveFolderId) {
+      console.log('driveFolderId not found, skipping Drive deletion');
+    }
+
+    // 2. Видалити з масиву справ
+    setCases(prev => prev.filter(c => c.id !== caseItem.id));
+
+    // 3. Зберегти оновлений реєстр
+    saveToDrive();
+
+    // 4. Якщо відкрите досьє цієї справи — закрити
+    if (dossierCase?.id === caseItem.id) {
+      setDossierCase(null);
+    }
+
+    alert(`Справу "${caseItem.name}" видалено.`);
+  } catch (err) {
+    console.error('Помилка видалення:', err);
+    alert('Помилка при видаленні. Спробуйте ще раз.');
+  }
+}
+```
+
+Функція видалення папки Drive:
+```jsx
+async function deleteDriveFolder(folderId) {
+  const token = localStorage.getItem('levytskyi_drive_token');
+  if (!token || !folderId) return;
+
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${folderId}`,
+    {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    }
+  );
+
+  // 204 = успішно видалено (переміщено в кошик Drive)
+  if (!response.ok && response.status !== 204) {
+    throw new Error(`Drive API error: ${response.status}`);
+  }
+}
+```
+
+---
+
+## КРОК 4 — ПЕРЕВІРИТИ driveFolderId
 
 ```bash
-grep -n "Брановськ\|Branovsk\|initialCases\|defaultCases" src/App.jsx | head -10
+grep -n "driveFolderId\|driveFolder\|folderLink" src/App.jsx | head -10
 ```
 
-Знайти об'єкт справи Брановського і додати поля якщо їх немає:
-
-```js
-agentHistory: [],
-proceedings: [
-  {
-    id: "proc_main",
-    type: "first",
-    title: "Основне провадження",
-    court: "Пустомитівський районний суд Львівської обл.",
-    status: "paused",
-    parentProcId: null,
-    parentEventId: null
-  },
-  {
-    id: "proc_appeal_1",
-    type: "appeal",
-    title: "Апеляція: ухвала 03.2024",
-    court: "Київський апеляційний суд",
-    status: "active",
-    parentProcId: "proc_main",
-    parentEventId: "event_4"
-  }
-],
-documents: [
-  { id: 1, procId: "proc_main", name: "Позовна заява", icon: "📄", date: "березень 2023", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-  { id: 2, procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", date: "березень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-  { id: 3, procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", date: "грудень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-  { id: 4, procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", date: "лютий 2024", category: "pleading", author: "opponent", tags: [], notes: "" },
-  { id: 5, procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", date: "лютий 2024", category: "motion", author: "opponent", tags: [], notes: "" },
-  { id: 6, procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", date: "березень 2024", category: "court_act", author: "court", tags: ["key"], notes: "" },
-  { id: 7, procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", date: "квітень 2024", category: "court_act", author: "court", tags: [], notes: "" },
-  { id: 8, procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", date: "квітень 2024", category: "pleading", author: "opponent", tags: ["key"], notes: "" },
-  { id: 9, procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", date: "квітень 2024", category: "other", author: "opponent", tags: [], notes: "" },
-  { id: 10, procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", date: "травень 2024", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-  { id: 11, procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", date: "червень 2024", category: "pleading", author: "opponent", tags: [], notes: "⚠️ Лікарняний лист — перевірити автентичність" },
-  { id: 12, procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
-]
-```
+Якщо поля немає в справах — для існуючих справ воно буде null.
+В такому випадку deleteCasePermanently просто пропускає видалення папки Drive
+і виводить попередження: "Папку Drive не знайдено — видалено тільки з реєстру."
 
 ---
 
-## КРОК 9 — ЗБІРКА І ДЕПЛОЙ
+## КРОК 5 — ЗБІРКА І ДЕПЛОЙ
 
 ```bash
 npm run build
-git add -A && git commit -m "Connect CaseDossier to App.jsx: click case opens dossier" && git push origin main
+git add -A && git commit -m "feat: close case and permanent delete with Drive folder removal" && git push origin main
 ```
 
 ---
 
 ## КРИТЕРІЇ ЗАВЕРШЕННЯ
 
-- [ ] Клік на справу в реєстрі → відкривається CaseDossier overlay
-- [ ] "← Реєстр" → повертає назад в реєстр
-- [ ] Вкладки Огляд / Матеріали / Позиція / Шаблони видно
-- [ ] Справа Брановський має вкладку Матеріали з документами
-- [ ] `npm run build` без помилок
+- [ ] Кнопка "Закрити справу" є в картці або меню дій
+- [ ] Після закриття справа переходить в статус closed
+- [ ] Закрита справа відображається у вкладці "Закриті"
+- [ ] Тільки закриті справи мають кнопку "Видалити назавжди"
+- [ ] Активні і призупинені — цієї кнопки не мають
+- [ ] При натисканні — два вікна підтвердження
+- [ ] Після підтвердження справа зникає з реєстру
+- [ ] Якщо відкрите досьє цієї справи — воно закривається
+- [ ] npm run build без помилок
 
 ---
 
 ## ЯКЩО ЩОСЬ НЕ ТАК
 
-**Досьє не відкривається після кліку:** перевірити чи `setDossierCase` викликається в onClick картки справи — додати `console.log("click", caseItem)` тимчасово.
-
-**Blank page після деплою:** перевірити GitHub Actions логи — скоріш за все синтаксична помилка.
-
-**"React is not defined" при ErrorBoundary:** на початку файлу має бути `import React from 'react'` або замінити `React.Component` на просто клас без React prefix якщо використовується інший підхід.
-
-**updateCase не знайдено:** перевірити як називається функція зміни полів справи в поточному коді — можливо вона вже є під іншою назвою.
+driveFolderId null: пропустити Drive видалення, показати попередження.
+Drive 403: токен протух, запустити переавторизацію.
+Blank page: перевірити рядки з confirm — апострофи замінити на подвійні лапки.

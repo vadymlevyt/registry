@@ -195,7 +195,7 @@ function CaseCard({ c, onClick }) {
   );
 }
 
-function CaseModal({ c, onClose, onEdit, onDelete }) {
+function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase }) {
   const hearingDays = daysUntil(c.hearing_date);
   const deadlineDays = daysUntil(c.deadline);
   return (
@@ -256,12 +256,17 @@ function CaseModal({ c, onClose, onEdit, onDelete }) {
           <button className="btn-lg secondary">📁 Google Drive</button>
           <button className="btn-lg secondary">📄 Генерувати документ</button>
           <button className="btn-lg secondary">💡 Ідея для контенту</button>
-          <button className="btn-lg danger" onClick={() => {
-            if (window.confirm(`Видалити справу ${c.name}? Цю дію не можна скасувати.`)) {
-              onDelete(c.id);
-              onClose();
-            }
-          }}>🗑 Видалити справу</button>
+          {c.status !== 'closed' && (
+            <button className="btn-lg secondary" onClick={() => {
+              if (window.confirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.")) {
+                onCloseCase(c.id);
+                onClose();
+              }
+            }}>📦 Закрити справу</button>
+          )}
+          {c.status === 'closed' && (
+            <button className="btn-lg danger" onClick={() => onDelete(c)}>🗑 Видалити назавжди</button>
+          )}
         </div>
       </div>
     </div>
@@ -1570,20 +1575,39 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
 
             if (matched) {
-              // Для видалення — залишаємо confirm() як захист
-              if (!window.confirm(`Видалити справу "${matched.name}"? Цю дію не можна скасувати.`)) {
+              if (matched.status === 'closed') {
+                // Вже закрита — пропонуємо видалити назавжди
+                if (!window.confirm(`Справа "${matched.name}" вже закрита. Видалити назавжди? Цю дію не можна скасувати.`)) {
+                  setConversationHistory(prev => [...prev, {
+                    role: 'assistant',
+                    content: `Видалення справи "${matched.name}" скасовано.`
+                  }]);
+                  setChatLoading(false);
+                  return;
+                }
+                setCases(prev => prev.filter(c => c.id !== matched.id));
                 setConversationHistory(prev => [...prev, {
                   role: 'assistant',
-                  content: `Видалення справи "${matched.name}" скасовано.`
+                  content: `✅ Справу "${matched.name}" видалено з реєстру назавжди.`
                 }]);
-                setChatLoading(false);
-                return;
+              } else {
+                // Спочатку закриваємо
+                if (!window.confirm(`Закрити справу "${matched.name}"? Вона перейде в архів.`)) {
+                  setConversationHistory(prev => [...prev, {
+                    role: 'assistant',
+                    content: `Закриття справи "${matched.name}" скасовано.`
+                  }]);
+                  setChatLoading(false);
+                  return;
+                }
+                setCases(prev => prev.map(c =>
+                  c.id === matched.id ? { ...c, status: 'closed' } : c
+                ));
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ Справу "${matched.name}" закрито. Вона тепер у вкладці "Закриті". Звідти можна видалити назавжди.`
+                }]);
               }
-              setCases(prev => prev.filter(c => c.id !== matched.id));
-              setConversationHistory(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Справу "${matched.name}" видалено з реєстру.`
-              }]);
               setChatLoading(false);
               return;
             }
@@ -2736,9 +2760,57 @@ function App() {
     setTab('add');
   };
 
-  const deleteCase = (id) => {
-    setCases(prev => prev.filter(c => c.id !== id));
+  const closeCase = (id) => {
+    setCases(prev => prev.map(c =>
+      c.id === id ? { ...c, status: 'closed' } : c
+    ));
     setSelected(null);
+  };
+
+  const deleteDriveFolder = async (folderId) => {
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token || !folderId) return;
+    const response = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${folderId}`,
+      { method: "DELETE", headers: { "Authorization": `Bearer ${token}` } }
+    );
+    if (!response.ok && response.status !== 204) {
+      throw new Error(`Drive API error: ${response.status}`);
+    }
+  };
+
+  const deleteCasePermanently = async (caseItem) => {
+    try {
+      if (caseItem.driveFolderId && driveConnected) {
+        await deleteDriveFolder(caseItem.driveFolderId);
+      } else if (!caseItem.driveFolderId) {
+        console.log("driveFolderId not found, skipping Drive deletion");
+      }
+      setCases(prev => prev.filter(c => c.id !== caseItem.id));
+      if (dossierCase?.id === caseItem.id) {
+        setDossierCase(null);
+      }
+      setSelected(null);
+      alert(`Справу "${caseItem.name}" видалено.`);
+    } catch (err) {
+      console.error("Помилка видалення:", err);
+      alert("Помилка при видаленні. Спробуйте ще раз.");
+    }
+  };
+
+  const handleDeleteCase = (caseItem) => {
+    const first = window.confirm(
+      `Видалити справу "${caseItem.name}"?\n\nСправа буде видалена з реєстру.`
+    );
+    if (!first) return;
+    const second = window.confirm(
+      "УВАГА! Незворотна операція!\n\n" +
+      `Буде видалено справу "${caseItem.name}" з реєстру\n` +
+      "та папку справи на Google Drive з усіма файлами.\n\n" +
+      "Це неможливо скасувати. Продовжити?"
+    );
+    if (!second) return;
+    deleteCasePermanently(caseItem);
   };
 
   return (
@@ -2818,7 +2890,18 @@ function App() {
                 </div>
                 <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
                 {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
-                <div className="cases-grid">{filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={() => setDossierCase(c)} />)}</div>
+                <div className="cases-grid">{filteredCases.map(c => (
+                  <div key={c.id} style={{position:'relative'}}>
+                    <CaseCard c={c} onClick={() => setDossierCase(c)} />
+                    {c.status === 'closed' && (
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
+                        position:'absolute', bottom:8, right:8, color:'#e74c3c',
+                        background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
+                        padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
+                      }}>Видалити назавжди</button>
+                    )}
+                  </div>
+                ))}</div>
               </div>
             )}
             {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
@@ -2898,7 +2981,18 @@ function App() {
               <div style={{fontSize:12,color:'var(--text2)',marginBottom:12}}>{filteredCases.length} справ</div>
               {filteredCases.length === 0 && <div className="empty"><div className="empty-icon">🔍</div><div className="empty-text">Нічого не знайдено</div></div>}
               <div className="cases-grid">
-                {filteredCases.map(c => <CaseCard key={c.id} c={c} onClick={() => setDossierCase(c)} />)}
+                {filteredCases.map(c => (
+                  <div key={c.id} style={{position:'relative'}}>
+                    <CaseCard c={c} onClick={() => setDossierCase(c)} />
+                    {c.status === 'closed' && (
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteCase(c); }} style={{
+                        position:'absolute', bottom:8, right:8, color:'#e74c3c',
+                        background:'rgba(231,76,60,.1)', border:'1px solid rgba(231,76,60,.3)',
+                        padding:'4px 10px', borderRadius:6, cursor:'pointer', fontSize:11
+                      }}>Видалити назавжди</button>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -2930,7 +3024,7 @@ function App() {
       )}
 
       {/* MODALS */}
-      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={deleteCase} />}
+      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} />}
 
       {/* DOSSIER */}
       {dossierCase && (
@@ -2941,6 +3035,8 @@ function App() {
             updateCase={updateCase}
             onClose={() => setDossierCase(null)}
             onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
+            onCloseCase={closeCase}
+            onDeleteCase={handleDeleteCase}
           />
         </ErrorBoundary>
       )}

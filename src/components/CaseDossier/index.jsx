@@ -20,7 +20,7 @@ const PROC_COLORS = {
   cassation: "#f39c12"
 };
 
-export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea }) {
+export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -337,6 +337,17 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
           {caseData.hearing_date && <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{caseData.hearing_date}</span>}
+          {caseData.status !== "closed" && onCloseCase && (
+            <button onClick={() => {
+              if (window.confirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.")) {
+                onCloseCase(caseData.id);
+                onClose();
+              }
+            }} style={{ background: "none", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"📦 Закрити"}</button>
+          )}
+          {caseData.status === "closed" && onDeleteCase && (
+            <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"🗑 Видалити назавжди"}</button>
+          )}
           <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>{"💡"}</button>
           <button style={{ background: "#4f7cff", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{"🤖 Агент"}</button>
         </div>
