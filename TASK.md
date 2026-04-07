@@ -1,14 +1,14 @@
-# TASK.md — Фікс z-index після resizable panels + LESSONS.md
+# TASK.md — Хірургічний фікс CaseDossier layout
 Дата: 08.04.2026
 
 ## СЕРЕДОВИЩЕ
-Репо: github.com/vadymlevyt/registry
+Поточний коміт: 5966caf
+Компонент: src/components/CaseDossier/index.jsx
 Деплой: git add -A && git commit -m "..." && git push origin main
-Перевірка: git log --oneline -3
 
 ---
 
-## ОБОВ'ЯЗКОВО ПЕРЕД ПОЧАТКОМ — ПРОЧИТАТИ LESSONS.md
+## КРОК 0 — ПРОЧИТАТИ LESSONS.md
 
 ```bash
 cat LESSONS.md
@@ -16,78 +16,112 @@ cat LESSONS.md
 
 ---
 
-## ДІАГНОСТИКА СПОЧАТКУ
+## КРОК 1 — ДІАГНОСТИКА (не чіпати код до завершення)
 
+### 1А. Знайти кореневий контейнер CaseDossier
 ```bash
-# 1. Останні коміти
-git log --oneline -5
-
-# 2. z-index в CaseDossier
-grep -n "zIndex\|z-index\|position" src/components/CaseDossier/index.jsx | head -40
-
-# 3. z-index в App.jsx
-grep -n "zIndex\|z-index\|position.*fixed\|position.*absolute" src/App.jsx | head -40
+grep -n "position\|zIndex\|overflow\|display.*flex\|flexDirection" src/components/CaseDossier/index.jsx | head -60
 ```
 
-Показати результати перед змінами.
+### 1Б. Знайти де рендериться шапка (← Реєстр, вкладки, кнопка агента)
+```bash
+grep -n "Реєстр\|showAgent\|setShowAgent\|activeTab\|← " src/components/CaseDossier/index.jsx | head -30
+```
+
+### 1В. Знайти де рендериться QI в досьє
+```bash
+grep -n "showQI\|QuickInput\|Quick Input\|setShowQI" src/components/CaseDossier/index.jsx | head -20
+```
+
+### 1Г. Знайти resizable логіку
+```bash
+grep -n "resize\|Resize\|handleResize\|mouseDown\|touchStart\|panelWidth\|qiWidth\|agentWidth" src/components/CaseDossier/index.jsx | head -30
+```
+
+### 1Д. Показати першу return() — структуру JSX
+```bash
+grep -n "return (" src/components/CaseDossier/index.jsx
+```
+Потім показати рядки від першого return до ~50 рядків після нього.
+
+**СТОП. Показати результати діагностики і чекати підтвердження перед змінами.**
 
 ---
 
-## БАГ 1 — КНОПКИ ДОСЬЄ ХОВАЮТЬСЯ ЗА ШАРАМИ
+## КРОК 2 — ФІКС НА ОСНОВІ ДІАГНОСТИКИ
 
-**Симптом:** Кнопка "← Реєстр", "Сховати агента", вкладки — зникли або з'являються тільки при скролі.
+Після діагностики застосувати такі правила:
 
-**Причина:** Resizable panels додали position:relative або transform що створило новий stacking context і перекрив шапку.
-
-**Рішення:**
-
-Кореневий контейнер CaseDossier:
+### Правило 1 — Кореневий контейнер
+Перший div після return() в CaseDossier МАЄ бути:
 ```jsx
-{
+<div style={{
   position: 'fixed',
-  top: 0, left: 0, right: 0, bottom: 0,
-  zIndex: 50,
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 100,
   background: '#0d0f1a',
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
-}
+}}>
 ```
+**overflow: hidden на кореневому** — скрол тільки всередині дочірніх контейнерів.
 
-Шапка (заголовок + кнопки + вкладки):
+### Правило 2 — Шапка (← Реєстр + вкладки + кнопка агента)
 ```jsx
-{
-  position: 'sticky',
-  top: 0,
-  zIndex: 100,
-  background: '#0d0f1a',
+<div style={{
   flexShrink: 0,
-}
+  zIndex: 200,
+  position: 'relative',
+  background: '#0d0f1a',
+}}>
 ```
+zIndex: 200 — вище всього іншого в досьє.
 
-Resizable контейнер (flex row з панелями):
+### Правило 3 — Робочий рядок (контент + агент + QI)
 ```jsx
-{
+<div style={{
   flex: 1,
   display: 'flex',
+  flexDirection: 'row',
   overflow: 'hidden',
   position: 'relative',
   zIndex: 1,
-}
+  minHeight: 0,  // КРИТИЧНО для flex дітей зі скролом
+}}>
 ```
 
----
-
-## БАГ 2 — QI НЕ ВИДНО ПІСЛЯ ВІДКРИТТЯ
-
-**Симптом:** Клавіатура з'являється але QI не видно — ніби під контентом.
-
-**Рішення:**
-
-QI sidebar:
+### Правило 4 — Контент досьє (ліва частина)
 ```jsx
-{
-  width: qiWidth,
+<div style={{
+  flex: 1,
+  overflowY: 'auto',
+  minWidth: 0,
+}}>
+```
+
+### Правило 5 — Агент досьє
+```jsx
+<div style={{
+  width: agentWidth,  // від resizable state, початково 35%
+  minWidth: 260,
+  maxWidth: 500,
+  flexShrink: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+  borderLeft: '1px solid #2a2d3e',
+  position: 'relative',  // НЕ absolute
+}}>
+```
+
+### Правило 6 — QI sidebar
+```jsx
+<div style={{
+  width: qiWidth,  // від resizable state, початково 33%
   minWidth: 280,
   maxWidth: 480,
   flexShrink: 0,
@@ -95,55 +129,32 @@ QI sidebar:
   flexDirection: 'column',
   overflow: 'hidden',
   borderLeft: '1px solid #2a2d3e',
-  // НЕ position:absolute, НЕ transform
-}
+  position: 'relative',  // НЕ absolute
+}}>
 ```
 
----
-
-## БАГ 3 — АГЕНТ ВІДКРИТИЙ НА ВСІХ ВКЛАДКАХ, КНОПКА TOGGLE ЗНИКЛА
-
-**Діагностика:**
-```bash
-grep -n "showAgent\|setShowAgent\|Сховати агента" src/components/CaseDossier/index.jsx
-```
-
-**Відновити якщо зникло:**
+### Правило 7 — Розділювач між панелями
 ```jsx
-const [showAgent, setShowAgent] = useState(activeTab === 'overview');
-
-useEffect(() => {
-  setShowAgent(activeTab === 'overview');
-}, [activeTab]);
-
-// Кнопка
-<button onClick={() => setShowAgent(!showAgent)}>
-  {showAgent ? '🤖 Сховати агента' : '🤖 Показати агента'}
-</button>
-
-// Рендер агента тільки якщо showAgent
-{showAgent && <AgentPanel ... />}
-```
-
----
-
-## БАГ 4 — РОЗДІЛЮВАЧ ПЕРЕКРИВАЄ КОНТЕНТ
-
-**Рішення:**
-```jsx
-<div style={{
-  width: 8,
-  flexShrink: 0,
-  background: '#1a1d2e',
-  cursor: 'col-resize',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 2,
-  position: 'relative',
-}} onMouseDown={handleResizeStart} onTouchStart={handleResizeTouchStart}>
+<div
+  style={{
+    width: 8,
+    flexShrink: 0,
+    cursor: 'col-resize',
+    background: '#1a1d2e',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    zIndex: 10,
+    userSelect: 'none',
+    WebkitUserSelect: 'none',
+  }}
+  onMouseDown={handleResizeStart}
+  onTouchStart={handleResizeTouchStart}
+>
   <div style={{
-    width: 4, height: 40,
+    width: 4,
+    height: 40,
     borderRadius: 2,
     background: '#3a3d5a',
     pointerEvents: 'none',
@@ -151,144 +162,105 @@ useEffect(() => {
 </div>
 ```
 
----
+### Правило 8 — Агент: поле вводу завжди внизу
+Панель агента — flex колонка:
+```jsx
+// Переписка
+<div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+  {messages...}
+</div>
 
-## ПОРЯДОК ВИКОНАННЯ
-
-1. Діагностика grep (показати результати)
-2. Фікс кореневого контейнера
-3. Фікс шапки
-4. Фікс QI sidebar
-5. Відновити toggle агента
-6. Перевірити розділювачі
-7. Створити LESSONS.md
-8. Оновити CLAUDE.md
-
----
-
-## СТВОРИТИ ФАЙЛ LESSONS.md В КОРЕНІ РЕПО
-
-```markdown
-# LESSONS.md — Інституційна пам'ять розробки
-# Legal BMS | АБ Левицького
-
-## ЯК КОРИСТУВАТИСЬ
-
-ВАЖЛИВО: цей файл — довідник при діагностиці, НЕ інструкція до дії.
-НЕ змінювати код на основі записів без явного завдання в TASK.md.
-
-КОЛИ звертатись:
-- Перша спроба вирішити проблему не дала результату
-- Бачиш схожий симптом але не знаєш причину
-- Збираєшся робити merge або переписувати великий блок коду
-- Щось "злетіло" після попереднього фіксу
-
-КОЛИ НЕ звертатись:
-- Прості зміни стилів
-- Новий функціонал з нуля
-- Очевидні правки одного поля
-
-ЯК ПОПОВНЮЄТЬСЯ:
-- Тільки за явною командою в TASK.md
-- НЕ дописувати самостійно
-
----
-
-## УРОКИ
-
-### [2026-04-08] Після resizable panels зникають кнопки і QI
-**Компонент:** src/components/CaseDossier/index.jsx
-**Симптом:** Кнопки шапки зникають або ховаються при скролі. QI не видно. Агент на всіх вкладках.
-**Причина:** Resizable panels змінюють stacking context. position:relative або transform на контейнері перекриває елементи вище.
-**Правило:** Кореневий контейнер: position:fixed, overflow:hidden. Шапка: position:sticky, zIndex:100. Resizable контейнер: zIndex:1.
-**Після будь-яких змін layout — перевіряти чекліст:**
-1. Кнопка "← Реєстр" видима
-2. Кнопка "Сховати агента" видима і працює
-3. QI відкривається і видно
-4. Вкладки переключаються
-5. На не-overview вкладках агент закритий
-
----
-
-### [2026-04-07] Агент досьє не передає історію в API
-**Компонент:** src/components/CaseDossier/index.jsx
-**Симптом:** Агент каже "не пам'ятаю попередніх розмов" — переписка візуально є але в API не передається
-**Причина:** У fetch до api.anthropic.com в messages[] — тільки поточне повідомлення
-**Рішення:**
-```js
-const historyForAPI = agentMessages
-  .filter(m => m.role === 'user' || m.role === 'assistant')
-  .slice(-10)
-  .map(m => ({ role: m.role, content: m.content }));
-const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
-const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
-messages: [...cleanHistory, { role: 'user', content: userMessage }]
-```
-**Правило:** API вимагає першим role:'user'. Перевіряти при будь-яких змінах fetch.
-**Діагностика:** grep -B5 -A30 "fetch.*anthropic" src/components/CaseDossier/index.jsx
-
----
-
-### [2026-04-06] Merge конфлікт — два варіанти коду в одному файлі
-**Симптом:** Дублікати змінних, мертвий код після return, blank page
-**Діагностика:** grep -n "<<<<<<\|>>>>>>\|=======" src/components/CaseDossier/index.jsx
-**Правило:** Ніколи не залишати обидва варіанти. Вибрати один. Перевіряти після кожного merge.
-
----
-
-### [2026-04-05] textarea в QI виштовхує кнопки за екран
-**Компонент:** QI в src/App.jsx
-**Симптом:** Кнопки ховаються за межі екрану на планшеті
-**Правило:** textarea ЗАВЖДИ height:120px фіксована. НЕ flex:1, НЕ min-height. Кнопки поза scrollable div з flexShrink:0.
-
----
-
-### [2026-04-05] Апостроф в українському тексті ламає JS
-**Симптом:** Blank page без помилок
-**Правило:** Весь україномовний текст — подвійні лапки або шаблонні рядки. Ніколи одинарні.
-
----
-
-### [2026-04-05] Haiku плутається в чат-командах
-**Правило:** Haiku — тільки аналіз документів і JSON. Sonnet — всі чат-команди і розмови з агентом. Не змішувати.
+// Поле вводу — ЗАВЖДИ внизу
+<div style={{ flexShrink: 0, padding: 8, borderTop: '1px solid #2a2d3e' }}>
+  <textarea ... />
+  <button>→</button>
+</div>
 ```
 
 ---
 
-## ОНОВИТИ CLAUDE.md — ДОДАТИ СЕКЦІЮ
+## КРОК 3 — ПЕРЕВІРКА TOGGLE АГЕНТА
 
-Додати після секції "КРИТИЧНЕ ПРАВИЛО №1":
-
-```markdown
-## LESSONS.md — ІНСТИТУЦІЙНА ПАМ'ЯТЬ
-
-Файл LESSONS.md в корені репо містить уроки з попередніх сесій.
-
-Звертатись ТІЛЬКИ коли:
-- Перша спроба не дала результату
-- Бачиш схожий симптом але не знаєш причину
-- Збираєшся робити merge або переписувати великий блок
-- Щось зникло після попереднього фіксу
-
-Читати: cat LESSONS.md
-НЕ змінювати код на основі LESSONS.md без явного завдання в TASK.md.
+```bash
+grep -n "showAgent\|setShowAgent\|Сховати\|Показати" src/components/CaseDossier/index.jsx
 ```
+
+Якщо логіки немає або зламана — відновити:
+```jsx
+const [showAgent, setShowAgent] = useState(true);
+
+// При зміні вкладки
+useEffect(() => {
+  setShowAgent(activeTab === 'overview');
+}, [activeTab]);
+```
+
+Кнопка в шапці:
+```jsx
+<button onClick={() => setShowAgent(v => !v)}>
+  {showAgent ? '🤖 Сховати агента' : '🤖 Агент'}
+</button>
+```
+
+Агент рендериться тільки коли showAgent:
+```jsx
+{showAgent && (
+  <>
+    {/* розділювач */}
+    {/* панель агента */}
+  </>
+)}
+```
+
+---
+
+## КРОК 4 — ПЕРЕВІРКА QI
+
+QI в досьє НЕ є окремим overlay. Це flex sibling всередині робочого рядка.
+Рендериться тільки коли showQI:
+```jsx
+{showQI && (
+  <>
+    {/* розділювач */}
+    {/* QI панель */}
+  </>
+)}
+```
+
+Кнопка QI — в шапці досьє (не плаваюча).
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: dossier z-index after resizable panels, add LESSONS.md" && git push origin main
+git add -A && git commit -m "fix: dossier layout - proper stacking context and flex structure" && git push origin main
 ```
 
-## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
+---
 
-- [ ] Кнопка "← Реєстр" видима
-- [ ] Кнопка "Сховати агента" видима і працює
-- [ ] QI відкривається і видно повністю
-- [ ] Вкладки переключаються
-- [ ] На Матеріалах/Позиції агент закритий за замовчуванням
-- [ ] Рухомі межі працюють
-- [ ] LESSONS.md є в репо (cat LESSONS.md)
-- [ ] CLAUDE.md оновлено
+## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ — ПЕРЕВІРИТИ КОЖЕН ПУНКТ
+
+- [ ] Відкрив досьє — шапка видима одразу (← Реєстр, вкладки, кнопка агента)
+- [ ] Кнопка "Сховати агента" працює — агент ховається/показується
+- [ ] На вкладках Матеріали/Позиція — агент закритий за замовчуванням
+- [ ] Натиснув QI — з'явилась QI панель справа (не overlay, не під контентом)
+- [ ] QI займає ~1/3 ширини
+- [ ] Рухомі межі між панелями працюють
+- [ ] Реєстр НЕ проступає під досьє
+- [ ] Головне меню (Дашборд/Справи/Книжка) — активне з досьє
+
+---
+
+## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
+
+Додати запис:
+```
+### [2026-04-08] CaseDossier — правильна flex структура
+Кореневий: position:fixed, zIndex:100, overflow:hidden
+Шапка: flexShrink:0, zIndex:200, position:relative
+Робочий рядок: flex:1, overflow:hidden, minHeight:0 (КРИТИЧНО)
+Панелі (контент/агент/QI): position:relative (НЕ absolute)
+Розділювач: position:relative, zIndex:10
+Агент і QI рендеряться як flex siblings — НЕ як overlay
+```

@@ -25,6 +25,18 @@
 
 ## УРОКИ
 
+### [2026-04-08] CaseDossier — правильна flex структура
+**Компонент:** src/components/CaseDossier/index.jsx
+**Кореневий:** position:fixed, zIndex:100, overflow:hidden
+**Шапка:** flexShrink:0, zIndex:200, position:relative
+**Робочий рядок:** flex:1, overflow:hidden, minHeight:0 (КРИТИЧНО)
+**Панелі (контент/агент/QI):** position:relative (НЕ absolute)
+**Розділювач:** position:relative, zIndex:10
+**Агент і QI рендеряться як flex siblings — НЕ як overlay**
+**Модалки:** zIndex:300 (вище шапки з 200)
+
+---
+
 ### [2026-04-08] Після resizable panels зникають кнопки і QI
 **Компонент:** src/components/CaseDossier/index.jsx
 **Симптом:** Кнопки шапки зникають або ховаються при скролі. QI не видно. Агент на всіх вкладках.

@@ -49,6 +49,16 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
 
+  // QI panel state
+  const [showQI, setShowQI] = useState(false);
+  const [qiWidth, setQiWidth] = useState(() => Math.min(480, Math.max(280, Math.round(window.innerWidth * 0.33))));
+  const [qiInput, setQiInput] = useState('');
+  const [qiFile, setQiFile] = useState(null);
+  const [qiAnalyzing, setQiAnalyzing] = useState(false);
+  const [qiResult, setQiResult] = useState(null);
+  const qiDragRef = useRef(false);
+  const qiFileRef = useRef(null);
+
   // Materials resizer state
   const [matWidth, setMatWidth] = useState(280);
   const matDragRef = useRef(false);
@@ -178,6 +188,32 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     };
   }, []);
 
+  // QI panel drag resize
+  useEffect(() => {
+    function onMouseMove(e) {
+      if (!qiDragRef.current) return;
+      const newWidth = window.innerWidth - e.clientX;
+      if (newWidth > 280 && newWidth < 480) setQiWidth(newWidth);
+    }
+    function onMouseUp() { qiDragRef.current = false; }
+    function onTouchMove(e) {
+      if (!qiDragRef.current) return;
+      const touch = e.touches[0];
+      const newWidth = window.innerWidth - touch.clientX;
+      if (newWidth > 280 && newWidth < 480) setQiWidth(newWidth);
+    }
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('touchmove', onTouchMove);
+    window.addEventListener('touchend', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onMouseUp);
+    };
+  }, []);
+
   // Materials panel drag resize
   useEffect(() => {
     function onMove(e) {
@@ -203,6 +239,65 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       window.removeEventListener('touchend', onUp);
     };
   }, []);
+
+  // QI — analyze file with Haiku
+  async function analyzeQIFile() {
+    const apiKey = localStorage.getItem("claude_api_key");
+    if (!apiKey) { setQiResult("API ключ не знайдено. Додайте в налаштуваннях."); return; }
+    if (!qiFile && !qiInput.trim()) return;
+    setQiAnalyzing(true);
+    setQiResult(null);
+    try {
+      let fileContent = "";
+      if (qiFile) {
+        fileContent = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error("File read error"));
+          if (qiFile.type === "application/pdf") {
+            reader.readAsArrayBuffer(qiFile);
+          } else {
+            reader.readAsText(qiFile);
+          }
+        });
+        if (qiFile.type === "application/pdf" && typeof pdfjsLib !== "undefined") {
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(fileContent) }).promise;
+          let text = "";
+          for (let i = 1; i <= Math.min(pdf.numPages, 20); i++) {
+            const page = await pdf.getPage(i);
+            const tc = await page.getTextContent();
+            text += tc.items.map(it => it.str).join(" ") + "\n";
+          }
+          fileContent = text;
+        }
+      }
+      const userMessage = [
+        qiInput.trim() ? qiInput.trim() : "Проаналізуй цей документ",
+        fileContent ? `\n\nДокумент:\n${typeof fileContent === "string" ? fileContent.slice(0, 15000) : ""}` : ""
+      ].join("");
+
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 2048,
+          system: `Ти — юридичний аналітик. Аналізуй документи українською. Справа: ${caseData.name}. Категорія: ${caseData.category || ""}. Суд: ${caseData.court || ""}.`,
+          messages: [{ role: "user", content: userMessage }]
+        })
+      });
+      const data = await resp.json();
+      setQiResult(data.content?.[0]?.text || "Немає відповіді");
+    } catch (err) {
+      setQiResult("Помилка аналізу: " + err.message);
+    }
+    setQiAnalyzing(false);
+  }
 
   async function uploadFileToDrive(file, cData) {
     const token = localStorage.getItem("levytskyi_drive_token");
@@ -880,10 +975,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   ];
 
   return (
-    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#0d0f1a", display: "flex", flexDirection: "column", zIndex: 50, overflow: "hidden", color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#0d0f1a", display: "flex", flexDirection: "column", zIndex: 100, overflow: "hidden", color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
 
       {/* ШАПКА */}
-      <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#0d0f1a", position: "sticky", top: 0, zIndex: 100 }}>
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#0d0f1a", position: "relative", zIndex: 200 }}>
         <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>{"\u2190 Реєстр"}</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{caseData.name}</div>
@@ -906,12 +1001,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"🗑 Видалити назавжди"}</button>
           )}
           <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>{"💡"}</button>
+          <button onClick={() => setShowQI(prev => !prev)} style={{ background: showQI ? "#f39c12" : "none", color: showQI ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: showQI ? "#f39c12" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{showQI ? "⚡ Сховати QI" : "⚡ QI"}</button>
           <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{agentOpen ? "🤖 Сховати агента" : "🤖 Агент"}</button>
         </div>
       </div>
 
       {/* ВКЛАДКИ */}
-      <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0, padding: "0 16px", gap: 2, background: "#0d0f1a", position: "sticky", top: 0, zIndex: 99 }}>
+      <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0, padding: "0 16px", gap: 2, background: "#0d0f1a", position: "relative", zIndex: 200 }}>
         {tabs.map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: "8px 14px", border: "none", background: "none", color: activeTab === tab.id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${activeTab === tab.id ? "#9aa0b8" : "transparent"}`, fontWeight: activeTab === tab.id ? 500 : 400, whiteSpace: "nowrap", transition: "all .15s" }}>
             {tab.label}
@@ -923,7 +1019,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       {/* BODY */}
       <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
         {/* Основний вміст вкладки */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', minWidth: 0 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', minWidth: 0 }}>
           {activeTab === "overview" && renderOverview()}
           {activeTab === "materials" && renderMaterials()}
           {["position", "templates"].includes(activeTab) && (
@@ -940,7 +1036,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <div
             onMouseDown={() => { agentDragRef.current = true; }}
             onTouchStart={() => { agentDragRef.current = true; }}
-            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s', zIndex: 2, position: 'relative' }}
+            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1a1d2e', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s', zIndex: 10, position: 'relative' }}
             onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
             onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
           >
@@ -952,18 +1048,94 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         {agentOpen && (
           <div style={{
             width: agentWidth, flexShrink: 0, borderLeft: '1px solid #2e3148',
-            display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#1a1d27'
+            display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#1a1d27',
+            position: 'relative'
           }}>
             {renderAgentPanel()}
+          </div>
+        )}
+
+        {/* Рухома межа QI */}
+        {showQI && (
+          <div
+            onMouseDown={() => { qiDragRef.current = true; }}
+            onTouchStart={() => { qiDragRef.current = true; }}
+            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1a1d2e', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s', zIndex: 10, position: 'relative' }}
+            onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
+            onMouseLeave={e => e.currentTarget.style.background = '#1a1d2e'}
+          >
+            <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a', pointerEvents: 'none' }} />
+          </div>
+        )}
+
+        {/* QI панель */}
+        {showQI && (
+          <div style={{
+            width: qiWidth, minWidth: 280, maxWidth: 480, flexShrink: 0,
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            borderLeft: '1px solid #2a2d3e', background: '#1a1d27', position: 'relative'
+          }}>
+            <div style={{ padding: '10px 12px', borderBottom: '1px solid #2e3148', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              <span style={{ fontSize: 14 }}>{"⚡"}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{"Quick Input"}</div>
+                <div style={{ fontSize: 10, color: '#5a6080' }}>{"Haiku \u00b7 аналіз документів"}</div>
+              </div>
+              <button onClick={() => { setQiResult(null); setQiFile(null); setQiInput(''); }} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"Очистити"}</button>
+            </div>
+
+            {/* Результат аналізу */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 10, minHeight: 0 }}>
+              {!qiResult && !qiAnalyzing && (
+                <div style={{ fontSize: 11, color: '#3a3f58', textAlign: 'center', marginTop: 20 }}>
+                  {"Завантажте файл або введіть текст для аналізу"}
+                </div>
+              )}
+              {qiAnalyzing && (
+                <div style={{ fontSize: 12, color: '#5a6080', textAlign: 'center', marginTop: 20 }}>{"⏳ Аналізую..."}</div>
+              )}
+              {qiResult && (
+                <div style={{ fontSize: 12, lineHeight: 1.7, color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {qiResult}
+                </div>
+              )}
+            </div>
+
+            {/* Поле вводу — ЗАВЖДИ внизу */}
+            <div style={{ flexShrink: 0, padding: 8, borderTop: '1px solid #2e3148', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {qiFile && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: '#222536', borderRadius: 6, fontSize: 11 }}>
+                  <span>{"📄"}</span>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#9aa0b8' }}>{qiFile.name}</span>
+                  <button onClick={() => setQiFile(null)} style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 12 }}>{"\u00d7"}</button>
+                </div>
+              )}
+              <textarea
+                value={qiInput}
+                onChange={e => setQiInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); analyzeQIFile(); } }}
+                placeholder="Запитання до документа..."
+                style={{ width: '100%', height: 120, background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '6px 8px', borderRadius: 6, fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5, boxSizing: 'border-box' }}
+              />
+              <input ref={qiFileRef} type="file" style={{ display: 'none' }} onChange={e => { if (e.target.files[0]) setQiFile(e.target.files[0]); }} />
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <button onClick={() => qiFileRef.current?.click()} style={{ flex: 1, background: '#222536', border: '1px solid #2e3148', color: '#9aa0b8', padding: '6px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>{"📁 Файл"}</button>
+                <button
+                  onClick={analyzeQIFile}
+                  disabled={qiAnalyzing || (!qiInput.trim() && !qiFile)}
+                  style={{ flex: 1, background: '#f39c12', border: 'none', color: '#fff', padding: '6px 8px', borderRadius: 6, cursor: qiAnalyzing ? 'default' : 'pointer', fontSize: 11, fontWeight: 600, opacity: qiAnalyzing ? 0.5 : 1 }}
+                >{"⚡ Аналізувати"}</button>
+              </div>
+            </div>
           </div>
         )}
       </div>
 
       {/* МОДАЛКА ІДЕЯ ДЛЯ КОНТЕНТУ */}
       {ideaOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 360 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{"💡 Ідея для контенту"}</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{"💡 Ідея для конт��нту"}</div>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 12 }}>{"Справа: "}{caseData.name}</div>
             <textarea
               value={ideaText}
@@ -982,7 +1154,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* МОДАЛКА НОТАТКИ */}
       {noteModalOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 400 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{"+ Нова нотатка"}</div>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 8 }}>{"Справа: "}{caseData.name}</div>
@@ -1009,7 +1181,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* МОДАЛКА + ПРОВАДЖЕННЯ */}
       {procModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
           <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 360 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Нове провадження</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1048,7 +1220,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       {/* МОДАЛКА + ДОКУМЕНТ */}
       {docModalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
           <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 400 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Новий документ</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
