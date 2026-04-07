@@ -40,7 +40,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
-  const [agentWidth, setAgentWidth] = useState(320);
+  const [agentWidth, setAgentWidth] = useState(() => Math.min(500, Math.max(280, Math.round(window.innerWidth * 0.35))));
   const [agentMessages, setAgentMessages] = useState(() => {
     const history = caseData.agentHistory || [];
     return history.slice(-20);
@@ -50,20 +50,28 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const agentDragRef = useRef(false);
 
   // Materials resizer state
-  const [matWidth, setMatWidth] = useState(300);
+  const [matWidth, setMatWidth] = useState(280);
   const matDragRef = useRef(false);
 
-  const proceedings = (caseData.proceedings && caseData.proceedings.length > 0)
-    ? caseData.proceedings
-    : [{
-        id: 'proc_main',
-        type: 'first',
-        title: 'Основне провадження',
-        court: caseData.court || '',
-        status: 'active',
-        parentProcId: null,
-        parentEventId: null
-      }];
+  const defaultProc = [{
+    id: 'proc_main',
+    type: 'first',
+    title: 'Основне провадження',
+    court: caseData.court || '',
+    status: 'active',
+    parentProcId: null,
+    parentEventId: null
+  }];
+  const [proceedings, setProceedings] = useState(
+    (caseData.proceedings && caseData.proceedings.length > 0) ? caseData.proceedings : defaultProc
+  );
+
+  // Sync proceedings with props when caseData changes externally
+  useEffect(() => {
+    if (caseData.proceedings && caseData.proceedings.length > 0) {
+      setProceedings(caseData.proceedings);
+    }
+  }, [caseData.proceedings]);
   const documents = caseData.documents || [];
 
   const caseNotes = (notesProp || []).slice().sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
@@ -114,6 +122,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
+  // Voice input for agent
+  const [agentRecording, setAgentRecording] = useState(false);
+  const agentRecognitionRef = useRef(null);
+  const agentPendingTranscript = useRef('');
+
   // Agent default: open on overview, closed on other tabs
   useEffect(() => {
     setAgentOpen(activeTab === 'overview');
@@ -144,14 +157,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     function onMouseMove(e) {
       if (!agentDragRef.current) return;
       const newWidth = window.innerWidth - e.clientX;
-      if (newWidth > 200 && newWidth < window.innerWidth * 0.6) setAgentWidth(newWidth);
+      if (newWidth > 280 && newWidth < 500) setAgentWidth(newWidth);
     }
     function onMouseUp() { agentDragRef.current = false; }
     function onTouchMove(e) {
       if (!agentDragRef.current) return;
       const touch = e.touches[0];
       const newWidth = window.innerWidth - touch.clientX;
-      if (newWidth > 200 && newWidth < window.innerWidth * 0.6) setAgentWidth(newWidth);
+      if (newWidth > 280 && newWidth < 500) setAgentWidth(newWidth);
     }
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
@@ -170,14 +183,24 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     function onMove(e) {
       if (!matDragRef.current) return;
       const newWidth = e.clientX;
-      if (newWidth > 150 && newWidth < window.innerWidth * 0.5) setMatWidth(newWidth);
+      if (newWidth > 200 && newWidth < 400) setMatWidth(newWidth);
+    }
+    function onTouchMove(e) {
+      if (!matDragRef.current) return;
+      const touch = e.touches[0];
+      const newWidth = touch.clientX;
+      if (newWidth > 200 && newWidth < 400) setMatWidth(newWidth);
     }
     function onUp() { matDragRef.current = false; }
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onTouchMove);
+    window.addEventListener('touchend', onUp);
     return () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onUp);
     };
   }, []);
 
@@ -217,6 +240,51 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const iconBtn = { background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 };
   const primaryBtn = { background: "#4f7cff", color: "#fff", border: "none", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 };
 
+  function startAgentVoice() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { alert("Мікрофон не підтримується в цьому браузері"); return; }
+    if (agentRecognitionRef.current) { stopAgentVoice(); return; }
+    const recognition = new SR();
+    recognition.lang = 'uk-UA';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.onresult = (event) => {
+      const t = event.results[0][0].transcript;
+      agentPendingTranscript.current = (agentPendingTranscript.current || '') + t + ' ';
+    };
+    recognition.onend = () => {
+      if (agentRecognitionRef.current && agentRecording) {
+        recognition.start();
+        return;
+      }
+      const final = (agentPendingTranscript.current || '').trim();
+      if (final) setAgentInput(prev => prev ? prev + ' ' + final : final);
+      agentPendingTranscript.current = '';
+      setAgentRecording(false);
+      agentRecognitionRef.current = null;
+    };
+    recognition.onerror = () => {
+      setAgentRecording(false);
+      agentRecognitionRef.current = null;
+      agentPendingTranscript.current = '';
+    };
+    recognition.start();
+    setAgentRecording(true);
+    agentRecognitionRef.current = recognition;
+  }
+
+  function stopAgentVoice() {
+    setAgentRecording(false);
+    agentRecognitionRef.current?.stop();
+  }
+
+  function cancelAgentVoice() {
+    setAgentRecording(false);
+    agentRecognitionRef.current?.abort();
+    agentRecognitionRef.current = null;
+    agentPendingTranscript.current = '';
+  }
+
   // ── АГЕНТ ДОСЬЄ ────────────────────────────────────────────────────────────
   function renderAgentPanel() {
     async function sendAgentMessage() {
@@ -240,14 +308,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 Відповідай українською. Допомагай з аналізом і тактикою по справі.`;
 
         // Send last 10 messages as context for API (token economy)
-        const historyRaw = agentMessages
+        const historyForAPI = agentMessages
           .filter(m => m.role === 'user' || m.role === 'assistant')
           .slice(-10)
           .map(m => ({ role: m.role, content: m.content }));
 
         // API requires first message to be role:'user'
-        const firstUserIdx = historyRaw.findIndex(m => m.role === 'user');
-        const historyForAPI = firstUserIdx >= 0 ? historyRaw.slice(firstUserIdx) : [];
+        const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
+        const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
 
         const response = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
@@ -261,7 +329,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             model: 'claude-sonnet-4-20250514',
             max_tokens: 1024,
             system: systemPrompt,
-            messages: [...historyForAPI, { role: 'user', content: userMsg }]
+            messages: [...cleanHistory, { role: 'user', content: userMsg }]
           })
         });
         const data = await response.json();
@@ -327,7 +395,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <div style={{ padding: '8px 10px', borderRadius: 8, background: '#222536', fontSize: 12, color: '#5a6080' }}>{"⏳ Думаю..."}</div>
           )}
         </div>
-        <div style={{ padding: 8, borderTop: '1px solid #2e3148', display: 'flex', gap: 6, flexShrink: 0 }}>
+        <div style={{ padding: 8, borderTop: '1px solid #2e3148', display: 'flex', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
           <textarea
             value={agentInput}
             onChange={e => setAgentInput(e.target.value)}
@@ -339,12 +407,20 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               padding: '6px 8px', borderRadius: 6, fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5
             }}
           />
+          {agentRecording ? (
+            <>
+              <button onClick={cancelAgentVoice} style={{ background: 'none', border: '1px solid rgba(231,76,60,.4)', color: '#e74c3c', padding: '0 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14, height: 34 }}>{"\u00d7"}</button>
+              <button onClick={stopAgentVoice} style={{ background: '#2ecc71', border: 'none', color: '#fff', padding: '0 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14, height: 34 }}>{"\u2713"}</button>
+            </>
+          ) : (
+            <button onClick={startAgentVoice} style={{ background: 'none', border: '1px solid #2e3148', color: '#9aa0b8', padding: '0 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14, height: 34 }}>{"\ud83c\udfa4"}</button>
+          )}
           <button
             onClick={sendAgentMessage}
             disabled={agentLoading || !agentInput.trim()}
             style={{
               background: '#4f7cff', border: 'none', color: '#fff',
-              padding: '0 12px', borderRadius: 6,
+              padding: '0 12px', borderRadius: 6, height: 34,
               cursor: agentLoading ? 'default' : 'pointer',
               fontSize: 16, opacity: agentLoading ? 0.5 : 1
             }}
@@ -726,10 +802,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         <div
           onMouseDown={() => { matDragRef.current = true; }}
           onTouchStart={() => { matDragRef.current = true; }}
-          style={{ width: 6, cursor: 'col-resize', flexShrink: 0, background: '#2e3148', transition: 'background .15s' }}
-          onMouseEnter={e => e.currentTarget.style.background = '#4f7cff'}
-          onMouseLeave={e => e.currentTarget.style.background = '#2e3148'}
-        />
+          style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s' }}
+          onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
+          onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
+        >
+          <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a' }} />
+        </div>
 
         {/* Viewer */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -802,7 +880,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   ];
 
   return (
-    <div style={{ position: "absolute", inset: 0, background: "#0f1117", display: "flex", flexDirection: "column", zIndex: 50, color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "#0d0f1a", display: "flex", flexDirection: "column", zIndex: 50, overflow: "auto", color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
 
       {/* ШАПКА */}
       <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#1a1d27" }}>
@@ -862,10 +940,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <div
             onMouseDown={() => { agentDragRef.current = true; }}
             onTouchStart={() => { agentDragRef.current = true; }}
-            style={{ width: 6, cursor: 'col-resize', flexShrink: 0, background: '#2e3148', transition: 'background .15s' }}
-            onMouseEnter={e => e.currentTarget.style.background = '#4f7cff'}
-            onMouseLeave={e => e.currentTarget.style.background = '#2e3148'}
-          />
+            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s' }}
+            onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
+            onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
+          >
+            <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a' }} />
+          </div>
         )}
 
         {/* Панель агента */}
@@ -957,6 +1037,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 const proc = { id: 'proc_' + Date.now(), type: newProc.type, title: newProc.title.trim(), court: newProc.court.trim(), status: 'active', parentProcId: 'proc_main', parentEventId: null };
                 const updated = [...proceedings, proc];
                 updateCase && updateCase(caseData.id, 'proceedings', updated);
+                setProceedings(updated);
                 setProcModalOpen(false);
                 setNewProc({ title: '', court: '', type: 'appeal' });
               }} style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Додати</button>

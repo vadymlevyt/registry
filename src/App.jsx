@@ -2999,11 +2999,22 @@ function App() {
           )}
         </div>
 
-        {/* QI Sidebar */}
+        {/* QI Resizer + Sidebar */}
+        {showQI && isLandscape && (
+          <div
+            onMouseDown={() => { isDragging.current = true; }}
+            onTouchStart={() => { isDragging.current = true; }}
+            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s' }}
+            onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
+            onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
+          >
+            <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a' }} />
+          </div>
+        )}
         {showQI && (
           <div style={{
             ...(isLandscape
-              ? { width: '33.33%', maxWidth: 480, minWidth: 320, height: '100%', borderLeft: '1px solid #2e3148' }
+              ? { width: `${ratio * 100}%`, maxWidth: 480, minWidth: 320, height: '100%', borderLeft: '1px solid #2e3148' }
               : { width: '100%', height: '33.33vh', maxHeight: 400, minHeight: 250, borderTop: '1px solid #2e3148' }
             ),
             display: 'flex', flexDirection: 'column',

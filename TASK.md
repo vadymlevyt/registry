@@ -1,290 +1,241 @@
-# TASK.md — Багфікси раунд 2
-# Дата: 07.04.2026
-# Гілка: main
+# TASK.md — CaseDossier багфікси + UI покращення
+Дата: 07.04.2026
 
-## КРИТИЧНЕ ПРАВИЛО
-Після успішного npm run build — ЗАВЖДИ без запитань:
+## СЕРЕДОВИЩЕ
+Репо: github.com/vadymlevyt/registry
+Компонент: src/components/CaseDossier/index.jsx
+Деплой: git add -A && git commit -m "..." && git push origin main
+Перевірка після деплою: git log --oneline -3
+
+---
+
+## ОБОВ'ЯЗКОВО ПЕРЕД ПОЧАТКОМ
+
+Прочитати поточний стан компонента:
 ```bash
-git add -A && git commit -m "fix: agent memory API, main menu active, QI proportions, responsive layout" && git push origin main
+wc -l src/components/CaseDossier/index.jsx
 ```
 
 ---
 
-## КОНТЕКСТ
+## БАГ 1 — АГЕНТ НЕ ПАМ'ЯТАЄ ПЕРЕПИСКУ (КРИТИЧНИЙ)
 
-Файли для редагування:
-- src/components/CaseDossier/index.jsx
-- src/App.jsx
+**Симптом:** Агент каже "не пам'ятаю жодної розмови яка була до цієї сесії".
+Переписка візуально зберігається і показується — але в API не передається.
 
-Попередній коміт виправив: QI sidebar справа, кнопка "← Реєстр", toggle агента, нотатки [object Object], підказка "Закріпіть нотатку".
-Залишились 4 проблеми.
-
----
-
-## БАГ A — Агент досьє НЕ пам'ятає переписку між сесіями
-
-### Симптом (підтверджений скріншотом ПОВТОРНО)
-Переписка візуально зберігається і показується при повторному відкритті.
-Але агент каже: "я не зможу пам'ятати цю розмову якщо закриєте чат".
-Значить agentHistory НЕ передається в API як messages[].
-Цей баг НЕ був виправлений попереднім комітом.
-
-### Діагностика — ОБОВ'ЯЗКОВО ВИКОНАТИ
+**ОБОВ'ЯЗКОВА ДІАГНОСТИКА СПОЧАТКУ:**
 ```bash
-grep -n "messages" src/components/CaseDossier/index.jsx | head -15
 grep -B5 -A30 "fetch.*anthropic\|api\.anthropic" src/components/CaseDossier/index.jsx
 ```
+Знайти де формується масив `messages:` у fetch до api.anthropic.com.
+Показати що там зараз. Тільки після цього вносити зміни.
 
-Подивитись що саме передається в body.messages при fetch.
-Якщо там тільки одне повідомлення { role: 'user', content: ... } — це і є причина.
-
-### Рішення
-
-Знайти fetch до api.anthropic.com в CaseDossier. Знайти де формується масив messages.
-ДОДАТИ збережену історію ПЕРЕД поточним повідомленням:
+**Що потрібно зробити:**
+Знайти fetch до api.anthropic.com. Знайти масив messages[]. Замінити на:
 
 ```jsx
-// ПЕРЕД fetch — підготувати історію з agentMessages:
 const historyForAPI = agentMessages
   .filter(m => m.role === 'user' || m.role === 'assistant')
   .slice(-10)
   .map(m => ({ role: m.role, content: m.content }));
 
-// API Anthropic вимагає щоб першим елементом був role: 'user'
-// Якщо історія починається з assistant — обрізати до першого user
 const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
 const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
 
-// В fetch body замінити messages на:
+// У fetch body:
 messages: [
   ...cleanHistory,
   { role: 'user', content: userMessage }
 ]
 ```
 
-### Перевірка
-Після фіксу — відкрити досьє, написати агенту "Мене звати Вадим, запам'ятай".
-Закрити досьє. Відкрити знову. Написати "Як мене звати?".
-Агент має відповісти "Вадим".
+**Тест після виправлення:**
+1. Відкрити досьє будь-якої справи
+2. Написати агенту: "Мене звати Вадим"
+3. Закрити досьє (← Реєстр)
+4. Відкрити те саме досьє знову
+5. Написати: "Як мене звати?"
+6. Агент має відповісти "Вадим"
 
 ---
 
-## БАГ B — Головне меню неактивне в досьє
+## БАГ 2 — QI ЗАНАДТО ШИРОКИЙ
 
-### Симптом (підтверджений скріншотом)
-Коли відкрите досьє, пункти головного меню (Дашборд, Справи, Книжка, Нова справа, Аналіз системи) — заблоковані/неактивні. Можна вийти тільки через "← Реєстр" або оновити сторінку.
+**Симптом:** QI sidebar займає ~50% ширини замість 1/3.
 
-### Як має працювати
-Головне меню ЗАВЖДИ активне незалежно від того що відкрито.
-Натиснув "Дашборд" з досьє → досьє закривається → відкривається дашборд.
-Натиснув "Книжка" → досьє закривається → відкривається книжка.
-Будь-який пункт меню — закриває досьє і переходить.
-
-### Діагностика
-```bash
-grep -n "currentView\|setCurrentView\|dossierCase\|setDossierCase\|nav.*click\|menu.*click\|disabled\|pointer-events" src/App.jsx | head -25
-```
-
-Подивитись чи навігація в головному меню перевіряє dossierCase і блокується.
-
-### Рішення
-
-В App.jsx — знайти обробники кліку по пунктах меню (Дашборд, Справи, тощо).
-При натисканні будь-якого пункту меню — ЗАВЖДИ:
-1. Закрити досьє: setDossierCase(null)
-2. Перейти до обраного view: setCurrentView('dashboard') тощо
-
+**Рішення:** Знайти стилі QI sidebar і встановити:
 ```jsx
-// Приклад обробника пункту меню:
-function navigateTo(view) {
-  setDossierCase(null);   // закрити досьє якщо відкрите
-  setShowQI(false);       // закрити QI якщо відкритий
-  setCurrentView(view);
-}
+width: '33.33%',
+maxWidth: 480,
+minWidth: 320,
 ```
-
-НЕ додавати disabled або pointer-events:none на меню коли досьє відкрите.
-НЕ перевіряти dossierCase перед навігацією.
-
-Якщо меню має стиль з opacity або pointer-events коли dossierCase !== null — ВИДАЛИТИ цю умову.
 
 ---
 
-## БАГ C — QI sidebar занадто широкий
+## БАГ 3 — РЕЄСТР ПРОСТУПАЄ ПІД ДОСЬЄ
 
-### Симптом (підтверджений скріншотом)
-QI займає приблизно 50% ширини. Занадто багато.
+**Симптом:** Коли відкрите досьє — внизу екрану видно карточки справ з реєстру.
 
-### Як має працювати
-Пропорція: QI = 1/3 екрана, решта = 2/3 екрана.
-В ландшафтному режимі (горизонтально) — QI справа, 1/3 ширини.
-
-### Діагностика
-```bash
-grep -n "showQI\|qi.*width\|qi.*sidebar\|width.*420\|width.*50" src/App.jsx | head -15
+**Рішення:** Знайти кореневий контейнер CaseDossier і встановити:
+```jsx
+position: 'fixed',
+top: 0,
+left: 0,
+right: 0,
+bottom: 0,
+background: '#0d0f1a',
+zIndex: 50,
+overflow: 'auto',
 ```
 
-### Рішення
+---
 
-Знайти div QI sidebar і змінити ширину:
+## БАГ 4 — ДОДАВАННЯ ПРОВАДЖЕННЯ БЕЗ ОНОВЛЕННЯ СТОРІНКИ
+
+**Симптом:** Після додавання нового провадження воно з'являється в UI тільки після F5.
+
+**Причина:** Локальний стан проваджень не оновлюється після збереження через updateCase().
+
+**Рішення:**
+Знайти функцію що додає провадження (щось на кшталт handleAddProceeding або addProceeding).
+
+Після виклику updateCase() — додати примусове оновлення локального стану проваджень:
 
 ```jsx
-{showQI && (
-  <div style={{
-    width: '33.33%',          // 1/3 екрана
-    maxWidth: 480,            // не більше 480px
-    minWidth: 320,            // не менше 320px
-    borderLeft: '1px solid #2e3148',
-    display: 'flex', flexDirection: 'column',
-    background: '#141625', flexShrink: 0,
-    height: '100%', overflow: 'hidden'
-  }}>
-    {/* QI content */}
+// Після updateCase(caseId, 'proceedings', newProceedings):
+setLocalProceedings(newProceedings); // або setCase({...case, proceedings: newProceedings})
+```
+
+Якщо компонент бере proceedings напряму з props.caseData — переконатись що App.jsx оновлює об'єкт справи реактивно і компонент отримує нові props без перезавантаження.
+
+**Тест:**
+1. Відкрити досьє
+2. Натиснути "+ Додати провадження"
+3. Заповнити і зберегти
+4. Нове провадження має з'явитись ОДРАЗУ без F5
+
+---
+
+## ПОКРАЩЕННЯ 1 — ПОЛЕ ЧАТУ АГЕНТА ОДРАЗУ ПІД РУКОЮ
+
+**Проблема:** Коли відкриваєш агента досьє — треба скролити щоб дістатись до поля вводу.
+
+**Рішення:** Панель агента має бути flex колонкою де:
+- Заголовок + кнопки управління — фіксована висота зверху
+- Переписка (messages) — flex: 1, overflow-y: auto (займає весь простір що лишився)
+- Поле вводу (textarea + кнопка надіслати) — фіксовано ЗНИЗУ панелі, flexShrink: 0
+
+```jsx
+// Структура панелі агента:
+<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+  {/* Заголовок */}
+  <div style={{ flexShrink: 0 }}> ... кнопки, заголовок ... </div>
+  
+  {/* Переписка */}
+  <div style={{ flex: 1, overflowY: 'auto' }}> ... messages ... </div>
+  
+  {/* Поле вводу — ЗАВЖДИ ВНИЗУ */}
+  <div style={{ flexShrink: 0, padding: '8px', borderTop: '1px solid #2a2d3e' }}>
+    <textarea ... />
+    <button ...>→</button>
   </div>
-)}
-```
-
----
-
-## БАГ D — Планшет: при повороті QI переїжджає вниз
-
-### Як має працювати
-
-**Ландшафт (горизонтально):** QI справа, основний контент зліва. flex-direction: row. Пропорція 2/3 + 1/3.
-
-**Портрет (вертикально):** QI знизу, основний контент зверху. flex-direction: column. Пропорція 2/3 висоти зверху + 1/3 висоти знизу.
-
-### Рішення
-
-Використати CSS media query через matchMedia або CSS в App.css:
-
-**Варіант А — через CSS (рекомендований):**
-
-В src/App.css додати:
-
-```css
-.app-layout {
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-  flex-direction: row;
-}
-
-.app-main-content {
-  flex: 1;
-  overflow: auto;
-  min-width: 0;
-  min-height: 0;
-}
-
-.qi-sidebar {
-  width: 33.33%;
-  max-width: 480px;
-  min-width: 320px;
-  border-left: 1px solid #2e3148;
-  display: flex;
-  flex-direction: column;
-  background: #141625;
-  flex-shrink: 0;
-  height: 100%;
-  overflow: hidden;
-}
-
-/* Портретний режим — QI знизу */
-@media (orientation: portrait) {
-  .app-layout {
-    flex-direction: column;
-  }
-
-  .qi-sidebar {
-    width: 100%;
-    max-width: none;
-    min-width: none;
-    height: 33.33vh;
-    max-height: 400px;
-    min-height: 250px;
-    border-left: none;
-    border-top: 1px solid #2e3148;
-  }
-
-  .app-main-content {
-    flex: 1;
-    min-height: 0;
-  }
-}
-```
-
-**Варіант Б — через JS (якщо CSS складно застосувати):**
-
-```jsx
-const [isPortrait, setIsPortrait] = useState(
-  window.matchMedia('(orientation: portrait)').matches
-);
-
-useEffect(() => {
-  const mq = window.matchMedia('(orientation: portrait)');
-  const handler = (e) => setIsPortrait(e.matches);
-  mq.addEventListener('change', handler);
-  return () => mq.removeEventListener('change', handler);
-}, []);
-
-// Layout:
-<div style={{
-  display: 'flex',
-  flexDirection: isPortrait ? 'column' : 'row',
-  height: '100vh', overflow: 'hidden'
-}}>
-  <div style={{ flex: 1, overflow: 'auto', minWidth: 0, minHeight: 0 }}>
-    {/* основний контент */}
-  </div>
-  {showQI && (
-    <div style={{
-      ...(isPortrait
-        ? { width: '100%', height: '33.33vh', maxHeight: 400, minHeight: 250,
-            borderTop: '1px solid #2e3148' }
-        : { width: '33.33%', maxWidth: 480, minWidth: 320, height: '100%',
-            borderLeft: '1px solid #2e3148' }
-      ),
-      display: 'flex', flexDirection: 'column',
-      background: '#141625', flexShrink: 0, overflow: 'hidden'
-    }}>
-      {/* QI content */}
-    </div>
-  )}
 </div>
 ```
 
-Обрати ОДИН варіант (А або Б). Якщо в App.jsx вже є inline styles для layout — краще Б. Якщо є CSS класи — краще А.
+Аналогічно для QI sidebar.
+
+---
+
+## ПОКРАЩЕННЯ 2 — ГОЛОСОВИЙ ВВІД В АГЕНТ ДОСЬЄ
+
+**Рішення:** Додати кнопку 🎤 поруч з полем вводу агента досьє.
+Використати той самий механізм що вже реалізований в QI (isRecordingRef, Web Speech API, uk-UA).
+Кнопки × і ✓ при активному записі — як в QI.
+
+---
+
+## ПОКРАЩЕННЯ 3 — РУХОМІ МЕЖІ (RESIZABLE PANELS)
+
+Три рухомі межі:
+
+### 3А — Між QI sidebar і основним контентом досьє
+### 3Б — Між агентом досьє і контентом досьє  
+### 3В — Між деревом матеріалів і viewer'ом (вкладка Матеріали)
+
+**Реалізація для кожної межі:**
+
+```jsx
+// Компонент-розділювач
+<div
+  style={{
+    width: 8,           // або height: 8 для горизонтального
+    background: '#1e2130',
+    cursor: 'col-resize',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    userSelect: 'none',
+  }}
+  onMouseDown={handleResizeStart}
+  onTouchStart={handleResizeTouchStart}
+>
+  {/* Потовщення-ручка по центру */}
+  <div style={{
+    width: 4,
+    height: 40,
+    borderRadius: 2,
+    background: '#3a3d5a',
+  }} />
+</div>
+```
+
+**Логіка drag для mouse і touch:**
+```jsx
+const handleResizeStart = (e) => {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startWidth = currentPanelWidth;
+  
+  const onMove = (e) => {
+    const delta = e.clientX - startX;
+    const newWidth = Math.max(200, Math.min(600, startWidth + delta));
+    setPanelWidth(newWidth);
+  };
+  
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+};
+
+// Touch аналог — через e.touches[0].clientX
+```
+
+**Початкові розміри:**
+- QI: 33% (min 280, max 480)
+- Агент досьє: 35% (min 280, max 500)
+- Дерево матеріалів: 280px (min 200, max 400)
 
 ---
 
 ## ПОРЯДОК ВИКОНАННЯ
 
-1. **БАГ A** — агент пам'ять в API (найкритичніший — двічі не виправлений)
-2. **БАГ B** — головне меню активне
-3. **БАГ C** — QI ширина 1/3
-4. **БАГ D** — responsive portrait/landscape
+1. Баг 1 (агент пам'ять) — СПОЧАТКУ grep діагностика
+2. Баг 2 (QI ширина)
+3. Баг 3 (реєстр проступає)
+4. Баг 4 (провадження без F5)
+5. Покращення 1 (поле вводу знизу)
+6. Покращення 2 (голос в агенті)
+7. Покращення 3 (рухомі межі)
 
----
-
-## ЗБІРКА І ДЕПЛОЙ
+## ДЕПЛОЙ
 
 ```bash
-npm run build 2>&1 | tail -5
-git add -A && git commit -m "fix: agent memory API, main menu active, QI proportions, responsive layout" && git push origin main
+git add -A && git commit -m "fix: dossier bugfixes + resizable panels + agent UX" && git push origin main
 ```
 
----
-
-## КРИТЕРІЇ ЗАВЕРШЕННЯ
-
-- [ ] Агент РЕАЛЬНО пам'ятає переписку між сесіями (перевірити: сказати ім'я → закрити → відкрити → запитати)
-- [ ] agentMessages передається в API fetch як messages[] (перевірити grep по коду)
-- [ ] Головне меню (Дашборд/Справи/Книжка/Нова справа/Аналіз) активне коли досьє відкрите
-- [ ] Натиснув пункт меню з досьє → досьє закривається → перехід до модуля
-- [ ] QI sidebar = 1/3 ширини екрана (не 50%)
-- [ ] В портретному режимі (планшет вертикально) QI внизу, 1/3 висоти
-- [ ] В ландшафтному режимі QI справа, 1/3 ширини
-- [ ] При повороті планшета layout переключається автоматично
-- [ ] npm run build без помилок
-- [ ] git push origin main виконано
+Перевірити: git log --oneline -3
