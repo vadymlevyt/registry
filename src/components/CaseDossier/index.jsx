@@ -93,7 +93,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             { label: "Наступна дія", field: "next_action", value: caseData.next_action },
             { label: "Дата засідання", field: "hearing_date", value: caseData.hearing_date },
             { label: "Дедлайн", field: "deadline", value: caseData.deadline },
-            { label: "Нотатки до справи", field: "notes", value: caseData.notes }
+            { label: "Нотатки до справи", field: "notes", value: Array.isArray(caseData.notes) ? caseData.notes.map(n => n.text).filter(Boolean).join('\n') : (typeof caseData.notes === 'string' ? caseData.notes : '') }
           ].map(row => (
             <div key={row.field} style={{ display: "flex", gap: 12, marginBottom: 10, alignItems: "flex-start" }}>
               <div style={{ width: 130, fontSize: 11, color: "#5a6080", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
