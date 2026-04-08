@@ -1,10 +1,30 @@
-# TASK.md — Хірургічний фікс CaseDossier layout
+# TASK.md — Архітектурний рефакторинг: QI виноситься в App.jsx
 Дата: 08.04.2026
 
-## СЕРЕДОВИЩЕ
-Поточний коміт: 5966caf
-Компонент: src/components/CaseDossier/index.jsx
-Деплой: git add -A && git commit -m "..." && git push origin main
+## СУТЬ ПРОБЛЕМИ
+
+QI зараз вбудований всередину CaseDossier — це неправильна архітектура.
+QI має жити в App.jsx на тому ж рівні що і на Дашборді.
+CaseDossier не знає про QI і не містить його.
+
+## ПРАВИЛЬНА АРХІТЕКТУРА
+
+```
+App.jsx:
+┌──────────────────────────────────────────────────┐
+│  Верхнє меню (завжди, на всіх сторінках)         │
+├────────────────────────────────┬─────────────────┤
+│  Поточний вид:                 │   QI sidebar    │
+│  - Дашборд                     │   (керується    │
+│  - Реєстр справ                │   з App.jsx,    │
+│  - CaseDossier                 │   якщо showQI)  │
+│    └─ контент + агент досьє    │                 │
+└────────────────────────────────┴─────────────────┘
+```
+
+QI — глобальний sidebar в App.jsx.
+При відкритті QI — весь поточний вид (включно з досьє) зсувається вліво.
+CaseDossier всередині себе має тільки: контент зліва + агент досьє справа.
 
 ---
 
@@ -16,251 +36,286 @@ cat LESSONS.md
 
 ---
 
-## КРОК 1 — ДІАГНОСТИКА (не чіпати код до завершення)
+## КРОК 1 — ДІАГНОСТИКА
 
-### 1А. Знайти кореневий контейнер CaseDossier
+### 1А. Як QI зараз реалізований в App.jsx
 ```bash
-grep -n "position\|zIndex\|overflow\|display.*flex\|flexDirection" src/components/CaseDossier/index.jsx | head -60
+grep -n "showQI\|QuickInput\|Quick Input\|qiWidth\|setShowQI" src/App.jsx | head -40
 ```
 
-### 1Б. Знайти де рендериться шапка (← Реєстр, вкладки, кнопка агента)
+### 1Б. Чи є QI в CaseDossier
 ```bash
-grep -n "Реєстр\|showAgent\|setShowAgent\|activeTab\|← " src/components/CaseDossier/index.jsx | head -30
+grep -n "showQI\|QuickInput\|Quick Input\|qiWidth" src/components/CaseDossier/index.jsx | head -20
 ```
 
-### 1В. Знайти де рендериться QI в досьє
+### 1В. Як виглядає головний layout в App.jsx (return)
 ```bash
-grep -n "showQI\|QuickInput\|Quick Input\|setShowQI" src/components/CaseDossier/index.jsx | head -20
+grep -n "return\|<div\|flexDirection\|display.*flex\|position.*fixed" src/App.jsx | head -50
 ```
 
-### 1Г. Знайти resizable логіку
+### 1Г. Де рендериться верхнє меню в App.jsx
 ```bash
-grep -n "resize\|Resize\|handleResize\|mouseDown\|touchStart\|panelWidth\|qiWidth\|agentWidth" src/components/CaseDossier/index.jsx | head -30
+grep -n "Дашборд\|nav\|menu\|header\|АБ Левицького\|topBar\|navbar" src/App.jsx | head -20
 ```
 
-### 1Д. Показати першу return() — структуру JSX
-```bash
-grep -n "return (" src/components/CaseDossier/index.jsx
-```
-Потім показати рядки від першого return до ~50 рядків після нього.
-
-**СТОП. Показати результати діагностики і чекати підтвердження перед змінами.**
+СТОП після діагностики — показати результати.
 
 ---
 
-## КРОК 2 — ФІКС НА ОСНОВІ ДІАГНОСТИКИ
+## КРОК 2 — РЕФАКТОРИНГ
 
-Після діагностики застосувати такі правила:
+### 2А. Видалити QI з CaseDossier
 
-### Правило 1 — Кореневий контейнер
-Перший div після return() в CaseDossier МАЄ бути:
+В src/components/CaseDossier/index.jsx:
+- Видалити весь код пов'язаний з QI (showQI state, QI панель, кнопку QI в шапці)
+- Кнопка "Сховати QI" / "QI" — прибрати з шапки досьє
+- CaseDossier більше не знає про QI
+
+### 2Б. Перевірити що QI вже є в App.jsx
+
+QI в App.jsx має бути реалізований як глобальний sidebar — так само як на Дашборді.
+Якщо вже є — переконатись що він працює і для стану коли відкрите досьє.
+
+Якщо QI в App.jsx керується через showQI state — він має відображатись поверх
+будь-якого поточного виду включно з CaseDossier.
+
+### 2В. Головний layout App.jsx
+
+Структура App.jsx має бути:
 ```jsx
 <div style={{
   position: 'fixed',
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
-  zIndex: 100,
+  top: 0, left: 0, right: 0, bottom: 0,
+  display: 'flex',
+  flexDirection: 'column',
   background: '#0d0f1a',
+  overflow: 'hidden',
+}}>
+  {/* Верхнє меню — ЗАВЖДИ зверху */}
+  <div style={{ flexShrink: 0, zIndex: 200 }}>
+    {/* АБ Левицького + навігація */}
+  </div>
+
+  {/* Робочий рядок */}
+  <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+
+    {/* Поточний вид — займає весь простір що лишився */}
+    <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
+      {currentView === 'dashboard' && <Dashboard ... />}
+      {currentView === 'registry' && <Registry ... />}
+      {dossierCase && <CaseDossier ... />}
+    </div>
+
+    {/* Universal Panel — з'являється справа якщо showUniversalPanel */}
+    {/* Дві вкладки: [⚡ QI] і [🤖 Агент] — переключення без втрати контексту */}
+    {showUniversalPanel && (
+      <>
+        {/* розділювач */}
+        <div style={{ width: 8, cursor: 'col-resize', ... }} onMouseDown={handleQIResize} />
+        {/* Universal Panel */}
+        <div style={{ width: qiWidth, minWidth: 280, maxWidth: 480, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+
+          {/* Вкладки */}
+          <div style={{ flexShrink: 0, display: 'flex', borderBottom: '1px solid #2a2d3e' }}>
+            <button onClick={() => setUniversalTab('qi')}
+              style={{ flex: 1, opacity: universalTab === 'qi' ? 1 : 0.5 }}>
+              ⚡ QI
+            </button>
+            <button onClick={() => setUniversalTab('agent')}
+              style={{ flex: 1, opacity: universalTab === 'agent' ? 1 : 0.5 }}>
+              🤖 Агент
+            </button>
+          </div>
+
+          {/* Вміст вкладки */}
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            {universalTab === 'qi' && <QuickInputPanel ... />}
+            {universalTab === 'agent' && <MainAgentPanel ... />}
+          </div>
+
+        </div>
+      </>
+    )}
+    {/* State: showUniversalPanel, universalTab: 'qi'|'agent', qiWidth */}
+    {/* MainAgentPanel — поки порожній placeholder, реалізація пізніше */}
+
+  </div>
+</div>
+```
+
+### 2Г. CaseDossier — тільки свій контент і агент
+
+CaseDossier всередині має:
+```jsx
+<div style={{
+  position: 'absolute',  // або просто flex child — НЕ fixed
+  top: 0, left: 0, right: 0, bottom: 0,
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
 }}>
-```
-**overflow: hidden на кореневому** — скрол тільки всередині дочірніх контейнерів.
+  {/* Шапка досьє */}
+  <div style={{ flexShrink: 0, zIndex: 10 }}>
+    ← Реєстр | вкладки | кнопка Агент
+    {/* НЕ має кнопки QI */}
+  </div>
 
-### Правило 2 — Шапка (← Реєстр + вкладки + кнопка агента)
-```jsx
-<div style={{
-  flexShrink: 0,
-  zIndex: 200,
-  position: 'relative',
-  background: '#0d0f1a',
-}}>
-```
-zIndex: 200 — вище всього іншого в досьє.
+  {/* Робочий рядок досьє */}
+  <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
 
-### Правило 3 — Робочий рядок (контент + агент + QI)
-```jsx
-<div style={{
-  flex: 1,
-  display: 'flex',
-  flexDirection: 'row',
-  overflow: 'hidden',
-  position: 'relative',
-  zIndex: 1,
-  minHeight: 0,  // КРИТИЧНО для flex дітей зі скролом
-}}>
-```
+    {/* Контент вкладки */}
+    <div style={{ flex: 1, overflowY: 'auto', minWidth: 0 }}>
+      {activeTab === 'overview' && <OverviewTab />}
+      {activeTab === 'materials' && <MaterialsTab />}
+      ...
+    </div>
 
-### Правило 4 — Контент досьє (ліва частина)
-```jsx
-<div style={{
-  flex: 1,
-  overflowY: 'auto',
-  minWidth: 0,
-}}>
-```
+    {/* Агент досьє — якщо showAgent */}
+    {showAgent && (
+      <>
+        <div style={{ width: 8, cursor: 'col-resize' }} onMouseDown={handleAgentResize} />
+        <div style={{ width: agentWidth, minWidth: 260, maxWidth: 500, flexShrink: 0 }}>
+          <AgentPanel ... />
+        </div>
+      </>
+    )}
 
-### Правило 5 — Агент досьє
-```jsx
-<div style={{
-  width: agentWidth,  // від resizable state, початково 35%
-  minWidth: 260,
-  maxWidth: 500,
-  flexShrink: 0,
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
-  borderLeft: '1px solid #2a2d3e',
-  position: 'relative',  // НЕ absolute
-}}>
-```
-
-### Правило 6 — QI sidebar
-```jsx
-<div style={{
-  width: qiWidth,  // від resizable state, початково 33%
-  minWidth: 280,
-  maxWidth: 480,
-  flexShrink: 0,
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
-  borderLeft: '1px solid #2a2d3e',
-  position: 'relative',  // НЕ absolute
-}}>
-```
-
-### Правило 7 — Розділювач між панелями
-```jsx
-<div
-  style={{
-    width: 8,
-    flexShrink: 0,
-    cursor: 'col-resize',
-    background: '#1a1d2e',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-    zIndex: 10,
-    userSelect: 'none',
-    WebkitUserSelect: 'none',
-  }}
-  onMouseDown={handleResizeStart}
-  onTouchStart={handleResizeTouchStart}
->
-  <div style={{
-    width: 4,
-    height: 40,
-    borderRadius: 2,
-    background: '#3a3d5a',
-    pointerEvents: 'none',
-  }} />
+  </div>
 </div>
 ```
 
-### Правило 8 — Агент: поле вводу завжди внизу
-Панель агента — flex колонка:
-```jsx
-// Переписка
-<div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-  {messages...}
-</div>
+ВАЖЛИВО: CaseDossier НЕ має position:fixed. Він живе всередині flex контейнера App.jsx.
+position:fixed має тільки App.jsx кореневий контейнер.
 
-// Поле вводу — ЗАВЖДИ внизу
-<div style={{ flexShrink: 0, padding: 8, borderTop: '1px solid #2a2d3e' }}>
-  <textarea ... />
-  <button>→</button>
-</div>
-```
+### 2Д. Прибрати кнопку QI з верхнього хедера
 
----
-
-## КРОК 3 — ПЕРЕВІРКА TOGGLE АГЕНТА
-
+Знайти і видалити кнопку "Quick Input" з верхнього меню App.jsx:
 ```bash
-grep -n "showAgent\|setShowAgent\|Сховати\|Показати" src/components/CaseDossier/index.jsx
+grep -n "Quick Input\|quickInput\|showQI" src/App.jsx | head -20
 ```
+Залишити тільки круглу плаваючу кнопку ⚡ внизу праворуч.
+Вона відкриває/закриває Universal Panel.
 
-Якщо логіки немає або зламана — відновити:
-```jsx
-const [showAgent, setShowAgent] = useState(true);
+### 2Е. Кругла кнопка ⚡ — єдина точка входу
 
-// При зміні вкладки
-useEffect(() => {
-  setShowAgent(activeTab === 'overview');
-}, [activeTab]);
-```
-
-Кнопка в шапці:
-```jsx
-<button onClick={() => setShowAgent(v => !v)}>
-  {showAgent ? '🤖 Сховати агента' : '🤖 Агент'}
-</button>
-```
-
-Агент рендериться тільки коли showAgent:
-```jsx
-{showAgent && (
-  <>
-    {/* розділювач */}
-    {/* панель агента */}
-  </>
-)}
-```
+Кнопка що відкриває/закриває QI — у верхньому меню App.jsx (як зараз на інших сторінках).
+Не в шапці досьє.
 
 ---
 
-## КРОК 4 — ПЕРЕВІРКА QI
+## КРОК 3 — ВЕРХНЄ МЕНЮ
 
-QI в досьє НЕ є окремим overlay. Це flex sibling всередині робочого рядка.
-Рендериться тільки коли showQI:
+Верхнє меню (АБ Левицького + Дашборд/Справи/Книжка/Нова справа/Аналіз системи) —
+має бути видиме на ВСІХ сторінках включно з досьє.
+
+Перевірити: чи не перекривається верхнє меню коли відкрите досьє.
+Якщо досьє зараз має position:fixed з top:0 — воно перекриває меню.
+Після рефакторингу (CaseDossier без position:fixed) — меню має бути видиме завжди.
+
+---
+
+## КРОК 4 — РУХОМА МЕЖА QI
+
+Рухома межа між QI і основним контентом — в App.jsx.
+При перетягуванні — змінює qiWidth в App.jsx state.
+Це впливає на весь поточний вид включно з досьє.
+
 ```jsx
-{showQI && (
-  <>
-    {/* розділювач */}
-    {/* QI панель */}
-  </>
-)}
-```
+const [qiWidth, setQiWidth] = useState(380);
 
-Кнопка QI — в шапці досьє (не плаваюча).
+const handleQIResize = (e) => {
+  e.preventDefault();
+  const startX = e.clientX || e.touches?.[0]?.clientX;
+  const startWidth = qiWidth;
+
+  const onMove = (e) => {
+    const x = e.clientX || e.touches?.[0]?.clientX;
+    const delta = startX - x;  // QI справа — тягнемо вліво щоб розширити
+    const newWidth = Math.max(280, Math.min(480, startWidth + delta));
+    setQiWidth(newWidth);
+  };
+
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onUp);
+  };
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onUp);
+};
+```
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: dossier layout - proper stacking context and flex structure" && git push origin main
+git add -A && git commit -m "refactor: QI moved to App.jsx, CaseDossier without fixed position" && git push origin main
 ```
 
 ---
 
-## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ — ПЕРЕВІРИТИ КОЖЕН ПУНКТ
+## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
 
-- [ ] Відкрив досьє — шапка видима одразу (← Реєстр, вкладки, кнопка агента)
-- [ ] Кнопка "Сховати агента" працює — агент ховається/показується
-- [ ] На вкладках Матеріали/Позиція — агент закритий за замовчуванням
-- [ ] Натиснув QI — з'явилась QI панель справа (не overlay, не під контентом)
-- [ ] QI займає ~1/3 ширини
-- [ ] Рухомі межі між панелями працюють
-- [ ] Реєстр НЕ проступає під досьє
-- [ ] Головне меню (Дашборд/Справи/Книжка) — активне з досьє
+- [ ] Верхнє меню видиме на всіх сторінках (включно з досьє)
+- [ ] Відкрив досьє — шапка досьє видима (← Реєстр, вкладки, кнопка Агент)
+- [ ] Натиснув кнопку панелі у верхньому меню — Universal Panel з'явився справа і відтіснив досьє вліво
+- [ ] Вкладки [⚡ QI] і [🤖 Агент] переключаються без втрати контексту
+- [ ] Рухома межа між Universal Panel і основним контентом працює
+- [ ] Всередині досьє рухома межа між контентом і агентом досьє
+- [ ] При закритті QI — досьє розширюється назад
+- [ ] Кнопка "Агент" в шапці досьє — ховає/показує агент досьє
+- [ ] Реєстр справ НЕ проступає під досьє
 
 ---
+
+## ДОДАТИ В LESSONS.md — АРХІТЕКТУРНИЙ ПРИНЦИП (одразу, не після виконання)
+
+Дописати на початок секції УРОКИ в LESSONS.md:
+
+```
+### [АРХІТЕКТУРНИЙ ПРИНЦИП] Universal Panel — найвищий пріоритет інтерфейсу
+
+Це фундаментальний принцип для ВСІХ модулів системи.
+
+Universal Panel (QI + Головний агент) — єдиний глобальний сайдбар.
+Живе ТІЛЬКИ в App.jsx. Жоден модуль не містить його і не знає про нього.
+
+ТОЧКА ВХОДУ: одна кругла кнопка ⚡ внизу праворуч (плаваюча, завжди видима).
+Кнопка QI у верхньому хедері — ПРИБРАТИ. Залишити тільки круглу кнопку.
+
+ПОВЕДІНКА при відкритті:
+- Весь поточний вид (Дашборд / Реєстр / Досьє / будь-який модуль) поступається
+  місцем як єдине ціле — зсувається вліво
+- Модуль не знає що відбулось — він просто отримав менше ширини
+- Universal Panel з'являється справа з рухомою межею
+
+ВКЛАДКИ всередині панелі:
+- [⚡ QI] — аналіз документів, введення даних
+- [🤖 Агент] — головний агент (поки placeholder)
+- Переключення без втрати контексту кожної вкладки
+
+НОВИЙ МОДУЛЬ — чекліст:
+□ Модуль НЕ містить QI і НЕ містить Universal Panel
+□ Модуль НЕ має position:fixed (тільки App.jsx має fixed)
+□ Модуль — flex child в App.jsx, займає весь простір що лишився після Universal Panel
+□ Власні панелі модуля (агент, sidebar) — тільки всередині модуля, flex siblings
+□ Рухома межа між власними панелями — тільки всередині модуля
+```
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
-Додати запис:
 ```
-### [2026-04-08] CaseDossier — правильна flex структура
-Кореневий: position:fixed, zIndex:100, overflow:hidden
-Шапка: flexShrink:0, zIndex:200, position:relative
-Робочий рядок: flex:1, overflow:hidden, minHeight:0 (КРИТИЧНО)
-Панелі (контент/агент/QI): position:relative (НЕ absolute)
-Розділювач: position:relative, zIndex:10
-Агент і QI рендеряться як flex siblings — НЕ як overlay
+### [2026-04-08] Universal Panel — глобальний сайдбар з двома вкладками
+Universal Panel (QI + Головний агент) належить App.jsx — не будь-якому модулю.
+Дві вкладки: [⚡ QI] і [🤖 Агент] — переключення без втрати контексту.
+State в App.jsx: showUniversalPanel, universalTab: 'qi'|'agent', panelWidth.
+CaseDossier і Дашборд не знають про Universal Panel — він рівнем вище.
+При відкритті — весь поточний вид зсувається вліво.
+CaseDossier НЕ має position:fixed — він flex child в App.jsx.
+position:fixed має тільки кореневий контейнер App.jsx.
 ```

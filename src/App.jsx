@@ -2567,7 +2567,8 @@ function App() {
   const openCase = (c) => { usageLog.log('open_case', {name: c.name}); setSelected(c); };
   const [dossierCase, setDossierCase] = useState(null);
   const [ideas, setIdeas] = useState([]);
-  const [showQI, setShowQI] = useState(false);
+  const [showUniversalPanel, setShowUniversalPanel] = useState(false);
+  const [universalTab, setUniversalTab] = useState('qi');
   const [qiBtnPos, setQiBtnPos] = useState({ x: null, y: null });
   const qiDragRef = useRef(false);
   const qiDragMoved = useRef(false);
@@ -2578,13 +2579,10 @@ function App() {
   const [filterCat, setFilterCat] = useState('all');
   const [filterStatus, setFilterStatus] = useState('active');
 
-  // ── Split panel ────────────────────────────────────────────────────────────
-  const [isLandscape, setIsLandscape] = useState(() => window.matchMedia('(orientation: landscape)').matches);
-  const [qiRatio, setQiRatio] = useState(null); // null = default
+  // ── Universal Panel ────────────────────────────────────────────────────────
+  const [panelWidth, setPanelWidth] = useState(380);
   const isDragging = useRef(false);
   const containerRef = useRef(null);
-  const isLandscapeRef = useRef(isLandscape);
-  const ratio = qiRatio !== null ? qiRatio : (isLandscape ? 0.33 : 0.60);
 
   // ── QI FAB drag ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -2643,26 +2641,16 @@ function App() {
     }
   }, [cases]);
 
-  // ── Split panel effects ────────────────────────────────────────────────────
-  useEffect(() => { isLandscapeRef.current = isLandscape; }, [isLandscape]);
-
+  // ── Universal Panel resize ──────────────────────────────────────────────────
   useEffect(() => {
-    const mq = window.matchMedia('(orientation: landscape)');
-    const handler = (e) => { setIsLandscape(e.matches); setQiRatio(null); };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
-
-  useEffect(() => {
-    const onMove = (clientX, clientY) => {
-      if (!isDragging.current || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const r = (rect.right - clientX) / rect.width;
-      setQiRatio(Math.min(0.75, Math.max(0.15, r)));
+    const onMove = (clientX) => {
+      if (!isDragging.current) return;
+      const newWidth = window.innerWidth - clientX;
+      setPanelWidth(Math.max(280, Math.min(480, newWidth)));
     };
-    const onMouseMove = (e) => onMove(e.clientX, e.clientY);
+    const onMouseMove = (e) => onMove(e.clientX);
     const onMouseUp   = () => { isDragging.current = false; };
-    const onTouchMove = (e) => { if (!isDragging.current) return; e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); };
+    const onTouchMove = (e) => { if (!isDragging.current) return; e.preventDefault(); onMove(e.touches[0].clientX); };
     const onTouchEnd  = () => { isDragging.current = false; };
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup',   onMouseUp);
@@ -2874,9 +2862,6 @@ function App() {
         <div className="topbar-logo">АБ <span>Левицького</span></div>
         <div className="topbar-right" style={{display:'flex',gap:8,alignItems:'center'}}>
           {lastSaved && <span style={{fontSize:10,color:'var(--text3)',letterSpacing:'0.04em'}}>збережено {lastSaved}</span>}
-          <button className="btn-sm btn-ghost" onClick={() => setShowQI(true)} style={{fontSize:12}}>
-            ⚡ Quick Input
-          </button>
           <button className="btn-sm btn-ghost" onClick={() => {
             if(confirm('Скинути всі дані і повернути тестові справи?')) {
               localStorage.removeItem('levytskyi_cases');
@@ -2901,12 +2886,12 @@ function App() {
         ))}
       </div>
 
-      {/* MAIN + QI SIDEBAR */}
+      {/* MAIN + UNIVERSAL PANEL */}
       <div
         ref={containerRef}
-        style={{ flex: 1, display: 'flex', flexDirection: isLandscape ? 'row' : 'column', overflow: 'hidden', minHeight: 0 }}
+        style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', minHeight: 0 }}
       >
-        {/* Main content */}
+        {/* Main content — поточний вид */}
         <div className="main" style={{ flex: 1, overflow: 'auto', minWidth: 0, minHeight: 0, position: 'relative' }}>
           {tab === 'dashboard' && (
             <Dashboard
@@ -2999,8 +2984,8 @@ function App() {
           )}
         </div>
 
-        {/* QI Resizer + Sidebar */}
-        {showQI && isLandscape && (
+        {/* Universal Panel — розділювач */}
+        {showUniversalPanel && (
           <div
             onMouseDown={() => { isDragging.current = true; }}
             onTouchStart={() => { isDragging.current = true; }}
@@ -3011,17 +2996,44 @@ function App() {
             <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a' }} />
           </div>
         )}
-        {showQI && (
+
+        {/* Universal Panel */}
+        {showUniversalPanel && (
           <div style={{
-            ...(isLandscape
-              ? { width: `${ratio * 100}%`, maxWidth: 480, minWidth: 320, height: '100%', borderLeft: '1px solid #2e3148' }
-              : { width: '100%', height: '33.33vh', maxHeight: 400, minHeight: 250, borderTop: '1px solid #2e3148' }
-            ),
-            display: 'flex', flexDirection: 'column',
-            background: '#141625', flexShrink: 0, overflow: 'hidden',
+            width: panelWidth, minWidth: 280, maxWidth: 480, flexShrink: 0,
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            borderLeft: '1px solid #2e3148', background: '#141625',
             animation: 'splitPanelIn 0.2s ease'
           }}>
-            <QuickInput cases={cases} setCases={setCases} onClose={() => setShowQI(false)} driveConnected={driveConnected} />
+            {/* Вкладки */}
+            <div style={{ flexShrink: 0, display: 'flex', borderBottom: '1px solid #2a2d3e' }}>
+              <button onClick={() => setUniversalTab('qi')} style={{
+                flex: 1, padding: '8px 0', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                background: universalTab === 'qi' ? '#1a1d27' : 'transparent',
+                color: universalTab === 'qi' ? '#f39c12' : '#5a6080',
+                borderBottom: universalTab === 'qi' ? '2px solid #f39c12' : '2px solid transparent'
+              }}>{"⚡ QI"}</button>
+              <button onClick={() => setUniversalTab('agent')} style={{
+                flex: 1, padding: '8px 0', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                background: universalTab === 'agent' ? '#1a1d27' : 'transparent',
+                color: universalTab === 'agent' ? '#4f7cff' : '#5a6080',
+                borderBottom: universalTab === 'agent' ? '2px solid #4f7cff' : '2px solid transparent'
+              }}>{"🤖 Агент"}</button>
+            </div>
+
+            {/* Вміст вкладки */}
+            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              {universalTab === 'qi' && (
+                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} />
+              )}
+              {universalTab === 'agent' && (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5a6080', gap: 12, padding: 20 }}>
+                  <div style={{ fontSize: 48, opacity: 0.2 }}>{"🤖"}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#9aa0b8' }}>{"Головний агент"}</div>
+                  <div style={{ fontSize: 12, textAlign: 'center' }}>{"Буде реалізовано в наступній сесії"}</div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -3029,10 +3041,10 @@ function App() {
       {/* MODALS */}
       {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} onRestore={restoreCase} />}
 
-      {/* FAB — hidden when QI panel is open, draggable */}
-      {!showQI && <button
+      {/* FAB — toggle Universal Panel, draggable */}
+      {!showUniversalPanel && <button
         className="fab"
-        title="Quick Input"
+        title="Universal Panel"
         style={qiBtnPos.x !== null ? { position: 'fixed', left: qiBtnPos.x, top: qiBtnPos.y, right: 'auto', bottom: 'auto', touchAction: 'none' } : { touchAction: 'none' }}
         onMouseDown={e => {
           qiDragRef.current = true;
@@ -3050,7 +3062,7 @@ function App() {
         }}
         onClick={e => {
           if (qiDragMoved.current) { e.preventDefault(); return; }
-          setShowQI(true);
+          setShowUniversalPanel(true);
         }}
       >⚡</button>}
     </div>
