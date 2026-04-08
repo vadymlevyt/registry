@@ -78,76 +78,37 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const handleCreateDriveStructure = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
-    if (!token) {
-      showMsg("❌ Підключіть Google Drive в розділі «Аналіз системи»");
-      return;
-    }
+    if (!token) { showMsg("❌ Підключіть Google Drive"); return; }
+
     setCreatingStructure(true);
+    showMsg("⏳ Створюю...");
+
     try {
-      const targetFolderId = storageState?.driveFolderId;
+      const SUBFOLDERS = ["01_ОРИГІНАЛИ", "02_ОБРОБЛЕНІ", "03_ФРАГМЕНТИ", "04_ПОЗИЦІЯ", "05_ЗОВНІШНІ"];
 
-      if (!targetFolderId) {
-        // Немає папки — створити нову з повною структурою
-        const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`;
+      if (!storageState?.driveFolderId) {
+        // Немає папки — створити нову в 01_АКТИВНІ_СПРАВИ
+        const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`.replace(/[/\s\\:*?"<>|]+/g, "_");
         const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
-        const storageData = {
-          driveFolderId: caseFolderId,
-          driveFolderName: caseFolderName,
-          localFolderPath: null,
-          lastSyncAt: new Date().toISOString(),
-        };
-        updateCase(caseData.id, "storage", storageData);
-        setStorageState(storageData);
-        setStructureStatus({ state: "ok", missing: [] });
-        showMsg(`✅ Структуру створено: ${caseFolderName}`);
+        const newStorage = { driveFolderId: caseFolderId, driveFolderName: caseFolderName, localFolderPath: null, lastSyncAt: new Date().toISOString() };
+        updateCase(caseData.id, "storage", newStorage);
+        setStorageState(newStorage);
       } else {
-        // Папка є — створити підпапки в існуючій папці
-        const SUBFOLDERS = ["01_ОРИГІНАЛИ", "02_ОБРОБЛЕНІ", "03_ФРАГМЕНТИ", "04_ПОЗИЦІЯ", "05_ЗОВНІШНІ"];
+        // Папка є — створити підпапки всередині
+        const fid = storageState.driveFolderId;
         for (const name of SUBFOLDERS) {
-          // Перевірити чи підпапка вже є
-          const checkRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files?` +
-            `q=${encodeURIComponent(`'${targetFolderId}' in parents and name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
-            `&fields=files(id,name)`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          const checkData = await checkRes.json();
-
-          if (!checkData.files || checkData.files.length === 0) {
-            await fetch("https://www.googleapis.com/drive/v3/files", {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                name,
-                mimeType: "application/vnd.google-apps.folder",
-                parents: [targetFolderId],
-              }),
-            });
-          }
-        }
-        setStructureStatus({ state: "ok", missing: [] });
-        showMsg("✅ Структуру створено");
-
-        // Оновити driveFolderName якщо є тільки ID
-        if (!storageState?.driveFolderName) {
-          const nameRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${storageState.driveFolderId}?fields=name`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          const nameData = await nameRes.json();
-          if (nameData.name) {
-            const updated = { ...storageState, driveFolderName: nameData.name };
-            setStorageState(updated);
-            updateCase(caseData.id, "storage", updated);
-          }
+          await fetch("https://www.googleapis.com/drive/v3/files", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [fid] }),
+          });
         }
       }
+
+      setStructureStatus({ state: "ok", missing: [] });
+      showMsg("✅ Структуру створено");
     } catch (e) {
-      console.error("Drive structure error:", e);
-      showMsg(`❌ ${e.message}`);
+      showMsg("❌ Помилка: " + e.message);
     } finally {
       setCreatingStructure(false);
     }

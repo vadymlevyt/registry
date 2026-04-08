@@ -484,7 +484,7 @@ ${filesList}
   // ── CHAT ───────────────────────────────────────────────────────────────────
 
   async function sendChat(overrideText) {
-    const text = (overrideText || chatInput).trim();
+    const text = (typeof overrideText === "string" ? overrideText : chatInput).trim();
     if (!text || processing) return;
 
     setChatInput("");
@@ -1080,7 +1080,7 @@ ${filesList}
             }}
           />
           <button
-            onClick={sendChat}
+            onClick={() => sendChat()}
             disabled={processing || !chatInput.trim()}
             style={{
               background: processing ? "#2e3148" : "#4f7cff",
