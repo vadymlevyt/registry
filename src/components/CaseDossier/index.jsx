@@ -95,53 +95,46 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
   };
 
-  const PICKER_API_KEY = 'AIzaSyBzGFMJ3wBN-8DiXWaw6jokb5_7mSmv_n4';
+  const [folderBrowser, setFolderBrowser] = useState(null);
 
-  const openFolderPicker = () => {
+  const loadFolderContents = async (folderId, folderName, token) => {
+    try {
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false&fields=files(id,name)&orderBy=name`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      setFolderBrowser(prev => ({
+        ...prev,
+        currentFolderId: folderId,
+        currentFolderName: folderName,
+        items: data.files || [],
+        loading: false,
+      }));
+    } catch (e) {
+      showMsg("❌ Помилка завантаження папок");
+      setFolderBrowser(null);
+    }
+  };
+
+  const openFolderBrowser = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) { showMsg("❌ Підключіть Google Drive"); return; }
-    if (!window.gapi) { showMsg("❌ Picker API не завантажено"); return; }
+    setFolderBrowser({ isOpen: true, currentFolderId: "root", currentFolderName: "Мій диск", items: [], loading: true });
+    await loadFolderContents("root", "Мій диск", token);
+  };
 
-    window.gapi.load("picker", () => {
-      const foldersView = new window.google.picker.DocsView(
-        window.google.picker.ViewId.FOLDERS
-      )
-        .setSelectFolderEnabled(true)
-        .setIncludeFolders(true)
-        .setMimeTypes("application/vnd.google-apps.folder");
-
-      const sharedView = new window.google.picker.DocsView(
-        window.google.picker.ViewId.FOLDERS
-      )
-        .setSelectFolderEnabled(true)
-        .setIncludeFolders(true)
-        .setMimeTypes("application/vnd.google-apps.folder")
-        .setEnableDrives(true);
-
-      const picker = new window.google.picker.PickerBuilder()
-        .addView(foldersView)
-        .addView(sharedView)
-        .setOAuthToken(token)
-        .setDeveloperKey(PICKER_API_KEY)
-        .setTitle("Виберіть папку для справи")
-        .setCallback((data) => {
-          if (data.action === window.google.picker.Action.PICKED) {
-            const folder = data.docs[0];
-            const storageData = {
-              driveFolderId: folder.id,
-              driveFolderName: folder.name,
-              localFolderPath: null,
-              lastSyncAt: new Date().toISOString(),
-            };
-            updateCase(caseData.id, "storage", storageData);
-            setStorageState(storageData);
-            showMsg(`✅ Папку вибрано: ${folder.name}`);
-          }
-        })
-        .build();
-
-      picker.setVisible(true);
-    });
+  const selectFolder = (folder) => {
+    const storageData = {
+      driveFolderId: folder.id,
+      driveFolderName: folder.name,
+      localFolderPath: null,
+      lastSyncAt: new Date().toISOString(),
+    };
+    updateCase(caseData.id, "storage", storageData);
+    setStorageState(storageData);
+    setFolderBrowser(null);
+    showMsg(`✅ Папку вибрано: ${folder.name}`);
   };
 
   const defaultProc = [{
@@ -639,7 +632,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span style={{ fontSize: 12, color: "#4f7cff" }}>{"☁️ "}{storageState.driveFolderName || "Drive папка"}</span>
               <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"🔗 Відкрити"}</button>
-              <button onClick={openFolderPicker} style={{ background: "none", border: "1px solid #2e3148", color: "#5a6080", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"✏️ Змінити папку"}</button>
+              <button onClick={openFolderBrowser} style={{ background: "none", border: "1px solid #2e3148", color: "#5a6080", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"✏️ Змінити папку"}</button>
             </div>
           )}
           {storageMsg && (
@@ -1137,6 +1130,49 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         )}
 
       </div>
+
+      {/* МОДАЛКА БРАУЗЕР ПАПОК */}
+      {folderBrowser?.isOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#1a1d2e", borderRadius: 12, padding: 24, width: "90%", maxWidth: 500, maxHeight: "70vh", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ color: "#fff", fontSize: 16, fontWeight: 600 }}>{"📁 "}{folderBrowser.currentFolderName}</span>
+              <button onClick={() => setFolderBrowser(null)} style={{ background: "none", border: "none", color: "#aaa", fontSize: 20, cursor: "pointer" }}>{"✕"}</button>
+            </div>
+            <button
+              onClick={() => selectFolder({ id: folderBrowser.currentFolderId, name: folderBrowser.currentFolderName })}
+              style={{ background: "#1a4a8a", color: "#fff", border: "none", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}
+            >{"✅ Вибрати цю папку: "}{folderBrowser.currentFolderName}</button>
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+              {folderBrowser.loading ? (
+                <span style={{ color: "#aaa", padding: 8 }}>{"⏳ Завантаження..."}</span>
+              ) : folderBrowser.items.length === 0 ? (
+                <span style={{ color: "#aaa", padding: 8 }}>{"Немає підпапок"}</span>
+              ) : folderBrowser.items.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    const token = localStorage.getItem("levytskyi_drive_token");
+                    setFolderBrowser(prev => ({ ...prev, loading: true }));
+                    loadFolderContents(item.id, item.name, token);
+                  }}
+                  style={{ background: "#0d0f1a", border: "1px solid #2a2d3e", borderRadius: 6, padding: "8px 12px", color: "#ccc", cursor: "pointer", textAlign: "left", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}
+                >{"📁 "}{item.name}</button>
+              ))}
+            </div>
+            {folderBrowser.currentFolderId !== "root" && (
+              <button
+                onClick={() => {
+                  const token = localStorage.getItem("levytskyi_drive_token");
+                  setFolderBrowser(prev => ({ ...prev, loading: true }));
+                  loadFolderContents("root", "Мій диск", token);
+                }}
+                style={{ background: "none", border: "none", color: "#4a9eff", cursor: "pointer", fontSize: 12 }}
+              >{"← Мій диск"}</button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* МОДАЛКА ІДЕЯ ДЛЯ КОНТЕНТУ */}
       {ideaOpen && (
