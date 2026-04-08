@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from "react";
+import { PDFDocument } from "pdf-lib";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -13,7 +14,29 @@ const DOC_SYSTEM_PROMPT = `Ти — агент обробки документі
 7. Після підтвердження — виконуй точно те що погоджено
 
 Формат структури в чаті — ASCII дерево з іконками папок і файлів.
-Мова: українська.`;
+Мова: українська.
+
+Коли отримуєш PDF більше 5 сторінок:
+1. Визнач чи це один документ чи кілька склеєних
+2. Якщо кілька — знайди межі за заголовками і змістом
+3. Поверни JSON в кінці відповіді: ACTION_JSON:{"action":"split","split_points":[{"start":0,"end":1,"name":"Назва_документа","type":"pleading"},{"start":2,"end":8,"name":"Додаток_1","type":"evidence"}]}
+4. Покажи нарізку деревом в чаті
+5. Запитай підтвердження ПЕРЕД нарізкою
+
+Для кожного файлу визнач категорію:
+- pleading (процесуальні: позов, відзив, заперечення)
+- evidence (докази: договори, акти, листи)
+- court_act (судові акти: рішення, ухвали, постанови)
+- motion (клопотання)
+- correspondence (листування)
+
+І автора:
+- ours (наші документи)
+- opponent (від протилежної сторони)
+- court (від суду)
+
+Поверни в кінці відповіді JSON:
+ACTION_JSON:{"action":"classify","documents":[{"originalName":"file.pdf","processedName":"Позовна_заява_2024-01","category":"pleading","author":"ours","folder":"01_ПРОЦЕСУАЛЬНІ","date":"2024-01-15","pageCount":null}]}`;
 
 const ACCEPTED_TYPES = [
   ".pdf", ".jpeg", ".jpg", ".png", ".heic",
@@ -27,6 +50,14 @@ const FORMAT_ICONS = {
   zip: "\ud83d\udce6", md: "\ud83d\udcc3", txt: "\ud83d\udcc3", p7s: "\ud83d\udd10", asic: "\ud83d\udd10"
 };
 
+const CATEGORY_ICONS = {
+  pleading: "\ud83d\udcc4",
+  evidence: "\ud83d\udccb",
+  court_act: "\u2696\ufe0f",
+  motion: "\ud83d\udcdd",
+  correspondence: "\ud83d\udce8",
+};
+
 function getExt(name) {
   const dot = name.lastIndexOf(".");
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
@@ -38,12 +69,62 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-export default function DocumentProcessor({ caseData, cases, onCreateCase, onNavigateToDossier, apiKey }) {
+function parseActionJSON(text) {
+  const idx = text.indexOf("ACTION_JSON:");
+  if (idx === -1) return null;
+  const start = text.indexOf("{", idx);
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function splitPDF(fileArrayBuffer, splitPoints) {
+  const srcDoc = await PDFDocument.load(fileArrayBuffer);
+  const results = [];
+  for (const part of splitPoints) {
+    const newDoc = await PDFDocument.create();
+    const pageIndices = Array.from(
+      { length: part.end - part.start + 1 },
+      (_, i) => part.start + i
+    );
+    const pages = await newDoc.copyPages(srcDoc, pageIndices);
+    pages.forEach(p => newDoc.addPage(p));
+    const bytes = await newDoc.save({ useObjectStreams: true });
+    results.push({ name: part.name, type: part.type, data: bytes, pageCount: pages.length });
+  }
+  return results;
+}
+
+async function compressPDF(arrayBuffer) {
+  try {
+    const doc = await PDFDocument.load(arrayBuffer, { updateMetadata: false });
+    const compressed = await doc.save({ useObjectStreams: true });
+    return compressed;
+  } catch {
+    return arrayBuffer;
+  }
+}
+
+export default function DocumentProcessor({ caseData, cases, updateCase, onCreateCase, onNavigateToDossier, apiKey }) {
   const [files, setFiles] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [processing, setProcessing] = useState(false);
   const [proposedStructure, setProposedStructure] = useState(null);
+  const [parsedAction, setParsedAction] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -52,6 +133,11 @@ export default function DocumentProcessor({ caseData, cases, onCreateCase, onNav
   const scrollToBottom = useCallback(() => {
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
   }, []);
+
+  function addAgentMessage(content) {
+    setChatMessages(prev => [...prev, { role: "assistant", content }]);
+    scrollToBottom();
+  }
 
   // ── FILE HANDLING ──────────────────────────────────────────────────────────
 
@@ -68,12 +154,7 @@ export default function DocumentProcessor({ caseData, cases, onCreateCase, onNav
     setFiles(prev => [...prev, ...newFiles]);
 
     const names = newFiles.map(f => f.name).join(", ");
-    const agentMsg = {
-      role: "assistant",
-      content: `Отримав ${newFiles.length} файл(ів): ${names}\n\nАналізую...`,
-    };
-    setChatMessages(prev => [...prev, agentMsg]);
-    scrollToBottom();
+    addAgentMessage(`Отримав ${newFiles.length} файл(ів): ${names}\n\nАналізую...`);
 
     analyzeFiles(newFiles);
   }
@@ -99,11 +180,7 @@ export default function DocumentProcessor({ caseData, cases, onCreateCase, onNav
 
   async function analyzeFiles(newFiles) {
     if (!apiKey) {
-      setChatMessages(prev => [...prev, {
-        role: "assistant",
-        content: "API ключ не налаштований. Додайте ключ в налаштуваннях для роботи з агентом.",
-      }]);
-      scrollToBottom();
+      addAgentMessage("API ключ не налаштований. Додайте ключ в налаштуваннях для роботи з агентом.");
       return;
     }
 
@@ -132,14 +209,14 @@ ${filesList}
 Проаналізуй ці файли:
 1. Визнач до якої справи вони належать (поточна / інша існуюча / нова)
 2. Запропонуй структуру зберігання (ASCII дерево)
-3. Поясни логіку класифікації кожного файлу`;
+3. Класифікуй кожен файл (category, author, folder, date)
+4. Поверни ACTION_JSON з класифікацією`;
 
     try {
       const messages = [
         ...chatHistoryRef.current.slice(-10),
         { role: "user", content: userPrompt }
       ];
-      // Ensure first message is from user
       const firstUserIdx = messages.findIndex(m => m.role === "user");
       const cleanMessages = firstUserIdx >= 0 ? messages.slice(firstUserIdx) : messages;
 
@@ -172,20 +249,23 @@ ${filesList}
         { role: "assistant", content: text }
       );
 
-      setChatMessages(prev => [...prev, { role: "assistant", content: text }]);
+      // Parse ACTION_JSON from response
+      const action = parseActionJSON(text);
+      if (action) {
+        setParsedAction(action);
+      }
+
+      // Show response without ACTION_JSON part
+      const displayText = text.replace(/ACTION_JSON:\{[\s\S]*$/, "").trim();
+      setChatMessages(prev => [...prev, { role: "assistant", content: displayText }]);
       setProposedStructure(text);
       scrollToBottom();
 
-      // Update file statuses
       setFiles(prev => prev.map(f =>
         newFiles.some(nf => nf.id === f.id) ? { ...f, status: "done" } : f
       ));
     } catch (err) {
-      setChatMessages(prev => [...prev, {
-        role: "assistant",
-        content: `Помилка аналізу: ${err.message}`,
-      }]);
-      scrollToBottom();
+      addAgentMessage(`Помилка аналізу: ${err.message}`);
       setFiles(prev => prev.map(f =>
         newFiles.some(nf => nf.id === f.id) ? { ...f, status: "error" } : f
       ));
@@ -205,11 +285,7 @@ ${filesList}
     scrollToBottom();
 
     if (!apiKey) {
-      setChatMessages(prev => [...prev, {
-        role: "assistant",
-        content: "API ключ не налаштований.",
-      }]);
-      scrollToBottom();
+      addAgentMessage("API ключ не налаштований.");
       return;
     }
 
@@ -249,14 +325,17 @@ ${filesList}
         { role: "assistant", content: reply }
       );
 
-      setChatMessages(prev => [...prev, { role: "assistant", content: reply }]);
+      const action = parseActionJSON(reply);
+      if (action) {
+        setParsedAction(action);
+        setProposedStructure(reply);
+      }
+
+      const displayReply = reply.replace(/ACTION_JSON:\{[\s\S]*$/, "").trim();
+      setChatMessages(prev => [...prev, { role: "assistant", content: displayReply }]);
       scrollToBottom();
     } catch (err) {
-      setChatMessages(prev => [...prev, {
-        role: "assistant",
-        content: `Помилка: ${err.message}`,
-      }]);
-      scrollToBottom();
+      addAgentMessage(`Помилка: ${err.message}`);
     } finally {
       setProcessing(false);
     }
@@ -264,23 +343,150 @@ ${filesList}
 
   // ── ACTIONS ────────────────────────────────────────────────────────────────
 
-  function handleConfirm() {
-    setChatMessages(prev => [...prev, {
-      role: "assistant",
-      content: "Структуру підтверджено. Готово до виконання.\n\n(Функція збереження на Google Drive буде доступна в наступній версії)",
-    }]);
-    setProposedStructure(null);
-    scrollToBottom();
+  async function handleConfirm() {
+    if (!updateCase || !caseData) {
+      addAgentMessage("Помилка: немає зв'язку зі справою для збереження.");
+      return;
+    }
+
+    setProcessing(true);
+
+    try {
+      // If agent returned split points, handle PDF splitting
+      if (parsedAction?.action === "split" && parsedAction.split_points?.length > 0) {
+        await handleSplit();
+        return;
+      }
+
+      // Save documents from classification or from files directly
+      const classifiedDocs = parsedAction?.action === "classify" ? parsedAction.documents : null;
+      const newDocuments = [];
+
+      if (classifiedDocs && classifiedDocs.length > 0) {
+        for (const item of classifiedDocs) {
+          const matchedFile = files.find(f => f.name === item.originalName);
+          newDocuments.push({
+            id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+            name: item.processedName || item.originalName,
+            originalName: item.originalName,
+            category: item.category || "evidence",
+            author: item.author || "ours",
+            folder: item.folder || "01_ОРИГІНАЛИ",
+            date: item.date || new Date().toISOString().slice(0, 10),
+            pageCount: item.pageCount || null,
+            size: matchedFile?.size || 0,
+            icon: CATEGORY_ICONS[item.category] || "\ud83d\udcc4",
+            procId: caseData.proceedings?.[0]?.id || "proc_main",
+            tags: [],
+            status: "ready",
+            addedAt: new Date().toISOString(),
+          });
+        }
+      } else {
+        // Fallback: create documents from uploaded files
+        for (const f of files) {
+          newDocuments.push({
+            id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+            name: f.name,
+            originalName: f.name,
+            category: "evidence",
+            author: "ours",
+            folder: "01_ОРИГІНАЛИ",
+            date: new Date().toISOString().slice(0, 10),
+            pageCount: null,
+            size: f.size,
+            icon: FORMAT_ICONS[f.ext] || "\ud83d\udcc4",
+            procId: caseData.proceedings?.[0]?.id || "proc_main",
+            tags: [],
+            status: "ready",
+            addedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      const existingDocs = caseData.documents || [];
+      updateCase(caseData.id, "documents", [...existingDocs, ...newDocuments]);
+
+      addAgentMessage(`\u2705 Збережено ${newDocuments.length} документ(ів) у справу "${caseData.name}".\nВкладка Матеріали оновлена.`);
+
+      setProposedStructure(null);
+      setParsedAction(null);
+      setFiles([]);
+    } catch (err) {
+      addAgentMessage(`Помилка збереження: ${err.message}`);
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleSplit() {
+    try {
+      const splitPoints = parsedAction.split_points;
+      const pdfFile = files.find(f => f.ext === "pdf");
+
+      if (!pdfFile?.file) {
+        addAgentMessage("Не знайдено PDF файл для нарізки.");
+        setProcessing(false);
+        return;
+      }
+
+      addAgentMessage("\u2702\ufe0f Нарізаю PDF...");
+
+      const arrayBuffer = await pdfFile.file.arrayBuffer();
+      const originalSize = arrayBuffer.byteLength;
+      const parts = await splitPDF(arrayBuffer, splitPoints);
+
+      const newDocuments = [];
+      let totalCompressedSize = 0;
+
+      for (const part of parts) {
+        const compressed = await compressPDF(part.data);
+        totalCompressedSize += compressed.byteLength;
+
+        newDocuments.push({
+          id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+          name: part.name,
+          originalName: pdfFile.name,
+          category: part.type || "evidence",
+          author: "ours",
+          folder: "01_ПРОЦЕСУАЛЬНІ",
+          date: new Date().toISOString().slice(0, 10),
+          pageCount: part.pageCount,
+          size: compressed.byteLength,
+          icon: CATEGORY_ICONS[part.type] || "\ud83d\udcc4",
+          procId: caseData.proceedings?.[0]?.id || "proc_main",
+          tags: [],
+          status: "ready",
+          addedAt: new Date().toISOString(),
+        });
+      }
+
+      const existingDocs = caseData.documents || [];
+      updateCase(caseData.id, "documents", [...existingDocs, ...newDocuments]);
+
+      const compressionInfo = `${formatSize(originalSize)} \u2192 ${formatSize(totalCompressedSize)} (-${Math.round((1 - totalCompressedSize / originalSize) * 100)}%)`;
+
+      addAgentMessage(
+        `\u2705 PDF нарізано на ${parts.length} документ(ів):\n` +
+        parts.map(p => `  \u2022 ${p.name} (${p.pageCount} стор.)`).join("\n") +
+        `\n\nСтиснення: ${compressionInfo}\nВкладка Матеріали оновлена.`
+      );
+
+      setProposedStructure(null);
+      setParsedAction(null);
+      setFiles([]);
+    } catch (err) {
+      addAgentMessage(`Помилка нарізки PDF: ${err.message}`);
+    } finally {
+      setProcessing(false);
+    }
   }
 
   function handleCancel() {
     setFiles([]);
     setProposedStructure(null);
-    setChatMessages(prev => [...prev, {
-      role: "assistant",
-      content: "Обробку скасовано. Файли видалено з черги.",
-    }]);
-    scrollToBottom();
+    setParsedAction(null);
+    addAgentMessage("Обробку скасовано. Файли видалено з черги.");
   }
 
   // ── RENDER ─────────────────────────────────────────────────────────────────
@@ -401,8 +607,9 @@ ${filesList}
           <div style={{ display: "flex", gap: 6, padding: "6px 10px", borderTop: "1px solid #2e3148", flexShrink: 0 }}>
             <button
               onClick={handleConfirm}
-              style={{ flex: 1, padding: "7px 0", background: "#2ecc71", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
-            >{"\u2713 Підтвердити структуру"}</button>
+              disabled={processing}
+              style={{ flex: 1, padding: "7px 0", background: processing ? "#2e3148" : "#2ecc71", color: "#fff", border: "none", borderRadius: 6, cursor: processing ? "default" : "pointer", fontSize: 12, fontWeight: 600, opacity: processing ? 0.5 : 1 }}
+            >{parsedAction?.action === "split" ? "\u2702\ufe0f Підтвердити нарізку" : "\u2713 Підтвердити структуру"}</button>
             <button
               onClick={() => {
                 setChatMessages(prev => [...prev, { role: "user", content: "Запропонуй іншу структуру" }]);

@@ -976,6 +976,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <DocumentProcessor
               caseData={caseData}
               cases={cases}
+              updateCase={updateCase}
               onCreateCase={null}
               onNavigateToDossier={null}
               apiKey={localStorage.getItem("claude_api_key")}
