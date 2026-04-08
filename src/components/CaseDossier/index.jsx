@@ -98,11 +98,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [folderBrowser, setFolderBrowser] = useState(null);
 
   const loadFolderContents = async (folderId, folderName, token) => {
+    setFolderBrowser(prev => ({ ...prev, loading: true }));
     try {
-      const res = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false&fields=files(id,name)&orderBy=name`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const parentQuery = folderId === "root"
+        ? "'root' in parents"
+        : `'${folderId}' in parents`;
+      const url = `https://www.googleapis.com/drive/v3/files` +
+        `?q=${encodeURIComponent(`${parentQuery} and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+        `&fields=files(id,name)&orderBy=name&pageSize=100`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       setFolderBrowser(prev => ({
         ...prev,
@@ -112,16 +116,34 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         loading: false,
       }));
     } catch (e) {
-      showMsg("❌ Помилка завантаження папок");
-      setFolderBrowser(null);
+      showMsg(`❌ Помилка завантаження папок: ${e.message}`);
+      setFolderBrowser(prev => ({ ...prev, loading: false }));
     }
   };
 
   const openFolderBrowser = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) { showMsg("❌ Підключіть Google Drive"); return; }
-    setFolderBrowser({ isOpen: true, currentFolderId: "root", currentFolderName: "Мій диск", items: [], loading: true });
+    setFolderBrowser({ isOpen: true, currentFolderId: "root", currentFolderName: "Мій диск", items: [], loading: true, history: [] });
     await loadFolderContents("root", "Мій диск", token);
+  };
+
+  const navigateToFolder = (folder) => {
+    const token = localStorage.getItem("levytskyi_drive_token");
+    setFolderBrowser(prev => ({
+      ...prev,
+      history: [...prev.history, { id: prev.currentFolderId, name: prev.currentFolderName }],
+    }));
+    loadFolderContents(folder.id, folder.name, token);
+  };
+
+  const navigateBack = () => {
+    if (!folderBrowser?.history?.length) return;
+    const token = localStorage.getItem("levytskyi_drive_token");
+    const newHistory = [...folderBrowser.history];
+    const parent = newHistory.pop();
+    setFolderBrowser(prev => ({ ...prev, history: newHistory }));
+    loadFolderContents(parent.id, parent.name, token);
   };
 
   const selectFolder = (folder) => {
@@ -1134,42 +1156,39 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       {/* МОДАЛКА БРАУЗЕР ПАПОК */}
       {folderBrowser?.isOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: "#1a1d2e", borderRadius: 12, padding: 24, width: "90%", maxWidth: 500, maxHeight: "70vh", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ background: "#1a1d2e", borderRadius: 12, padding: 20, width: "90%", maxWidth: 480, maxHeight: "75vh", display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: "#fff", fontSize: 16, fontWeight: 600 }}>{"📁 "}{folderBrowser.currentFolderName}</span>
-              <button onClick={() => setFolderBrowser(null)} style={{ background: "none", border: "none", color: "#aaa", fontSize: 20, cursor: "pointer" }}>{"✕"}</button>
+              <span style={{ color: "#fff", fontSize: 15, fontWeight: 600 }}>{"Вибрати папку справи"}</span>
+              <button onClick={() => setFolderBrowser(null)} style={{ background: "none", border: "none", color: "#aaa", fontSize: 22, cursor: "pointer", lineHeight: 1 }}>{"✕"}</button>
             </div>
-            <button
-              onClick={() => selectFolder({ id: folderBrowser.currentFolderId, name: folderBrowser.currentFolderName })}
-              style={{ background: "#1a4a8a", color: "#fff", border: "none", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}
-            >{"✅ Вибрати цю папку: "}{folderBrowser.currentFolderName}</button>
-            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-              {folderBrowser.loading ? (
-                <span style={{ color: "#aaa", padding: 8 }}>{"⏳ Завантаження..."}</span>
-              ) : folderBrowser.items.length === 0 ? (
-                <span style={{ color: "#aaa", padding: 8 }}>{"Немає підпапок"}</span>
-              ) : folderBrowser.items.map(item => (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    const token = localStorage.getItem("levytskyi_drive_token");
-                    setFolderBrowser(prev => ({ ...prev, loading: true }));
-                    loadFolderContents(item.id, item.name, token);
-                  }}
-                  style={{ background: "#0d0f1a", border: "1px solid #2a2d3e", borderRadius: 6, padding: "8px 12px", color: "#ccc", cursor: "pointer", textAlign: "left", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}
-                >{"📁 "}{item.name}</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+              {folderBrowser.history?.length > 0 && (
+                <button onClick={navigateBack} style={{ background: "none", border: "none", color: "#4a9eff", cursor: "pointer", fontSize: 12, padding: 0 }}>{"←"}</button>
+              )}
+              {(folderBrowser.history || []).map(h => (
+                <span key={h.id} style={{ color: "#666", fontSize: 12 }}>{h.name}{" / "}</span>
               ))}
+              <span style={{ color: "#aaa", fontSize: 12, fontWeight: 600 }}>{"📁 "}{folderBrowser.currentFolderName}</span>
             </div>
             {folderBrowser.currentFolderId !== "root" && (
               <button
-                onClick={() => {
-                  const token = localStorage.getItem("levytskyi_drive_token");
-                  setFolderBrowser(prev => ({ ...prev, loading: true }));
-                  loadFolderContents("root", "Мій диск", token);
-                }}
-                style={{ background: "none", border: "none", color: "#4a9eff", cursor: "pointer", fontSize: 12 }}
-              >{"← Мій диск"}</button>
+                onClick={() => selectFolder({ id: folderBrowser.currentFolderId, name: folderBrowser.currentFolderName })}
+                style={{ background: "#1a4a2a", color: "#4caf50", border: "1px solid #4caf50", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}
+              >{"✅ Вибрати: "}{folderBrowser.currentFolderName}</button>
             )}
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+              {folderBrowser.loading ? (
+                <span style={{ color: "#aaa", padding: 12, textAlign: "center" }}>{"⏳ Завантаження..."}</span>
+              ) : folderBrowser.items.length === 0 ? (
+                <span style={{ color: "#666", padding: 12, textAlign: "center", fontSize: 13 }}>{"Немає підпапок — можна вибрати цю папку"}</span>
+              ) : folderBrowser.items.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => navigateToFolder(item)}
+                  style={{ background: "#0d0f1a", border: "1px solid #2a2d3e", borderRadius: 6, padding: "10px 12px", color: "#ccc", cursor: "pointer", textAlign: "left", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}
+                >{"📁 "}{item.name}</button>
+              ))}
+            </div>
           </div>
         </div>
       )}
