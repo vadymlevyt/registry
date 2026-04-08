@@ -214,6 +214,16 @@ Drive API вже підключений і працює — використов
 
 ---
 
+### [2026-04-08] PDF нарізка — pdfjs + Claude Vision + pdf-lib
+pdfjs рендерить сторінки в base64 JPEG (scale 1.2, quality 0.8)
+Пакети по 10 сторінок → Claude Vision визначає межі
+boundariesToSplitPoints() — фільтрує confidence > 0.7
+pdf-lib нарізає по 0-indexed сторінках
+Стиснення: PDFDocument.save({ useObjectStreams: true })
+Запис на Drive: multipart upload в 02_ОБРОБЛЕНІ
+
+---
+
 ### [2026-04-08] Drive API — root папка
 'root' в запиті files.list не завжди працює.
 Правильно: спочатку GET /drive/v3/files/root?fields=id

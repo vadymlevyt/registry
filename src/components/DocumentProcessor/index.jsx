@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 import { PDFDocument } from "pdf-lib";
+import * as pdfjsLib from "pdfjs-dist";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs`;
 import {
   createCaseStructure,
   uploadFileToDrive,
@@ -126,6 +129,130 @@ async function compressPDF(arrayBuffer) {
   }
 }
 
+// ── PDF VISION ANALYSIS ──────────────────────────────────────────────────────
+
+async function renderPagesToImages(arrayBuffer, pageNumbers) {
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const images = [];
+
+  for (const pageNum of pageNumbers) {
+    if (pageNum > pdf.numPages) break;
+
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1.2 });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+
+    await page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport,
+    }).promise;
+
+    const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+    images.push({ pageNum, base64 });
+  }
+
+  return images;
+}
+
+async function analyzePDFBoundaries(arrayBuffer, totalPages, apiKey, caseContext, onProgress) {
+  const BATCH_SIZE = 10;
+  const allBoundaries = [];
+
+  for (let start = 1; start <= totalPages; start += BATCH_SIZE) {
+    const end = Math.min(start + BATCH_SIZE - 1, totalPages);
+    const pageNumbers = Array.from({ length: end - start + 1 }, (_, i) => start + i);
+
+    if (onProgress) onProgress(start, totalPages);
+
+    const images = await renderPagesToImages(arrayBuffer, pageNumbers);
+
+    const content = [
+      ...images.map(img => ({
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg", data: img.base64 }
+      })),
+      {
+        type: "text",
+        text: `Це сторінки ${start}-${end} з ${totalPages} PDF файлу судової справи.
+${caseContext ? `Контекст справи: ${caseContext}` : ""}
+
+Визнач де починаються нові документи на цих сторінках.
+Шукай: нові заголовки, печатки, підписи, нову нумерацію, зміну типу документа.
+
+Поверни ТІЛЬКИ JSON:
+{
+  "boundaries": [
+    {
+      "page": 1,
+      "isNewDocument": true,
+      "documentType": "Титульна сторінка судової справи",
+      "confidence": 0.95
+    }
+  ]
+}
+
+Якщо на цих сторінках немає нових документів — поверни {"boundaries": []}`
+      }
+    ];
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [{ role: "user", content }]
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`API ${response.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    const text = data.content[0].text;
+
+    try {
+      const clean = text.replace(/```json|```/g, "").trim();
+      const result = JSON.parse(clean);
+      allBoundaries.push(...(result.boundaries || []));
+    } catch (e) {
+      console.warn("Пакет", start, "-", end, ": помилка парсингу", e);
+    }
+  }
+
+  return allBoundaries;
+}
+
+function boundariesToSplitPoints(boundaries, totalPages) {
+  const newDocs = boundaries
+    .filter(b => b.isNewDocument && b.confidence > 0.7)
+    .sort((a, b) => a.page - b.page);
+
+  if (newDocs.length === 0 || newDocs[0].page !== 1) {
+    newDocs.unshift({ page: 1, documentType: "Документ 1", confidence: 1 });
+  }
+
+  return newDocs.map((doc, i) => ({
+    name: doc.documentType,
+    start: doc.page - 1, // 0-indexed for splitPDF compatibility
+    end: i + 1 < newDocs.length ? newDocs[i + 1].page - 2 : totalPages - 1,
+    startPage: doc.page,
+    endPage: i + 1 < newDocs.length ? newDocs[i + 1].page - 1 : totalPages,
+    confidence: doc.confidence,
+    type: "evidence",
+  }));
+}
+
 function getMimeType(ext) {
   const map = {
     pdf: "application/pdf", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
@@ -147,6 +274,10 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
   const [parsedAction, setParsedAction] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [localDirHandle, setLocalDirHandle] = useState(null);
+  const [pdfArrayBuffer, setPdfArrayBuffer] = useState(null);
+  const [totalPages, setTotalPages] = useState(0);
+  const [uploadedFileName, setUploadedFileName] = useState("");
+  const [splitPoints, setSplitPoints] = useState([]);
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatHistoryRef = useRef([]);
@@ -166,7 +297,7 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
 
   // ── FILE HANDLING ──────────────────────────────────────────────────────────
 
-  function addFiles(fileList) {
+  async function addFiles(fileList) {
     const newFiles = Array.from(fileList).map(f => ({
       id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
       file: f,
@@ -178,10 +309,31 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
     }));
     setFiles(prev => [...prev, ...newFiles]);
 
-    const names = newFiles.map(f => f.name).join(", ");
-    addAgentMessage(`Отримав ${newFiles.length} файл(ів): ${names}\n\nАналізую...`);
+    // Detect PDF and store arrayBuffer for Vision analysis
+    const pdfFile = newFiles.find(f => f.ext === "pdf");
+    if (pdfFile) {
+      try {
+        const buffer = await pdfFile.file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+        setPdfArrayBuffer(buffer);
+        setTotalPages(pdf.numPages);
+        setUploadedFileName(pdfFile.name);
 
-    analyzeFiles(newFiles);
+        const names = newFiles.map(f => f.name).join(", ");
+        addAgentMessage(`Отримав ${newFiles.length} файл(ів): ${names}\n\n\u{1F4C4} ${pdfFile.name} (${pdf.numPages} сторінок)\n\nЩо зробити?\n\u2022 Написати "нарізати" \u2014 я визначу межі документів автоматично\n\u2022 Або опишіть що є в файлі і як нарізати`);
+
+        setFiles(prev => prev.map(f =>
+          newFiles.some(nf => nf.id === f.id) ? { ...f, status: "done" } : f
+        ));
+      } catch (err) {
+        addAgentMessage(`Помилка читання PDF: ${err.message}`);
+        analyzeFiles(newFiles);
+      }
+    } else {
+      const names = newFiles.map(f => f.name).join(", ");
+      addAgentMessage(`Отримав ${newFiles.length} файл(ів): ${names}\n\nАналізую...`);
+      analyzeFiles(newFiles);
+    }
   }
 
   function handleDrop(e) {
@@ -297,6 +449,52 @@ ${filesList}
     }
   }
 
+  // ── VISION BOUNDARY ANALYSIS ────────────────────────────────────────────────
+
+  async function handleAnalyzeBoundaries(userHint) {
+    if (!pdfArrayBuffer) {
+      addAgentMessage("\u274C \u0421\u043F\u043E\u0447\u0430\u0442\u043A\u0443 \u0437\u0430\u0432\u0430\u043D\u0442\u0430\u0436\u0442\u0435 PDF \u0444\u0430\u0439\u043B");
+      return;
+    }
+
+    setProcessing(true);
+    const batchCount = Math.ceil(totalPages / 10);
+    addAgentMessage(`\u{1F50D} \u0410\u043D\u0430\u043B\u0456\u0437\u0443\u044E ${totalPages} \u0441\u0442\u043E\u0440\u0456\u043D\u043E\u043A \u043F\u0430\u043A\u0435\u0442\u0430\u043C\u0438 \u043F\u043E 10...\n(~${batchCount} \u0437\u0430\u043F\u0438\u0442\u0456\u0432 \u0434\u043E API)`);
+
+    try {
+      const caseContext = (userHint || "") + (caseData ? ` \u0421\u043F\u0440\u0430\u0432\u0430: ${caseData.name}` : "");
+      const boundaries = await analyzePDFBoundaries(
+        pdfArrayBuffer,
+        totalPages,
+        apiKey,
+        caseContext,
+        (current, total) => {
+          addAgentMessage(`\u23F3 \u041E\u0431\u0440\u043E\u0431\u043B\u044E\u044E \u0441\u0442\u043E\u0440\u0456\u043D\u043A\u0438 ${current}-${Math.min(current + 9, total)} \u0437 ${total}...`);
+        }
+      );
+
+      const points = boundariesToSplitPoints(boundaries, totalPages);
+      setSplitPoints(points);
+
+      // Set parsedAction for compatibility with handleSplit
+      setParsedAction({
+        action: "split",
+        split_points: points,
+      });
+      setProposedStructure("vision_analysis");
+
+      const tree = points.map((p, i) =>
+        `${i + 1}. \u{1F4C4} ${p.name}\n   \u0421\u0442\u043E\u0440\u0456\u043D\u043A\u0438: ${p.startPage}-${p.endPage} (${p.endPage - p.startPage + 1} \u0441\u0442\u043E\u0440.)`
+      ).join("\n\n");
+
+      addAgentMessage(`\u0417\u043D\u0430\u0439\u0434\u0435\u043D\u043E ${points.length} \u0434\u043E\u043A\u0443\u043C\u0435\u043D\u0442\u0456\u0432:\n\n${tree}\n\n\u041F\u0456\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0438 \u043D\u0430\u0440\u0456\u0437\u043A\u0443? \u0410\u0431\u043E \u0441\u043A\u0430\u0436\u0456\u0442\u044C \u0449\u043E \u0437\u043C\u0456\u043D\u0438\u0442\u0438.`);
+    } catch (e) {
+      addAgentMessage(`\u274C \u041F\u043E\u043C\u0438\u043B\u043A\u0430 \u0430\u043D\u0430\u043B\u0456\u0437\u0443: ${e.message}`);
+    } finally {
+      setProcessing(false);
+    }
+  }
+
   // ── CHAT ───────────────────────────────────────────────────────────────────
 
   async function sendChat() {
@@ -308,7 +506,20 @@ ${filesList}
     scrollToBottom();
 
     if (!apiKey) {
-      addAgentMessage("API ключ не налаштований.");
+      addAgentMessage("API \u043A\u043B\u044E\u0447 \u043D\u0435 \u043D\u0430\u043B\u0430\u0448\u0442\u043E\u0432\u0430\u043D\u0438\u0439.");
+      return;
+    }
+
+    // Intercept "нарізати" command — trigger Vision boundary analysis
+    const lower = text.toLowerCase();
+    if (lower.includes("\u043D\u0430\u0440\u0456\u0437\u0430\u0442\u0438") || lower.includes("\u0440\u043E\u0437\u0440\u0456\u0436") || lower.includes("\u0440\u043E\u0437\u0434\u0456\u043B\u0438")) {
+      await handleAnalyzeBoundaries(text);
+      return;
+    }
+
+    // Intercept "підтвердити" command — trigger split
+    if ((lower.includes("\u043F\u0456\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0438") || lower === "\u0442\u0430\u043A") && splitPoints.length > 0) {
+      await handleConfirm();
       return;
     }
 
@@ -322,6 +533,14 @@ ${filesList}
       const firstUserIdx = messages.findIndex(m => m.role === "user");
       const cleanMessages = firstUserIdx >= 0 ? messages.slice(firstUserIdx) : messages;
 
+      const docProcessorContext = pdfArrayBuffer
+        ? `\n\n\u0417\u0430\u0432\u0430\u043D\u0442\u0430\u0436\u0435\u043D\u0438\u0439 \u0444\u0430\u0439\u043B: ${uploadedFileName} (${totalPages} \u0441\u0442\u043E\u0440\u0456\u043D\u043E\u043A)${
+            splitPoints.length > 0
+              ? `\n\u0412\u0438\u0437\u043D\u0430\u0447\u0435\u043D\u0430 \u0441\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430:\n${splitPoints.map((p, i) => `${i + 1}. ${p.name} (\u0441\u0442\u043E\u0440. ${p.startPage}-${p.endPage})`).join("\n")}`
+              : "\n\u0421\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u0449\u0435 \u043D\u0435 \u0432\u0438\u0437\u043D\u0430\u0447\u0435\u043D\u0430."
+          }`
+        : "\n\n\u0424\u0430\u0439\u043B\u0456\u0432 \u043D\u0435 \u0437\u0430\u0432\u0430\u043D\u0442\u0430\u0436\u0435\u043D\u043E.";
+
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -333,7 +552,7 @@ ${filesList}
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 2048,
-          system: DOC_SYSTEM_PROMPT,
+          system: DOC_SYSTEM_PROMPT + docProcessorContext,
           messages: cleanMessages,
         }),
       });
@@ -618,9 +837,13 @@ ${filesList}
 
       setProposedStructure(null);
       setParsedAction(null);
+      setSplitPoints([]);
+      setPdfArrayBuffer(null);
+      setTotalPages(0);
+      setUploadedFileName("");
       setFiles([]);
     } catch (err) {
-      addAgentMessage(`Помилка нарізки PDF: ${err.message}`);
+      addAgentMessage(`\u041F\u043E\u043C\u0438\u043B\u043A\u0430 \u043D\u0430\u0440\u0456\u0437\u043A\u0438 PDF: ${err.message}`);
     } finally {
       setProcessing(false);
     }
@@ -630,7 +853,11 @@ ${filesList}
     setFiles([]);
     setProposedStructure(null);
     setParsedAction(null);
-    addAgentMessage("Обробку скасовано. Файли видалено з черги.");
+    setSplitPoints([]);
+    setPdfArrayBuffer(null);
+    setTotalPages(0);
+    setUploadedFileName("");
+    addAgentMessage("\u041E\u0431\u0440\u043E\u0431\u043A\u0443 \u0441\u043A\u0430\u0441\u043E\u0432\u0430\u043D\u043E. \u0424\u0430\u0439\u043B\u0438 \u0432\u0438\u0434\u0430\u043B\u0435\u043D\u043E \u0437 \u0447\u0435\u0440\u0433\u0438.");
   }
 
   async function handleSelectLocalFolder() {
