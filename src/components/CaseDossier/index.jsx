@@ -40,6 +40,17 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [dropQueue, setDropQueue] = useState([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [creatingStructure, setCreatingStructure] = useState(false);
+  const [storageState, setStorageState] = useState(caseData.storage || {});
+  const [storageMsg, setStorageMsg] = useState('');
+
+  useEffect(() => {
+    setStorageState(caseData.storage || {});
+  }, [caseData.storage]);
+
+  const showMsg = (text) => {
+    setStorageMsg(text);
+    setTimeout(() => setStorageMsg(''), 3000);
+  };
 
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
@@ -60,35 +71,76 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const handleCreateDriveStructure = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) {
-      alert("Підключіть Google Drive в розділі «Аналіз системи»");
+      showMsg("❌ Підключіть Google Drive в розділі «Аналіз системи»");
       return;
     }
     setCreatingStructure(true);
     try {
       const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`;
       const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
-      updateCase(caseData.id, "storage", {
-        ...(caseData.storage || {}),
+      const storageData = {
         driveFolderId: caseFolderId,
         driveFolderName: caseFolderName,
+        localFolderPath: null,
         lastSyncAt: new Date().toISOString(),
-      });
-      alert(`Структуру створено: ${caseFolderName}`);
+      };
+      updateCase(caseData.id, "storage", storageData);
+      setStorageState(storageData);
+      showMsg(`✅ Структуру створено: ${caseFolderName}`);
     } catch (e) {
       console.error("Drive structure error:", e);
-      alert(`Помилка: ${e.message}`);
+      showMsg(`❌ ${e.message}`);
     } finally {
       setCreatingStructure(false);
     }
   };
 
-  const handleChangeDriveFolder = () => {
-    const newFolderId = prompt("Введіть ID папки Google Drive:");
-    if (!newFolderId) return;
-    updateCase(caseData.id, "storage", {
-      ...(caseData.storage || {}),
-      driveFolderId: newFolderId.trim(),
-      driveFolderName: "Вибрана папка",
+  const PICKER_API_KEY = 'PICKER_API_KEY_HERE';
+
+  const openFolderPicker = () => {
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token) { showMsg("❌ Підключіть Google Drive"); return; }
+    if (!window.gapi) { showMsg("❌ Picker API не завантажено"); return; }
+
+    window.gapi.load("picker", () => {
+      const foldersView = new window.google.picker.DocsView(
+        window.google.picker.ViewId.FOLDERS
+      )
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true)
+        .setMimeTypes("application/vnd.google-apps.folder");
+
+      const sharedView = new window.google.picker.DocsView(
+        window.google.picker.ViewId.FOLDERS
+      )
+        .setSelectFolderEnabled(true)
+        .setIncludeFolders(true)
+        .setMimeTypes("application/vnd.google-apps.folder")
+        .setEnableDrives(true);
+
+      const picker = new window.google.picker.PickerBuilder()
+        .addView(foldersView)
+        .addView(sharedView)
+        .setOAuthToken(token)
+        .setDeveloperKey(PICKER_API_KEY)
+        .setTitle("Виберіть папку для справи")
+        .setCallback((data) => {
+          if (data.action === window.google.picker.Action.PICKED) {
+            const folder = data.docs[0];
+            const storageData = {
+              driveFolderId: folder.id,
+              driveFolderName: folder.name,
+              localFolderPath: null,
+              lastSyncAt: new Date().toISOString(),
+            };
+            updateCase(caseData.id, "storage", storageData);
+            setStorageState(storageData);
+            showMsg(`✅ Папку вибрано: ${folder.name}`);
+          }
+        })
+        .build();
+
+      picker.setVisible(true);
     });
   };
 
@@ -574,7 +626,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         {/* Сховище Drive */}
         <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
           <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Сховище"}</div>
-          {!caseData.storage?.driveFolderId ? (
+          {!storageState?.driveFolderId ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <button
                 onClick={handleCreateDriveStructure}
@@ -585,9 +637,17 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "#4f7cff" }}>{"☁️ "}{caseData.storage.driveFolderName || "Drive папка"}</span>
-              <button onClick={() => window.open(`https://drive.google.com/drive/folders/${caseData.storage.driveFolderId}`, "_blank")} style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"🔗 Відкрити"}</button>
-              <button onClick={handleChangeDriveFolder} style={{ background: "none", border: "1px solid #2e3148", color: "#5a6080", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"Змінити папку"}</button>
+              <span style={{ fontSize: 12, color: "#4f7cff" }}>{"☁️ "}{storageState.driveFolderName || "Drive папка"}</span>
+              <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"🔗 Відкрити"}</button>
+              <button onClick={openFolderPicker} style={{ background: "none", border: "1px solid #2e3148", color: "#5a6080", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"✏️ Змінити папку"}</button>
+            </div>
+          )}
+          {storageMsg && (
+            <div style={{
+              marginTop: 6, fontSize: 12,
+              color: storageMsg.startsWith("\u2705") ? "#4caf50" : "#f44336",
+            }}>
+              {storageMsg}
             </div>
           )}
         </div>
@@ -996,8 +1056,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
           {caseData.hearing_date && <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{caseData.hearing_date}</span>}
-          {caseData.storage?.driveFolderId ? (
-            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${caseData.storage.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer" }} title={caseData.storage.driveFolderName || "Drive папка"}>{"☁️ Drive 🔗"}</button>
+          {storageState?.driveFolderId ? (
+            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer" }} title={storageState.driveFolderName || "Drive папка"}>{"☁️ Drive 🔗"}</button>
           ) : (
             <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(231,76,60,.1)", color: "#e74c3c" }}>{"⚠️ Без папки"}</span>
           )}

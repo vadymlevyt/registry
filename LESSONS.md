@@ -197,3 +197,19 @@ OAuth scope: drive (не drive.file) — для створення папок і
 Глобальний 00_INBOX — один для всіх справ, очищається після обробки.
 storage поле в об'єкті справи: driveFolderId, driveFolderName, localFolderPath, lastSyncAt
 findOrCreateFolder — завжди перевіряти чи існує перед створенням.
+
+---
+
+### [2026-04-08] Миттєвий UI після updateCase — локальний state
+Додати useState що дзеркалить поле з props.
+Оновлювати updateCase() і setLocalState() одночасно.
+Синхронізувати через useEffect([caseData.поле]).
+
+---
+
+### [2026-04-08] Google Picker API
+Потребує окремий API Key — публічний, можна в коді.
+Скрипт: apis.google.com/js/api.js в index.html.
+window.gapi.load('picker', callback) перед використанням.
+ViewId.FOLDERS + setSelectFolderEnabled(true) для папок.
+setEnableDrives(true) для спільних папок.
