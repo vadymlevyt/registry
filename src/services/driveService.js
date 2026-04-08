@@ -3,7 +3,6 @@
 // Окремо від основного driveService в App.jsx (який працює тільки з registry_data.json)
 
 const CASE_FOLDER_STRUCTURE = [
-  "00_INBOX",
   "01_ОРИГІНАЛИ",
   "02_ОБРОБЛЕНІ",
   "03_ФРАГМЕНТИ",
@@ -61,16 +60,23 @@ export async function findOrCreateFolder(name, parentId, token) {
 }
 
 export async function createCaseStructure(caseName, token) {
+  // 1. Кореневу папку активних справ
   const rootFolder = await findOrCreateFolder("01_АКТИВНІ_СПРАВИ", null, token);
+
+  // 2. Глобальний INBOX на рівні Drive (не підпапка справи)
+  await findOrCreateFolder("00_INBOX", null, token);
+
+  // 3. Папку справи
   const caseFolder = await findOrCreateFolder(caseName, rootFolder.id, token);
 
+  // 4. Підпапки
   const subFolders = {};
   for (const folderName of CASE_FOLDER_STRUCTURE) {
     const folder = await findOrCreateFolder(folderName, caseFolder.id, token);
     subFolders[folderName] = folder.id;
   }
 
-  return { caseFolderId: caseFolder.id, subFolders };
+  return { caseFolderId: caseFolder.id, caseFolderName: caseName, subFolders };
 }
 
 export async function uploadFileToDrive(fileName, fileBlob, parentFolderId, token) {
@@ -96,6 +102,15 @@ export async function uploadFileToDrive(fileName, fileBlob, parentFolderId, toke
   );
 
   return res.json();
+}
+
+export async function listFolderFiles(folderId, token) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+trashed=false&fields=files(id,name,mimeType,size,modifiedTime)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const data = await res.json();
+  return data.files || [];
 }
 
 // ── LOCAL FILE SYSTEM (Desktop only) ─────────────────────────────────────────

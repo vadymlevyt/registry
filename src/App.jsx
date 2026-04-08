@@ -1235,6 +1235,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         deadline_type: '',
         next_action: '',
         notes: [],
+        storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
       };
 
       // Показати підтвердження з даними
@@ -1465,6 +1466,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
               hearing_date: ext.hearing_date || '',
               hearing_time: ext.hearing_time || '',
               deadline: '', deadline_type: '', next_action: '', notes: [],
+              storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
             };
 
             setCases(prev => [...prev, newCase]);
@@ -2426,6 +2428,7 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
             {driveSyncStatus === 'syncing' && <span style={{fontSize:11,color:'var(--text3)'}}>⏳ Збереження...</span>}
             {driveSyncStatus === 'synced'  && <span style={{fontSize:11,color:'var(--text3)'}}>✓ Синхронізовано</span>}
             {driveSyncStatus === 'error'   && <span style={{fontSize:11,color:'var(--red)'}}>⚠ Помилка синхронізації</span>}
+            <button className="btn-sm btn-ghost" onClick={() => { driveService.clearToken(); setDriveConnected(false); window.location.reload(); }} title="Очистити токен і запросити нові дозволи">{"🔄 Оновити дозволи"}</button>
             <button className="btn-sm btn-ghost" style={{marginLeft:'auto'}} onClick={disconnectDrive}>Відключити</button>
           </div>
         ) : (
@@ -2979,6 +2982,7 @@ function App() {
                 onUpdateNote={updateNote}
                 onDeleteNote={deleteNote}
                 onPinNote={pinNote}
+                driveConnected={driveConnected}
               />
             </ErrorBoundary>
           )}

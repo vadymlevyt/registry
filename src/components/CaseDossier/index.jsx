@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
+import { createCaseStructure } from "../../services/driveService.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -21,7 +22,7 @@ const PROC_COLORS = {
   cassation: "#f39c12"
 };
 
-export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote }) {
+export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -38,6 +39,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [newDoc, setNewDoc] = useState({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null });
   const [dropQueue, setDropQueue] = useState([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [creatingStructure, setCreatingStructure] = useState(false);
 
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
@@ -54,6 +56,41 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // Materials resizer state
   const [matWidth, setMatWidth] = useState(280);
   const matDragRef = useRef(false);
+
+  const handleCreateDriveStructure = async () => {
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token) {
+      alert("Підключіть Google Drive в розділі «Аналіз системи»");
+      return;
+    }
+    setCreatingStructure(true);
+    try {
+      const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`;
+      const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
+      updateCase(caseData.id, "storage", {
+        ...(caseData.storage || {}),
+        driveFolderId: caseFolderId,
+        driveFolderName: caseFolderName,
+        lastSyncAt: new Date().toISOString(),
+      });
+      alert(`Структуру створено: ${caseFolderName}`);
+    } catch (e) {
+      console.error("Drive structure error:", e);
+      alert(`Помилка: ${e.message}`);
+    } finally {
+      setCreatingStructure(false);
+    }
+  };
+
+  const handleChangeDriveFolder = () => {
+    const newFolderId = prompt("Введіть ID папки Google Drive:");
+    if (!newFolderId) return;
+    updateCase(caseData.id, "storage", {
+      ...(caseData.storage || {}),
+      driveFolderId: newFolderId.trim(),
+      driveFolderName: "Вибрана папка",
+    });
+  };
 
   const defaultProc = [{
     id: 'proc_main',
@@ -119,8 +156,6 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       source: "manual"
     });
   }
-
-  const driveConnected = !!localStorage.getItem("levytskyi_drive_token");
 
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
@@ -536,6 +571,27 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           </div>
         </div>
 
+        {/* Сховище Drive */}
+        <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Сховище"}</div>
+          {!caseData.storage?.driveFolderId ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                onClick={handleCreateDriveStructure}
+                disabled={creatingStructure || !driveConnected}
+                style={{ background: driveConnected ? "#4f7cff" : "#2e3148", color: driveConnected ? "#fff" : "#5a6080", border: "none", padding: "8px 16px", borderRadius: 7, cursor: driveConnected ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 500 }}
+              >{creatingStructure ? "Створюю..." : "Створити структуру на Drive"}</button>
+              {!driveConnected && <span style={{ fontSize: 11, color: "#5a6080" }}>{"Підключіть Drive в «Аналіз системи»"}</span>}
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#4f7cff" }}>{"☁️ "}{caseData.storage.driveFolderName || "Drive папка"}</span>
+              <button onClick={() => window.open(`https://drive.google.com/drive/folders/${caseData.storage.driveFolderId}`, "_blank")} style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"🔗 Відкрити"}</button>
+              <button onClick={handleChangeDriveFolder} style={{ background: "none", border: "1px solid #2e3148", color: "#5a6080", padding: "4px 10px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}>{"Змінити папку"}</button>
+            </div>
+          )}
+        </div>
+
         {/* Провадження */}
         {proceedings.length > 0 && (
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -940,6 +996,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
           {caseData.hearing_date && <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{caseData.hearing_date}</span>}
+          {caseData.storage?.driveFolderId ? (
+            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${caseData.storage.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer" }} title={caseData.storage.driveFolderName || "Drive папка"}>{"☁️ Drive 🔗"}</button>
+          ) : (
+            <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(231,76,60,.1)", color: "#e74c3c" }}>{"⚠️ Без папки"}</span>
+          )}
           {caseData.status !== "closed" && onCloseCase && (
             <button onClick={() => {
               if (window.confirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.")) {

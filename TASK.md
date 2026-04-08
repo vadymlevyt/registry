@@ -1,18 +1,14 @@
-# TASK.md — Drive запис + локальне сховище + Document Processor реальні дії
+# TASK.md — Drive інфраструктура: папка справи + INBOX
 Дата: 08.04.2026
 
-## АРХІТЕКТУРА СХОВИЩА
+## СУТЬ ЗАВДАННЯ
 
-Платформа визначається автоматично:
-- Десктоп Chrome → локальна папка (File System Access API) + Google Drive
-- Планшет/мобільний → тільки Google Drive
-
-```
-const isDesktop = () => {
-  return window.showDirectoryPicker !== undefined &&
-    !(/Android|iPhone|iPad/i.test(navigator.userAgent));
-};
-```
+Реалізувати фундамент для роботи з файлами:
+1. Розширити Drive scope для запису файлів і створення папок
+2. Додати storage поле до об'єкту справи
+3. Функції роботи з Drive папками
+4. Кнопка "Створити структуру" в досьє
+5. Глобальний 00_INBOX на Drive
 
 ---
 
@@ -24,62 +20,70 @@ cat LESSONS.md
 
 ---
 
-## КРОК 1 — ДІАГНОСТИКА ПОТОЧНОГО DRIVE СЕРВІСУ
+## КРОК 1 — ДІАГНОСТИКА
 
 ```bash
-# Знайти поточний Drive scope і функції
-grep -n "scope\|drive\|DRIVE\|oauth\|token" src/App.jsx | head -20
-grep -rn "scope\|drive" src/services/ | head -20
+# Знайти поточний OAuth scope
+grep -n "scope\|drive\.file\|oauth\|token" src/App.jsx | head -20
 
-# Знайти handleConfirm в DocumentProcessor
-grep -n "handleConfirm\|Підтвердити\|наступній версії" src/components/DocumentProcessor/index.jsx | head -20
+# Знайти де зберігається токен
+grep -n "levytskyi_drive_token\|drive_token" src/App.jsx | head -10
+
+# Перевірити структуру об'єкту справи
+grep -n "driveFolderId\|storage\|driveFolder" src/App.jsx | head -10
 ```
 
 Показати результати перед змінами.
 
 ---
 
-## КРОК 2 — РОЗШИРИТИ DRIVE SCOPE
+## КРОК 2 — РОЗШИРИТИ OAUTH SCOPE
 
-### 2А. Знайти де зараз визначається scope OAuth
+Знайти де визначається scope і замінити:
 
-```bash
-grep -n "scope\|drive.file\|SCOPE" src/App.jsx | head -10
+```js
+// БУЛО:
+'https://www.googleapis.com/auth/drive.file'
+
+// СТАЛО:
+'https://www.googleapis.com/auth/drive'
 ```
 
-### 2Б. Змінити scope
-
-Поточний scope дозволяє тільки файли створені системою:
-```
-https://www.googleapis.com/auth/drive.file
-```
-
-Новий scope — повний доступ для створення папок і завантаження будь-яких файлів:
-```
-https://www.googleapis.com/auth/drive
-```
-
-ВАЖЛИВО: після зміни scope — при наступній авторизації користувач побачить
+Після зміни scope — при наступній авторизації користувач побачить
 новий запит дозволу від Google. Це нормально — один раз.
 
-Також очистити збережений токен щоб примусити повторну авторизацію:
-```jsx
-// В UI — кнопка "Оновити дозволи Drive" або автоматично при помилці доступу
+Щоб примусити повторну авторизацію — очистити збережений токен.
+Додати кнопку "🔄 Оновити дозволи Drive" в налаштуваннях:
+```js
 localStorage.removeItem('levytskyi_drive_token');
+window.location.reload();
 ```
 
 ---
 
-## КРОК 3 — DRIVE СЕРВІС: НОВІ ФУНКЦІЇ
+## КРОК 3 — ДОДАТИ STORAGE ДО МОДЕЛІ СПРАВИ
 
-Створити або розширити src/services/driveService.js:
+В updateCase і в початковому стані справи додати поле storage:
 
-### 3А. Створити структуру папок справи
+```js
+// Дефолтне значення для нової справи:
+storage: {
+  driveFolderId: null,      // ID папки справи на Google Drive
+  driveFolderName: null,    // назва папки для відображення
+  localFolderPath: null,    // локальна папка (тільки десктоп)
+  lastSyncAt: null,         // час останньої синхронізації
+}
+```
 
-```jsx
+---
+
+## КРОК 4 — DRIVE СЕРВІС
+
+Створити src/services/driveService.js:
+
+```js
 // Стандартна структура папок справи
 const CASE_FOLDER_STRUCTURE = [
-  '00_INBOX',
   '01_ОРИГІНАЛИ',
   '02_ОБРОБЛЕНІ',
   '03_ФРАГМЕНТИ',
@@ -87,62 +91,65 @@ const CASE_FOLDER_STRUCTURE = [
   '05_ЗОВНІШНІ',
 ];
 
-async function createCaseStructure(caseName, token) {
-  // 1. Знайти або створити кореневу папку системи
-  const rootFolder = await findOrCreateFolder('01_АКТИВНІ_СПРАВИ', null, token);
-
-  // 2. Створити папку справи
-  const caseFolder = await findOrCreateFolder(caseName, rootFolder.id, token);
-
-  // 3. Створити всі підпапки
-  const subFolders = {};
-  for (const folderName of CASE_FOLDER_STRUCTURE) {
-    const folder = await findOrCreateFolder(folderName, caseFolder.id, token);
-    subFolders[folderName] = folder.id;
-  }
-
-  return { caseFolderId: caseFolder.id, subFolders };
-}
-
+// Знайти або створити папку на Drive
 async function findOrCreateFolder(name, parentId, token) {
-  // Спробувати знайти існуючу папку
-  const query = parentId
+  const q = parentId
     ? `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`
     : `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
 
-  const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  const searchData = await searchRes.json();
+  const data = await res.json();
 
-  if (searchData.files && searchData.files.length > 0) {
-    return searchData.files[0]; // папка вже існує
+  if (data.files && data.files.length > 0) {
+    return data.files[0]; // вже існує
   }
 
-  // Створити нову папку
-  const metadata = {
+  // Створити нову
+  const body = {
     name,
     mimeType: 'application/vnd.google-apps.folder',
     ...(parentId && { parents: [parentId] }),
   };
-
   const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(metadata),
+    body: JSON.stringify(body),
   });
-
   return createRes.json();
 }
-```
 
-### 3Б. Завантажити файл на Drive
+// Створити повну структуру папок для справи
+async function createCaseStructure(caseName, token) {
+  // 1. Знайти або створити кореневу папку активних справ
+  const rootFolder = await findOrCreateFolder('01_АКТИВНІ_СПРАВИ', null, token);
 
-```jsx
+  // 2. Знайти або створити глобальний INBOX
+  await findOrCreateFolder('00_INBOX', null, token);
+
+  // 3. Створити папку справи
+  const caseFolder = await findOrCreateFolder(caseName, rootFolder.id, token);
+
+  // 4. Створити підпапки
+  const subFolders = {};
+  for (const name of CASE_FOLDER_STRUCTURE) {
+    const folder = await findOrCreateFolder(name, caseFolder.id, token);
+    subFolders[name] = folder.id;
+  }
+
+  return {
+    caseFolderId: caseFolder.id,
+    caseFolderName: caseName,
+    subFolders,
+  };
+}
+
+// Завантажити файл на Drive
 async function uploadFileToDrive(fileName, fileBlob, parentFolderId, token) {
   const metadata = {
     name: fileName,
@@ -150,7 +157,10 @@ async function uploadFileToDrive(fileName, fileBlob, parentFolderId, token) {
   };
 
   const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append(
+    'metadata',
+    new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+  );
   form.append('file', fileBlob);
 
   const res = await fetch(
@@ -161,223 +171,154 @@ async function uploadFileToDrive(fileName, fileBlob, parentFolderId, token) {
       body: form,
     }
   );
-
-  return res.json(); // повертає { id, name, webViewLink }
+  return res.json();
 }
-```
 
-### 3В. Визначити папку для документа
-
-```jsx
-// Маппінг типу документа → папка в структурі справи
-function getFolderForDocument(doc) {
-  const mapping = {
-    'pleading': '02_ОБРОБЛЕНІ',      // позовні заяви, відзиви
-    'court_act': '02_ОБРОБЛЕНІ',     // ухвали, постанови
-    'evidence': '02_ОБРОБЛЕНІ',      // докази
-    'correspondence': '02_ОБРОБЛЕНІ', // листування
-    'motion': '02_ОБРОБЛЕНІ',        // клопотання
-    'contract': '02_ОБРОБЛЕНІ',      // договори
-    'fragment': '03_ФРАГМЕНТИ',      // неповні документи
-    'position': '04_ПОЗИЦІЯ',        // матеріали позиції
-    'original': '01_ОРИГІНАЛИ',      // оригінали (незмінні)
-  };
-  return mapping[doc.type] || '02_ОБРОБЛЕНІ';
+// Отримати список файлів у папці
+async function listFolderFiles(folderId, token) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q='${folderId}' in parents and trashed=false&fields=files(id,name,mimeType,size,modifiedTime)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const data = await res.json();
+  return data.files || [];
 }
-```
 
----
-
-## КРОК 4 — ЛОКАЛЬНЕ СХОВИЩЕ (ДЕСКТОП)
-
-```jsx
-// Перевірка платформи
-const isDesktop = () => {
-  return window.showDirectoryPicker !== undefined &&
-    !(/Android|iPhone|iPad/i.test(navigator.userAgent));
+export {
+  findOrCreateFolder,
+  createCaseStructure,
+  uploadFileToDrive,
+  listFolderFiles,
 };
-
-// Вибір локальної папки (тільки десктоп)
-async function selectLocalFolder() {
-  try {
-    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    // Зберегти handle в sessionStorage для поточної сесії
-    return dirHandle;
-  } catch (e) {
-    if (e.name === 'AbortError') return null; // користувач скасував
-    throw e;
-  }
-}
-
-// Зберегти файл локально
-async function saveFileLocally(dirHandle, relativePath, fileBlob) {
-  // relativePath: "02_ОБРОБЛЕНІ/Позовна_заява.pdf"
-  const parts = relativePath.split('/');
-  let currentDir = dirHandle;
-
-  // Створити підпапки якщо потрібно
-  for (let i = 0; i < parts.length - 1; i++) {
-    currentDir = await currentDir.getDirectoryHandle(parts[i], { create: true });
-  }
-
-  // Записати файл
-  const fileName = parts[parts.length - 1];
-  const fileHandle = await currentDir.getFileHandle(fileName, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(fileBlob);
-  await writable.close();
-}
 ```
 
 ---
 
-## КРОК 5 — ОНОВИТИ handleConfirm В DOCUMENT PROCESSOR
+## КРОК 5 — КНОПКА "СТВОРИТИ СТРУКТУРУ" В ДОСЬЄ
 
-Після підтвердження структури — реальні дії:
+В CaseDossier/index.jsx — в шапці або в вкладці Огляд:
 
 ```jsx
-const handleConfirm = async () => {
-  setStatus('executing');
-  addAgentMessage('⚙️ Виконую...');
-
+const handleCreateDriveStructure = async () => {
   const token = localStorage.getItem('levytskyi_drive_token');
-  const desktop = isDesktop();
+  if (!token) {
+    alert('Підключіть Google Drive');
+    return;
+  }
 
+  setCreatingStructure(true);
   try {
-    // 1. Нарізка PDF через pdf-lib (якщо потрібно)
-    const processedFiles = await processFiles(confirmedStructure, originalFileBuffer);
+    const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`;
+    const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
 
-    // 2. Визначити куди зберігати
-    let localDirHandle = null;
-    if (desktop) {
-      // Запитати локальну папку або використати збережену
-      localDirHandle = await selectLocalFolder();
-    }
+    // Зберегти в об'єкті справи
+    updateCase(caseData.id, 'storage', {
+      ...caseData.storage,
+      driveFolderId: caseFolderId,
+      driveFolderName: caseFolderName,
+    });
 
-    // 3. Зберегти кожен файл
-    const results = [];
-    for (const file of processedFiles) {
-      const folder = getFolderForDocument(file);
-      const fileName = file.processedName;
-      const fileBlob = new Blob([file.data], { type: 'application/pdf' });
-      const result = { name: fileName, folder };
-
-      // Drive (завжди якщо є токен)
-      if (token) {
-        // Переконатись що структура папок існує
-        const { subFolders } = await createCaseStructure(
-          `${caseData.name}_${caseData.case_no || ''}`,
-          token
-        );
-        const folderId = subFolders[folder] || subFolders['02_ОБРОБЛЕНІ'];
-        const driveFile = await uploadFileToDrive(fileName, fileBlob, folderId, token);
-        result.driveId = driveFile.id;
-        result.driveUrl = driveFile.webViewLink;
-      }
-
-      // Локально (тільки десктоп)
-      if (localDirHandle) {
-        await saveFileLocally(localDirHandle, `${folder}/${fileName}`, fileBlob);
-        result.savedLocally = true;
-      }
-
-      results.push(result);
-    }
-
-    // 4. Зберегти в documents[] справи
-    const newDocuments = results.map((r, i) => ({
-      id: `doc_${Date.now()}_${i}`,
-      name: r.name,
-      folder: r.folder,
-      driveId: r.driveId || null,
-      driveUrl: r.driveUrl || null,
-      savedLocally: r.savedLocally || false,
-      compressedSize: processedFiles[i].compressedSize,
-      originalSize: processedFiles[i].originalSize,
-      status: 'ready',
-      addedAt: new Date().toISOString(),
-    }));
-
-    updateCase(caseData.id, 'documents', [
-      ...(caseData.documents || []),
-      ...newDocuments,
-    ]);
-
-    // 5. Результат
-    const summary = results.map(r =>
-      `✅ ${r.name}\n   📁 ${r.folder}${r.driveUrl ? `\n   🔗 Drive` : ''}${r.savedLocally ? '\n   💾 Локально' : ''}`
-    ).join('\n\n');
-
-    addAgentMessage(`Готово! ${results.length} документів збережено:\n\n${summary}`);
-    setStatus('done');
-
-  } catch (error) {
-    addAgentMessage(`❌ Помилка: ${error.message}`);
-    setStatus('error');
+    alert(`✅ Структуру створено: ${caseFolderName}`);
+  } catch (e) {
+    alert(`❌ Помилка: ${e.message}`);
+  } finally {
+    setCreatingStructure(false);
   }
 };
+
+// В UI:
+{!caseData.storage?.driveFolderId ? (
+  <button onClick={handleCreateDriveStructure} disabled={creatingStructure}>
+    {creatingStructure ? '⏳ Створюю...' : '📁 Створити структуру на Drive'}
+  </button>
+) : (
+  <span>
+    ☁️ Drive: {caseData.storage.driveFolderName}
+    <button onClick={() => window.open(`https://drive.google.com/drive/folders/${caseData.storage.driveFolderId}`)}>
+      🔗
+    </button>
+  </span>
+)}
 ```
 
 ---
 
-## КРОК 6 — UI ІНДИКАТОРИ ПЛАТФОРМИ
+## КРОК 6 — ЗМІНА ПАПКИ СПРАВИ
 
-В Document Processor показувати куди буде збережено:
+В налаштуваннях досьє — можливість змінити папку:
 
 ```jsx
-// Вгорі компонента після завантаження файлів:
-<div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-  Буде збережено:
-  {token && ' ☁️ Google Drive'}
-  {isDesktop() && ' 💾 Локальна папка'}
-  {!token && !isDesktop() && ' ⚠️ Підключіть Google Drive'}
-</div>
+const handleChangeDriveFolder = async () => {
+  // Запитати новий folderId (через Google Picker або вручну)
+  const newFolderId = prompt('Введіть ID папки Google Drive:');
+  if (!newFolderId) return;
+
+  updateCase(caseData.id, 'storage', {
+    ...caseData.storage,
+    driveFolderId: newFolderId,
+    driveFolderName: 'Вибрана папка',
+  });
+};
+```
+
+Примітка: Google Picker API — повноцінний вибір папки — додати пізніше.
+Поки що через ручне введення ID або посилання.
+
+---
+
+## КРОК 7 — ПОКАЗАТИ STORAGE СТАТУС В ДОСЬЄ
+
+В шапці досьє або вкладці Огляд — індикатор підключеного сховища:
+
+```jsx
+const storageStatus = () => {
+  const s = caseData.storage;
+  if (!s?.driveFolderId) return '⚠️ Папку не підключено';
+  return `☁️ ${s.driveFolderName || 'Drive папка підключена'}`;
+};
 ```
 
 ---
 
 ## ПОРЯДОК ВИКОНАННЯ
 
-1. Діагностика поточного Drive сервісу
-2. Розширити OAuth scope на `drive`
-3. Додати функції в driveService: findOrCreateFolder, uploadFileToDrive
-4. Додати локальне збереження (File System Access API)
-5. Оновити handleConfirm з реальними діями
-6. Додати UI індикатори платформи
-7. Перевірити що Матеріали оновлюються після збереження
+1. Діагностика (показати результати grep)
+2. Змінити OAuth scope на `drive`
+3. Додати storage поле до моделі справи
+4. Створити src/services/driveService.js
+5. Додати кнопку і логіку в CaseDossier
+6. Показати storage статус в шапці
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "feat: drive write access, local storage, document processor real actions" && git push origin main
+git add -A && git commit -m "feat: drive infrastructure - case folder structure, storage field" && git push origin main
 ```
 
 ---
 
 ## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
 
-- [ ] Drive scope оновлено — при авторизації запитує нові дозволи
-- [ ] Підтвердив структуру → файли з'явились на Google Drive в правильних папках
-- [ ] На десктопі → є можливість вибрати локальну папку
-- [ ] Документи з'явились у вкладці Матеріали з посиланнями на Drive
-- [ ] При завантаженні нових документів в існуючу справу — папки вже є, просто додає файли
-- [ ] При новій справі — створює повну структуру папок автоматично
+- [ ] Drive scope оновлено (при авторизації запитує нові дозволи)
+- [ ] В досьє є кнопка "📁 Створити структуру на Drive"
+- [ ] Після натискання — папки з'являються на Google Drive
+- [ ] Структура: 01_ОРИГІНАЛИ / 02_ОБРОБЛЕНІ / 03_ФРАГМЕНТИ / 04_ПОЗИЦІЯ / 05_ЗОВНІШНІ
+- [ ] Глобальна папка 00_INBOX створена на Drive
+- [ ] В шапці досьє видно статус підключеної папки
+- [ ] Посилання на папку відкриває Drive
 
 ---
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-08] Drive scope — drive замість drive.file
-drive.file дозволяє тільки файли створені системою.
-Для створення папок і завантаження довільних файлів потрібен scope: drive.
+### [2026-04-08] Drive інфраструктура — scope і структура папок
+OAuth scope: drive (не drive.file) — для створення папок і запису файлів.
 Після зміни scope — очистити токен: localStorage.removeItem('levytskyi_drive_token')
-Користувач побачить новий запит дозволу від Google — це нормально.
-
-### [2026-04-08] Локальне сховище — тільки десктоп Chrome
-File System Access API (showDirectoryPicker) — працює тільки на десктопі.
-На Android/iOS — тільки Google Drive.
-Перевірка платформи: window.showDirectoryPicker !== undefined && !(/Android|iPhone|iPad/i.test(navigator.userAgent))
+Структура справи: 01_ОРИГІНАЛИ / 02_ОБРОБЛЕНІ / 03_ФРАГМЕНТИ / 04_ПОЗИЦІЯ / 05_ЗОВНІШНІ
+Глобальний 00_INBOX — один для всіх справ, очищається після обробки.
+storage поле в об'єкті справи: driveFolderId, driveFolderName, localFolderPath, lastSyncAt
+findOrCreateFolder — завжди перевіряти чи існує перед створенням.
 ```
