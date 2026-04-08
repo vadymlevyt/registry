@@ -97,14 +97,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const [folderBrowser, setFolderBrowser] = useState(null);
 
-  const loadFolderContents = async (folderId, folderName, token) => {
+  const loadFolderContents = async (folderId, folderName, token, history) => {
     setFolderBrowser(prev => ({ ...prev, loading: true }));
     try {
-      const parentQuery = folderId === "root"
-        ? "'root' in parents"
-        : `'${folderId}' in parents`;
       const url = `https://www.googleapis.com/drive/v3/files` +
-        `?q=${encodeURIComponent(`${parentQuery} and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+        `?q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
         `&fields=files(id,name)&orderBy=name&pageSize=100`;
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
@@ -114,9 +111,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         currentFolderName: folderName,
         items: data.files || [],
         loading: false,
+        history: history !== undefined ? history : prev.history,
       }));
     } catch (e) {
-      showMsg(`❌ Помилка завантаження папок: ${e.message}`);
+      showMsg(`❌ Помилка: ${e.message}`);
       setFolderBrowser(prev => ({ ...prev, loading: false }));
     }
   };
@@ -124,26 +122,37 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const openFolderBrowser = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) { showMsg("❌ Підключіть Google Drive"); return; }
-    setFolderBrowser({ isOpen: true, currentFolderId: "root", currentFolderName: "Мій диск", items: [], loading: true, history: [] });
-    await loadFolderContents("root", "Мій диск", token);
+    setFolderBrowser({ isOpen: true, currentFolderId: null, currentFolderName: "Мій диск", items: [], loading: true, history: [] });
+    try {
+      const rootRes = await fetch(
+        "https://www.googleapis.com/drive/v3/files/root?fields=id",
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const rootData = await rootRes.json();
+      await loadFolderContents(rootData.id, "Мій диск", token, []);
+    } catch (e) {
+      showMsg(`❌ Помилка: ${e.message}`);
+      setFolderBrowser(null);
+    }
   };
 
   const navigateToFolder = (folder) => {
     const token = localStorage.getItem("levytskyi_drive_token");
-    setFolderBrowser(prev => ({
-      ...prev,
-      history: [...prev.history, { id: prev.currentFolderId, name: prev.currentFolderName }],
-    }));
-    loadFolderContents(folder.id, folder.name, token);
+    const newHistory = [
+      ...(folderBrowser.history || []),
+      { id: folderBrowser.currentFolderId, name: folderBrowser.currentFolderName },
+    ];
+    setFolderBrowser(prev => ({ ...prev, loading: true }));
+    loadFolderContents(folder.id, folder.name, token, newHistory);
   };
 
   const navigateBack = () => {
-    if (!folderBrowser?.history?.length) return;
     const token = localStorage.getItem("levytskyi_drive_token");
-    const newHistory = [...folderBrowser.history];
-    const parent = newHistory.pop();
-    setFolderBrowser(prev => ({ ...prev, history: newHistory }));
-    loadFolderContents(parent.id, parent.name, token);
+    const history = [...(folderBrowser.history || [])];
+    const parent = history.pop();
+    if (parent) {
+      loadFolderContents(parent.id, parent.name, token, history);
+    }
   };
 
   const selectFolder = (folder) => {
