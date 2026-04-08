@@ -95,7 +95,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
   };
 
-  const PICKER_API_KEY = 'AIzaSyBgfOXYyNT0bivIZjbx4i4zCOichsKvAy8';
+  const PICKER_API_KEY = 'AIzaSyBzGFMJ3wBN-8DiXWaw6jokb5_7mSmv_n4';
 
   const openFolderPicker = () => {
     const token = localStorage.getItem("levytskyi_drive_token");
