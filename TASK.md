@@ -1,24 +1,5 @@
-# TASK.md — PDF нарізка через document block (один запит)
+# TASK.md — Два баги: перевірка структури + нарізка після підтвердження
 Дата: 08.04.2026
-
-## СУТЬ
-
-Замість pdfjs + пакети зображень — відправляти PDF напряму як document block.
-Anthropic читає весь PDF в одному запиті. Дешевше і точніше.
-
-Офіційний формат (docs.anthropic.com/en/docs/build-with-claude/pdf-support):
-```json
-{
-  "type": "document",
-  "source": {
-    "type": "base64",
-    "media_type": "application/pdf",
-    "data": "<base64>"
-  }
-}
-```
-
----
 
 ## КРОК 0 — ПРОЧИТАТИ LESSONS.md
 ```bash
@@ -30,359 +11,242 @@ cat LESSONS.md
 ## КРОК 1 — ДІАГНОСТИКА
 
 ```bash
-# Знайти поточну логіку аналізу PDF
-grep -n "analyzePDF\|pdfjs\|renderPage\|document.*block\|split_points\|splitPoints\|boundaries" src/components/DocumentProcessor/index.jsx | head -30
+# Баг 1: перевірка структури папок
+grep -n "checkFolderStatus\|structureStatus\|REQUIRED\|01_ОРИГІНАЛИ\|no_structure" src/components/CaseDossier/index.jsx | head -20
 
-# Знайти де відправляється запит до API
-grep -n "fetch.*anthropic\|api\.anthropic\|messages.*content" src/components/DocumentProcessor/index.jsx | head -20
+# Баг 2: нарізка після підтвердження
+grep -n "uploadedFile\|splitPoints\|handleConfirm\|Підтвердити нарізку\|splitPDF" src/components/DocumentProcessor/index.jsx | head -30
+
+# Перевірити чи зберігається uploadedFile в state
+grep -n "setUploadedFile\|useState.*File\|useState.*null" src/components/DocumentProcessor/index.jsx | head -10
 ```
 
-Показати результати перед змінами.
+Показати результати.
 
 ---
 
-## КРОК 2 — ЗАМІНИТИ АНАЛІЗ НА DOCUMENT BLOCK
+## БАГ 1 — СХОВИЩЕ: ПЕРЕВІРКА СТРУКТУРИ
 
-Знайти функцію що аналізує PDF і замінити на:
+### Проблема:
+checkFolderStatus перевіряє підпапки але не знаходить їх.
+Можлива причина: назви підпапок на Drive мають кирилицю — запит може їх не знаходити через encoding.
+
+### Фікс — додати логування і перевірити що повертає API:
 
 ```jsx
-async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
-  // Крок 1: конвертувати файл в base64
-  const arrayBuffer = await file.arrayBuffer();
-  const uint8 = new Uint8Array(arrayBuffer);
-  let binary = '';
-  for (let i = 0; i < uint8.length; i++) {
-    binary += String.fromCharCode(uint8[i]);
-  }
-  const base64 = btoa(binary);
-
-  // Крок 2: відправити як document block — один запит
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'document',
-            source: {
-              type: 'base64',
-              media_type: 'application/pdf',
-              data: base64,
-            }
-          },
-          {
-            type: 'text',
-            text: `Це PDF файл судової справи. ${userHint ? `Контекст: ${userHint}` : ''}
-
-Прочитай весь документ і визнач де починається кожен окремий документ.
-Шукай: нові заголовки, печатки, підписи, нову нумерацію сторінок, зміну типу документа.
-
-Поверни ТІЛЬКИ JSON без жодного тексту до або після:
-{
-  "totalPages": 65,
-  "documents": [
-    {
-      "name": "Титульна сторінка судової справи",
-      "startPage": 1,
-      "endPage": 1,
-      "type": "court_cover"
-    },
-    {
-      "name": "Позовна заява Брановської Л.Б.",
-      "startPage": 2,
-      "endPage": 8,
-      "type": "pleading"
-    }
-  ]
-}
-
-Типи документів (type):
-- court_cover: титульна сторінка справи
-- pleading: позовна заява, відзив, заперечення
-- court_act: ухвала, рішення, постанова суду
-- evidence: докази, додатки, довідки
-- certificate: свідоцтво, витяг з реєстру
-- contract: договір, угода
-- other: інше
-
-ВАЖЛИВО: визначай межі тільки на основі реального вмісту. Не вигадуй документи яких немає.`
-          }
-        ]
-      }]
-    })
-  });
-
-  const data = await response.json();
-
-  if (data.error) {
-    throw new Error(data.error.message);
-  }
-
-  const text = data.content[0].text;
-
-  // Парсити JSON
+const checkFolderStatus = async (folderId, token) => {
   try {
-    const clean = text.replace(/```json|```/g, '').trim();
-    return JSON.parse(clean);
-  } catch (e) {
-    throw new Error('Не вдалось розпізнати структуру документа: ' + text.substring(0, 200));
-  }
-}
-```
-
----
-
-## КРОК 3 — ВИПРАВИТИ НАРІЗКУ PDF-LIB
-
-Поточна помилка: `Cannot read properties of undefined (reading 'node')`
-Це помилка при завантаженні pdf-lib. Виправити імпорт:
-
-```bash
-# Перевірити як імпортується pdf-lib
-grep -n "pdf-lib\|PDFDocument\|import.*pdf" src/components/DocumentProcessor/index.jsx | head -10
-```
-
-Правильний імпорт:
-```jsx
-import { PDFDocument } from 'pdf-lib';
-```
-
-Або якщо dynamic import:
-```jsx
-const { PDFDocument } = await import('pdf-lib');
-```
-
-Функція нарізки (виправлена):
-```jsx
-async function splitPDFByDocuments(file, documents) {
-  const arrayBuffer = await file.arrayBuffer();
-  const { PDFDocument } = await import('pdf-lib');
-  const srcDoc = await PDFDocument.load(arrayBuffer);
-  const totalPages = srcDoc.getPageCount();
-  const results = [];
-
-  for (const doc of documents) {
-    const startIdx = doc.startPage - 1; // 0-indexed
-    const endIdx = Math.min(doc.endPage - 1, totalPages - 1);
-
-    if (startIdx > totalPages - 1) continue;
-
-    const newDoc = await PDFDocument.create();
-    const pageIndices = [];
-    for (let i = startIdx; i <= endIdx; i++) {
-      pageIndices.push(i);
-    }
-
-    const pages = await newDoc.copyPages(srcDoc, pageIndices);
-    pages.forEach(p => newDoc.addPage(p));
-
-    const bytes = await newDoc.save({ useObjectStreams: true });
-
-    results.push({
-      ...doc,
-      pageCount: pageIndices.length,
-      data: bytes,
-      sizeMB: (bytes.byteLength / 1024 / 1024).toFixed(2),
-    });
-  }
-
-  return results;
-}
-```
-
----
-
-## КРОК 4 — ІНТЕГРАЦІЯ В DOCUMENT PROCESSOR
-
-### При завантаженні файлу — зберегти файл в state:
-```jsx
-const [uploadedFile, setUploadedFile] = useState(null);
-
-// В handleDrop або handleFileSelect:
-setUploadedFile(file);
-addAgentMessage(`📄 Завантажено: ${file.name} (${(file.size/1024/1024).toFixed(1)} МБ)\n\nНапишіть "нарізати" або опишіть що є у файлі.`);
-```
-
-### Обробка команди нарізки:
-```jsx
-// В обробнику повідомлень агента:
-const isSlitCommand = msg.toLowerCase().includes('нарізати') ||
-  msg.toLowerCase().includes('розріж') ||
-  msg.toLowerCase().includes('визнач документи');
-
-if (isSplitCommand && uploadedFile) {
-  addAgentMessage('🔍 Читаю весь PDF... (може зайняти 30-60 секунд)');
-
-  try {
-    const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, msg);
-
-    setSplitPoints(result.documents);
-
-    // Показати структуру деревом
-    const tree = result.documents.map((d, i) =>
-      `${i+1}. 📄 ${d.name}\n   Сторінки: ${d.startPage}-${d.endPage} (${d.endPage - d.startPage + 1} стор.)`
-    ).join('\n\n');
-
-    addAgentMessage(
-      `Знайдено ${result.documents.length} документів у ${result.totalPages} сторінках:\n\n${tree}\n\n` +
-      `Підтвердити нарізку? Або скажіть що змінити:\n` +
-      `• "з'єднай 2 і 3"\n` +
-      `• "сторінка 12 це продовження позовної"\n` +
-      `• "підтвердити"`
+    // Перевірити чи існує папка
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
+    if (res.status === 404) return { state: 'deleted' };
+
+    const file = await res.json();
+    if (file.trashed) return { state: 'trashed' };
+
+    // Отримати ВСІ підпапки (без фільтра по назві)
+    const subRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+        `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+      )}&fields=files(id,name)&pageSize=50`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const subData = await subRes.json();
+    const existingNames = (subData.files || []).map(f => f.name);
+
+    console.log('Папки в', file.name, ':', existingNames); // для діагностики
+
+    // Перевірити чи є хоча б одна з обов'язкових
+    const REQUIRED = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ'];
+    const missing = REQUIRED.filter(n => !existingNames.includes(n));
+
+    return {
+      state: missing.length === 0 ? 'ok' : 'no_structure',
+      missing,
+      existing: existingNames, // для діагностики
+    };
+
   } catch (e) {
-    addAgentMessage(`❌ Помилка: ${e.message}`);
+    console.error('checkFolderStatus error:', e);
+    return { state: 'error', error: e.message };
   }
-  return;
-}
+};
 ```
 
-### Обробка підтвердження:
+### Фікс handleCreateDriveStructure — перевірити storageState перед дією:
+
 ```jsx
-const isConfirm = msg.toLowerCase().includes('підтвердити') ||
-  msg.toLowerCase().includes('так') ||
-  msg.toLowerCase().includes('нарізай');
+const handleCreateDriveStructure = async () => {
+  const token = localStorage.getItem('levytskyi_drive_token');
+  if (!token) { showMsg('❌ Підключіть Google Drive'); return; }
 
-if (isConfirm && splitPoints.length > 0 && uploadedFile) {
-  addAgentMessage('✂️ Нарізаю PDF...');
+  // Знайти правильний folderId
+  const targetFolderId = storageState?.driveFolderId;
 
-  try {
-    const results = await splitPDFByDocuments(uploadedFile, splitPoints);
-
-    // Зберегти на Drive
-    const token = localStorage.getItem('levytskyi_drive_token');
-    const folderId = caseData?.storage?.driveFolderId;
-
-    if (token && folderId) {
-      addAgentMessage('☁️ Записую на Drive в 02_ОБРОБЛЕНІ...');
-
-      // Знайти папку 02_ОБРОБЛЕНІ
-      const subRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-          `'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder' and trashed=false`
-        )}&fields=files(id)`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const subData = await subRes.json();
-      const targetFolderId = subData.files?.[0]?.id || folderId;
-
-      for (const result of results) {
-        const safeName = result.name.replace(/[/\\:*?"<>|]/g, '_');
-        const fileName = `${safeName}.pdf`;
-        const blob = new Blob([result.data], { type: 'application/pdf' });
-
-        const form = new FormData();
-        form.append('metadata', new Blob([JSON.stringify({
-          name: fileName,
-          parents: [targetFolderId],
-        })], { type: 'application/json' }));
-        form.append('file', blob);
-
-        await fetch(
-          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
-          { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
-        );
-      }
-
-      // Оновити Матеріали
-      const newDocs = results.map(r => ({
-        id: `doc_${Date.now()}_${Math.random().toString(36).substr(2,6)}`,
-        name: r.name,
-        type: r.type,
-        pageCount: r.pageCount,
-        folder: '02_ОБРОБЛЕНІ',
-        status: 'ready',
-        addedAt: new Date().toISOString(),
-      }));
-
-      updateCase(caseData.id, 'documents', [
-        ...(caseData.documents || []),
-        ...newDocs,
-      ]);
-
-      const summary = results.map(r =>
-        `✅ ${r.name} — ${r.pageCount} стор., ${r.sizeMB} МБ`
-      ).join('\n');
-
-      addAgentMessage(`Готово! ${results.length} документів збережено:\n\n${summary}\n\n📁 Drive: 02_ОБРОБЛЕНІ\n📋 Вкладка Матеріали оновлена`);
-
-    } else {
-      addAgentMessage('✅ Нарізано але Drive не підключено.\nПідключіть Drive в блоці Сховище щоб зберегти файли.');
+  if (!targetFolderId) {
+    // Немає папки — створити нову в 01_АКТИВНІ_СПРАВИ
+    setCreatingStructure(true);
+    try {
+      const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`.replace(/[/\s]+/g, '_');
+      const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
+      const storageData = {
+        driveFolderId: caseFolderId,
+        driveFolderName: caseFolderName,
+        localFolderPath: null,
+        lastSyncAt: new Date().toISOString(),
+      };
+      updateCase(caseData.id, 'storage', storageData);
+      setStorageState(storageData);
+      setStructureStatus({ state: 'ok', missing: [] });
+      showMsg('✅ Структуру створено: ' + caseFolderName);
+    } catch (e) {
+      showMsg('❌ Помилка: ' + e.message);
+    } finally {
+      setCreatingStructure(false);
     }
-
-  } catch (e) {
-    addAgentMessage(`❌ Помилка нарізки: ${e.message}`);
+    return;
   }
-  return;
-}
+
+  // Папка є — створити підпапки всередині
+  setCreatingStructure(true);
+  try {
+    const SUBFOLDERS = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ', '05_ЗОВНІШНІ'];
+    for (const name of SUBFOLDERS) {
+      await findOrCreateFolder(name, targetFolderId, token);
+    }
+    setStructureStatus({ state: 'ok', missing: [] });
+    showMsg('✅ Структуру створено');
+  } catch (e) {
+    showMsg('❌ Помилка: ' + e.message);
+  } finally {
+    setCreatingStructure(false);
+  }
+};
 ```
 
 ---
 
-## КРОК 5 — КОНТЕКСТ ДЛЯ АГЕНТА ДОСЬЄ
+## БАГ 2 — НАРІЗКА ПІСЛЯ ПІДТВЕРДЖЕННЯ
 
-На вкладці "Робота з документами" агент досьє має отримувати додатковий контекст:
+### Діагностика:
+```bash
+# Знайти handleConfirm і кнопку підтвердження
+grep -n "handleConfirm\|Підтвердити нарізку\|onClick.*підтвердити\|splitPDF\|uploadedFile" src/components/DocumentProcessor/index.jsx | head -20
+```
+
+### Можливі причини:
+1. `uploadedFile` не зберігається в state при завантаженні файлу
+2. `splitPoints` скидається при ре-рендері
+3. `handleConfirm` не знаходить `uploadedFile` бо замикання (closure) на старе значення
+
+### Фікс — використати useRef для надійного зберігання:
 
 ```jsx
-// В system prompt агента коли активна вкладка docProcessing:
-const docContext = uploadedFile
-  ? `\n\nЗавантажений файл: ${uploadedFile.name} (${(uploadedFile.size/1024/1024).toFixed(1)} МБ)${
-      splitPoints.length > 0
-        ? `\nВизначена структура (${splitPoints.length} документів):\n` +
-          splitPoints.map((d,i) => `${i+1}. ${d.name} (стор. ${d.startPage}-${d.endPage})`).join('\n')
-        : '\nСтруктуру ще не визначено — напиши "нарізати"'
-    }`
-  : '\n\nФайлів не завантажено.';
+// Додати refs поруч зі state
+const uploadedFileRef = useRef(null);
+const splitPointsRef = useRef([]);
+
+// При завантаженні файлу — зберігати в обох
+const handleFileLoad = (file) => {
+  setUploadedFile(file);
+  uploadedFileRef.current = file;
+};
+
+// При встановленні splitPoints — зберігати в обох
+const handleSetSplitPoints = (points) => {
+  setSplitPoints(points);
+  splitPointsRef.current = points;
+};
+
+// В handleConfirm — читати з ref:
+const handleConfirm = async () => {
+  const file = uploadedFileRef.current || uploadedFile;
+  const points = splitPointsRef.current.length > 0 ? splitPointsRef.current : splitPoints;
+
+  if (!file) {
+    addAgentMessage('❌ Файл не завантажено');
+    return;
+  }
+  if (!points || points.length === 0) {
+    addAgentMessage('❌ Структуру не визначено. Спочатку напишіть "нарізати"');
+    return;
+  }
+
+  addAgentMessage('✂️ Нарізаю PDF...');
+  // ... далі логіка нарізки
+};
+```
+
+### Перевірити що кнопка "Підтвердити нарізку" викликає handleConfirm:
+
+```bash
+grep -n "Підтвердити нарізку\|handleConfirm" src/components/DocumentProcessor/index.jsx | head -10
+```
+
+Якщо кнопка викликає щось інше — виправити.
+
+### Перевірити що pdf-lib завантажується:
+
+```jsx
+// На початку handleConfirm — перевірити доступність pdf-lib
+const handleConfirm = async () => {
+  try {
+    const { PDFDocument } = await import('pdf-lib');
+    console.log('pdf-lib завантажено OK');
+  } catch (e) {
+    addAgentMessage('❌ pdf-lib не завантажено: ' + e.message);
+    return;
+  }
+  // ...
+};
 ```
 
 ---
 
-## ПОРЯДОК ВИКОНАННЯ
+## КРОК 2 — КНОПКА "РЕДАГУВАТИ"
 
-1. Діагностика (показати результати grep)
-2. Замінити аналіз на analyzePDFWithDocumentBlock
-3. Виправити імпорт pdf-lib і функцію splitPDFByDocuments
-4. Зберегти uploadedFile в state
-5. Додати обробники команд нарізки і підтвердження
-6. Передати контекст завантаженого файлу агенту досьє
+```bash
+grep -n "Редагувати\|handleEdit\|onEdit" src/components/DocumentProcessor/index.jsx | head -10
+```
+
+Якщо кнопка нічого не робить — додати базову логіку:
+```jsx
+const handleEdit = () => {
+  // Показати textarea з поточною структурою для ручного редагування
+  setEditMode(true);
+};
+```
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "feat: PDF split via document block - single request, accurate boundaries" && git push origin main
+git add -A && git commit -m "fix: folder structure detection, split confirmation with refs" && git push origin main
 ```
 
----
+## ЧЕКЛІСТ
 
-## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
-
-- [ ] Завантажив PDF → агент повідомляє розмір і чекає команди
-- [ ] Написав "нарізати" → один запит до API → агент показує список документів з реальними сторінками
-- [ ] Структура відповідає реальному вмісту (не вигадана)
-- [ ] Написав "підтвердити" → pdf-lib нарізає без помилки
-- [ ] Файли з'являються на Drive в 02_ОБРОБЛЕНІ
-- [ ] Вкладка Матеріали оновлюється
-
----
+- [ ] Відкрив досьє з папкою що має підпапки → "✅ Структура папок є"
+- [ ] Відкрив досьє з папкою без підпапок → "⚠️ Немає структури" + кнопка Створити
+- [ ] Натиснув Створити → підпапки з'являються в папці на Drive
+- [ ] Завантажив PDF → написав "нарізати" → отримав список
+- [ ] Натиснув "Підтвердити нарізку" → pdf-lib нарізає без помилки
+- [ ] Файли записуються на Drive в 02_ОБРОБЛЕНІ
+- [ ] Матеріали оновлюються
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-08] PDF аналіз — document block замість pdfjs рендерингу
-Один запит з document block дешевше і точніше ніж пакети зображень.
-base64: btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
-Формат: { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 }}
-pdf-lib: використовувати dynamic import: const { PDFDocument } = await import('pdf-lib')
-Помилка 'Cannot read properties of undefined (reading node)' = неправильний імпорт pdf-lib
+### [2026-04-08] useRef для збереження файлів між рендерами
+uploadedFile і splitPoints зберігати в useRef додатково до useState.
+В async функціях читати з ref: uploadedFileRef.current
+Closure в async функціях може захопити старе значення state — ref завжди актуальний.
+
+### [2026-04-08] Drive підпапки — отримувати без фільтра по назві
+Запит без name filter: q="folderId in parents and mimeType=folder and trashed=false"
+Потім фільтрувати existingNames в JS — надійніше ніж через q з кирилицею.
 ```

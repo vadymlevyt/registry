@@ -268,6 +268,8 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatHistoryRef = useRef([]);
+  const uploadedFileRef = useRef(null);
+  const splitPointsRef = useRef([]);
 
   const token = localStorage.getItem("levytskyi_drive_token");
   const hasDrive = !!token;
@@ -304,6 +306,7 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
         const pdfDoc = await PDFDocument.load(buffer);
         const numPages = pdfDoc.getPageCount();
         setUploadedFile(pdfFile.file);
+        uploadedFileRef.current = pdfFile.file;
         setTotalPages(numPages);
         setUploadedFileName(pdfFile.name);
 
@@ -452,6 +455,7 @@ ${filesList}
       const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, userHint);
 
       setSplitPoints(result.documents);
+      splitPointsRef.current = result.documents;
       setParsedAction({
         action: "split",
         split_points: result.documents,
@@ -479,8 +483,8 @@ ${filesList}
 
   // ── CHAT ───────────────────────────────────────────────────────────────────
 
-  async function sendChat() {
-    const text = chatInput.trim();
+  async function sendChat(overrideText) {
+    const text = (overrideText || chatInput).trim();
     if (!text || processing) return;
 
     setChatInput("");
@@ -748,8 +752,9 @@ ${filesList}
   async function handleSplit() {
     try {
       const currentSplitPoints = parsedAction.split_points;
+      const file = uploadedFileRef.current || uploadedFile;
 
-      if (!uploadedFile) {
+      if (!file) {
         addAgentMessage("Не знайдено PDF файл для нарізки.");
         setProcessing(false);
         return;
@@ -757,8 +762,8 @@ ${filesList}
 
       addAgentMessage("\u2702\ufe0f Нарізаю PDF...");
 
-      const originalSize = uploadedFile.size;
-      const parts = await splitPDFByDocuments(uploadedFile, currentSplitPoints);
+      const originalSize = file.size;
+      const parts = await splitPDFByDocuments(file, currentSplitPoints);
 
       // Compress each part
       const processedFiles = [];
@@ -766,7 +771,7 @@ ${filesList}
         const compressed = await compressPDF(part.data);
         processedFiles.push({
           name: part.name + ".pdf",
-          originalName: uploadedFile.name,
+          originalName: file.name,
           category: part.type || "evidence",
           author: "ours",
           date: new Date().toISOString().slice(0, 10),
@@ -818,7 +823,9 @@ ${filesList}
       setProposedStructure(null);
       setParsedAction(null);
       setSplitPoints([]);
+      splitPointsRef.current = [];
       setUploadedFile(null);
+      uploadedFileRef.current = null;
       setTotalPages(0);
       setUploadedFileName("");
       setFiles([]);
@@ -834,7 +841,9 @@ ${filesList}
     setProposedStructure(null);
     setParsedAction(null);
     setSplitPoints([]);
+    splitPointsRef.current = [];
     setUploadedFile(null);
+    uploadedFileRef.current = null;
     setTotalPages(0);
     setUploadedFileName("");
     addAgentMessage("\u041E\u0431\u0440\u043E\u0431\u043A\u0443 \u0441\u043A\u0430\u0441\u043E\u0432\u0430\u043D\u043E. \u0424\u0430\u0439\u043B\u0438 \u0432\u0438\u0434\u0430\u043B\u0435\u043D\u043E \u0437 \u0447\u0435\u0440\u0433\u0438.");
@@ -985,10 +994,7 @@ ${filesList}
               style={{ flex: 1, padding: "7px 0", background: processing ? "#2e3148" : "#2ecc71", color: "#fff", border: "none", borderRadius: 6, cursor: processing ? "default" : "pointer", fontSize: 12, fontWeight: 600, opacity: processing ? 0.5 : 1 }}
             >{parsedAction?.action === "split" ? "\u2702\ufe0f Підтвердити нарізку" : "\u2713 Підтвердити структуру"}</button>
             <button
-              onClick={() => {
-                setChatMessages(prev => [...prev, { role: "user", content: "Запропонуй іншу структуру" }]);
-                sendChat();
-              }}
+              onClick={() => sendChat("Запропонуй іншу структуру")}
               style={{ flex: 1, padding: "7px 0", background: "#222536", color: "#9aa0b8", border: "1px solid #2e3148", borderRadius: 6, cursor: "pointer", fontSize: 12 }}
             >{"\u270e Редагувати"}</button>
             <button

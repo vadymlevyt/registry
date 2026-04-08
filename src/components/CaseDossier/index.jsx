@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
-import { createCaseStructure } from "../../services/driveService.js";
+import { createCaseStructure, findOrCreateFolder } from "../../services/driveService.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -84,18 +84,31 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
     setCreatingStructure(true);
     try {
-      const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`;
-      const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
-      const storageData = {
-        driveFolderId: caseFolderId,
-        driveFolderName: caseFolderName,
-        localFolderPath: null,
-        lastSyncAt: new Date().toISOString(),
-      };
-      updateCase(caseData.id, "storage", storageData);
-      setStorageState(storageData);
-      setStructureStatus({ hasStructure: true, missing: [] });
-      showMsg(`✅ Структуру створено: ${caseFolderName}`);
+      const targetFolderId = storageState?.driveFolderId;
+
+      if (!targetFolderId) {
+        // Немає папки — створити нову з повною структурою
+        const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`;
+        const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
+        const storageData = {
+          driveFolderId: caseFolderId,
+          driveFolderName: caseFolderName,
+          localFolderPath: null,
+          lastSyncAt: new Date().toISOString(),
+        };
+        updateCase(caseData.id, "storage", storageData);
+        setStorageState(storageData);
+        setStructureStatus({ hasStructure: true, missing: [] });
+        showMsg(`✅ Структуру створено: ${caseFolderName}`);
+      } else {
+        // Папка є — створити тільки відсутні підпапки
+        const SUBFOLDERS = ["01_ОРИГІНАЛИ", "02_ОБРОБЛЕНІ", "03_ФРАГМЕНТИ", "04_ПОЗИЦІЯ", "05_ЗОВНІШНІ"];
+        for (const name of SUBFOLDERS) {
+          await findOrCreateFolder(name, targetFolderId, token);
+        }
+        setStructureStatus({ hasStructure: true, missing: [] });
+        showMsg("✅ Структуру створено");
+      }
     } catch (e) {
       console.error("Drive structure error:", e);
       showMsg(`❌ ${e.message}`);
@@ -111,15 +124,29 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const checkFolderStructure = async (folderId, token) => {
     try {
+      // Перевірити чи існує сама папка
+      const folderRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (folderRes.status === 404) return { hasStructure: false, missing: REQUIRED_SUBFOLDERS, state: "deleted" };
+      const folderData = await folderRes.json();
+      if (folderData.trashed) return { hasStructure: false, missing: REQUIRED_SUBFOLDERS, state: "trashed" };
+
+      // Отримати ВСІ підпапки (без фільтра по назві — надійніше з кирилицею)
       const url = `https://www.googleapis.com/drive/v3/files` +
         `?q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
-        `&fields=files(id,name)&pageSize=20`;
+        `&fields=files(id,name)&pageSize=50`;
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       const existingNames = (data.files || []).map(f => f.name);
+
+      console.log("Папки в", folderData.name, ":", existingNames);
+
       const missing = REQUIRED_SUBFOLDERS.filter(name => !existingNames.includes(name));
-      return { hasStructure: missing.length === 0, missing };
+      return { hasStructure: missing.length === 0, missing, existing: existingNames };
     } catch (e) {
+      console.error("checkFolderStructure error:", e);
       return { hasStructure: false, missing: REQUIRED_SUBFOLDERS };
     }
   };
