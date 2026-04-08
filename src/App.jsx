@@ -2893,7 +2893,7 @@ function App() {
       >
         {/* Main content — поточний вид */}
         <div className="main" style={{ flex: 1, overflow: 'auto', minWidth: 0, minHeight: 0, position: 'relative' }}>
-          {tab === 'dashboard' && (
+          {!dossierCase && tab === 'dashboard' && (
             <Dashboard
               cases={cases}
               calendarEvents={calendarEvents}
@@ -2905,7 +2905,7 @@ function App() {
               buildSystemContext={buildSystemContext}
             />
           )}
-          {tab === 'cases' && (
+          {!dossierCase && tab === 'cases' && (
             <div>
               <div className="status-counter">
                 <span>Активні: <strong style={{color:'var(--green)'}}>{cases.filter(c=>c.status==='active').length}</strong></span>
@@ -2953,15 +2953,15 @@ function App() {
               </div>
             </div>
           )}
-          {tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
-          {tab === 'notebook' && (
+          {!dossierCase && tab === 'add' && <AddCaseForm onSave={editingCase ? saveCaseEdit : addCase} onCancel={() => { setEditingCase(null); setTab('cases'); }} initialData={editingCase} />}
+          {!dossierCase && tab === 'notebook' && (
             <ModuleErrorBoundary>
               <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
                 <Notebook cases={cases} onUpdateCase={updateCase} notes={notes} onAddNote={addNote} onUpdateNote={updateNote} onDeleteNote={deleteNote} onPinNote={pinNote} />
               </React.Suspense>
             </ModuleErrorBoundary>
           )}
-          {tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
+          {!dossierCase && tab === 'analysis' && <AnalysisPanel cases={cases} setCases={setCases} driveConnected={driveConnected} setDriveConnected={setDriveConnected} driveSyncStatus={driveSyncStatus} />}
 
           {/* DOSSIER — inside main, position absolute to fill parent */}
           {dossierCase && (
