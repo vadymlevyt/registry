@@ -47,6 +47,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setStorageState(caseData.storage || {});
   }, [caseData.storage]);
 
+  useEffect(() => {
+    const folderId = caseData.storage?.driveFolderId;
+    if (!folderId) return;
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token) return;
+    checkFolderStructure(folderId, token).then(setStructureStatus);
+  }, [caseData.storage?.driveFolderId]);
+
   const showMsg = (text) => {
     setStorageMsg(text);
     setTimeout(() => setStorageMsg(''), 3000);
@@ -86,6 +94,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       };
       updateCase(caseData.id, "storage", storageData);
       setStorageState(storageData);
+      setStructureStatus({ hasStructure: true, missing: [] });
       showMsg(`✅ Структуру створено: ${caseFolderName}`);
     } catch (e) {
       console.error("Drive structure error:", e);
@@ -95,7 +104,25 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
   };
 
+  const [structureStatus, setStructureStatus] = useState(null);
   const [folderBrowser, setFolderBrowser] = useState(null);
+
+  const REQUIRED_SUBFOLDERS = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ'];
+
+  const checkFolderStructure = async (folderId, token) => {
+    try {
+      const url = `https://www.googleapis.com/drive/v3/files` +
+        `?q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+        `&fields=files(id,name)&pageSize=20`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      const existingNames = (data.files || []).map(f => f.name);
+      const missing = REQUIRED_SUBFOLDERS.filter(name => !existingNames.includes(name));
+      return { hasStructure: missing.length === 0, missing };
+    } catch (e) {
+      return { hasStructure: false, missing: REQUIRED_SUBFOLDERS };
+    }
+  };
 
   const loadFolderContents = async (folderId, folderName, token, history) => {
     setFolderBrowser(prev => ({ ...prev, loading: true }));
@@ -155,7 +182,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
   };
 
-  const selectFolder = (folder) => {
+  const selectFolder = async (folder) => {
+    const token = localStorage.getItem("levytskyi_drive_token");
     const storageData = {
       driveFolderId: folder.id,
       driveFolderName: folder.name,
@@ -166,6 +194,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setStorageState(storageData);
     setFolderBrowser(null);
     showMsg(`✅ Папку вибрано: ${folder.name}`);
+    setStructureStatus(null);
+    const status = await checkFolderStructure(folder.id, token);
+    setStructureStatus(status);
   };
 
   const defaultProc = [{
@@ -672,6 +703,26 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               color: storageMsg.startsWith("\u2705") ? "#4caf50" : "#f44336",
             }}>
               {storageMsg}
+            </div>
+          )}
+          {storageState?.driveFolderId && (
+            <div style={{ marginTop: 6, fontSize: 12 }}>
+              {structureStatus === null && (
+                <span style={{ color: "#666" }}>{"⏳ Перевірка структури..."}</span>
+              )}
+              {structureStatus?.hasStructure === true && (
+                <span style={{ color: "#4caf50" }}>{"✅ Структура папок є"}</span>
+              )}
+              {structureStatus?.hasStructure === false && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ color: "#f5a623" }}>{"⚠️ Немає структури папок"}</span>
+                  <button
+                    onClick={handleCreateDriveStructure}
+                    disabled={creatingStructure}
+                    style={{ background: "#1a3a1a", border: "1px solid #4caf50", borderRadius: 4, padding: "2px 8px", color: "#4caf50", cursor: "pointer", fontSize: 11 }}
+                  >{creatingStructure ? "⏳" : "📁 Створити"}</button>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -1,10 +1,10 @@
-# TASK.md — Фікс: Drive API не показує папки кореня
+# TASK.md — Перевірка структури папок в блоці Сховище
 Дата: 08.04.2026
 
-## ПРОБЛЕМА
+## СУТЬ
 
-Drive API з `'root' in parents` не повертає папки.
-Треба спочатку отримати реальний ID кореневої папки через окремий запит.
+Після вибору або зміни папки — перевірити чи є стандартні підпапки.
+Показати статус і кнопку створити якщо структури немає.
 
 ---
 
@@ -18,101 +18,147 @@ cat LESSONS.md
 ## КРОК 1 — ДІАГНОСТИКА
 
 ```bash
-grep -n "loadFolderContents\|root.*parents\|drive/v3/files" src/components/CaseDossier/index.jsx | head -20
+grep -n "selectFolder\|storageState\|СХОВИЩЕ\|hasFolder\|структур" src/components/CaseDossier/index.jsx | head -20
 ```
 
 ---
 
-## КРОК 2 — ФІКС
-
-### 2А. Отримати реальний ID кореня при відкритті браузера:
+## КРОК 2 — ФУНКЦІЯ ПЕРЕВІРКИ СТРУКТУРИ
 
 ```jsx
-const openFolderBrowser = async () => {
-  const token = localStorage.getItem('levytskyi_drive_token');
-  if (!token) { showMsg('❌ Підключіть Google Drive'); return; }
+const REQUIRED_SUBFOLDERS = [
+  '01_ОРИГІНАЛИ',
+  '02_ОБРОБЛЕНІ',
+  '03_ФРАГМЕНТИ',
+  '04_ПОЗИЦІЯ',
+];
 
-  setFolderBrowser({
-    isOpen: true,
-    currentFolderId: null,
-    currentFolderName: 'Мій диск',
-    items: [],
-    loading: true,
-    history: [],
-  });
-
-  try {
-    // Отримати реальний ID кореневої папки
-    const rootRes = await fetch(
-      'https://www.googleapis.com/drive/v3/files/root?fields=id',
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const rootData = await rootRes.json();
-    const rootId = rootData.id;
-
-    await loadFolderContents(rootId, 'Мій диск', token, []);
-  } catch (e) {
-    showMsg('❌ Помилка: ' + e.message);
-  }
-};
-```
-
-### 2Б. Оновити loadFolderContents — використовувати реальний ID:
-
-```jsx
-const loadFolderContents = async (folderId, folderName, token, history) => {
+// Перевірити чи є стандартні підпапки в папці справи
+const checkFolderStructure = async (folderId, token) => {
   try {
     const url = `https://www.googleapis.com/drive/v3/files` +
       `?q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
-      `&fields=files(id,name)` +
-      `&orderBy=name` +
-      `&pageSize=100`;
+      `&fields=files(id,name)&pageSize=20`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
+    const existingNames = (data.files || []).map(f => f.name);
 
-    setFolderBrowser(prev => ({
-      ...prev,
-      currentFolderId: folderId,
-      currentFolderName: folderName,
-      items: data.files || [],
-      loading: false,
-      history: history !== undefined ? history : prev.history,
-    }));
+    const missing = REQUIRED_SUBFOLDERS.filter(name => !existingNames.includes(name));
+    return {
+      hasStructure: missing.length === 0,
+      missing,
+    };
   } catch (e) {
-    showMsg('❌ Помилка: ' + e.message);
-    setFolderBrowser(prev => ({ ...prev, loading: false }));
+    return { hasStructure: false, missing: REQUIRED_SUBFOLDERS };
   }
 };
 ```
 
-### 2В. Навігація в підпапку:
+---
+
+## КРОК 3 — STATE ДЛЯ СТАТУСУ СТРУКТУРИ
 
 ```jsx
-const navigateToFolder = (folder) => {
+const [structureStatus, setStructureStatus] = useState(null);
+// null | { hasStructure: bool, missing: [] }
+```
+
+---
+
+## КРОК 4 — ПЕРЕВІРЯТИ ПІСЛЯ ВИБОРУ ПАПКИ
+
+В функції selectFolder — після збереження папки одразу перевірити структуру:
+
+```jsx
+const selectFolder = async (folder) => {
   const token = localStorage.getItem('levytskyi_drive_token');
-  const newHistory = [
-    ...(folderBrowser.history || []),
-    { id: folderBrowser.currentFolderId, name: folderBrowser.currentFolderName }
-  ];
-  setFolderBrowser(prev => ({ ...prev, loading: true }));
-  loadFolderContents(folder.id, folder.name, token, newHistory);
+  const storageData = {
+    driveFolderId: folder.id,
+    driveFolderName: folder.name,
+    localFolderPath: null,
+    lastSyncAt: new Date().toISOString(),
+  };
+  updateCase(caseData.id, 'storage', storageData);
+  setStorageState(storageData);
+  setFolderBrowser(null);
+  showMsg(`✅ Папку вибрано: ${folder.name}`);
+
+  // Одразу перевірити структуру
+  setStructureStatus(null); // loading
+  const status = await checkFolderStructure(folder.id, token);
+  setStructureStatus(status);
 };
 ```
 
-### 2Г. Навігація назад:
+---
+
+## КРОК 5 — ПЕРЕВІРЯТИ ПРИ ВІДКРИТТІ ДОСЬЄ
+
+В useEffect при завантаженні компонента:
 
 ```jsx
-const navigateBack = () => {
+useEffect(() => {
+  const folderId = caseData.storage?.driveFolderId;
+  if (!folderId) return;
+
   const token = localStorage.getItem('levytskyi_drive_token');
-  const history = [...(folderBrowser.history || [])];
-  const parent = history.pop();
-  if (parent) {
-    loadFolderContents(parent.id, parent.name, token, history);
-  }
-};
+  if (!token) return;
+
+  checkFolderStructure(folderId, token).then(setStructureStatus);
+}, [caseData.storage?.driveFolderId]);
+```
+
+---
+
+## КРОК 6 — UI СТАТУСУ СТРУКТУРИ
+
+Додати під рядком з назвою папки в блоці Сховище:
+
+```jsx
+{storageState?.driveFolderId && (
+  <div style={{ marginTop: 6, fontSize: 12 }}>
+    {structureStatus === null && (
+      <span style={{ color: '#666' }}>⏳ Перевірка структури...</span>
+    )}
+    {structureStatus?.hasStructure === true && (
+      <span style={{ color: '#4caf50' }}>✅ Структура папок є</span>
+    )}
+    {structureStatus?.hasStructure === false && (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ color: '#f5a623' }}>
+          ⚠️ Немає структури папок
+        </span>
+        <button
+          onClick={handleCreateDriveStructure}
+          disabled={creatingStructure}
+          style={{
+            background: '#1a3a1a',
+            border: '1px solid #4caf50',
+            borderRadius: 4,
+            padding: '2px 8px',
+            color: '#4caf50',
+            cursor: 'pointer',
+            fontSize: 11,
+          }}
+        >
+          {creatingStructure ? '⏳' : '📁 Створити'}
+        </button>
+      </div>
+    )}
+  </div>
+)}
+```
+
+---
+
+## КРОК 7 — ОНОВИТИ СТАТУС ПІСЛЯ СТВОРЕННЯ СТРУКТУРИ
+
+В handleCreateDriveStructure після успіху:
+
+```jsx
+// Після createCaseStructure і updateCase:
+setStructureStatus({ hasStructure: true, missing: [] });
 ```
 
 ---
@@ -120,22 +166,22 @@ const navigateBack = () => {
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: folder browser use real root ID from Drive API" && git push origin main
+git add -A && git commit -m "feat: check folder structure status, show create button if missing" && git push origin main
 ```
 
 ## ЧЕКЛІСТ
 
-- [ ] Відкрив браузер → показує папки з кореня Мого диску
-- [ ] Бачить 01_АКТИВНІ_СПРАВИ та інші папки
-- [ ] Натиснув папку → заходить в неї
-- [ ] Кнопка ← повертає назад
-- [ ] Вибрав папку → назва в блоці Сховище
+- [ ] Відкрив досьє з папкою → одразу перевіряє структуру
+- [ ] Є структура → "✅ Структура папок є"
+- [ ] Немає структури → "⚠️ Немає структури" + кнопка "📁 Створити"
+- [ ] Вибрав нову папку → одразу показує статус нової папки
+- [ ] Після "Створити" → статус змінюється на "✅"
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-08] Drive API — root папка
-'root' в запиті files.list не завжди працює.
-Правильно: спочатку GET /drive/v3/files/root?fields=id
-Отримати реальний ID → використовувати в запиті '${realRootId}' in parents
+### [2026-04-08] Перевірка структури папок Drive
+REQUIRED_SUBFOLDERS = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ']
+Перевіряти при відкритті досьє і після зміни папки.
+Запит: files.list з mimeType=folder і folderId in parents.
 ```
