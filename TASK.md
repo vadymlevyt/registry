@@ -1,14 +1,22 @@
-# TASK.md — Нарізка PDF: читання пакетами + агент + pdf-lib
+# TASK.md — PDF нарізка через document block (один запит)
 Дата: 08.04.2026
 
-## МЕТА
+## СУТЬ
 
-Реалізувати повний флоу нарізки PDF на окремі документи:
-1. Завантажив файл → pdfjs рендерить сторінки
-2. Claude читає пакетами і визначає межі документів
-3. Агент показує структуру в чаті досьє і приймає команди
-4. pdf-lib нарізає після підтвердження
-5. Файли записуються на Drive в 02_ОБРОБЛЕНІ
+Замість pdfjs + пакети зображень — відправляти PDF напряму як document block.
+Anthropic читає весь PDF в одному запиті. Дешевше і точніше.
+
+Офіційний формат (docs.anthropic.com/en/docs/build-with-claude/pdf-support):
+```json
+{
+  "type": "document",
+  "source": {
+    "type": "base64",
+    "media_type": "application/pdf",
+    "data": "<base64>"
+  }
+}
+```
 
 ---
 
@@ -22,192 +30,164 @@ cat LESSONS.md
 ## КРОК 1 — ДІАГНОСТИКА
 
 ```bash
-# Поточний стан Document Processor
-grep -n "pdfjs\|PDFDocument\|split\|splitPoints\|analyzeFile\|handleConfirm" src/components/DocumentProcessor/index.jsx | head -30
+# Знайти поточну логіку аналізу PDF
+grep -n "analyzePDF\|pdfjs\|renderPage\|document.*block\|split_points\|splitPoints\|boundaries" src/components/DocumentProcessor/index.jsx | head -30
 
-# Чи встановлений pdf-lib
-grep "pdf-lib" package.json
-
-# Чи встановлений pdfjs-dist
-grep "pdfjs-dist" package.json
+# Знайти де відправляється запит до API
+grep -n "fetch.*anthropic\|api\.anthropic\|messages.*content" src/components/DocumentProcessor/index.jsx | head -20
 ```
+
+Показати результати перед змінами.
 
 ---
 
-## КРОК 2 — ВСТАНОВИТИ ЗАЛЕЖНОСТІ ЯКЩО НЕМАЄ
+## КРОК 2 — ЗАМІНИТИ АНАЛІЗ НА DOCUMENT BLOCK
 
-```bash
-npm list pdf-lib 2>/dev/null || npm install pdf-lib
-npm list pdfjs-dist 2>/dev/null || npm install pdfjs-dist
-```
-
----
-
-## КРОК 3 — ФУНКЦІЯ РЕНДЕРИНГУ СТОРІНОК ЧЕРЕЗ PDFJS
+Знайти функцію що аналізує PDF і замінити на:
 
 ```jsx
-import * as pdfjsLib from 'pdfjs-dist';
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
-
-// Рендерити сторінки PDF в base64 зображення
-async function renderPagesToImages(arrayBuffer, pageNumbers) {
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const images = [];
-
-  for (const pageNum of pageNumbers) {
-    if (pageNum > pdf.numPages) break;
-
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1.2 }); // достатня якість для читання
-
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-
-    await page.render({
-      canvasContext: canvas.getContext('2d'),
-      viewport,
-    }).promise;
-
-    const base64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-    images.push({ pageNum, base64 });
+async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
+  // Крок 1: конвертувати файл в base64
+  const arrayBuffer = await file.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
   }
+  const base64 = btoa(binary);
 
-  return images;
-}
-```
+  // Крок 2: відправити як document block — один запит
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: base64,
+            }
+          },
+          {
+            type: 'text',
+            text: `Це PDF файл судової справи. ${userHint ? `Контекст: ${userHint}` : ''}
 
----
+Прочитай весь документ і визнач де починається кожен окремий документ.
+Шукай: нові заголовки, печатки, підписи, нову нумерацію сторінок, зміну типу документа.
 
-## КРОК 4 — ФУНКЦІЯ АНАЛІЗУ МЕЖ ДОКУМЕНТІВ
-
-Читати PDF пакетами по 10 сторінок і знаходити межі:
-
-```jsx
-async function analyzePDFBoundaries(arrayBuffer, totalPages, apiKey, caseContext) {
-  const BATCH_SIZE = 10;
-  const allBoundaries = [];
-
-  for (let start = 1; start <= totalPages; start += BATCH_SIZE) {
-    const end = Math.min(start + BATCH_SIZE - 1, totalPages);
-    const pageNumbers = Array.from({ length: end - start + 1 }, (_, i) => start + i);
-
-    const images = await renderPagesToImages(arrayBuffer, pageNumbers);
-
-    const content = [
-      ...images.map(img => ({
-        type: 'image',
-        source: { type: 'base64', media_type: 'image/jpeg', data: img.base64 }
-      })),
-      {
-        type: 'text',
-        text: `Це сторінки ${start}-${end} з ${totalPages} PDF файлу судової справи.
-${caseContext ? `Контекст справи: ${caseContext}` : ''}
-
-Визнач де починаються нові документи на цих сторінках.
-Шукай: нові заголовки, печатки, підписи, нову нумерацію, зміну типу документа.
-
-Поверни ТІЛЬКИ JSON:
+Поверни ТІЛЬКИ JSON без жодного тексту до або після:
 {
-  "boundaries": [
+  "totalPages": 65,
+  "documents": [
     {
-      "page": 1,
-      "isNewDocument": true,
-      "documentType": "Титульна сторінка судової справи",
-      "confidence": 0.95
+      "name": "Титульна сторінка судової справи",
+      "startPage": 1,
+      "endPage": 1,
+      "type": "court_cover"
+    },
+    {
+      "name": "Позовна заява Брановської Л.Б.",
+      "startPage": 2,
+      "endPage": 8,
+      "type": "pleading"
     }
   ]
 }
 
-Якщо на цих сторінках немає нових документів — поверни {"boundaries": []}`
-      }
-    ];
+Типи документів (type):
+- court_cover: титульна сторінка справи
+- pleading: позовна заява, відзив, заперечення
+- court_act: ухвала, рішення, постанова суду
+- evidence: докази, додатки, довідки
+- certificate: свідоцтво, витяг з реєстру
+- contract: договір, угода
+- other: інше
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content }]
-      })
-    });
+ВАЖЛИВО: визначай межі тільки на основі реального вмісту. Не вигадуй документи яких немає.`
+          }
+        ]
+      }]
+    })
+  });
 
-    const data = await response.json();
-    const text = data.content[0].text;
+  const data = await response.json();
 
-    try {
-      const clean = text.replace(/```json|```/g, '').trim();
-      const result = JSON.parse(clean);
-      allBoundaries.push(...(result.boundaries || []));
-    } catch (e) {
-      console.warn('Пакет', start, '-', end, ': помилка парсингу', e);
-    }
+  if (data.error) {
+    throw new Error(data.error.message);
   }
 
-  return allBoundaries;
+  const text = data.content[0].text;
+
+  // Парсити JSON
+  try {
+    const clean = text.replace(/```json|```/g, '').trim();
+    return JSON.parse(clean);
+  } catch (e) {
+    throw new Error('Не вдалось розпізнати структуру документа: ' + text.substring(0, 200));
+  }
 }
 ```
 
 ---
 
-## КРОК 5 — ФОРМУВАННЯ SPLIT POINTS З МЕЖ
+## КРОК 3 — ВИПРАВИТИ НАРІЗКУ PDF-LIB
 
-```jsx
-function boundariesToSplitPoints(boundaries, totalPages) {
-  // Відфільтрувати тільки нові документи з достатньою впевненістю
-  const newDocs = boundaries
-    .filter(b => b.isNewDocument && b.confidence > 0.7)
-    .sort((a, b) => a.page - b.page);
+Поточна помилка: `Cannot read properties of undefined (reading 'node')`
+Це помилка при завантаженні pdf-lib. Виправити імпорт:
 
-  // Якщо першою сторінкою немає — додати
-  if (newDocs.length === 0 || newDocs[0].page !== 1) {
-    newDocs.unshift({ page: 1, documentType: 'Документ 1', confidence: 1 });
-  }
-
-  // Сформувати split_points з початком і кінцем кожного документа
-  return newDocs.map((doc, i) => ({
-    name: doc.documentType,
-    startPage: doc.page,
-    endPage: i + 1 < newDocs.length ? newDocs[i + 1].page - 1 : totalPages,
-    confidence: doc.confidence,
-  }));
-}
+```bash
+# Перевірити як імпортується pdf-lib
+grep -n "pdf-lib\|PDFDocument\|import.*pdf" src/components/DocumentProcessor/index.jsx | head -10
 ```
 
----
-
-## КРОК 6 — НАРІЗКА ЧЕРЕЗ PDF-LIB
-
+Правильний імпорт:
 ```jsx
 import { PDFDocument } from 'pdf-lib';
+```
 
-async function splitPDF(arrayBuffer, splitPoints) {
+Або якщо dynamic import:
+```jsx
+const { PDFDocument } = await import('pdf-lib');
+```
+
+Функція нарізки (виправлена):
+```jsx
+async function splitPDFByDocuments(file, documents) {
+  const arrayBuffer = await file.arrayBuffer();
+  const { PDFDocument } = await import('pdf-lib');
   const srcDoc = await PDFDocument.load(arrayBuffer);
+  const totalPages = srcDoc.getPageCount();
   const results = [];
 
-  for (const part of splitPoints) {
-    const newDoc = await PDFDocument.create();
+  for (const doc of documents) {
+    const startIdx = doc.startPage - 1; // 0-indexed
+    const endIdx = Math.min(doc.endPage - 1, totalPages - 1);
 
-    const pageIndices = Array.from(
-      { length: part.endPage - part.startPage + 1 },
-      (_, i) => part.startPage - 1 + i // 0-indexed
-    );
+    if (startIdx > totalPages - 1) continue;
+
+    const newDoc = await PDFDocument.create();
+    const pageIndices = [];
+    for (let i = startIdx; i <= endIdx; i++) {
+      pageIndices.push(i);
+    }
 
     const pages = await newDoc.copyPages(srcDoc, pageIndices);
     pages.forEach(p => newDoc.addPage(p));
 
-    // Стиснення
     const bytes = await newDoc.save({ useObjectStreams: true });
 
     results.push({
-      name: part.name,
-      startPage: part.startPage,
-      endPage: part.endPage,
+      ...doc,
       pageCount: pageIndices.length,
       data: bytes,
       sizeMB: (bytes.byteLength / 1024 / 1024).toFixed(2),
@@ -220,155 +200,146 @@ async function splitPDF(arrayBuffer, splitPoints) {
 
 ---
 
-## КРОК 7 — ІНТЕГРАЦІЯ В DOCUMENT PROCESSOR
+## КРОК 4 — ІНТЕГРАЦІЯ В DOCUMENT PROCESSOR
 
-### State:
+### При завантаженні файлу — зберегти файл в state:
 ```jsx
-const [pdfArrayBuffer, setPdfArrayBuffer] = useState(null);
-const [totalPages, setTotalPages] = useState(0);
-const [analyzingBoundaries, setAnalyzingBoundaries] = useState(false);
-const [splitPoints, setSplitPoints] = useState([]);
-const [splitResults, setSplitResults] = useState([]);
-const [analysisProgress, setAnalysisProgress] = useState(0);
+const [uploadedFile, setUploadedFile] = useState(null);
+
+// В handleDrop або handleFileSelect:
+setUploadedFile(file);
+addAgentMessage(`📄 Завантажено: ${file.name} (${(file.size/1024/1024).toFixed(1)} МБ)\n\nНапишіть "нарізати" або опишіть що є у файлі.`);
 ```
 
-### При завантаженні файлу:
+### Обробка команди нарізки:
 ```jsx
-const handleFileLoad = async (file) => {
-  const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+// В обробнику повідомлень агента:
+const isSlitCommand = msg.toLowerCase().includes('нарізати') ||
+  msg.toLowerCase().includes('розріж') ||
+  msg.toLowerCase().includes('визнач документи');
 
-  setPdfArrayBuffer(buffer);
-  setTotalPages(pdf.numPages);
-
-  // Повідомити агента
-  addAgentMessage(`📄 Завантажено: ${file.name} (${pdf.numPages} сторінок)\n\nЩо зробити?\n• Написати "нарізати" — я визначу межі документів автоматично\n• Або опишіть що є в файлі і як нарізати`);
-};
-```
-
-### Команда "нарізати" в чаті агента:
-```jsx
-// В обробнику повідомлень агента — якщо команда на нарізку:
-if (userMessage.toLowerCase().includes('нарізати') || userMessage.toLowerCase().includes('розріж')) {
-  await handleAnalyzeBoundaries(userMessage);
-  return;
-}
-
-const handleAnalyzeBoundaries = async (userHint) => {
-  if (!pdfArrayBuffer) {
-    addAgentMessage('❌ Спочатку завантажте PDF файл');
-    return;
-  }
-
-  setAnalyzingBoundaries(true);
-  addAgentMessage(`🔍 Аналізую ${totalPages} сторінок пакетами по 10...\n(~${Math.ceil(totalPages/10)} запитів до API)`);
+if (isSplitCommand && uploadedFile) {
+  addAgentMessage('🔍 Читаю весь PDF... (може зайняти 30-60 секунд)');
 
   try {
-    const caseContext = userHint + (caseData ? ` Справа: ${caseData.name}` : '');
-    const boundaries = await analyzePDFBoundaries(
-      pdfArrayBuffer,
-      totalPages,
-      apiKey,
-      caseContext
-    );
+    const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, msg);
 
-    const points = boundariesToSplitPoints(boundaries, totalPages);
-    setSplitPoints(points);
+    setSplitPoints(result.documents);
 
-    // Показати структуру деревом в чаті
-    const tree = points.map((p, i) =>
-      `${i+1}. 📄 ${p.name}\n   Сторінки: ${p.startPage}-${p.endPage} (${p.endPage - p.startPage + 1} стор.)`
+    // Показати структуру деревом
+    const tree = result.documents.map((d, i) =>
+      `${i+1}. 📄 ${d.name}\n   Сторінки: ${d.startPage}-${d.endPage} (${d.endPage - d.startPage + 1} стор.)`
     ).join('\n\n');
 
-    addAgentMessage(`Знайдено ${points.length} документів:\n\n${tree}\n\nПідтвердити нарізку? Або скажіть що змінити.`);
+    addAgentMessage(
+      `Знайдено ${result.documents.length} документів у ${result.totalPages} сторінках:\n\n${tree}\n\n` +
+      `Підтвердити нарізку? Або скажіть що змінити:\n` +
+      `• "з'єднай 2 і 3"\n` +
+      `• "сторінка 12 це продовження позовної"\n` +
+      `• "підтвердити"`
+    );
 
   } catch (e) {
-    addAgentMessage(`❌ Помилка аналізу: ${e.message}`);
-  } finally {
-    setAnalyzingBoundaries(false);
+    addAgentMessage(`❌ Помилка: ${e.message}`);
   }
-};
+  return;
+}
 ```
 
-### Команда "підтвердити" — нарізка і запис:
+### Обробка підтвердження:
 ```jsx
-if (userMessage.toLowerCase().includes('підтвердити') || userMessage.toLowerCase().includes('так')) {
-  if (splitPoints.length === 0) return;
+const isConfirm = msg.toLowerCase().includes('підтвердити') ||
+  msg.toLowerCase().includes('так') ||
+  msg.toLowerCase().includes('нарізай');
 
-  addAgentMessage('✂️ Нарізаю...');
+if (isConfirm && splitPoints.length > 0 && uploadedFile) {
+  addAgentMessage('✂️ Нарізаю PDF...');
 
-  const results = await splitPDF(pdfArrayBuffer, splitPoints);
-  setSplitResults(results);
+  try {
+    const results = await splitPDFByDocuments(uploadedFile, splitPoints);
 
-  // Записати на Drive якщо є папка
-  const token = localStorage.getItem('levytskyi_drive_token');
-  const folderId = caseData?.storage?.driveFolderId;
+    // Зберегти на Drive
+    const token = localStorage.getItem('levytskyi_drive_token');
+    const folderId = caseData?.storage?.driveFolderId;
 
-  if (token && folderId) {
-    addAgentMessage('☁️ Записую на Drive...');
+    if (token && folderId) {
+      addAgentMessage('☁️ Записую на Drive в 02_ОБРОБЛЕНІ...');
 
-    // Знайти папку 02_ОБРОБЛЕНІ
-    const subRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder'`)}&fields=files(id)`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const subData = await subRes.json();
-    const processFolderId = subData.files?.[0]?.id || folderId;
-
-    for (const result of results) {
-      const fileName = `${result.name.replace(/[/\\:*?"<>|]/g, '_')}.pdf`;
-      const blob = new Blob([result.data], { type: 'application/pdf' });
-
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify({
-        name: fileName,
-        parents: [processFolderId],
-      })], { type: 'application/json' }));
-      form.append('file', blob);
-
-      await fetch(
-        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
-        { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+      // Знайти папку 02_ОБРОБЛЕНІ
+      const subRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          `'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+        )}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } }
       );
+      const subData = await subRes.json();
+      const targetFolderId = subData.files?.[0]?.id || folderId;
+
+      for (const result of results) {
+        const safeName = result.name.replace(/[/\\:*?"<>|]/g, '_');
+        const fileName = `${safeName}.pdf`;
+        const blob = new Blob([result.data], { type: 'application/pdf' });
+
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify({
+          name: fileName,
+          parents: [targetFolderId],
+        })], { type: 'application/json' }));
+        form.append('file', blob);
+
+        await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+          { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+        );
+      }
+
+      // Оновити Матеріали
+      const newDocs = results.map(r => ({
+        id: `doc_${Date.now()}_${Math.random().toString(36).substr(2,6)}`,
+        name: r.name,
+        type: r.type,
+        pageCount: r.pageCount,
+        folder: '02_ОБРОБЛЕНІ',
+        status: 'ready',
+        addedAt: new Date().toISOString(),
+      }));
+
+      updateCase(caseData.id, 'documents', [
+        ...(caseData.documents || []),
+        ...newDocs,
+      ]);
+
+      const summary = results.map(r =>
+        `✅ ${r.name} — ${r.pageCount} стор., ${r.sizeMB} МБ`
+      ).join('\n');
+
+      addAgentMessage(`Готово! ${results.length} документів збережено:\n\n${summary}\n\n📁 Drive: 02_ОБРОБЛЕНІ\n📋 Вкладка Матеріали оновлена`);
+
+    } else {
+      addAgentMessage('✅ Нарізано але Drive не підключено.\nПідключіть Drive в блоці Сховище щоб зберегти файли.');
     }
 
-    // Оновити Матеріали
-    const newDocs = results.map(r => ({
-      id: `doc_${Date.now()}_${Math.random().toString(36).substr(2,6)}`,
-      name: r.name,
-      pageCount: r.pageCount,
-      folder: '02_ОБРОБЛЕНІ',
-      status: 'ready',
-      addedAt: new Date().toISOString(),
-    }));
-
-    updateCase(caseData.id, 'documents', [...(caseData.documents || []), ...newDocs]);
-
-    const summary = results.map(r =>
-      `✅ ${r.name} — ${r.pageCount} стор., ${r.sizeMB} МБ`
-    ).join('\n');
-
-    addAgentMessage(`Готово! ${results.length} документів:\n\n${summary}\n\nВкладка Матеріали оновлена.`);
-
-  } else {
-    // Без Drive — запропонувати завантажити
-    addAgentMessage(`✅ Нарізано ${results.length} документів в пам'яті.\n\n⚠️ Drive не підключено — підключіть в блоці Сховище щоб зберегти.`);
+  } catch (e) {
+    addAgentMessage(`❌ Помилка нарізки: ${e.message}`);
   }
+  return;
 }
 ```
 
 ---
 
-## КРОК 8 — АГЕНТ ОТРИМУЄ КОНТЕКСТ ЗАВАНТАЖЕНИХ ФАЙЛІВ
+## КРОК 5 — КОНТЕКСТ ДЛЯ АГЕНТА ДОСЬЄ
 
-В system prompt агента досьє на вкладці "Робота з документами" додати:
+На вкладці "Робота з документами" агент досьє має отримувати додатковий контекст:
 
-```js
-const docProcessorContext = pdfArrayBuffer
-  ? `\n\nЗавантажений файл: ${uploadedFileName} (${totalPages} сторінок)${
+```jsx
+// В system prompt агента коли активна вкладка docProcessing:
+const docContext = uploadedFile
+  ? `\n\nЗавантажений файл: ${uploadedFile.name} (${(uploadedFile.size/1024/1024).toFixed(1)} МБ)${
       splitPoints.length > 0
-        ? `\nВизначена структура:\n${splitPoints.map((p,i) => `${i+1}. ${p.name} (стор. ${p.startPage}-${p.endPage})`).join('\n')}`
-        : '\nСтруктура ще не визначена.'
+        ? `\nВизначена структура (${splitPoints.length} документів):\n` +
+          splitPoints.map((d,i) => `${i+1}. ${d.name} (стор. ${d.startPage}-${d.endPage})`).join('\n')
+        : '\nСтруктуру ще не визначено — напиши "нарізати"'
     }`
   : '\n\nФайлів не завантажено.';
 ```
@@ -377,39 +348,41 @@ const docProcessorContext = pdfArrayBuffer
 
 ## ПОРЯДОК ВИКОНАННЯ
 
-1. Діагностика
-2. npm install pdf-lib pdfjs-dist якщо немає
-3. Додати renderPagesToImages
-4. Додати analyzePDFBoundaries
-5. Додати splitPDF
-6. Інтегрувати в Document Processor
-7. Підключити агент досьє до процесора
+1. Діагностика (показати результати grep)
+2. Замінити аналіз на analyzePDFWithDocumentBlock
+3. Виправити імпорт pdf-lib і функцію splitPDFByDocuments
+4. Зберегти uploadedFile в state
+5. Додати обробники команд нарізки і підтвердження
+6. Передати контекст завантаженого файлу агенту досьє
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "feat: PDF boundary detection + split via pdfjs and pdf-lib" && git push origin main
+git add -A && git commit -m "feat: PDF split via document block - single request, accurate boundaries" && git push origin main
 ```
 
-## ЧЕКЛІСТ
+---
 
-- [ ] Завантажив PDF → агент повідомляє кількість сторінок
-- [ ] Написав "нарізати" → агент аналізує пакетами і показує структуру деревом
-- [ ] Можна сказати "з'єднай 3 і 4" або "сторінка 12 це продовження позовної"
-- [ ] Написав "підтвердити" → pdf-lib нарізає
-- [ ] Файли записуються на Drive в 02_ОБРОБЛЕНІ
+## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
+
+- [ ] Завантажив PDF → агент повідомляє розмір і чекає команди
+- [ ] Написав "нарізати" → один запит до API → агент показує список документів з реальними сторінками
+- [ ] Структура відповідає реальному вмісту (не вигадана)
+- [ ] Написав "підтвердити" → pdf-lib нарізає без помилки
+- [ ] Файли з'являються на Drive в 02_ОБРОБЛЕНІ
 - [ ] Вкладка Матеріали оновлюється
+
+---
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-08] PDF нарізка — pdfjs + Claude Vision + pdf-lib
-pdfjs рендерить сторінки в base64 JPEG (scale 1.2, quality 0.8)
-Пакети по 10 сторінок → Claude Vision визначає межі
-boundariesToSplitPoints() — фільтрує confidence > 0.7
-pdf-lib нарізає по 0-indexed сторінках
-Стиснення: PDFDocument.save({ useObjectStreams: true })
-Запис на Drive: multipart upload в 02_ОБРОБЛЕНІ
+### [2026-04-08] PDF аналіз — document block замість pdfjs рендерингу
+Один запит з document block дешевше і точніше ніж пакети зображень.
+base64: btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+Формат: { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 }}
+pdf-lib: використовувати dynamic import: const { PDFDocument } = await import('pdf-lib')
+Помилка 'Cannot read properties of undefined (reading node)' = неправильний імпорт pdf-lib
 ```

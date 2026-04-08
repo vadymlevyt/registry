@@ -214,11 +214,13 @@ Drive API вже підключений і працює — використов
 
 ---
 
-### [2026-04-08] PDF нарізка — pdfjs + Claude Vision + pdf-lib
-pdfjs рендерить сторінки в base64 JPEG (scale 1.2, quality 0.8)
-Пакети по 10 сторінок → Claude Vision визначає межі
-boundariesToSplitPoints() — фільтрує confidence > 0.7
-pdf-lib нарізає по 0-indexed сторінках
+### [2026-04-08] PDF аналіз — document block замість pdfjs рендерингу
+Один запит з document block дешевше і точніше ніж пакети зображень.
+base64: btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+Формат: { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 }}
+pdf-lib: PDFDocument.load() для page count, PDFDocument.create() + copyPages() для нарізки.
+splitPDFByDocuments працює з startPage/endPage (1-indexed), конвертує в 0-indexed для copyPages.
+Помилка 'Cannot read properties of undefined (reading node)' = неправильний імпорт pdf-lib.
 Стиснення: PDFDocument.save({ useObjectStreams: true })
 Запис на Drive: multipart upload в 02_ОБРОБЛЕНІ
 

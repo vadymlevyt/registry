@@ -1,8 +1,5 @@
 import { useState, useRef, useCallback } from "react";
 import { PDFDocument } from "pdf-lib";
-import * as pdfjsLib from "pdfjs-dist";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs`;
 import {
   createCaseStructure,
   uploadFileToDrive,
@@ -102,20 +99,38 @@ function parseActionJSON(text) {
   return null;
 }
 
-async function splitPDF(fileArrayBuffer, splitPoints) {
-  const srcDoc = await PDFDocument.load(fileArrayBuffer);
+async function splitPDFByDocuments(file, documents) {
+  const arrayBuffer = await file.arrayBuffer();
+  const srcDoc = await PDFDocument.load(arrayBuffer);
+  const totalPages = srcDoc.getPageCount();
   const results = [];
-  for (const part of splitPoints) {
+
+  for (const doc of documents) {
+    const startIdx = doc.startPage - 1;
+    const endIdx = Math.min(doc.endPage - 1, totalPages - 1);
+
+    if (startIdx > totalPages - 1) continue;
+
     const newDoc = await PDFDocument.create();
-    const pageIndices = Array.from(
-      { length: part.end - part.start + 1 },
-      (_, i) => part.start + i
-    );
+    const pageIndices = [];
+    for (let i = startIdx; i <= endIdx; i++) {
+      pageIndices.push(i);
+    }
+
     const pages = await newDoc.copyPages(srcDoc, pageIndices);
     pages.forEach(p => newDoc.addPage(p));
+
     const bytes = await newDoc.save({ useObjectStreams: true });
-    results.push({ name: part.name, type: part.type, data: bytes, pageCount: pages.length });
+
+    results.push({
+      name: doc.name,
+      type: doc.type,
+      pageCount: pageIndices.length,
+      data: bytes,
+      sizeMB: (bytes.byteLength / 1024 / 1024).toFixed(2),
+    });
   }
+
   return results;
 }
 
@@ -129,128 +144,100 @@ async function compressPDF(arrayBuffer) {
   }
 }
 
-// ── PDF VISION ANALYSIS ──────────────────────────────────────────────────────
+// ── PDF DOCUMENT BLOCK ANALYSIS ──────────────────────────────────────────────
 
-async function renderPagesToImages(arrayBuffer, pageNumbers) {
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const images = [];
-
-  for (const pageNum of pageNumbers) {
-    if (pageNum > pdf.numPages) break;
-
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1.2 });
-
-    const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-
-    await page.render({
-      canvasContext: canvas.getContext("2d"),
-      viewport,
-    }).promise;
-
-    const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
-    images.push({ pageNum, base64 });
+async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
+  const arrayBuffer = await file.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
   }
+  const base64 = btoa(binary);
 
-  return images;
-}
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: base64,
+            }
+          },
+          {
+            type: "text",
+            text: `Це PDF файл судової справи. ${userHint ? `Контекст: ${userHint}` : ""}
 
-async function analyzePDFBoundaries(arrayBuffer, totalPages, apiKey, caseContext, onProgress) {
-  const BATCH_SIZE = 10;
-  const allBoundaries = [];
+Прочитай весь документ і визнач де починається кожен окремий документ.
+Шукай: нові заголовки, печатки, підписи, нову нумерацію сторінок, зміну типу документа.
 
-  for (let start = 1; start <= totalPages; start += BATCH_SIZE) {
-    const end = Math.min(start + BATCH_SIZE - 1, totalPages);
-    const pageNumbers = Array.from({ length: end - start + 1 }, (_, i) => start + i);
-
-    if (onProgress) onProgress(start, totalPages);
-
-    const images = await renderPagesToImages(arrayBuffer, pageNumbers);
-
-    const content = [
-      ...images.map(img => ({
-        type: "image",
-        source: { type: "base64", media_type: "image/jpeg", data: img.base64 }
-      })),
-      {
-        type: "text",
-        text: `Це сторінки ${start}-${end} з ${totalPages} PDF файлу судової справи.
-${caseContext ? `Контекст справи: ${caseContext}` : ""}
-
-Визнач де починаються нові документи на цих сторінках.
-Шукай: нові заголовки, печатки, підписи, нову нумерацію, зміну типу документа.
-
-Поверни ТІЛЬКИ JSON:
+Поверни ТІЛЬКИ JSON без жодного тексту до або після:
 {
-  "boundaries": [
+  "totalPages": 65,
+  "documents": [
     {
-      "page": 1,
-      "isNewDocument": true,
-      "documentType": "Титульна сторінка судової справи",
-      "confidence": 0.95
+      "name": "Титульна сторінка судової справи",
+      "startPage": 1,
+      "endPage": 1,
+      "type": "court_cover"
+    },
+    {
+      "name": "Позовна заява Брановської Л.Б.",
+      "startPage": 2,
+      "endPage": 8,
+      "type": "pleading"
     }
   ]
 }
 
-Якщо на цих сторінках немає нових документів — поверни {"boundaries": []}`
-      }
-    ];
+Типи документів (type):
+- court_cover: титульна сторінка справи
+- pleading: позовна заява, відзив, заперечення
+- court_act: ухвала, рішення, постанова суду
+- evidence: докази, додатки, довідки
+- certificate: свідоцтво, витяг з реєстру
+- contract: договір, угода
+- other: інше
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [{ role: "user", content }]
-      })
-    });
+ВАЖЛИВО: визначай межі тільки на основі реального вмісту. Не вигадуй документи яких немає.`
+          }
+        ]
+      }]
+    })
+  });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`API ${response.status}: ${errText.slice(0, 200)}`);
-    }
-
-    const data = await response.json();
-    const text = data.content[0].text;
-
-    try {
-      const clean = text.replace(/```json|```/g, "").trim();
-      const result = JSON.parse(clean);
-      allBoundaries.push(...(result.boundaries || []));
-    } catch (e) {
-      console.warn("Пакет", start, "-", end, ": помилка парсингу", e);
-    }
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`API ${response.status}: ${errText.slice(0, 200)}`);
   }
 
-  return allBoundaries;
-}
+  const data = await response.json();
 
-function boundariesToSplitPoints(boundaries, totalPages) {
-  const newDocs = boundaries
-    .filter(b => b.isNewDocument && b.confidence > 0.7)
-    .sort((a, b) => a.page - b.page);
-
-  if (newDocs.length === 0 || newDocs[0].page !== 1) {
-    newDocs.unshift({ page: 1, documentType: "Документ 1", confidence: 1 });
+  if (data.error) {
+    throw new Error(data.error.message);
   }
 
-  return newDocs.map((doc, i) => ({
-    name: doc.documentType,
-    start: doc.page - 1, // 0-indexed for splitPDF compatibility
-    end: i + 1 < newDocs.length ? newDocs[i + 1].page - 2 : totalPages - 1,
-    startPage: doc.page,
-    endPage: i + 1 < newDocs.length ? newDocs[i + 1].page - 1 : totalPages,
-    confidence: doc.confidence,
-    type: "evidence",
-  }));
+  const text = data.content[0].text;
+
+  try {
+    const clean = text.replace(/```json|```/g, "").trim();
+    return JSON.parse(clean);
+  } catch (e) {
+    throw new Error("Не вдалось розпізнати структуру документа: " + text.substring(0, 200));
+  }
 }
 
 function getMimeType(ext) {
@@ -274,7 +261,7 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
   const [parsedAction, setParsedAction] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [localDirHandle, setLocalDirHandle] = useState(null);
-  const [pdfArrayBuffer, setPdfArrayBuffer] = useState(null);
+  const [uploadedFile, setUploadedFile] = useState(null);
   const [totalPages, setTotalPages] = useState(0);
   const [uploadedFileName, setUploadedFileName] = useState("");
   const [splitPoints, setSplitPoints] = useState([]);
@@ -309,18 +296,19 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
     }));
     setFiles(prev => [...prev, ...newFiles]);
 
-    // Detect PDF and store arrayBuffer for Vision analysis
+    // Detect PDF and store file for document block analysis
     const pdfFile = newFiles.find(f => f.ext === "pdf");
     if (pdfFile) {
       try {
         const buffer = await pdfFile.file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-        setPdfArrayBuffer(buffer);
-        setTotalPages(pdf.numPages);
+        const pdfDoc = await PDFDocument.load(buffer);
+        const numPages = pdfDoc.getPageCount();
+        setUploadedFile(pdfFile.file);
+        setTotalPages(numPages);
         setUploadedFileName(pdfFile.name);
 
         const names = newFiles.map(f => f.name).join(", ");
-        addAgentMessage(`Отримав ${newFiles.length} файл(ів): ${names}\n\n\u{1F4C4} ${pdfFile.name} (${pdf.numPages} сторінок)\n\nЩо зробити?\n\u2022 Написати "нарізати" \u2014 я визначу межі документів автоматично\n\u2022 Або опишіть що є в файлі і як нарізати`);
+        addAgentMessage(`Отримав ${newFiles.length} файл(ів): ${names}\n\n\u{1F4C4} ${pdfFile.name} (${numPages} сторінок, ${(pdfFile.file.size / 1024 / 1024).toFixed(1)} МБ)\n\nЩо зробити?\n\u2022 Написати "нарізати" \u2014 я визначу межі документів автоматично\n\u2022 Або опишіть що є в файлі і як нарізати`);
 
         setFiles(prev => prev.map(f =>
           newFiles.some(nf => nf.id === f.id) ? { ...f, status: "done" } : f
@@ -452,44 +440,38 @@ ${filesList}
   // ── VISION BOUNDARY ANALYSIS ────────────────────────────────────────────────
 
   async function handleAnalyzeBoundaries(userHint) {
-    if (!pdfArrayBuffer) {
-      addAgentMessage("\u274C \u0421\u043F\u043E\u0447\u0430\u0442\u043A\u0443 \u0437\u0430\u0432\u0430\u043D\u0442\u0430\u0436\u0442\u0435 PDF \u0444\u0430\u0439\u043B");
+    if (!uploadedFile) {
+      addAgentMessage("\u274C Спочатку завантажте PDF файл");
       return;
     }
 
     setProcessing(true);
-    const batchCount = Math.ceil(totalPages / 10);
-    addAgentMessage(`\u{1F50D} \u0410\u043D\u0430\u043B\u0456\u0437\u0443\u044E ${totalPages} \u0441\u0442\u043E\u0440\u0456\u043D\u043E\u043A \u043F\u0430\u043A\u0435\u0442\u0430\u043C\u0438 \u043F\u043E 10...\n(~${batchCount} \u0437\u0430\u043F\u0438\u0442\u0456\u0432 \u0434\u043E API)`);
+    addAgentMessage("\u{1F50D} Читаю весь PDF... (може зайняти 30-60 секунд)");
 
     try {
-      const caseContext = (userHint || "") + (caseData ? ` \u0421\u043F\u0440\u0430\u0432\u0430: ${caseData.name}` : "");
-      const boundaries = await analyzePDFBoundaries(
-        pdfArrayBuffer,
-        totalPages,
-        apiKey,
-        caseContext,
-        (current, total) => {
-          addAgentMessage(`\u23F3 \u041E\u0431\u0440\u043E\u0431\u043B\u044E\u044E \u0441\u0442\u043E\u0440\u0456\u043D\u043A\u0438 ${current}-${Math.min(current + 9, total)} \u0437 ${total}...`);
-        }
-      );
+      const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, userHint);
 
-      const points = boundariesToSplitPoints(boundaries, totalPages);
-      setSplitPoints(points);
-
-      // Set parsedAction for compatibility with handleSplit
+      setSplitPoints(result.documents);
       setParsedAction({
         action: "split",
-        split_points: points,
+        split_points: result.documents,
       });
-      setProposedStructure("vision_analysis");
+      setProposedStructure("document_block_analysis");
+      setTotalPages(result.totalPages || totalPages);
 
-      const tree = points.map((p, i) =>
-        `${i + 1}. \u{1F4C4} ${p.name}\n   \u0421\u0442\u043E\u0440\u0456\u043D\u043A\u0438: ${p.startPage}-${p.endPage} (${p.endPage - p.startPage + 1} \u0441\u0442\u043E\u0440.)`
+      const tree = result.documents.map((d, i) =>
+        `${i + 1}. \u{1F4C4} ${d.name}\n   Сторінки: ${d.startPage}-${d.endPage} (${d.endPage - d.startPage + 1} стор.)`
       ).join("\n\n");
 
-      addAgentMessage(`\u0417\u043D\u0430\u0439\u0434\u0435\u043D\u043E ${points.length} \u0434\u043E\u043A\u0443\u043C\u0435\u043D\u0442\u0456\u0432:\n\n${tree}\n\n\u041F\u0456\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0438 \u043D\u0430\u0440\u0456\u0437\u043A\u0443? \u0410\u0431\u043E \u0441\u043A\u0430\u0436\u0456\u0442\u044C \u0449\u043E \u0437\u043C\u0456\u043D\u0438\u0442\u0438.`);
+      addAgentMessage(
+        `Знайдено ${result.documents.length} документів у ${result.totalPages || totalPages} сторінках:\n\n${tree}\n\n` +
+        "Підтвердити нарізку? Або скажіть що змінити:\n" +
+        "\u2022 \"з'єднай 2 і 3\"\n" +
+        "\u2022 \"сторінка 12 це продовження позовної\"\n" +
+        "\u2022 \"підтвердити\""
+      );
     } catch (e) {
-      addAgentMessage(`\u274C \u041F\u043E\u043C\u0438\u043B\u043A\u0430 \u0430\u043D\u0430\u043B\u0456\u0437\u0443: ${e.message}`);
+      addAgentMessage(`\u274C Помилка: ${e.message}`);
     } finally {
       setProcessing(false);
     }
@@ -533,7 +515,7 @@ ${filesList}
       const firstUserIdx = messages.findIndex(m => m.role === "user");
       const cleanMessages = firstUserIdx >= 0 ? messages.slice(firstUserIdx) : messages;
 
-      const docProcessorContext = pdfArrayBuffer
+      const docProcessorContext = uploadedFile
         ? `\n\n\u0417\u0430\u0432\u0430\u043D\u0442\u0430\u0436\u0435\u043D\u0438\u0439 \u0444\u0430\u0439\u043B: ${uploadedFileName} (${totalPages} \u0441\u0442\u043E\u0440\u0456\u043D\u043E\u043A)${
             splitPoints.length > 0
               ? `\n\u0412\u0438\u0437\u043D\u0430\u0447\u0435\u043D\u0430 \u0441\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430:\n${splitPoints.map((p, i) => `${i + 1}. ${p.name} (\u0441\u0442\u043E\u0440. ${p.startPage}-${p.endPage})`).join("\n")}`
@@ -765,10 +747,9 @@ ${filesList}
 
   async function handleSplit() {
     try {
-      const splitPoints = parsedAction.split_points;
-      const pdfFile = files.find(f => f.ext === "pdf");
+      const currentSplitPoints = parsedAction.split_points;
 
-      if (!pdfFile?.file) {
+      if (!uploadedFile) {
         addAgentMessage("Не знайдено PDF файл для нарізки.");
         setProcessing(false);
         return;
@@ -776,9 +757,8 @@ ${filesList}
 
       addAgentMessage("\u2702\ufe0f Нарізаю PDF...");
 
-      const arrayBuffer = await pdfFile.file.arrayBuffer();
-      const originalSize = arrayBuffer.byteLength;
-      const parts = await splitPDF(arrayBuffer, splitPoints);
+      const originalSize = uploadedFile.size;
+      const parts = await splitPDFByDocuments(uploadedFile, currentSplitPoints);
 
       // Compress each part
       const processedFiles = [];
@@ -786,7 +766,7 @@ ${filesList}
         const compressed = await compressPDF(part.data);
         processedFiles.push({
           name: part.name + ".pdf",
-          originalName: pdfFile.name,
+          originalName: uploadedFile.name,
           category: part.type || "evidence",
           author: "ours",
           date: new Date().toISOString().slice(0, 10),
@@ -838,7 +818,7 @@ ${filesList}
       setProposedStructure(null);
       setParsedAction(null);
       setSplitPoints([]);
-      setPdfArrayBuffer(null);
+      setUploadedFile(null);
       setTotalPages(0);
       setUploadedFileName("");
       setFiles([]);
@@ -854,7 +834,7 @@ ${filesList}
     setProposedStructure(null);
     setParsedAction(null);
     setSplitPoints([]);
-    setPdfArrayBuffer(null);
+    setUploadedFile(null);
     setTotalPages(0);
     setUploadedFileName("");
     addAgentMessage("\u041E\u0431\u0440\u043E\u0431\u043A\u0443 \u0441\u043A\u0430\u0441\u043E\u0432\u0430\u043D\u043E. \u0424\u0430\u0439\u043B\u0438 \u0432\u0438\u0434\u0430\u043B\u0435\u043D\u043E \u0437 \u0447\u0435\u0440\u0433\u0438.");
