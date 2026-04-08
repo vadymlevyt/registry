@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import DocumentProcessor from "../DocumentProcessor/index.jsx";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -803,17 +804,58 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
         {/* Рухома межа */}
         <div
-          onMouseDown={() => { matDragRef.current = true; }}
-          onTouchStart={() => { matDragRef.current = true; }}
-          style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1e2130', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s' }}
-          onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
-          onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
+          style={{
+            width: 8,
+            flexShrink: 0,
+            cursor: 'col-resize',
+            background: '#1a1d2e',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'relative',
+            zIndex: 10,
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startWidth = matWidth;
+            const container = e.currentTarget.parentElement;
+            const maxW = container.offsetWidth * 0.5;
+            const onMove = (ev) => {
+              const delta = ev.clientX - startX;
+              setMatWidth(Math.max(200, Math.min(maxW, startWidth + delta)));
+            };
+            const onUp = () => {
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          }}
+          onTouchStart={(e) => {
+            const startX = e.touches[0].clientX;
+            const startWidth = matWidth;
+            const container = e.currentTarget.parentElement;
+            const maxW = container.offsetWidth * 0.5;
+            const onMove = (ev) => {
+              const delta = ev.touches[0].clientX - startX;
+              setMatWidth(Math.max(200, Math.min(maxW, startWidth + delta)));
+            };
+            const onUp = () => {
+              document.removeEventListener('touchmove', onMove);
+              document.removeEventListener('touchend', onUp);
+            };
+            document.addEventListener('touchmove', onMove, { passive: false });
+            document.addEventListener('touchend', onUp);
+          }}
         >
-          <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a' }} />
+          <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a', pointerEvents: 'none' }} />
         </div>
 
         {/* Viewer */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {!selectedDoc ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 8 }}>
               <div style={{ fontSize: 36, opacity: .2 }}>{"📄"}</div>
@@ -878,6 +920,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const tabs = [
     { id: "overview", label: "📋 Огляд" },
     { id: "materials", label: "📁 Матеріали", badge: documents.length },
+    { id: "docprocessor", label: "🔧 Робота з документами" },
     { id: "position", label: "⚖️ Позиція" },
     { id: "templates", label: "📄 Шаблони" }
   ];
@@ -929,6 +972,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', minWidth: 0 }}>
           {activeTab === "overview" && renderOverview()}
           {activeTab === "materials" && renderMaterials()}
+          {activeTab === "docprocessor" && (
+            <DocumentProcessor
+              caseData={caseData}
+              cases={cases}
+              onCreateCase={null}
+              onNavigateToDossier={null}
+              apiKey={localStorage.getItem("claude_api_key")}
+            />
+          )}
           {["position", "templates"].includes(activeTab) && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 12 }}>
               <div style={{ fontSize: 48, opacity: .2 }}>{activeTab === "position" ? "⚖️" : "📄"}</div>
