@@ -1,5 +1,13 @@
 import { useState, useRef, useCallback } from "react";
 import { PDFDocument } from "pdf-lib";
+import {
+  createCaseStructure,
+  uploadFileToDrive,
+  getFolderForDocument,
+  isDesktop,
+  selectLocalFolder,
+  saveFileLocally,
+} from "../../services/driveService.js";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -118,6 +126,18 @@ async function compressPDF(arrayBuffer) {
   }
 }
 
+function getMimeType(ext) {
+  const map = {
+    pdf: "application/pdf", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    heic: "image/heic", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    zip: "application/zip", md: "text/markdown", txt: "text/plain",
+    p7s: "application/pkcs7-signature", asic: "application/vnd.etsi.asic-e+zip",
+  };
+  return map[ext] || "application/octet-stream";
+}
+
 export default function DocumentProcessor({ caseData, cases, updateCase, onCreateCase, onNavigateToDossier, apiKey }) {
   const [files, setFiles] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
@@ -126,9 +146,14 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
   const [proposedStructure, setProposedStructure] = useState(null);
   const [parsedAction, setParsedAction] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [localDirHandle, setLocalDirHandle] = useState(null);
   const fileInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const chatHistoryRef = useRef([]);
+
+  const token = localStorage.getItem("levytskyi_drive_token");
+  const hasDrive = !!token;
+  const hasDesktop = isDesktop();
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
@@ -249,13 +274,11 @@ ${filesList}
         { role: "assistant", content: text }
       );
 
-      // Parse ACTION_JSON from response
       const action = parseActionJSON(text);
       if (action) {
         setParsedAction(action);
       }
 
-      // Show response without ACTION_JSON part
       const displayText = text.replace(/ACTION_JSON:\{[\s\S]*$/, "").trim();
       setChatMessages(prev => [...prev, { role: "assistant", content: displayText }]);
       setProposedStructure(text);
@@ -341,6 +364,62 @@ ${filesList}
     }
   }
 
+  // ── STORAGE: DRIVE + LOCAL ─────────────────────────────────────────────────
+
+  async function saveFilesToStorage(processedFiles) {
+    const caseName = `${caseData.name}${caseData.case_no ? "_" + caseData.case_no : ""}`;
+    const results = [];
+    let driveStructure = null;
+
+    // Create Drive folder structure if connected
+    if (hasDrive) {
+      try {
+        driveStructure = await createCaseStructure(caseName, token);
+      } catch (err) {
+        addAgentMessage(`\u26a0\ufe0f Drive: ${err.message}. Зберігаю локально.`);
+      }
+    }
+
+    // Ask for local folder on desktop (if not already selected)
+    let dirHandle = localDirHandle;
+    if (hasDesktop && !dirHandle && !hasDrive) {
+      dirHandle = await selectLocalFolder();
+      if (dirHandle) setLocalDirHandle(dirHandle);
+    }
+
+    for (const pf of processedFiles) {
+      const folder = getFolderForDocument(pf.category);
+      const fileBlob = new Blob([pf.data], { type: getMimeType(pf.ext || "pdf") });
+      const result = { name: pf.name, folder, driveId: null, driveUrl: null, savedLocally: false };
+
+      // Upload to Drive
+      if (driveStructure) {
+        try {
+          const folderId = driveStructure.subFolders[folder] || driveStructure.subFolders["02_ОБРОБЛЕНІ"];
+          const driveFile = await uploadFileToDrive(pf.name, fileBlob, folderId, token);
+          result.driveId = driveFile.id;
+          result.driveUrl = driveFile.webViewLink;
+        } catch (err) {
+          addAgentMessage(`\u26a0\ufe0f Drive помилка для ${pf.name}: ${err.message}`);
+        }
+      }
+
+      // Save locally
+      if (dirHandle) {
+        try {
+          await saveFileLocally(dirHandle, `${folder}/${pf.name}`, fileBlob);
+          result.savedLocally = true;
+        } catch (err) {
+          addAgentMessage(`\u26a0\ufe0f Локально помилка для ${pf.name}: ${err.message}`);
+        }
+      }
+
+      results.push(result);
+    }
+
+    return results;
+  }
+
   // ── ACTIONS ────────────────────────────────────────────────────────────────
 
   async function handleConfirm() {
@@ -352,21 +431,32 @@ ${filesList}
     setProcessing(true);
 
     try {
-      // If agent returned split points, handle PDF splitting
       if (parsedAction?.action === "split" && parsedAction.split_points?.length > 0) {
         await handleSplit();
         return;
       }
 
-      // Save documents from classification or from files directly
+      addAgentMessage("\u2699\ufe0f Зберігаю документи...");
+
       const classifiedDocs = parsedAction?.action === "classify" ? parsedAction.documents : null;
-      const newDocuments = [];
+      const processedFiles = [];
 
       if (classifiedDocs && classifiedDocs.length > 0) {
         for (const item of classifiedDocs) {
           const matchedFile = files.find(f => f.name === item.originalName);
-          newDocuments.push({
-            id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+          let fileData = null;
+          if (matchedFile?.file) {
+            const ab = await matchedFile.file.arrayBuffer();
+            // Compress PDF files
+            if (matchedFile.ext === "pdf") {
+              const compressed = await compressPDF(ab);
+              fileData = compressed;
+            } else {
+              fileData = ab;
+            }
+          }
+
+          processedFiles.push({
             name: item.processedName || item.originalName,
             originalName: item.originalName,
             category: item.category || "evidence",
@@ -374,19 +464,16 @@ ${filesList}
             folder: item.folder || "01_ОРИГІНАЛИ",
             date: item.date || new Date().toISOString().slice(0, 10),
             pageCount: item.pageCount || null,
-            size: matchedFile?.size || 0,
-            icon: CATEGORY_ICONS[item.category] || "\ud83d\udcc4",
-            procId: caseData.proceedings?.[0]?.id || "proc_main",
-            tags: [],
-            status: "ready",
-            addedAt: new Date().toISOString(),
+            originalSize: matchedFile?.size || 0,
+            data: fileData,
+            ext: matchedFile?.ext || "pdf",
           });
         }
       } else {
-        // Fallback: create documents from uploaded files
         for (const f of files) {
-          newDocuments.push({
-            id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+          const ab = await f.file.arrayBuffer();
+          const data = f.ext === "pdf" ? await compressPDF(ab) : ab;
+          processedFiles.push({
             name: f.name,
             originalName: f.name,
             category: "evidence",
@@ -394,20 +481,58 @@ ${filesList}
             folder: "01_ОРИГІНАЛИ",
             date: new Date().toISOString().slice(0, 10),
             pageCount: null,
-            size: f.size,
-            icon: FORMAT_ICONS[f.ext] || "\ud83d\udcc4",
-            procId: caseData.proceedings?.[0]?.id || "proc_main",
-            tags: [],
-            status: "ready",
-            addedAt: new Date().toISOString(),
+            originalSize: f.size,
+            data,
+            ext: f.ext,
           });
         }
       }
 
+      // Save to Drive / local
+      const storageResults = await saveFilesToStorage(processedFiles);
+
+      // Build document entries for case
+      const newDocuments = processedFiles.map((pf, i) => ({
+        id: `doc_${Date.now()}_${i}`,
+        name: pf.name,
+        originalName: pf.originalName,
+        category: pf.category,
+        author: pf.author,
+        folder: pf.folder,
+        date: pf.date,
+        pageCount: pf.pageCount,
+        size: pf.data ? pf.data.byteLength : pf.originalSize,
+        originalSize: pf.originalSize,
+        icon: CATEGORY_ICONS[pf.category] || FORMAT_ICONS[pf.ext] || "\ud83d\udcc4",
+        procId: caseData.proceedings?.[0]?.id || "proc_main",
+        tags: [],
+        status: "ready",
+        driveId: storageResults[i]?.driveId || null,
+        driveUrl: storageResults[i]?.driveUrl || null,
+        savedLocally: storageResults[i]?.savedLocally || false,
+        addedAt: new Date().toISOString(),
+      }));
+
       const existingDocs = caseData.documents || [];
       updateCase(caseData.id, "documents", [...existingDocs, ...newDocuments]);
 
-      addAgentMessage(`\u2705 Збережено ${newDocuments.length} документ(ів) у справу "${caseData.name}".\nВкладка Матеріали оновлена.`);
+      // Build summary
+      const summary = storageResults.map(r =>
+        `\u2705 ${r.name}\n   \ud83d\udcc1 ${r.folder}${r.driveUrl ? "\n   \u2601\ufe0f Drive" : ""}${r.savedLocally ? "\n   \ud83d\udcbe Локально" : ""}`
+      ).join("\n\n");
+
+      // Compression info for PDFs
+      const pdfFiles = processedFiles.filter(f => f.ext === "pdf" && f.data);
+      let compressionLine = "";
+      if (pdfFiles.length > 0) {
+        const totalOrig = pdfFiles.reduce((s, f) => s + f.originalSize, 0);
+        const totalComp = pdfFiles.reduce((s, f) => s + (f.data?.byteLength || f.originalSize), 0);
+        if (totalOrig > totalComp) {
+          compressionLine = `\n\nСтиснення: ${formatSize(totalOrig)} \u2192 ${formatSize(totalComp)} (-${Math.round((1 - totalComp / totalOrig) * 100)}%)`;
+        }
+      }
+
+      addAgentMessage(`Готово! ${storageResults.length} документ(ів) збережено:\n\n${summary}${compressionLine}\n\nВкладка Матеріали оновлена.`);
 
       setProposedStructure(null);
       setParsedAction(null);
@@ -436,40 +561,59 @@ ${filesList}
       const originalSize = arrayBuffer.byteLength;
       const parts = await splitPDF(arrayBuffer, splitPoints);
 
-      const newDocuments = [];
-      let totalCompressedSize = 0;
-
+      // Compress each part
+      const processedFiles = [];
       for (const part of parts) {
         const compressed = await compressPDF(part.data);
-        totalCompressedSize += compressed.byteLength;
-
-        newDocuments.push({
-          id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
-          name: part.name,
+        processedFiles.push({
+          name: part.name + ".pdf",
           originalName: pdfFile.name,
           category: part.type || "evidence",
           author: "ours",
-          folder: "01_ПРОЦЕСУАЛЬНІ",
           date: new Date().toISOString().slice(0, 10),
           pageCount: part.pageCount,
-          size: compressed.byteLength,
-          icon: CATEGORY_ICONS[part.type] || "\ud83d\udcc4",
-          procId: caseData.proceedings?.[0]?.id || "proc_main",
-          tags: [],
-          status: "ready",
-          addedAt: new Date().toISOString(),
+          originalSize: part.data.byteLength,
+          data: compressed,
+          ext: "pdf",
         });
       }
+
+      // Save to Drive / local
+      const storageResults = await saveFilesToStorage(processedFiles);
+
+      const newDocuments = processedFiles.map((pf, i) => ({
+        id: `doc_${Date.now()}_${i}`,
+        name: pf.name,
+        originalName: pf.originalName,
+        category: pf.category,
+        author: pf.author,
+        folder: storageResults[i]?.folder || getFolderForDocument(pf.category),
+        date: pf.date,
+        pageCount: pf.pageCount,
+        size: pf.data.byteLength,
+        originalSize: pf.originalSize,
+        icon: CATEGORY_ICONS[pf.category] || "\ud83d\udcc4",
+        procId: caseData.proceedings?.[0]?.id || "proc_main",
+        tags: [],
+        status: "ready",
+        driveId: storageResults[i]?.driveId || null,
+        driveUrl: storageResults[i]?.driveUrl || null,
+        savedLocally: storageResults[i]?.savedLocally || false,
+        addedAt: new Date().toISOString(),
+      }));
 
       const existingDocs = caseData.documents || [];
       updateCase(caseData.id, "documents", [...existingDocs, ...newDocuments]);
 
-      const compressionInfo = `${formatSize(originalSize)} \u2192 ${formatSize(totalCompressedSize)} (-${Math.round((1 - totalCompressedSize / originalSize) * 100)}%)`;
+      const totalCompressed = processedFiles.reduce((s, f) => s + f.data.byteLength, 0);
+      const compressionInfo = `${formatSize(originalSize)} \u2192 ${formatSize(totalCompressed)} (-${Math.round((1 - totalCompressed / originalSize) * 100)}%)`;
+
+      const summary = storageResults.map((r, i) =>
+        `  \u2022 ${processedFiles[i].name} (${processedFiles[i].pageCount} стор.)${r.driveUrl ? " \u2601\ufe0f" : ""}${r.savedLocally ? " \ud83d\udcbe" : ""}`
+      ).join("\n");
 
       addAgentMessage(
-        `\u2705 PDF нарізано на ${parts.length} документ(ів):\n` +
-        parts.map(p => `  \u2022 ${p.name} (${p.pageCount} стор.)`).join("\n") +
-        `\n\nСтиснення: ${compressionInfo}\nВкладка Матеріали оновлена.`
+        `\u2705 PDF нарізано на ${parts.length} документ(ів):\n${summary}\n\nСтиснення: ${compressionInfo}\nВкладка Матеріали оновлена.`
       );
 
       setProposedStructure(null);
@@ -487,6 +631,14 @@ ${filesList}
     setProposedStructure(null);
     setParsedAction(null);
     addAgentMessage("Обробку скасовано. Файли видалено з черги.");
+  }
+
+  async function handleSelectLocalFolder() {
+    const handle = await selectLocalFolder();
+    if (handle) {
+      setLocalDirHandle(handle);
+      addAgentMessage(`\ud83d\udcbe Обрано локальну папку: ${handle.name}`);
+    }
   }
 
   // ── RENDER ─────────────────────────────────────────────────────────────────
@@ -507,6 +659,21 @@ ${filesList}
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
 
+      {/* Зона 0 — Індикатор платформи */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", fontSize: 11, color: "#5a6080", flexShrink: 0 }}>
+        <span>{"Збереження:"}</span>
+        {hasDrive && <span style={{ color: "#2ecc71" }}>{"\u2601\ufe0f Google Drive"}</span>}
+        {hasDesktop && (
+          <button
+            onClick={handleSelectLocalFolder}
+            style={{ background: "none", border: "1px solid #2e3148", color: localDirHandle ? "#2ecc71" : "#9aa0b8", padding: "2px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }}
+          >
+            {localDirHandle ? `\ud83d\udcbe ${localDirHandle.name}` : "\ud83d\udcbe Обрати папку"}
+          </button>
+        )}
+        {!hasDrive && !hasDesktop && <span style={{ color: "#f39c12" }}>{"\u26a0\ufe0f Підключіть Google Drive в налаштуваннях"}</span>}
+      </div>
+
       {/* Зона 1 — Drop zone */}
       <div
         onDrop={handleDrop}
@@ -517,7 +684,7 @@ ${filesList}
           border: `2px dashed ${isDragOver ? "#4f7cff" : "#2e3148"}`,
           borderRadius: 10,
           padding: "16px 20px",
-          margin: "10px 12px 6px",
+          margin: "4px 12px 6px",
           textAlign: "center",
           background: isDragOver ? "rgba(79,124,255,.06)" : "transparent",
           transition: "all .2s",
@@ -596,7 +763,7 @@ ${filesList}
           {processing && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 0", color: "#5a6080", fontSize: 11 }}>
               <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>{"\u23f3"}</span>
-              {"Агент аналізує..."}
+              {"Агент працює..."}
             </div>
           )}
           <div ref={chatEndRef} />

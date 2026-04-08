@@ -172,3 +172,18 @@ messages: [...cleanHistory, { role: 'user', content: userMessage }]
 pdf-lib для нарізки і стиснення — npm install pdf-lib.
 Стиснення завжди після будь-якої операції — без підтвердження.
 Ніколи не писати "буде в наступній версії".
+
+---
+
+### [2026-04-08] Drive scope — drive замість drive.file
+drive.file дозволяє тільки файли створені системою.
+Для створення папок і завантаження довільних файлів потрібен scope: drive.
+Після зміни scope — очистити токен: localStorage.removeItem('levytskyi_drive_token')
+Користувач побачить новий запит дозволу від Google — це нормально.
+
+---
+
+### [2026-04-08] Локальне сховище — тільки десктоп Chrome
+File System Access API (showDirectoryPicker) — працює тільки на десктопі.
+На Android/iOS — тільки Google Drive.
+Перевірка платформи: window.showDirectoryPicker !== undefined && !(/Android|iPhone|iPad/i.test(navigator.userAgent))

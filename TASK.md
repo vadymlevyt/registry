@@ -1,11 +1,18 @@
-# TASK.md — Document Processor: реальні дії після підтвердження
+# TASK.md — Drive запис + локальне сховище + Document Processor реальні дії
 Дата: 08.04.2026
 
-## ПРОБЛЕМА
+## АРХІТЕКТУРА СХОВИЩА
 
-Document Processor аналізує і показує структуру — але після "Підтвердити структуру"
-нічого не відбувається. Пише "функція буде в наступній версії".
-Треба реалізувати реальне виконання в браузері.
+Платформа визначається автоматично:
+- Десктоп Chrome → локальна папка (File System Access API) + Google Drive
+- Планшет/мобільний → тільки Google Drive
+
+```
+const isDesktop = () => {
+  return window.showDirectoryPicker !== undefined &&
+    !(/Android|iPhone|iPad/i.test(navigator.userAgent));
+};
+```
 
 ---
 
@@ -17,169 +24,360 @@ cat LESSONS.md
 
 ---
 
-## КРОК 1 — ДІАГНОСТИКА
+## КРОК 1 — ДІАГНОСТИКА ПОТОЧНОГО DRIVE СЕРВІСУ
 
 ```bash
-grep -n "Підтвердити\|confirmStructure\|handleConfirm\|наступній версії" src/components/DocumentProcessor/index.jsx | head -20
-grep -n "processedFiles\|documents\|structure" src/components/DocumentProcessor/index.jsx | head -30
+# Знайти поточний Drive scope і функції
+grep -n "scope\|drive\|DRIVE\|oauth\|token" src/App.jsx | head -20
+grep -rn "scope\|drive" src/services/ | head -20
+
+# Знайти handleConfirm в DocumentProcessor
+grep -n "handleConfirm\|Підтвердити\|наступній версії" src/components/DocumentProcessor/index.jsx | head -20
 ```
 
 Показати результати перед змінами.
 
 ---
 
-## КРОК 2 — ВИКОНАННЯ ПІСЛЯ ПІДТВЕРДЖЕННЯ
+## КРОК 2 — РОЗШИРИТИ DRIVE SCOPE
 
-Після "Підтвердити структуру" — зберегти документи в об'єкті справи:
+### 2А. Знайти де зараз визначається scope OAuth
 
+```bash
+grep -n "scope\|drive.file\|SCOPE" src/App.jsx | head -10
+```
+
+### 2Б. Змінити scope
+
+Поточний scope дозволяє тільки файли створені системою:
+```
+https://www.googleapis.com/auth/drive.file
+```
+
+Новий scope — повний доступ для створення папок і завантаження будь-яких файлів:
+```
+https://www.googleapis.com/auth/drive
+```
+
+ВАЖЛИВО: після зміни scope — при наступній авторизації користувач побачить
+новий запит дозволу від Google. Це нормально — один раз.
+
+Також очистити збережений токен щоб примусити повторну авторизацію:
 ```jsx
-const newDocuments = confirmedStructure.map(item => ({
-  id: Date.now() + Math.random(),
-  name: item.processedName,
-  originalName: item.originalName,
-  category: item.category,
-  proceeding: item.proceeding,
-  date: item.date || null,
-  author: item.author || 'unknown',
-  folder: item.folder,
-  size: item.size,
-  pageCount: item.pageCount || null,
-  status: 'ready',
-  addedAt: new Date().toISOString(),
-}));
-
-const existingDocs = caseData.documents || [];
-updateCase(caseData.id, 'documents', [...existingDocs, ...newDocuments]);
-addAgentMessage('✅ Документи збережено. Вкладка Матеріали оновлена.');
+// В UI — кнопка "Оновити дозволи Drive" або автоматично при помилці доступу
+localStorage.removeItem('levytskyi_drive_token');
 ```
 
 ---
 
-## КРОК 3 — НАРІЗКА PDF
+## КРОК 3 — DRIVE СЕРВІС: НОВІ ФУНКЦІЇ
 
-Встановити pdf-lib:
-```bash
-grep "pdf-lib" package.json || npm install pdf-lib
-```
+Створити або розширити src/services/driveService.js:
 
-Функція нарізки:
+### 3А. Створити структуру папок справи
+
 ```jsx
-import { PDFDocument } from 'pdf-lib';
+// Стандартна структура папок справи
+const CASE_FOLDER_STRUCTURE = [
+  '00_INBOX',
+  '01_ОРИГІНАЛИ',
+  '02_ОБРОБЛЕНІ',
+  '03_ФРАГМЕНТИ',
+  '04_ПОЗИЦІЯ',
+  '05_ЗОВНІШНІ',
+];
 
-async function splitPDF(fileArrayBuffer, splitPoints) {
-  const srcDoc = await PDFDocument.load(fileArrayBuffer);
-  const results = [];
-  for (const part of splitPoints) {
-    const newDoc = await PDFDocument.create();
-    const pageIndices = Array.from(
-      { length: part.end - part.start + 1 },
-      (_, i) => part.start + i
-    );
-    const pages = await newDoc.copyPages(srcDoc, pageIndices);
-    pages.forEach(p => newDoc.addPage(p));
-    const bytes = await newDoc.save();
-    results.push({ name: part.name, data: bytes, pageCount: pages.length });
+async function createCaseStructure(caseName, token) {
+  // 1. Знайти або створити кореневу папку системи
+  const rootFolder = await findOrCreateFolder('01_АКТИВНІ_СПРАВИ', null, token);
+
+  // 2. Створити папку справи
+  const caseFolder = await findOrCreateFolder(caseName, rootFolder.id, token);
+
+  // 3. Створити всі підпапки
+  const subFolders = {};
+  for (const folderName of CASE_FOLDER_STRUCTURE) {
+    const folder = await findOrCreateFolder(folderName, caseFolder.id, token);
+    subFolders[folderName] = folder.id;
   }
-  return results;
+
+  return { caseFolderId: caseFolder.id, subFolders };
+}
+
+async function findOrCreateFolder(name, parentId, token) {
+  // Спробувати знайти існуючу папку
+  const query = parentId
+    ? `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`
+    : `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+
+  const searchRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const searchData = await searchRes.json();
+
+  if (searchData.files && searchData.files.length > 0) {
+    return searchData.files[0]; // папка вже існує
+  }
+
+  // Створити нову папку
+  const metadata = {
+    name,
+    mimeType: 'application/vnd.google-apps.folder',
+    ...(parentId && { parents: [parentId] }),
+  };
+
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(metadata),
+  });
+
+  return createRes.json();
 }
 ```
 
-Агент визначає точки нарізки через Vision і повертає JSON:
-```json
-{"action": "split", "split_points": [
-  {"start": 0, "end": 1, "name": "Позовна_заява_2023-03", "type": "pleading"},
-  {"start": 2, "end": 8, "name": "Додаток_1_Договір", "type": "evidence"}
-]}
-```
-
-Показує деревом в чаті → підтвердження → нарізає.
-
-Додати в system prompt агента:
-```
-Коли отримуєш PDF більше 5 сторінок:
-1. Прочитай перші сторінки через Vision
-2. Визнач чи це один документ чи кілька склеєних
-3. Якщо кілька — знайди межі за заголовками і змістом
-4. Поверни JSON: {"action":"split","split_points":[...]}
-5. Покажи нарізку деревом в чаті
-6. Запитай підтвердження ПЕРЕД нарізкою
-```
-
----
-
-## КРОК 4 — СТИСНЕННЯ
+### 3Б. Завантажити файл на Drive
 
 ```jsx
-async function compressPDF(arrayBuffer) {
-  const doc = await PDFDocument.load(arrayBuffer, { updateMetadata: false });
-  const compressed = await doc.save({ useObjectStreams: true });
-  return compressed;
+async function uploadFileToDrive(fileName, fileBlob, parentFolderId, token) {
+  const metadata = {
+    name: fileName,
+    parents: [parentFolderId],
+  };
+
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', fileBlob);
+
+  const res = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    }
+  );
+
+  return res.json(); // повертає { id, name, webViewLink }
 }
 ```
 
-Стиснення — автоматично після нарізки/склейки без окремого підтвердження.
-Показувати: "22.3 МБ → 4.1 МБ (-82%)"
+### 3В. Визначити папку для документа
 
----
-
-## КРОК 5 — ОНОВЛЕННЯ МАТЕРІАЛІВ
-
-```bash
-grep -n "documents\|MaterialsTab" src/components/CaseDossier/index.jsx | head -20
+```jsx
+// Маппінг типу документа → папка в структурі справи
+function getFolderForDocument(doc) {
+  const mapping = {
+    'pleading': '02_ОБРОБЛЕНІ',      // позовні заяви, відзиви
+    'court_act': '02_ОБРОБЛЕНІ',     // ухвали, постанови
+    'evidence': '02_ОБРОБЛЕНІ',      // докази
+    'correspondence': '02_ОБРОБЛЕНІ', // листування
+    'motion': '02_ОБРОБЛЕНІ',        // клопотання
+    'contract': '02_ОБРОБЛЕНІ',      // договори
+    'fragment': '03_ФРАГМЕНТИ',      // неповні документи
+    'position': '04_ПОЗИЦІЯ',        // матеріали позиції
+    'original': '01_ОРИГІНАЛИ',      // оригінали (незмінні)
+  };
+  return mapping[doc.type] || '02_ОБРОБЛЕНІ';
+}
 ```
 
-Вкладка Матеріали має відображати caseData.documents[]:
-- Список згрупований по folder
-- Іконки: 📄 процесуальні, 📋 докази, ⚖️ рішення, 📨 листування
-- Назва, дата, кількість сторінок
-
 ---
 
-## КРОК 6 — ПРИБРАТИ "НАСТУПНА ВЕРСІЯ"
+## КРОК 4 — ЛОКАЛЬНЕ СХОВИЩЕ (ДЕСКТОП)
 
-```bash
-grep -n "наступній версії\|next version\|буде доступна" src/components/DocumentProcessor/index.jsx
+```jsx
+// Перевірка платформи
+const isDesktop = () => {
+  return window.showDirectoryPicker !== undefined &&
+    !(/Android|iPhone|iPad/i.test(navigator.userAgent));
+};
+
+// Вибір локальної папки (тільки десктоп)
+async function selectLocalFolder() {
+  try {
+    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    // Зберегти handle в sessionStorage для поточної сесії
+    return dirHandle;
+  } catch (e) {
+    if (e.name === 'AbortError') return null; // користувач скасував
+    throw e;
+  }
+}
+
+// Зберегти файл локально
+async function saveFileLocally(dirHandle, relativePath, fileBlob) {
+  // relativePath: "02_ОБРОБЛЕНІ/Позовна_заява.pdf"
+  const parts = relativePath.split('/');
+  let currentDir = dirHandle;
+
+  // Створити підпапки якщо потрібно
+  for (let i = 0; i < parts.length - 1; i++) {
+    currentDir = await currentDir.getDirectoryHandle(parts[i], { create: true });
+  }
+
+  // Записати файл
+  const fileName = parts[parts.length - 1];
+  const fileHandle = await currentDir.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(fileBlob);
+  await writable.close();
+}
 ```
 
-Замінити на реальні дії або:
-"Збережено локально. Для Drive — підключіть Google Drive в налаштуваннях."
+---
+
+## КРОК 5 — ОНОВИТИ handleConfirm В DOCUMENT PROCESSOR
+
+Після підтвердження структури — реальні дії:
+
+```jsx
+const handleConfirm = async () => {
+  setStatus('executing');
+  addAgentMessage('⚙️ Виконую...');
+
+  const token = localStorage.getItem('levytskyi_drive_token');
+  const desktop = isDesktop();
+
+  try {
+    // 1. Нарізка PDF через pdf-lib (якщо потрібно)
+    const processedFiles = await processFiles(confirmedStructure, originalFileBuffer);
+
+    // 2. Визначити куди зберігати
+    let localDirHandle = null;
+    if (desktop) {
+      // Запитати локальну папку або використати збережену
+      localDirHandle = await selectLocalFolder();
+    }
+
+    // 3. Зберегти кожен файл
+    const results = [];
+    for (const file of processedFiles) {
+      const folder = getFolderForDocument(file);
+      const fileName = file.processedName;
+      const fileBlob = new Blob([file.data], { type: 'application/pdf' });
+      const result = { name: fileName, folder };
+
+      // Drive (завжди якщо є токен)
+      if (token) {
+        // Переконатись що структура папок існує
+        const { subFolders } = await createCaseStructure(
+          `${caseData.name}_${caseData.case_no || ''}`,
+          token
+        );
+        const folderId = subFolders[folder] || subFolders['02_ОБРОБЛЕНІ'];
+        const driveFile = await uploadFileToDrive(fileName, fileBlob, folderId, token);
+        result.driveId = driveFile.id;
+        result.driveUrl = driveFile.webViewLink;
+      }
+
+      // Локально (тільки десктоп)
+      if (localDirHandle) {
+        await saveFileLocally(localDirHandle, `${folder}/${fileName}`, fileBlob);
+        result.savedLocally = true;
+      }
+
+      results.push(result);
+    }
+
+    // 4. Зберегти в documents[] справи
+    const newDocuments = results.map((r, i) => ({
+      id: `doc_${Date.now()}_${i}`,
+      name: r.name,
+      folder: r.folder,
+      driveId: r.driveId || null,
+      driveUrl: r.driveUrl || null,
+      savedLocally: r.savedLocally || false,
+      compressedSize: processedFiles[i].compressedSize,
+      originalSize: processedFiles[i].originalSize,
+      status: 'ready',
+      addedAt: new Date().toISOString(),
+    }));
+
+    updateCase(caseData.id, 'documents', [
+      ...(caseData.documents || []),
+      ...newDocuments,
+    ]);
+
+    // 5. Результат
+    const summary = results.map(r =>
+      `✅ ${r.name}\n   📁 ${r.folder}${r.driveUrl ? `\n   🔗 Drive` : ''}${r.savedLocally ? '\n   💾 Локально' : ''}`
+    ).join('\n\n');
+
+    addAgentMessage(`Готово! ${results.length} документів збережено:\n\n${summary}`);
+    setStatus('done');
+
+  } catch (error) {
+    addAgentMessage(`❌ Помилка: ${error.message}`);
+    setStatus('error');
+  }
+};
+```
 
 ---
 
-## ПОРЯДОК
+## КРОК 6 — UI ІНДИКАТОРИ ПЛАТФОРМИ
 
-1. Діагностика
-2. Збереження в documents[] після підтвердження
-3. pdf-lib нарізка
-4. Стиснення
-5. Оновлення Матеріалів
-6. Прибрати "наступна версія"
+В Document Processor показувати куди буде збережено:
+
+```jsx
+// Вгорі компонента після завантаження файлів:
+<div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+  Буде збережено:
+  {token && ' ☁️ Google Drive'}
+  {isDesktop() && ' 💾 Локальна папка'}
+  {!token && !isDesktop() && ' ⚠️ Підключіть Google Drive'}
+</div>
+```
+
+---
+
+## ПОРЯДОК ВИКОНАННЯ
+
+1. Діагностика поточного Drive сервісу
+2. Розширити OAuth scope на `drive`
+3. Додати функції в driveService: findOrCreateFolder, uploadFileToDrive
+4. Додати локальне збереження (File System Access API)
+5. Оновити handleConfirm з реальними діями
+6. Додати UI індикатори платформи
+7. Перевірити що Матеріали оновлюються після збереження
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "feat: document processor - real actions, PDF split and compress" && git push origin main
+git add -A && git commit -m "feat: drive write access, local storage, document processor real actions" && git push origin main
 ```
 
-## ЧЕКЛІСТ
+---
 
-- [ ] Підтвердив → документи з'явились у Матеріалах
-- [ ] Великий PDF → агент показав точки нарізки деревом
-- [ ] Підтвердив нарізку → PDF розрізаний на окремі файли
-- [ ] Показує розмір до/після: "22.3 МБ → 4.1 МБ"
-- [ ] Жодного "буде в наступній версії"
+## ЧЕКЛІСТ ПІСЛЯ ДЕПЛОЮ
+
+- [ ] Drive scope оновлено — при авторизації запитує нові дозволи
+- [ ] Підтвердив структуру → файли з'явились на Google Drive в правильних папках
+- [ ] На десктопі → є можливість вибрати локальну папку
+- [ ] Документи з'явились у вкладці Матеріали з посиланнями на Drive
+- [ ] При завантаженні нових документів в існуючу справу — папки вже є, просто додає файли
+- [ ] При новій справі — створює повну структуру папок автоматично
 
 ---
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-08] Document Processor — реальні дії
-Після підтвердження структури — updateCase() з новими documents[].
-Матеріали оновлюються автоматично через props.
-pdf-lib для нарізки і стиснення — npm install pdf-lib.
-Стиснення завжди після будь-якої операції — без підтвердження.
-Ніколи не писати "буде в наступній версії".
+### [2026-04-08] Drive scope — drive замість drive.file
+drive.file дозволяє тільки файли створені системою.
+Для створення папок і завантаження довільних файлів потрібен scope: drive.
+Після зміни scope — очистити токен: localStorage.removeItem('levytskyi_drive_token')
+Користувач побачить новий запит дозволу від Google — це нормально.
+
+### [2026-04-08] Локальне сховище — тільки десктоп Chrome
+File System Access API (showDirectoryPicker) — працює тільки на десктопі.
+На Android/iOS — тільки Google Drive.
+Перевірка платформи: window.showDirectoryPicker !== undefined && !(/Android|iPhone|iPad/i.test(navigator.userAgent))
 ```
