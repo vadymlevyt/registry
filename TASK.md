@@ -1,4 +1,4 @@
-# TASK.md — Два баги: перевірка структури + нарізка після підтвердження
+# TASK.md — Діагностика і фікс: структура папок + нарізка
 Дата: 08.04.2026
 
 ## КРОК 0 — ПРОЧИТАТИ LESSONS.md
@@ -8,117 +8,172 @@ cat LESSONS.md
 
 ---
 
-## КРОК 1 — ДІАГНОСТИКА
+## КРОК 1 — ПОКАЗАТИ ВЕСЬ ПОТОЧНИЙ КОД
 
 ```bash
-# Баг 1: перевірка структури папок
-grep -n "checkFolderStatus\|structureStatus\|REQUIRED\|01_ОРИГІНАЛИ\|no_structure" src/components/CaseDossier/index.jsx | head -20
+# Показати checkFolderStatus повністю
+grep -n -A 40 "checkFolderStatus" src/components/CaseDossier/index.jsx | head -60
 
-# Баг 2: нарізка після підтвердження
-grep -n "uploadedFile\|splitPoints\|handleConfirm\|Підтвердити нарізку\|splitPDF" src/components/DocumentProcessor/index.jsx | head -30
+# Показати handleCreateDriveStructure повністю  
+grep -n -A 40 "handleCreateDriveStructure" src/components/CaseDossier/index.jsx | head -60
 
-# Перевірити чи зберігається uploadedFile в state
-grep -n "setUploadedFile\|useState.*File\|useState.*null" src/components/DocumentProcessor/index.jsx | head -10
+# Показати handleConfirm в DocumentProcessor повністю
+grep -n -A 50 "handleConfirm" src/components/DocumentProcessor/index.jsx | head -80
+
+# Показати де зберігається uploadedFile
+grep -n "uploadedFile\|setUploadedFile\|uploadedFileRef" src/components/DocumentProcessor/index.jsx | head -20
 ```
 
-Показати результати.
+Показати ВСІ результати перед будь-якими змінами.
 
 ---
 
-## БАГ 1 — СХОВИЩЕ: ПЕРЕВІРКА СТРУКТУРИ
+## КРОК 2 — ЗАМІНИТИ checkFolderStatus
 
-### Проблема:
-checkFolderStatus перевіряє підпапки але не знаходить їх.
-Можлива причина: назви підпапок на Drive мають кирилицю — запит може їх не знаходити через encoding.
-
-### Фікс — додати логування і перевірити що повертає API:
+Замінити існуючу функцію повністю на просту і надійну:
 
 ```jsx
 const checkFolderStatus = async (folderId, token) => {
   try {
-    // Перевірити чи існує папка
-    const res = await fetch(
+    // 1. Перевірити чи папка існує
+    const fileRes = await fetch(
       `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    if (res.status === 404) return { state: 'deleted' };
+    if (fileRes.status === 404) {
+      return { state: 'deleted' };
+    }
 
-    const file = await res.json();
-    if (file.trashed) return { state: 'trashed' };
+    const fileData = await fileRes.json();
+    if (fileData.error) {
+      return { state: 'deleted' };
+    }
+    if (fileData.trashed) {
+      return { state: 'trashed' };
+    }
 
-    // Отримати ВСІ підпапки (без фільтра по назві)
+    // 2. Отримати підпапки БЕЗ фільтра по назві
     const subRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-        `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
-      )}&fields=files(id,name)&pageSize=50`,
+      `https://www.googleapis.com/drive/v3/files?` +
+      `q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+      `&fields=files(id,name)&pageSize=50`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
+
     const subData = await subRes.json();
-    const existingNames = (subData.files || []).map(f => f.name);
+    const folders = subData.files || [];
+    const names = folders.map(f => f.name);
 
-    console.log('Папки в', file.name, ':', existingNames); // для діагностики
-
-    // Перевірити чи є хоча б одна з обов'язкових
+    // 3. Перевірити наявність обов'язкових підпапок
     const REQUIRED = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ'];
-    const missing = REQUIRED.filter(n => !existingNames.includes(n));
+    const missing = REQUIRED.filter(r => !names.includes(r));
 
     return {
       state: missing.length === 0 ? 'ok' : 'no_structure',
       missing,
-      existing: existingNames, // для діагностики
+      found: names,
     };
 
   } catch (e) {
-    console.error('checkFolderStatus error:', e);
     return { state: 'error', error: e.message };
   }
 };
 ```
 
-### Фікс handleCreateDriveStructure — перевірити storageState перед дією:
+---
+
+## КРОК 3 — ЗАМІНИТИ handleCreateDriveStructure
+
+Замінити повністю на просту і надійну версію:
 
 ```jsx
 const handleCreateDriveStructure = async () => {
   const token = localStorage.getItem('levytskyi_drive_token');
-  if (!token) { showMsg('❌ Підключіть Google Drive'); return; }
+  if (!token) {
+    showMsg('❌ Підключіть Google Drive');
+    return;
+  }
 
-  // Знайти правильний folderId
-  const targetFolderId = storageState?.driveFolderId;
+  setCreatingStructure(true);
+  showMsg('⏳ Створюю структуру...');
 
-  if (!targetFolderId) {
-    // Немає папки — створити нову в 01_АКТИВНІ_СПРАВИ
-    setCreatingStructure(true);
-    try {
-      const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`.replace(/[/\s]+/g, '_');
+  try {
+    const SUBFOLDERS = [
+      '01_ОРИГІНАЛИ',
+      '02_ОБРОБЛЕНІ',
+      '03_ФРАГМЕНТИ',
+      '04_ПОЗИЦІЯ',
+      '05_ЗОВНІШНІ',
+    ];
+
+    let targetFolderId = storageState?.driveFolderId;
+
+    if (!targetFolderId) {
+      // Створити нову папку справи в 01_АКТИВНІ_СПРАВИ
+      const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`
+        .replace(/[/\s]+/g, '_')
+        .replace(/[\\:*?"<>|]/g, '');
+
       const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
-      const storageData = {
+      targetFolderId = caseFolderId;
+
+      const newStorage = {
         driveFolderId: caseFolderId,
         driveFolderName: caseFolderName,
         localFolderPath: null,
         lastSyncAt: new Date().toISOString(),
       };
-      updateCase(caseData.id, 'storage', storageData);
-      setStorageState(storageData);
-      setStructureStatus({ state: 'ok', missing: [] });
-      showMsg('✅ Структуру створено: ' + caseFolderName);
-    } catch (e) {
-      showMsg('❌ Помилка: ' + e.message);
-    } finally {
-      setCreatingStructure(false);
-    }
-    return;
-  }
+      updateCase(caseData.id, 'storage', newStorage);
+      setStorageState(newStorage);
+    } else {
+      // Створити підпапки в існуючій папці
+      for (const name of SUBFOLDERS) {
+        // Перевірити чи підпапка вже є
+        const checkRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files?` +
+          `q=${encodeURIComponent(`'${targetFolderId}' in parents and name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+          `&fields=files(id,name)`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const checkData = await checkRes.json();
 
-  // Папка є — створити підпапки всередині
-  setCreatingStructure(true);
-  try {
-    const SUBFOLDERS = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ', '05_ЗОВНІШНІ'];
-    for (const name of SUBFOLDERS) {
-      await findOrCreateFolder(name, targetFolderId, token);
+        if (!checkData.files || checkData.files.length === 0) {
+          // Створити підпапку
+          await fetch('https://www.googleapis.com/drive/v3/files', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              name,
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: [targetFolderId],
+            }),
+          });
+        }
+      }
     }
+
+    // Оновити статус
     setStructureStatus({ state: 'ok', missing: [] });
     showMsg('✅ Структуру створено');
+
+    // Оновити driveFolderName якщо є тільки ID
+    if (storageState?.driveFolderId && !storageState?.driveFolderName) {
+      const nameRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${storageState.driveFolderId}?fields=name`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const nameData = await nameRes.json();
+      if (nameData.name) {
+        const updated = { ...storageState, driveFolderName: nameData.name };
+        setStorageState(updated);
+        updateCase(caseData.id, 'storage', updated);
+      }
+    }
+
   } catch (e) {
     showMsg('❌ Помилка: ' + e.message);
   } finally {
@@ -129,95 +184,165 @@ const handleCreateDriveStructure = async () => {
 
 ---
 
-## БАГ 2 — НАРІЗКА ПІСЛЯ ПІДТВЕРДЖЕННЯ
+## КРОК 4 — ФІКС НАРІЗКИ
 
-### Діагностика:
-```bash
-# Знайти handleConfirm і кнопку підтвердження
-grep -n "handleConfirm\|Підтвердити нарізку\|onClick.*підтвердити\|splitPDF\|uploadedFile" src/components/DocumentProcessor/index.jsx | head -20
-```
+Після діагностики (Крок 1) знайти де проблема в handleConfirm.
 
-### Можливі причини:
-1. `uploadedFile` не зберігається в state при завантаженні файлу
-2. `splitPoints` скидається при ре-рендері
-3. `handleConfirm` не знаходить `uploadedFile` бо замикання (closure) на старе значення
+Найімовірніше uploadedFile або splitPoints не передаються правильно.
 
-### Фікс — використати useRef для надійного зберігання:
+Додати перевірки на початку handleConfirm:
 
 ```jsx
-// Додати refs поруч зі state
-const uploadedFileRef = useRef(null);
-const splitPointsRef = useRef([]);
-
-// При завантаженні файлу — зберігати в обох
-const handleFileLoad = (file) => {
-  setUploadedFile(file);
-  uploadedFileRef.current = file;
-};
-
-// При встановленні splitPoints — зберігати в обох
-const handleSetSplitPoints = (points) => {
-  setSplitPoints(points);
-  splitPointsRef.current = points;
-};
-
-// В handleConfirm — читати з ref:
 const handleConfirm = async () => {
-  const file = uploadedFileRef.current || uploadedFile;
-  const points = splitPointsRef.current.length > 0 ? splitPointsRef.current : splitPoints;
+  // Діагностика — показати що є
+  console.log('handleConfirm called');
+  console.log('uploadedFile:', uploadedFile?.name);
+  console.log('splitPoints:', splitPoints?.length);
 
-  if (!file) {
-    addAgentMessage('❌ Файл не завантажено');
-    return;
-  }
-  if (!points || points.length === 0) {
-    addAgentMessage('❌ Структуру не визначено. Спочатку напишіть "нарізати"');
+  // Перевірки
+  if (!uploadedFile) {
+    addAgentMessage('❌ Файл не завантажено. Перезавантажте файл і спробуйте знову.');
     return;
   }
 
-  addAgentMessage('✂️ Нарізаю PDF...');
-  // ... далі логіка нарізки
-};
-```
+  if (!splitPoints || splitPoints.length === 0) {
+    addAgentMessage('❌ Структуру не визначено. Напишіть "нарізати" в полі команди.');
+    return;
+  }
 
-### Перевірити що кнопка "Підтвердити нарізку" викликає handleConfirm:
+  addAgentMessage(`✂️ Нарізаю ${splitPoints.length} документів...`);
 
-```bash
-grep -n "Підтвердити нарізку\|handleConfirm" src/components/DocumentProcessor/index.jsx | head -10
-```
-
-Якщо кнопка викликає щось інше — виправити.
-
-### Перевірити що pdf-lib завантажується:
-
-```jsx
-// На початку handleConfirm — перевірити доступність pdf-lib
-const handleConfirm = async () => {
   try {
+    // Завантажити pdf-lib
     const { PDFDocument } = await import('pdf-lib');
-    console.log('pdf-lib завантажено OK');
+
+    // Читати файл
+    const arrayBuffer = await uploadedFile.arrayBuffer();
+    const srcDoc = await PDFDocument.load(arrayBuffer);
+    const totalPages = srcDoc.getPageCount();
+
+    addAgentMessage(`📄 Всього сторінок: ${totalPages}`);
+
+    const results = [];
+
+    for (const doc of splitPoints) {
+      const startIdx = Math.max(0, doc.startPage - 1);
+      const endIdx = Math.min(doc.endPage - 1, totalPages - 1);
+
+      if (startIdx > totalPages - 1) {
+        addAgentMessage(`⚠️ Пропускаю "${doc.name}" — сторінка ${doc.startPage} не існує`);
+        continue;
+      }
+
+      const newDoc = await PDFDocument.create();
+      const indices = [];
+      for (let i = startIdx; i <= endIdx; i++) indices.push(i);
+
+      const pages = await newDoc.copyPages(srcDoc, indices);
+      pages.forEach(p => newDoc.addPage(p));
+
+      const bytes = await newDoc.save({ useObjectStreams: true });
+      results.push({
+        name: doc.name,
+        type: doc.type || 'other',
+        startPage: doc.startPage,
+        endPage: doc.endPage,
+        pageCount: indices.length,
+        data: bytes,
+        sizeMB: (bytes.byteLength / 1024 / 1024).toFixed(2),
+      });
+    }
+
+    addAgentMessage(`✅ Нарізано ${results.length} документів`);
+
+    // Записати на Drive
+    const token = localStorage.getItem('levytskyi_drive_token');
+    const folderId = caseData?.storage?.driveFolderId;
+
+    if (token && folderId) {
+      addAgentMessage('☁️ Записую на Drive...');
+
+      // Знайти 02_ОБРОБЛЕНІ
+      const subRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?` +
+        `q=${encodeURIComponent(`'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+        `&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const subData = await subRes.json();
+      const targetFolderId = subData.files?.[0]?.id || folderId;
+
+      for (const result of results) {
+        const safeName = result.name.replace(/[/\\:*?"<>|]/g, '_');
+        const blob = new Blob([result.data], { type: 'application/pdf' });
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify({
+          name: `${safeName}.pdf`,
+          parents: [targetFolderId],
+        })], { type: 'application/json' }));
+        form.append('file', blob);
+
+        await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+          { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }
+        );
+      }
+
+      // Оновити Матеріали
+      const newDocs = results.map((r, i) => ({
+        id: `doc_${Date.now()}_${i}`,
+        name: r.name,
+        type: r.type,
+        pageCount: r.pageCount,
+        folder: '02_ОБРОБЛЕНІ',
+        status: 'ready',
+        addedAt: new Date().toISOString(),
+      }));
+
+      updateCase(caseData.id, 'documents', [
+        ...(caseData.documents || []),
+        ...newDocs,
+      ]);
+
+      const summary = results.map(r =>
+        `✅ ${r.name} (${r.pageCount} стор., ${r.sizeMB} МБ)`
+      ).join('\n');
+
+      addAgentMessage(`Готово!\n\n${summary}\n\n📁 Збережено в 02_ОБРОБЛЕНІ\n📋 Матеріали оновлено`);
+
+    } else {
+      const summary = results.map(r => `✅ ${r.name} (${r.pageCount} стор.)`).join('\n');
+      addAgentMessage(`Нарізано:\n\n${summary}\n\n⚠️ Drive не підключено — файли тільки в пам'яті`);
+    }
+
   } catch (e) {
-    addAgentMessage('❌ pdf-lib не завантажено: ' + e.message);
-    return;
+    addAgentMessage(`❌ Помилка нарізки: ${e.message}\n\nStack: ${e.stack?.substring(0, 200)}`);
   }
-  // ...
 };
 ```
 
 ---
 
-## КРОК 2 — КНОПКА "РЕДАГУВАТИ"
+## КРОК 5 — ПЕРЕВІРИТИ ЩО uploadedFile ЗБЕРІГАЄТЬСЯ
 
 ```bash
-grep -n "Редагувати\|handleEdit\|onEdit" src/components/DocumentProcessor/index.jsx | head -10
+# Знайти де встановлюється uploadedFile
+grep -n "setUploadedFile\|uploadedFile\s*=" src/components/DocumentProcessor/index.jsx | head -20
 ```
 
-Якщо кнопка нічого не робить — додати базову логіку:
+Якщо `setUploadedFile` викликається тільки в одному місці при завантаженні —
+переконатись що воно не скидається при аналізі.
+
+Якщо скидається — зберігати в useRef:
 ```jsx
-const handleEdit = () => {
-  // Показати textarea з поточною структурою для ручного редагування
-  setEditMode(true);
-};
+const fileRef = useRef(null);
+
+// При завантаженні:
+setUploadedFile(file);
+fileRef.current = file;
+
+// В handleConfirm:
+const file = fileRef.current || uploadedFile;
 ```
 
 ---
@@ -225,28 +350,28 @@ const handleEdit = () => {
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: folder structure detection, split confirmation with refs" && git push origin main
+git add -A && git commit -m "fix: folder structure check without name filter, split confirmation debug" && git push origin main
 ```
 
 ## ЧЕКЛІСТ
 
-- [ ] Відкрив досьє з папкою що має підпапки → "✅ Структура папок є"
-- [ ] Відкрив досьє з папкою без підпапок → "⚠️ Немає структури" + кнопка Створити
-- [ ] Натиснув Створити → підпапки з'являються в папці на Drive
+- [ ] Папка Манолюк з підпапками → система показує "✅ Структура папок є"
+- [ ] Папка без підпапок → "⚠️ Немає структури" + кнопка Створити
+- [ ] Кнопка Створити → підпапки з'являються на Drive → статус "✅"
 - [ ] Завантажив PDF → написав "нарізати" → отримав список
-- [ ] Натиснув "Підтвердити нарізку" → pdf-lib нарізає без помилки
-- [ ] Файли записуються на Drive в 02_ОБРОБЛЕНІ
-- [ ] Матеріали оновлюються
+- [ ] "Підтвердити нарізку" → файли записались на Drive
+- [ ] Матеріали оновились
 
 ## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-08] useRef для збереження файлів між рендерами
-uploadedFile і splitPoints зберігати в useRef додатково до useState.
-В async функціях читати з ref: uploadedFileRef.current
-Closure в async функціях може захопити старе значення state — ref завжди актуальний.
+### [2026-04-08] Drive підпапки — не фільтрувати по назві в запиті
+Запит з name filter в q= ненадійний для кирилиці.
+Правильно: отримати всі підпапки без фільтра, порівняти назви в JS.
+q="'folderId' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+потім: const missing = REQUIRED.filter(r => !names.includes(r))
 
-### [2026-04-08] Drive підпапки — отримувати без фільтра по назві
-Запит без name filter: q="folderId in parents and mimeType=folder and trashed=false"
-Потім фільтрувати existingNames в JS — надійніше ніж через q з кирилицею.
+### [2026-04-08] handleConfirm — uploadedFile може бути null при виклику
+Додати console.log на початку для діагностики.
+Зберігати в useRef додатково до useState.
 ```

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
-import { createCaseStructure, findOrCreateFolder } from "../../services/driveService.js";
+import { createCaseStructure } from "../../services/driveService.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -52,7 +52,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     if (!folderId) return;
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) return;
-    checkFolderStructure(folderId, token).then(setStructureStatus);
+    checkFolderStatus(folderId, token).then(setStructureStatus);
   }, [caseData.storage?.driveFolderId]);
 
   const showMsg = (text) => {
@@ -98,16 +98,52 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         };
         updateCase(caseData.id, "storage", storageData);
         setStorageState(storageData);
-        setStructureStatus({ hasStructure: true, missing: [] });
+        setStructureStatus({ state: "ok", missing: [] });
         showMsg(`✅ Структуру створено: ${caseFolderName}`);
       } else {
-        // Папка є — створити тільки відсутні підпапки
+        // Папка є — створити підпапки в існуючій папці
         const SUBFOLDERS = ["01_ОРИГІНАЛИ", "02_ОБРОБЛЕНІ", "03_ФРАГМЕНТИ", "04_ПОЗИЦІЯ", "05_ЗОВНІШНІ"];
         for (const name of SUBFOLDERS) {
-          await findOrCreateFolder(name, targetFolderId, token);
+          // Перевірити чи підпапка вже є
+          const checkRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files?` +
+            `q=${encodeURIComponent(`'${targetFolderId}' in parents and name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+            `&fields=files(id,name)`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          const checkData = await checkRes.json();
+
+          if (!checkData.files || checkData.files.length === 0) {
+            await fetch("https://www.googleapis.com/drive/v3/files", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                name,
+                mimeType: "application/vnd.google-apps.folder",
+                parents: [targetFolderId],
+              }),
+            });
+          }
         }
-        setStructureStatus({ hasStructure: true, missing: [] });
+        setStructureStatus({ state: "ok", missing: [] });
         showMsg("✅ Структуру створено");
+
+        // Оновити driveFolderName якщо є тільки ID
+        if (!storageState?.driveFolderName) {
+          const nameRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${storageState.driveFolderId}?fields=name`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          const nameData = await nameRes.json();
+          if (nameData.name) {
+            const updated = { ...storageState, driveFolderName: nameData.name };
+            setStorageState(updated);
+            updateCase(caseData.id, "storage", updated);
+          }
+        }
       }
     } catch (e) {
       console.error("Drive structure error:", e);
@@ -120,34 +156,50 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [structureStatus, setStructureStatus] = useState(null);
   const [folderBrowser, setFolderBrowser] = useState(null);
 
-  const REQUIRED_SUBFOLDERS = ['01_ОРИГІНАЛИ', '02_ОБРОБЛЕНІ', '03_ФРАГМЕНТИ', '04_ПОЗИЦІЯ'];
-
-  const checkFolderStructure = async (folderId, token) => {
+  const checkFolderStatus = async (folderId, token) => {
     try {
-      // Перевірити чи існує сама папка
-      const folderRes = await fetch(
+      // 1. Перевірити чи папка існує
+      const fileRes = await fetch(
         `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      if (folderRes.status === 404) return { hasStructure: false, missing: REQUIRED_SUBFOLDERS, state: "deleted" };
-      const folderData = await folderRes.json();
-      if (folderData.trashed) return { hasStructure: false, missing: REQUIRED_SUBFOLDERS, state: "trashed" };
 
-      // Отримати ВСІ підпапки (без фільтра по назві — надійніше з кирилицею)
-      const url = `https://www.googleapis.com/drive/v3/files` +
-        `?q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
-        `&fields=files(id,name)&pageSize=50`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      const existingNames = (data.files || []).map(f => f.name);
+      if (fileRes.status === 404) {
+        return { state: "deleted" };
+      }
 
-      console.log("Папки в", folderData.name, ":", existingNames);
+      const fileData = await fileRes.json();
+      if (fileData.error) {
+        return { state: "deleted" };
+      }
+      if (fileData.trashed) {
+        return { state: "trashed" };
+      }
 
-      const missing = REQUIRED_SUBFOLDERS.filter(name => !existingNames.includes(name));
-      return { hasStructure: missing.length === 0, missing, existing: existingNames };
+      // 2. Отримати підпапки БЕЗ фільтра по назві
+      const subRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?` +
+        `q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+        `&fields=files(id,name)&pageSize=50`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const subData = await subRes.json();
+      const folders = subData.files || [];
+      const names = folders.map(f => f.name);
+
+      // 3. Перевірити наявність обов'язкових підпапок
+      const REQUIRED = ["01_ОРИГІНАЛИ", "02_ОБРОБЛЕНІ", "03_ФРАГМЕНТИ", "04_ПОЗИЦІЯ"];
+      const missing = REQUIRED.filter(r => !names.includes(r));
+
+      return {
+        state: missing.length === 0 ? "ok" : "no_structure",
+        missing,
+        found: names,
+      };
+
     } catch (e) {
-      console.error("checkFolderStructure error:", e);
-      return { hasStructure: false, missing: REQUIRED_SUBFOLDERS };
+      return { state: "error", error: e.message };
     }
   };
 
@@ -222,7 +274,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setFolderBrowser(null);
     showMsg(`✅ Папку вибрано: ${folder.name}`);
     setStructureStatus(null);
-    const status = await checkFolderStructure(folder.id, token);
+    const status = await checkFolderStatus(folder.id, token);
     setStructureStatus(status);
   };
 
@@ -737,10 +789,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               {structureStatus === null && (
                 <span style={{ color: "#666" }}>{"⏳ Перевірка структури..."}</span>
               )}
-              {structureStatus?.hasStructure === true && (
+              {structureStatus?.state === "ok" && (
                 <span style={{ color: "#4caf50" }}>{"✅ Структура папок є"}</span>
               )}
-              {structureStatus?.hasStructure === false && (
+              {(structureStatus?.state === "no_structure" || structureStatus?.state === "deleted" || structureStatus?.state === "trashed" || structureStatus?.state === "error") && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ color: "#f5a623" }}>{"⚠️ Немає структури папок"}</span>
                   <button

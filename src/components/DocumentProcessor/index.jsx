@@ -628,6 +628,11 @@ ${filesList}
   // ── ACTIONS ────────────────────────────────────────────────────────────────
 
   async function handleConfirm() {
+    console.log("handleConfirm called");
+    console.log("uploadedFile:", (uploadedFileRef.current || uploadedFile)?.name);
+    console.log("splitPoints:", (splitPointsRef.current.length > 0 ? splitPointsRef.current : splitPoints)?.length);
+    console.log("parsedAction:", parsedAction?.action);
+
     if (!updateCase || !caseData) {
       addAgentMessage("Помилка: немає зв'язку зі справою для збереження.");
       return;
@@ -750,75 +755,126 @@ ${filesList}
   }
 
   async function handleSplit() {
+    // Діагностика — показати що є
+    const file = uploadedFileRef.current || uploadedFile;
+    const points = splitPointsRef.current.length > 0 ? splitPointsRef.current : splitPoints;
+
+    console.log("handleSplit called");
+    console.log("uploadedFile:", file?.name);
+    console.log("splitPoints:", points?.length);
+
+    if (!file) {
+      addAgentMessage("❌ Файл не завантажено. Перезавантажте файл і спробуйте знову.");
+      setProcessing(false);
+      return;
+    }
+
+    if (!points || points.length === 0) {
+      addAgentMessage("❌ Структуру не визначено. Напишіть \"нарізати\" в полі команди.");
+      setProcessing(false);
+      return;
+    }
+
+    addAgentMessage(`✂️ Нарізаю ${points.length} документів...`);
+
     try {
-      const currentSplitPoints = parsedAction.split_points;
-      const file = uploadedFileRef.current || uploadedFile;
+      const arrayBuffer = await file.arrayBuffer();
+      const srcDoc = await PDFDocument.load(arrayBuffer);
+      const pageCount = srcDoc.getPageCount();
 
-      if (!file) {
-        addAgentMessage("Не знайдено PDF файл для нарізки.");
-        setProcessing(false);
-        return;
-      }
+      addAgentMessage(`📄 Всього сторінок: ${pageCount}`);
 
-      addAgentMessage("\u2702\ufe0f Нарізаю PDF...");
+      const results = [];
 
-      const originalSize = file.size;
-      const parts = await splitPDFByDocuments(file, currentSplitPoints);
+      for (const doc of points) {
+        const startIdx = Math.max(0, doc.startPage - 1);
+        const endIdx = Math.min(doc.endPage - 1, pageCount - 1);
 
-      // Compress each part
-      const processedFiles = [];
-      for (const part of parts) {
-        const compressed = await compressPDF(part.data);
-        processedFiles.push({
-          name: part.name + ".pdf",
-          originalName: file.name,
-          category: part.type || "evidence",
-          author: "ours",
-          date: new Date().toISOString().slice(0, 10),
-          pageCount: part.pageCount,
-          originalSize: part.data.byteLength,
-          data: compressed,
-          ext: "pdf",
+        if (startIdx > pageCount - 1) {
+          addAgentMessage(`⚠️ Пропускаю "${doc.name}" — сторінка ${doc.startPage} не існує`);
+          continue;
+        }
+
+        const newDoc = await PDFDocument.create();
+        const indices = [];
+        for (let i = startIdx; i <= endIdx; i++) indices.push(i);
+
+        const pages = await newDoc.copyPages(srcDoc, indices);
+        pages.forEach(p => newDoc.addPage(p));
+
+        const bytes = await newDoc.save({ useObjectStreams: true });
+        results.push({
+          name: doc.name,
+          type: doc.type || "other",
+          startPage: doc.startPage,
+          endPage: doc.endPage,
+          pageCount: indices.length,
+          data: bytes,
+          sizeMB: (bytes.byteLength / 1024 / 1024).toFixed(2),
         });
       }
 
-      // Save to Drive / local
-      const storageResults = await saveFilesToStorage(processedFiles);
+      addAgentMessage(`✅ Нарізано ${results.length} документів`);
 
-      const newDocuments = processedFiles.map((pf, i) => ({
-        id: `doc_${Date.now()}_${i}`,
-        name: pf.name,
-        originalName: pf.originalName,
-        category: pf.category,
-        author: pf.author,
-        folder: storageResults[i]?.folder || getFolderForDocument(pf.category),
-        date: pf.date,
-        pageCount: pf.pageCount,
-        size: pf.data.byteLength,
-        originalSize: pf.originalSize,
-        icon: CATEGORY_ICONS[pf.category] || "\ud83d\udcc4",
-        procId: caseData.proceedings?.[0]?.id || "proc_main",
-        tags: [],
-        status: "ready",
-        driveId: storageResults[i]?.driveId || null,
-        driveUrl: storageResults[i]?.driveUrl || null,
-        savedLocally: storageResults[i]?.savedLocally || false,
-        addedAt: new Date().toISOString(),
-      }));
+      // Записати на Drive
+      const token = localStorage.getItem("levytskyi_drive_token");
+      const folderId = caseData?.storage?.driveFolderId;
 
-      const existingDocs = caseData.documents || [];
-      updateCase(caseData.id, "documents", [...existingDocs, ...newDocuments]);
+      if (token && folderId) {
+        addAgentMessage("☁️ Записую на Drive...");
 
-      const totalCompressed = processedFiles.reduce((s, f) => s + f.data.byteLength, 0);
-      const compressionInfo = `${formatSize(originalSize)} \u2192 ${formatSize(totalCompressed)} (-${Math.round((1 - totalCompressed / originalSize) * 100)}%)`;
+        // Знайти 02_ОБРОБЛЕНІ
+        const subRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files?` +
+          `q=${encodeURIComponent(`'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+          `&fields=files(id)`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const subData = await subRes.json();
+        const targetFolderId = subData.files?.[0]?.id || folderId;
 
-      const summary = storageResults.map((r, i) =>
-        `  \u2022 ${processedFiles[i].name} (${processedFiles[i].pageCount} стор.)${r.driveUrl ? " \u2601\ufe0f" : ""}${r.savedLocally ? " \ud83d\udcbe" : ""}`
-      ).join("\n");
+        for (const result of results) {
+          const safeName = result.name.replace(/[/\\:*?"<>|]/g, "_");
+          const blob = new Blob([result.data], { type: "application/pdf" });
+          const form = new FormData();
+          form.append("metadata", new Blob([JSON.stringify({
+            name: `${safeName}.pdf`,
+            parents: [targetFolderId],
+          })], { type: "application/json" }));
+          form.append("file", blob);
 
-      addAgentMessage(
-        `\u2705 PDF нарізано на ${parts.length} документ(ів):\n${summary}\n\nСтиснення: ${compressionInfo}\nВкладка Матеріали оновлена.`
-      );
+          await fetch(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
+            { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form }
+          );
+        }
+
+        // Оновити Матеріали
+        const newDocs = results.map((r, i) => ({
+          id: `doc_${Date.now()}_${i}`,
+          name: r.name,
+          type: r.type,
+          pageCount: r.pageCount,
+          folder: "02_ОБРОБЛЕНІ",
+          status: "ready",
+          addedAt: new Date().toISOString(),
+        }));
+
+        updateCase(caseData.id, "documents", [
+          ...(caseData.documents || []),
+          ...newDocs,
+        ]);
+
+        const summary = results.map(r =>
+          `✅ ${r.name} (${r.pageCount} стор., ${r.sizeMB} МБ)`
+        ).join("\n");
+
+        addAgentMessage(`Готово!\n\n${summary}\n\n📁 Збережено в 02_ОБРОБЛЕНІ\n📋 Матеріали оновлено`);
+
+      } else {
+        const summary = results.map(r => `✅ ${r.name} (${r.pageCount} стор.)`).join("\n");
+        addAgentMessage(`Нарізано:\n\n${summary}\n\n⚠️ Drive не підключено — файли тільки в пам'яті`);
+      }
 
       setProposedStructure(null);
       setParsedAction(null);
@@ -829,8 +885,9 @@ ${filesList}
       setTotalPages(0);
       setUploadedFileName("");
       setFiles([]);
-    } catch (err) {
-      addAgentMessage(`\u041F\u043E\u043C\u0438\u043B\u043A\u0430 \u043D\u0430\u0440\u0456\u0437\u043A\u0438 PDF: ${err.message}`);
+
+    } catch (e) {
+      addAgentMessage(`❌ Помилка нарізки: ${e.message}\n\nStack: ${e.stack?.substring(0, 200)}`);
     } finally {
       setProcessing(false);
     }
