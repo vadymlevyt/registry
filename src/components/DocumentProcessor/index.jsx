@@ -252,7 +252,7 @@ function getMimeType(ext) {
   return map[ext] || "application/octet-stream";
 }
 
-export default function DocumentProcessor({ caseData, cases, updateCase, onCreateCase, onNavigateToDossier, apiKey }) {
+export default function DocumentProcessor({ caseData, cases, updateCase, onCreateCase, onNavigateToDossier, apiKey, driveFolderId, driveToken }) {
   const [files, setFiles] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -271,7 +271,7 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
   const uploadedFileRef = useRef(null);
   const splitPointsRef = useRef([]);
 
-  const token = localStorage.getItem("levytskyi_drive_token");
+  const token = driveToken || localStorage.getItem("levytskyi_drive_token");
   const hasDrive = !!token;
   const hasDesktop = isDesktop();
 
@@ -817,10 +817,10 @@ ${filesList}
       addAgentMessage(`✅ Нарізано ${results.length} документів`);
 
       // Записати на Drive
-      const token = localStorage.getItem("levytskyi_drive_token");
-      const folderId = caseData?.storage?.driveFolderId;
+      const drToken = driveToken || localStorage.getItem("levytskyi_drive_token");
+      const folderId = driveFolderId || caseData?.storage?.driveFolderId;
 
-      if (token && folderId) {
+      if (drToken && folderId) {
         addAgentMessage("☁️ Записую на Drive...");
 
         // Знайти 02_ОБРОБЛЕНІ
@@ -828,7 +828,7 @@ ${filesList}
           `https://www.googleapis.com/drive/v3/files?` +
           `q=${encodeURIComponent(`'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
           `&fields=files(id)`,
-          { headers: { Authorization: `Bearer ${token}` } }
+          { headers: { Authorization: `Bearer ${drToken}` } }
         );
         const subData = await subRes.json();
         const targetFolderId = subData.files?.[0]?.id || folderId;
@@ -845,7 +845,7 @@ ${filesList}
 
           await fetch(
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
-            { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form }
+            { method: "POST", headers: { Authorization: `Bearer ${drToken}` }, body: form }
           );
         }
 
@@ -873,7 +873,7 @@ ${filesList}
 
       } else {
         const summary = results.map(r => `✅ ${r.name} (${r.pageCount} стор.)`).join("\n");
-        addAgentMessage(`Нарізано:\n\n${summary}\n\n⚠️ Drive не підключено — файли тільки в пам'яті`);
+        addAgentMessage(`Нарізано:\n\n${summary}\n\n⚠️ Drive не підключено. Підключіть в блоці Сховище.`);
       }
 
       setProposedStructure(null);
