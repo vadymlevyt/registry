@@ -61,13 +61,35 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   async function handleCreateContext() {
     const token = localStorage.getItem("levytskyi_drive_token");
     const folderId = storageState?.driveFolderId;
-    if (!token || !folderId) {
-      setContextMsg("❌ Немає folderId. Перевірте блок Сховище.");
-      return;
-    }
+
+    // Діагностика storage
+    setContextMsg(`Storage: ${JSON.stringify(caseData?.storage || storageState)}`);
+
+    if (!token) { setContextMsg("❌ Немає токена Drive"); return; }
+    if (!folderId) { setContextMsg("❌ Немає folderId в storage"); return; }
+
     setContextLoading(true);
-    setContextMsg(`🔍 Шукаю в папці: ${storageState.driveFolderName || ''} (${folderId})`);
+    setContextMsg(`🔍 folderId = ${folderId}`);
     try {
+      // Перевірити чи папка існує
+      const checkRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const checkData = await checkRes.json();
+      setContextMsg(`Папка: ${JSON.stringify(checkData)}`);
+
+      if (checkData.error) {
+        setContextMsg(`❌ Помилка доступу: ${checkData.error.message}`);
+        setContextLoading(false);
+        return;
+      }
+      if (checkData.trashed) {
+        setContextMsg("❌ Папка в кошику");
+        setContextLoading(false);
+        return;
+      }
+
       // Отримати підпапки
       const subRes = await fetch(
         `https://www.googleapis.com/drive/v3/files?` +
@@ -78,15 +100,21 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       );
       const subData = await subRes.json();
       const folders = subData.files || [];
+      setContextMsg(`Підпапки (${folders.length}): ${folders.map(f => f.name).join(", ") || "жодної"}`);
 
-      const folderNames = folders.map(f => f.name).join(", ") || "жодної підпапки";
-      setContextMsg(`📁 Підпапки: ${folderNames}`);
+      // Перевірити scope токена
+      const aboutRes = await fetch(
+        "https://www.googleapis.com/drive/v3/about?fields=user",
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const aboutData = await aboutRes.json();
+      setContextMsg(`Drive user: ${aboutData.user?.emailAddress || "невідомо"}`);
 
       const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
       const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
 
       if (!processed && !originals) {
-        setContextMsg(`❌ Не знайдено 02_ОБРОБЛЕНІ і 01_ОРИГІНАЛИ серед: ${folderNames}`);
+        setContextMsg(`❌ Не знайдено 02_ОБРОБЛЕНІ і 01_ОРИГІНАЛИ серед: ${folders.map(f => f.name).join(", ") || "жодної"}`);
         setContextLoading(false);
         return;
       }

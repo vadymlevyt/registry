@@ -338,6 +338,7 @@ const isPinned = (caseData?.pinnedNoteIds || []).includes(note.id);
 
 ---
 
-### [2026-04-09] Діагностика Drive — показувати повідомлення в UI
-Замість console.log — setContextMsg() на кожному кроці.
-Тоді видно де зупиняється без DevTools.
+### [2026-04-09] Діагностика Drive — показувати storage і перевіряти папку
+Якщо підпапки не знаходяться — спочатку перевірити чи правильний folderId.
+GET /files/{folderId}?fields=id,name,trashed — перевірити що папка існує.
+Потім шукати підпапки.
