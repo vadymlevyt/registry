@@ -329,7 +329,7 @@ function NoteCard({ note, cases, onDelete, onEdit, onPin }) {
             style={{
               background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
               padding: '2px 4px',
-              transform: isPinned ? 'rotate(-45deg)' : 'rotate(0deg)',
+              transform: isPinned ? 'rotate(0deg)' : 'rotate(-45deg)',
               transition: 'transform 0.2s ease, color 0.2s ease',
               color: isPinned ? '#e53935' : '#666',
             }}

@@ -338,7 +338,14 @@ const isPinned = (caseData?.pinnedNoteIds || []).includes(note.id);
 
 ---
 
-### [2026-04-09] Діагностика Drive — показувати storage і перевіряти папку
-Якщо підпапки не знаходяться — спочатку перевірити чи правильний folderId.
-GET /files/{folderId}?fields=id,name,trashed — перевірити що папка існує.
-Потім шукати підпапки.
+### [2026-04-09] Кнопка 📌 — правильна логіка
+НЕ прикріплена: rotate(-45deg) + color #666 (сіра нахилена)
+Прикріплена: rotate(0deg) + color #e53935 (червона вертикальна)
+isPinned = (caseData?.pinnedNoteIds || []).includes(note.id)
+Виправити в ОБОХ файлах: Notebook і CaseDossier.
+
+---
+
+### [2026-04-09] Drive токен — перехоплювати 401
+status 401 = токен протух, не баг коду.
+Показати: "Токен Drive протух. Натисніть Підключити Drive."

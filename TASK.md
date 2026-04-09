@@ -1,4 +1,4 @@
-# TASK.md — Діагностика: folderId + кнопка 📌
+# TASK.md — Фікс кнопки 📌 + контекст токен
 Дата: 09.04.2026
 
 ## КРОК 0 — ПРОЧИТАТИ LESSONS.md
@@ -8,156 +8,161 @@ cat LESSONS.md
 
 ---
 
-## КРОК 1 — ПОВНА ДІАГНОСТИКА
+## КРОК 1 — ДІАГНОСТИКА
 
 ```bash
-# 1. Як CaseDossier отримує caseData і storage
-grep -n "props\|caseData\|storage\|driveFolderId" src/components/CaseDossier/index.jsx | head -20
-
-# 2. Як передається caseData в CaseDossier з App.jsx
-grep -n "CaseDossier\|selectedCase\|activeCas" src/App.jsx | head -20
-
-# 3. Звідки береться folderId для контексту
-grep -n "folderId\|driveFolderId\|storage\." src/components/CaseDossier/index.jsx | head -20
-
-# 4. Як організовані нотатки в CaseDossier — локальний state чи props
-grep -n "useState.*note\|setNotes\|localNotes\|caseNotes\|notes.*case" src/components/CaseDossier/index.jsx | head -20
-
-# 5. Як pinNote передається в CaseDossier
-grep -n "onPinNote\|onUnpinNote\|pinNote\|unpinNote" src/components/CaseDossier/index.jsx | head -20
-grep -n "onPinNote\|onUnpinNote\|pinNote\|unpinNote" src/App.jsx | head -20
+# Знайти код кнопки 📌 в Notebook і CaseDossier
+grep -n -A 8 "rotate\|isPinned\|transform.*pin" src/components/Notebook/index.jsx | head -40
+grep -n -A 8 "rotate\|isPinned\|transform.*pin" src/components/CaseDossier/index.jsx | head -40
 ```
 
-Показати ВСІ результати перед будь-якими змінами.
+Показати результати.
 
 ---
 
-## БАГ 1 — КОНТЕКСТ: ЖОДНОЇ ПІДПАПКИ
+## БАГ 1 — КНОПКА 📌: ПРАВИЛЬНА ЛОГІКА
 
-Система пише "жодної підпапки" — значить запит до Drive повертає порожній масив.
-
-Причини:
-1. `folderId` який передається — це не ID папки справи а щось інше
-2. Токен не має доступу до цієї папки
-3. Папка не в Drive або в кошику
-
-### Додати більше діагностики в UI:
-
-```js
-const handleCreateCaseContext = async () => {
-  const token = localStorage.getItem('levytskyi_drive_token');
-  const folderId = caseData?.storage?.driveFolderId;
-
-  // Показати що є в storage
-  showMsg(`Storage: ${JSON.stringify(caseData?.storage)}`);
-
-  if (!token) { showMsg('❌ Немає токена Drive'); return; }
-  if (!folderId) { showMsg('❌ Немає folderId в storage'); return; }
-
-  showMsg(`🔍 folderId = ${folderId}`);
-
-  // Перевірити чи папка існує
-  const checkRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const checkData = await checkRes.json();
-  showMsg(`Папка: ${JSON.stringify(checkData)}`);
-
-  if (checkData.error) {
-    showMsg(`❌ Помилка доступу: ${checkData.error.message}`);
-    return;
-  }
-  if (checkData.trashed) {
-    showMsg('❌ Папка в кошику');
-    return;
-  }
-
-  // Тепер шукати підпапки
-  const subRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?` +
-    `q=${encodeURIComponent(
-      `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
-    )}&fields=files(id,name)&pageSize=20`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const subData = await subRes.json();
-  const folders = subData.files || [];
-  showMsg(`Підпапки (${folders.length}): ${folders.map(f=>f.name).join(', ') || 'жодної'}`);
-
-  // Також перевірити scope токена
-  const aboutRes = await fetch(
-    'https://www.googleapis.com/drive/v3/about?fields=user',
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const aboutData = await aboutRes.json();
-  showMsg(`Drive user: ${aboutData.user?.emailAddress}`);
-};
+### Як ПОВИННО працювати:
+```
+НЕ прикріплена → нахилена (rotate -45deg) + СІРА (#666)
+Прикріплена    → вертикальна (rotate 0deg) + ЧЕРВОНА (#e53935)
 ```
 
-Після деплою натиснути "Створити контекст" і скинути скрін з повідомленнями.
-Побачимо: правильний folderId, чи існує папка, чи є підпапки, який юзер в Drive.
+### Поточна проблема:
+Код має умову навпаки — червона коли НЕ прикріплена.
 
----
-
-## БАГ 2 — КНОПКА 📌: АРХІТЕКТУРНА ПРОБЛЕМА
-
-Проблема в тому що CaseDossier, скоріш за все, має локальний стейт
-для нотаток або для caseData який НЕ оновлюється коли App.jsx викликає setCases.
-
-### Після діагностики (Крок 1) — знайти де розрив:
-
-Якщо нотатки в локальному state:
-```js
-// Проблема — localNotes не оновлюється при pinNote в App.jsx
-const [localNotes, setLocalNotes] = useState(caseData.notes || []);
+### Знайти в ОБОХ файлах (Notebook і CaseDossier) рядки де:
+```
+color: isPinned ? ... : ...
+transform: isPinned ? ... : ...
 ```
 
-Рішення — читати нотатки напряму з props.caseData кожного рендеру:
-```js
-// Правильно — завжди актуально
-const caseNotes = (notes?.cases || []).filter(n => n.caseId === caseData.id);
+### Правильний код кнопки:
+```jsx
 const isPinned = (caseData?.pinnedNoteIds || []).includes(note.id);
+// В Notebook: (activeCaseData?.pinnedNoteIds || []).includes(note.id)
+
+<button
+  onClick={() => isPinned
+    ? onUnpinNote(note.id, caseData.id)
+    : onPinNote(note.id, caseData.id)
+  }
+  title={isPinned ? 'Відкріпити' : 'Прикріпити'}
+  style={{
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: 16,
+    padding: '2px 4px',
+    display: 'inline-block',
+    // ПРАВИЛЬНО:
+    // не прикріплена = нахилена + сіра
+    // прикріплена = вертикальна + червона
+    transform: isPinned ? 'rotate(0deg)' : 'rotate(-45deg)',
+    color: isPinned ? '#e53935' : '#666',
+    transition: 'transform 0.2s ease, color 0.2s ease',
+  }}
+>
+  📌
+</button>
 ```
 
-Якщо caseData в локальному state:
-```js
-// Проблема — localCase не оновлюється
-const [localCase, setLocalCase] = useState(caseData);
-```
+### ВАЖЛИВО — виправити в ОБОХ файлах:
+1. src/components/Notebook/index.jsx
+2. src/components/CaseDossier/index.jsx
 
-Рішення — НЕ копіювати caseData в локальний state.
-Передавати caseData як props і читати звідти напряму.
-
-### Перевірити props CaseDossier в App.jsx:
+### ЧОМУ НЕ ОНОВЛЮЄТЬСЯ ОДРАЗУ — знайти і виправити:
 
 ```bash
-grep -n -A 10 "<CaseDossier" src/App.jsx | head -30
+# Перевірити чи є локальний state в CaseDossier
+grep -n "useState.*pinned\|useState.*notes\|localCase\|setLocalCase" src/components/CaseDossier/index.jsx | head -10
+
+# Перевірити як передається caseData в CaseDossier
+grep -n -A 15 "<CaseDossier" src/App.jsx | head -20
 ```
 
-onPinNote і onUnpinNote мають передаватись як props і викликати setCases в App.jsx.
+Якщо CaseDossier має локальний state для caseData або notes —
+це причина чому кнопка не оновлюється без F5.
+
+Рішення:
+- НЕ копіювати caseData в локальний useState
+- Читати pinnedNoteIds напряму з props: `caseData.pinnedNoteIds`
+- onPinNote і onUnpinNote мають викликати setCases в App.jsx
+- Тоді React автоматично перерендерить CaseDossier з новим caseData
+
+---
+
+## БАГ 2 — КОНТЕКСТ: ТОКЕН ПРОТУХ
+
+### Причина:
+Повідомлення "Request had invalid authentication credentials" = OAuth токен протух.
+Токен Drive живе ~1 годину. Це не баг коду.
+
+### Фікс — перехоплювати 401 і просити перепідключитись:
+
+```js
+// В handleCreateCaseContext і в findPDFsForContext:
+// Якщо будь-який fetch повертає 401 — показати повідомлення
+
+const checkRes = await fetch(...);
+if (checkRes.status === 401) {
+  showMsg('❌ Токен Drive протух. Натисніть "Підключити Drive" знову.');
+  return;
+}
+```
+
+### Додати обробку 401 у всіх Drive запитах в контексті:
+
+```js
+const safeFetch = async (url, options) => {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    throw new Error('DRIVE_TOKEN_EXPIRED');
+  }
+  return res;
+};
+
+// В handleCreateCaseContext:
+try {
+  const { files, source } = await findPDFsForContext(folderId, token);
+  // ...
+} catch (e) {
+  if (e.message === 'DRIVE_TOKEN_EXPIRED') {
+    showMsg('❌ Токен Drive протух. Натисніть "Підключити Drive" і спробуйте знову.');
+  } else {
+    showMsg('❌ Помилка: ' + e.message);
+  }
+}
+```
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "diag: show storage info and folder check for context, investigate pin state" && git push origin main
+git add -A && git commit -m "fix: pin button correct rotation and color, handle expired Drive token" && git push origin main
 ```
 
 ## ЧЕКЛІСТ
 
-- [ ] Натиснув "Створити контекст" → бачу storage JSON в повідомленні
-- [ ] Бачу folderId
-- [ ] Бачу чи папка існує на Drive
-- [ ] Бачу список підпапок
-- [ ] Скинути скрін з цими повідомленнями → зрозуміємо де проблема
+- [ ] НЕ прикріплена нотатка → кнопка нахилена (-45deg) і СІРА
+- [ ] Натиснув прикріпити → кнопка ОДРАЗУ вертикальна (0deg) і ЧЕРВОНА
+- [ ] Натиснув відкріпити → кнопка ОДРАЗУ нахилена і СІРА
+- [ ] Однаково в Notebook і CaseDossier
+- [ ] Кнопка перевертається ОДРАЗУ без F5 — і в Notebook і в CaseDossier
+- [ ] Токен протух → чітке повідомлення "натисніть Підключити Drive"
+- [ ] Після перепідключення Drive → контекст створюється
 
 ## ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-09] Діагностика Drive — показувати storage і перевіряти папку
-Якщо підпапки не знаходяться — спочатку перевірити чи правильний folderId.
-GET /files/{folderId}?fields=id,name,trashed — перевірити що папка існує.
-Потім шукати підпапки.
+### [2026-04-09] Кнопка 📌 — правильна логіка
+НЕ прикріплена: rotate(-45deg) + color #666 (сіра нахилена)
+Прикріплена: rotate(0deg) + color #e53935 (червона вертикальна)
+isPinned = (caseData?.pinnedNoteIds || []).includes(note.id)
+Виправити в ОБОХ файлах: Notebook і CaseDossier.
+
+### [2026-04-09] Drive токен — перехоплювати 401
+status 401 = токен протух, не баг коду.
+Показати: "Токен Drive протух. Натисніть Підключити Drive."
 ```

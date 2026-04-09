@@ -76,6 +76,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
+      if (checkRes.status === 401) {
+        setContextMsg("❌ Токен Drive протух. Натисніть \"Підключити Drive\" і спробуйте знову.");
+        setContextLoading(false);
+        return;
+      }
       const checkData = await checkRes.json();
       setContextMsg(`Папка: ${JSON.stringify(checkData)}`);
 
@@ -947,7 +952,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       style={{
                         background: "none", border: "none", cursor: "pointer",
                         fontSize: 16, padding: "2px 4px", flexShrink: 0,
-                        transform: isPinned(note.id) ? "rotate(-45deg)" : "rotate(0deg)",
+                        transform: isPinned(note.id) ? "rotate(0deg)" : "rotate(-45deg)",
                         transition: "transform 0.2s ease, color 0.2s ease",
                         color: isPinned(note.id) ? "#e53935" : "#666",
                       }}
