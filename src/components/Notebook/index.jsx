@@ -243,9 +243,22 @@ function NotesTab({ cases, onUpdateCase, notesProp, onAddNote, onUpdateNote, onD
               Немає нотаток
             </div>
           )}
-          {filtered.map(n => (
-            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} cases={cases} onDelete={() => handleDeleteNote(n)} onEdit={handleEditNote} onPin={onPinNote} />
-          ))}
+          {filtered.map(n => {
+            const caseData = n.caseId ? (cases || []).find(c => c.id === n.caseId) : null;
+            const pinnedIds = caseData?.pinnedNoteIds || [];
+            return (
+              <NoteCard 
+                key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}-${pinnedIds.join(',')}`} 
+                note={n} 
+                cases={cases}
+                pinnedIds={pinnedIds}
+                onDelete={() => handleDeleteNote(n)} 
+                onEdit={handleEditNote} 
+                onPin={onPinNote} 
+              />
+            );
+          })}
+
         </div>
       </div>
 
@@ -287,13 +300,12 @@ function SidebarItem({ label, active, onClick }) {
   );
 }
 
-function NoteCard({ note, cases, onDelete, onEdit, onPin }) {
+function NoteCard({ note, cases, pinnedIds, onDelete, onEdit, onPin }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(note.text || '');
   const cat = note.category || 'general';
   const meta = CAT_META[cat] || CAT_META.general;
-  const caseData = note.caseId ? (cases || []).find(c => c.id === note.caseId) : null;
-  const isPinned = caseData?.pinnedNoteIds?.includes(String(note.id));
+  const isPinned = (pinnedIds || []).includes(String(note.id));
 
   function handleSaveEdit() {
     const trimmed = editText.trim();

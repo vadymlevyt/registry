@@ -2687,6 +2687,16 @@ function App() {
   const [dossierCase, setDossierCase] = useState(null);
   const [ideas, setIdeas] = useState([]);
   const [showUniversalPanel, setShowUniversalPanel] = useState(false);
+
+  // Sync dossierCase when cases changes (fixes pin button reactivity)
+  useEffect(() => {
+    if (dossierCase) {
+      const updated = cases.find(c => c.id === dossierCase.id);
+      if (updated && JSON.stringify(updated) !== JSON.stringify(dossierCase)) {
+        setDossierCase(updated);
+      }
+    }
+  }, [cases]);
   const [universalTab, setUniversalTab] = useState('qi');
   const [qiBtnPos, setQiBtnPos] = useState({ x: null, y: null });
   const qiDragRef = useRef(false);

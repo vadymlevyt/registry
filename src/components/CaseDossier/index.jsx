@@ -58,15 +58,37 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   };
 
   // ── Створити case_context.md ──────────────────────────────────────────────
+  // Хелпер для безпечної сериалізації без циклічних посилань
+  const safeStringify = (obj) => {
+    try {
+      const cache = new Set();
+      return JSON.stringify(obj, (key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (cache.has(value)) return '[Circular]';
+          cache.add(value);
+        }
+        return value;
+      });
+    } catch (e) {
+      return `[Error: ${e.message}]`;
+    }
+  };
+
   async function handleCreateContext() {
+    if (typeof handleCreateContext.running !== 'undefined' && handleCreateContext.running) {
+      setContextMsg("⏳ Операція вже виконується. Будь ласка, зачекайте.");
+      return;
+    }
+    handleCreateContext.running = true;
+    
     const token = localStorage.getItem("levytskyi_drive_token");
     const folderId = storageState?.driveFolderId;
 
     // Діагностика storage
-    setContextMsg(`Storage: ${JSON.stringify(caseData?.storage || storageState)}`);
+    setContextMsg(`Storage: ${safeStringify(caseData?.storage || storageState)}`);
 
-    if (!token) { setContextMsg("❌ Немає токена Drive"); return; }
-    if (!folderId) { setContextMsg("❌ Немає folderId в storage"); return; }
+    if (!token) { setContextMsg("❌ Немає токена Drive"); handleCreateContext.running = false; return; }
+    if (!folderId) { setContextMsg("❌ Немає folderId в storage"); handleCreateContext.running = false; return; }
 
     setContextLoading(true);
     setContextMsg(`🔍 folderId = ${folderId}`);
@@ -292,8 +314,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     } catch (err) {
       console.error("Context creation error:", err);
       setContextMsg(`Помилка: ${err.message}`);
+    } finally {
+      setContextLoading(false);
+      handleCreateContext.running = false;
     }
-    setContextLoading(false);
   }
 
   // Agent panel state
