@@ -342,7 +342,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
   const [agentWidth, setAgentWidth] = useState(() => Math.min(500, Math.max(280, Math.round(window.innerWidth * 0.35))));
-  const [agentMessages, setAgentMessages] = useState([]);
+  const [agentMessages, setAgentMessages] = useState(() => {
+    const history = caseData.agentHistory || [];
+    return history.slice(-20);
+  });
   const [agentInput, setAgentInput] = useState('');
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
@@ -660,10 +663,18 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         const data = await response.json();
         const reply = data.content?.[0]?.text || "Помилка відповіді";
         const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };
-        setAgentMessages(prev => [...prev, assistantEntry].slice(-50));
+        setAgentMessages(prev => {
+          const updated = [...prev, assistantEntry].slice(-50);
+          updateCase && updateCase(caseData.id, 'agentHistory', updated);
+          return updated;
+        });
       } catch (err) {
         const errEntry = { role: 'assistant', content: "Помилка з'єднання з агентом.", ts: new Date().toISOString() };
-        setAgentMessages(prev => [...prev, errEntry].slice(-50));
+        setAgentMessages(prev => {
+          const updated = [...prev, errEntry].slice(-50);
+          updateCase && updateCase(caseData.id, 'agentHistory', updated);
+          return updated;
+        });
       }
       setAgentLoading(false);
     }
@@ -989,17 +1000,22 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       title="Видалити"
                       style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
                     >{"🗑️"}</button>
-                    <button
-                      onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
-                      title={isPinned(note.id) ? "Відкріпити" : "Закріпити"}
-                      style={{
-                        background: "none", border: "none", cursor: "pointer",
-                        fontSize: 16, padding: "2px 4px", flexShrink: 0,
-                        transform: isPinned(note.id) ? "rotate(0deg)" : "rotate(-45deg)",
-                        transition: "transform 0.2s, opacity 0.2s",
-                        opacity: isPinned(note.id) ? 1 : 0.4,
-                      }}
-                    >{"📌"}</button>
+                    {(() => {
+                      const pinned = (caseData.pinnedNoteIds || []).includes(String(note.id));
+                      return (
+                        <button
+                          onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
+                          title={pinned ? "Відкріпити" : "Закріпити"}
+                          style={{
+                            background: "none", border: "none", cursor: "pointer",
+                            fontSize: 16, padding: "2px 4px", flexShrink: 0,
+                            transform: pinned ? "rotate(0deg)" : "rotate(-45deg)",
+                            opacity: pinned ? 1 : 0.4,
+                            transition: "transform 0.2s, opacity 0.2s"
+                          }}
+                        >{"📌"}</button>
+                      );
+                    })()}
                   </div>
                   <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
                 </>

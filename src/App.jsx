@@ -2620,9 +2620,9 @@ function normalizeCases(cases) {
       updated.pinnedNoteIds = [];
     }
 
-    // agentHistory — видалити з об'єкта справи (живе окремо на Drive)
-    if (updated.agentHistory !== undefined) {
-      delete updated.agentHistory;
+    // agentHistory — зберігати в об'єкті справи (тимчасово, поки немає agent_history.json)
+    if (!Array.isArray(updated.agentHistory)) {
+      updated.agentHistory = [];
     }
 
     return updated;
