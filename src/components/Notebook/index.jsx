@@ -244,7 +244,7 @@ function NotesTab({ cases, onUpdateCase, notesProp, onAddNote, onUpdateNote, onD
             </div>
           )}
           {filtered.map(n => (
-            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} onDelete={() => handleDeleteNote(n)} onEdit={handleEditNote} onPin={onPinNote} />
+            <NoteCard key={`${n.category}-${n.id || n.ts}-${n.caseId || ''}`} note={n} cases={cases} onDelete={() => handleDeleteNote(n)} onEdit={handleEditNote} onPin={onPinNote} />
           ))}
         </div>
       </div>
@@ -287,11 +287,13 @@ function SidebarItem({ label, active, onClick }) {
   );
 }
 
-function NoteCard({ note, onDelete, onEdit, onPin }) {
+function NoteCard({ note, cases, onDelete, onEdit, onPin }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(note.text || '');
   const cat = note.category || 'general';
   const meta = CAT_META[cat] || CAT_META.general;
+  const caseData = note.caseId ? (cases || []).find(c => c.id === note.caseId) : null;
+  const isPinned = caseData?.pinnedNoteIds?.includes(String(note.id));
 
   function handleSaveEdit() {
     const trimmed = editText.trim();
@@ -320,15 +322,15 @@ function NoteCard({ note, onDelete, onEdit, onPin }) {
         <span style={{ fontSize: 10, color: '#5a6080', marginLeft: 'auto' }}>
           {note.source ? `${note.source} · ` : ''}{formatTs(note.ts)}
         </span>
-        {onPin && (
+        {onPin && note.caseId && (
           <button
-            onClick={() => onPin(note.id)}
-            title={"Закріпити (з досьє справи)"}
+            onClick={() => onPin(note.id, note.caseId)}
+            title={isPinned ? "Відкріпити" : "Закріпити до досьє"}
             style={{
               background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
               padding: '2px 4px',
-              filter: 'grayscale(1) opacity(0.3)',
-              transform: 'none',
+              filter: isPinned ? 'none' : 'grayscale(1) opacity(0.3)',
+              transform: isPinned ? 'rotate(-45deg)' : 'none',
               transition: 'all 0.2s'
             }}
           >

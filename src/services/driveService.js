@@ -105,8 +105,9 @@ export async function uploadFileToDrive(fileName, fileBlob, parentFolderId, toke
 }
 
 export async function listFolderFiles(folderId, token) {
+  const q = `'${folderId}' in parents and trashed=false`;
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+trashed=false&fields=files(id,name,mimeType,size,modifiedTime)`,
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=100`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const data = await res.json();

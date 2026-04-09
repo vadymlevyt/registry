@@ -1,9 +1,5 @@
-# TASK.md — Архітектура даних, агентів і пам'яті v3
-# Legal BMS | АБ Левицького
-# Дата: 08.04.2026
-# Статус: Архітектурний документ — реалізація поетапно
-
----
+# TASK.md — Два баги: нотатки + контекстний файл
+Дата: 09.04.2026
 
 ## КРОК 0 — ПРОЧИТАТИ LESSONS.md
 ```bash
@@ -12,577 +8,220 @@ cat LESSONS.md
 
 ---
 
-## ЧАСТИНА 1 — ПРИНЦИПИ ДАНИХ
+## БАГ 1 — НОТАТКИ: ПРИКРІПЛЕННЯ
 
-### 1А. Єдине джерело правди
+### Симптоми:
+- В записній книжці показує неправильно які прикріплені
+- В досьє прикріплення відображається тільки після F5
+- Кнопки прикріплення сірі/неактивні
+- Потрібно мати можливість прикріпити КІЛЬКА нотаток до одного досьє
 
-Кожен факт живе в одному місці.
-Змінювати можна звідусіль — тільки через функції App.jsx.
-Єдиний виняток — pinnedNoteIds[] (копія посилань, не тексту).
+### Діагностика:
+```bash
+grep -n "pinNote\|pinnedNoteIds\|pinned\|setPinned\|handlePin" src/components/CaseDossier/index.jsx | head -20
+grep -n "pinNote\|pinnedNoteIds\|pinned\|handlePin" src/components/Notebook/index.jsx | head -20
+grep -n "pinNote\|pinnedNoteIds\|pinNote" src/App.jsx | head -20
+```
 
-Заборонено:
-- дублювати дані між полями
-- зберігати дату засідання і в hearings[] і в calendarEvents[]
-- зберігати одне і те саме в двох місцях
+### Що перевірити:
 
-### 1Б. Функції зміни даних — тільки в App.jsx
+1. Функція `pinNote` в App.jsx — чи оновлює стан React одразу:
+```js
+// Має бути так:
+const pinNote = (noteId, caseId) => {
+  setCases(prev => prev.map(c =>
+    c.id === caseId
+      ? { ...c, pinnedNoteIds: [...(c.pinnedNoteIds || []), noteId] }
+      : c
+  ));
+  // + зберегти на Drive
+};
+
+const unpinNote = (noteId, caseId) => {
+  setCases(prev => prev.map(c =>
+    c.id === caseId
+      ? { ...c, pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== noteId) }
+      : c
+  ));
+};
+```
+
+2. Кнопка прикріплення в Notebook — чи передається caseId:
+```bash
+grep -n "pinNote\|caseId\|onClick.*pin" src/components/Notebook/index.jsx | head -20
+```
+Якщо нотатка типу "case" — кнопка має бути активна і передавати caseId.
+Якщо нотатка типу "general" — кнопка неактивна (не можна прикріпити до справи).
+
+3. Відображення в Notebook — чи перечитує pinnedNoteIds після pin:
+```jsx
+// В Notebook — кнопка прикріплення:
+const isPinned = caseData?.pinnedNoteIds?.includes(note.id);
+
+<button
+  onClick={() => isPinned
+    ? onUnpinNote(note.id, note.caseId)
+    : onPinNote(note.id, note.caseId)
+  }
+  style={{ opacity: note.caseId ? 1 : 0.3, cursor: note.caseId ? 'pointer' : 'default' }}
+  title={note.caseId ? (isPinned ? 'Відкріпити' : 'Прикріпити') : 'Лише нотатки справ можна прикріпити'}
+>
+  📌
+</button>
+```
+
+4. В CaseDossier — перевірити чи props оновлюються без F5:
+```bash
+grep -n "pinnedNoteIds\|pinned\|notes" src/components/CaseDossier/index.jsx | head -20
+```
+Якщо компонент читає pinnedNoteIds з props.caseData — має оновлюватись автоматично при зміні стану в App.jsx.
+
+### Фікс кнопки (якщо сіра):
+Кнопка прикріплення має бути активна для всіх нотаток типу "case".
+Для "general", "content", "system", "records" — кнопка прихована або disabled.
+
+### Кілька нотаток:
+pinnedNoteIds[] — масив, тому кілька нотаток підтримуються автоматично.
+Перевірити що немає обмеження "якщо вже є pinned — не додавати".
+
+---
+
+## БАГ 2 — КОНТЕКСТНИЙ ФАЙЛ: НЕ ЗНАХОДИТЬ PDF
+
+### Симптом:
+Пише "Немає PDF файлів у папці справи" але в 02_ОБРОБЛЕНІ є 27 нарізаних PDF.
+
+### Діагностика:
+```bash
+grep -n "createCaseContext\|02_ОБРОБЛЕНІ\|listFiles\|driveFolderId\|getSubfolder" src/components/CaseDossier/index.jsx | head -30
+grep -n "createCaseContext\|listDriveFiles\|getFilesIn" src/services/driveService.js | head -20
+```
+
+### Найімовірніша причина:
+Функція шукає файли напряму в driveFolderId (корінь папки справи),
+а не в підпапці 02_ОБРОБЛЕНІ.
+
+### Алгоритм пошуку файлів (правильний):
 
 ```js
-updateCase(caseId, field, value, agentId)
-createCase(caseData, agentId)
-addHearing(caseId, hearing) / updateHearing(caseId, hearingId, updates) / deleteHearing(caseId, hearingId)
-addNote(note) / updateNote(id, text) / deleteNote(id)
-pinNote(noteId, caseId) / unpinNote(noteId, caseId)
-addCalendarEvent(event) / updateCalendarEvent(id, updates) / deleteCalendarEvent(id)
+const getContextFiles = async (caseFolderId, token) => {
+  // Крок 1: знайти підпапку 02_ОБРОБЛЕНІ
+  const subRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files?` +
+    `q=${encodeURIComponent(
+      `'${caseFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+    )}&fields=files(id,name)&pageSize=20`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const subData = await subRes.json();
+  const folders = subData.files || [];
+
+  // Знайти 02_ОБРОБЛЕНІ в JS (не в query — кирилиця ненадійна)
+  const processedFolder = folders.find(f => f.name === '02_ОБРОБЛЕНІ');
+
+  // Крок 2: якщо є 02_ОБРОБЛЕНІ — шукати PDF там
+  let targetFolderId = processedFolder?.id || null;
+
+  // Крок 3: якщо 02_ОБРОБЛЕНІ порожня — спробувати 01_ОРИГІНАЛИ
+  if (targetFolderId) {
+    const pdfRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files?` +
+      `q=${encodeURIComponent(
+        `'${targetFolderId}' in parents and mimeType='application/pdf' and trashed=false`
+      )}&fields=files(id,name,size)&pageSize=100`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const pdfData = await pdfRes.json();
+    const pdfs = pdfData.files || [];
+
+    if (pdfs.length > 0) return { files: pdfs, source: '02_ОБРОБЛЕНІ' };
+  }
+
+  // Крок 4: спробувати 01_ОРИГІНАЛИ
+  const originalsFolder = folders.find(f => f.name === '01_ОРИГІНАЛИ');
+  if (originalsFolder) {
+    const origRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files?` +
+      `q=${encodeURIComponent(
+        `'${originalsFolder.id}' in parents and mimeType='application/pdf' and trashed=false`
+      )}&fields=files(id,name,size)&pageSize=100`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const origData = await origRes.json();
+    const origPdfs = origData.files || [];
+
+    if (origPdfs.length > 0) {
+      return { files: origPdfs, source: '01_ОРИГІНАЛИ', warning: true };
+    }
+  }
+
+  return { files: [], source: null };
+};
 ```
 
-### 1В. Валідація повноважень в App.jsx
+### Після отримання файлів — завантажити і відправити в Claude:
 
 ```js
-updateCase(caseId, field, value, agentId) {
-  if (!hasPermission(agentId, 'updateCase', caseId)) {
-    throw new Error('Немає повноважень');
+const createContextFile = async () => {
+  const token = localStorage.getItem('levytskyi_drive_token');
+  const folderId = caseData.storage?.driveFolderId;
+  if (!token || !folderId) { showMsg('❌ Підключіть Drive'); return; }
+
+  showMsg('🔍 Шукаю документи...');
+  const { files, source, warning } = await getContextFiles(folderId, token);
+
+  if (files.length === 0) {
+    showMsg('❌ Немає PDF файлів. Спочатку нарізайте документи.');
+    return;
   }
-}
-```
-Захист на рівні коду — агент фізично не може змінити те на що не має права.
 
----
-
-## ЧАСТИНА 2 — СТРУКТУРА ДАНИХ
-
-### 2А. registry_data.json
-
-```json
-{
-  "cases": [
-    {
-      "id": "case_001",
-      "name": "Брановський",
-      "client": "Брановський Ю.В.",
-      "court": "Пустомитівський районний суд",
-      "case_no": "450/2275/25",
-      "category": "civil",
-      "status": "active",
-      "next_action": "Підготувати клопотання",
-      "deadline": "2026-04-10",
-      "deadline_type": "hearing",
-      "hearings": [
-        {
-          "id": "hrg_001",
-          "date": "2025-11-15",
-          "time": "10:00",
-          "court": "Пустомитівський районний суд",
-          "notes": "Відкладено",
-          "status": "completed"
-        },
-        {
-          "id": "hrg_002",
-          "date": "2026-04-15",
-          "time": "10:00",
-          "court": "Пустомитівський районний суд",
-          "notes": "",
-          "status": "scheduled"
-        }
-      ],
-      "storage": {
-        "driveFolderId": "1abc...",
-        "driveFolderName": "Брановський_450/2275/25",
-        "lastSyncAt": "2026-04-08T23:45:00"
-      },
-      "documents": [
-        {
-          "id": "doc_001",
-          "name": "Позовна заява",
-          "type": "pleading",
-          "pageCount": 7,
-          "folder": "02_ОБРОБЛЕНІ",
-          "driveFileId": "1xyz...",
-          "addedAt": "2026-04-08"
-        }
-      ],
-      "pinnedNoteIds": ["note_001", "note_003"]
-    }
-  ],
-
-  "calendarEvents": [
-    {
-      "id": "evt_001",
-      "type": "hearing",
-      "caseId": "case_001",
-      "hearingId": "hrg_002",
-      "title": "Засідання Брановський"
-    },
-    {
-      "id": "evt_002",
-      "type": "reminder",
-      "caseId": "case_001",
-      "date": "2026-04-12",
-      "time": "09:00",
-      "title": "Підготувати клопотання",
-      "notes": ""
-    }
-  ],
-
-  "notes": {
-    "cases": [
-      {
-        "id": "note_001",
-        "caseId": "case_001",
-        "text": "Клієнт — відповідач. Суддя Добош...",
-        "ts": "2026-04-07T18:00:00"
-      }
-    ],
-    "general": [],
-    "content": [],
-    "system": [],
-    "records": []
+  if (warning) {
+    showMsg(`⚠️ Читаю з 01_ОРИГІНАЛИ (${files.length} файлів). Рекомендую спочатку нарізати.`);
+  } else {
+    showMsg(`📄 Знайдено ${files.length} файлів в ${source}`);
   }
-}
-```
 
-### 2Б. Пояснення полів
-
-**hearings[]** — масив всіх засідань справи (минулих і майбутніх).
-- `notes` в hearings — коротка позначка про конкретне засідання ("відкладено", "ухвала про витрати"). Не плутати з notes.cases[] — ті повноцінні нотатки справи.
-- `status`: "scheduled" — майбутнє, "completed" — відбулось, "cancelled" — скасовано
-
-**calendarEvents[]** — два типи:
-- `type: "hearing"` — посилається на hearingId, дата береться з hearings[] — не дублюється
-- `type: "reminder"` — незалежне нагадування з власною датою (підготувати документ, зателефонувати клієнту). Це НЕ дублювання — це окрема сутність.
-
-**documents[]** — метадані документів справи. Самі PDF на Drive. В documents[] тільки список — що є, де лежить, скільки сторінок.
-
-**pinnedNoteIds[]** — масив ID нотаток що прикріплені. Зберігаються ID, не тексти. Система знаходить тексти в notes.cases[] за ID.
-
-**agentHistory** — ВІДСУТНІЙ в registry_data.json. Живе в окремому файлі.
-
-### 2В. agentHistory — окремий файл для КОЖНОЇ справи
-
-```
-Drive/01_АКТИВНІ_СПРАВИ/
-├── Брановський_450/2275/25/
-│   └── agent_history.json   ← тільки ця справа
-├── Манолюк_757/20899/25/
-│   └── agent_history.json   ← тільки ця справа
-└── Бабенко_757/9012/24/
-    └── agent_history.json   ← тільки ця справа
-```
-
-Кожна справа має свою переписку. Файли не змішуються.
-Причина: registry_data.json лишається компактним.
-
-### 2Г. Логіка нотаток і прикріплення
-
-```
-notes.cases[i] — оригінал, живе завжди
-      ↓ pinNote()
-cases[i].pinnedNoteIds[] — додається ID нотатки
-      ↓ при запиті
-Система знаходить тексти за ID в notes.cases[]
-      ↓ unpinNote()
-ID видаляється з pinnedNoteIds[], оригінал лишається
-```
-
-Редагування нотатки → оновлюється тільки оригінал в notes.cases[]
-Видалення нотатки → видаляється оригінал + ID прибирається з pinnedNoteIds[]
-Прикріплення/відкріплення → тільки з досьє або Записної книжки
-
-### 2Д. Найближче засідання
-
-Система сама знаходить: перше з hearings[] де status="scheduled" і date >= сьогодні.
-Показується в реєстрі справ і дашборді без додаткових полів.
-
-### 2Е. Очищення засідань
-
-Автоматично раз на рік (1 січня):
-- Агент аналізу формує річний звіт по справі
-- Звіт → archive/ папки справи
-- Видаляються засідання старші 1 року
-- Інформація не губиться — вона в архіві
-
-### 2Є. Резервне копіювання registry_data.json
-
-```
-Drive/_backups/
-├── registry_data_2026-04-08_23-45.json
-└── registry_data_2026-04-07_18-30.json
-```
-Зберігати останні 7 копій. Перед кожним великим оновленням.
-
-### 2Ж. Коли файл розділяється
-
-Поки все в registry_data.json. Коли стає великим:
-```
-registry_data.json  ← cases[] і базові поля
-notes_data.json     ← notes{} коли нотаток багато
-calendar_data.json  ← calendarEvents[] коли подій багато
+  // Завантажити файли і відправити в Claude
+  showMsg('📥 Завантажую файли...');
+  // ... далі document blocks
+};
 ```
 
 ---
 
-## ЧАСТИНА 3 — АРХІТЕКТУРА ПАМ'ЯТІ
+## ПОРЯДОК ВИКОНАННЯ
 
-### Рівень 0 — Глобальний (всі агенти, завжди)
-
-```
-Що входить в базовий набір cases[]:
-  id, name, client
-  court, case_no, category
-  status, next_action
-  deadline, deadline_type
-  найближче засідання (перше scheduled з hearings[])
-  storage.driveFolderId
-  pinnedNoteIds[] → розгорнуті тексти нотаток
-
-Що НЕ входить:
-  hearings[] повністю (тільки найближче)
-  documents[]
-  agent_history
-  notes.cases[] повністю (тільки pinned)
-
-Хто бачить: всі агенти без запиту
-```
-
-### Рівень 1 — Справа (агент досьє при відкритті)
-
-```
-Додатково до Рівня 0:
-  cases[i].hearings[] повністю — вся хронологія засідань
-  cases[i].documents[] — повний список документів
-  cases[i].pinnedNoteIds[] → розгорнуті нотатки
-  agent_history.json з папки справи — пам'ять розмов
-  notes.cases[] для цієї справи — всі нотатки
-
-Хто бачить: тільки агент досьє конкретної справи
-```
-
-### Рівень 2 — Контекст справи (по потребі)
-
-```
-case_context.md в папці справи на Drive
-
-Структура:
-# Справа [назва] [номер]
-Створено: [дата] | Оновлено: [дата]
-
-## Огляд справи
-## Сторони і позиції
-## Документи (вижимка кожного без шапок і реквізитів)
-## Ключові факти і докази
-## Хронологія подій
-## Слабкі місця
-## Спостереження адвоката
-
-Хто читає: агент досьє по потребі + зовнішні Claude чати
-```
-
-### Рівень 3 — RAG (майбутнє)
-
-```
-Векторна база — Supabase pgvector або Pinecone
-Коли: після 2-3 місяців, коли справи мають томи 500+ сторінок
-Підготовка: структура MD файлів вже правильна
-```
+1. Діагностика (показати результати grep)
+2. Фікс pinNote/unpinNote в App.jsx
+3. Фікс відображення в Notebook
+4. Фікс кнопок прикріплення
+5. Фікс getContextFiles — шукати в підпапках
 
 ---
 
-## ЧАСТИНА 4 — ПОВНОВАЖЕННЯ ПО НОТАТКАХ
+## ДЕПЛОЙ
 
-Кожен агент отримує тільки ті категорії нотаток які потрібні для роботи.
-
-```
-                notes.  notes.  notes.  notes.  notes.
-                cases[] general[] content[] system[] records[]
-
-QI агент         ✓ RW   —       —       —       —
-Дашборд агент    ✓ R    —       —       —       —
-Агент досьє      ✓ RW   —       —       —       —
-                 (тільки своя справа)
-Content Hub      ✓ R    —       ✓ RW    —       —
-Агент аналізу    ✓ R    ✓ R     ✓ R     ✓ R     ✓ R
-Головний агент   ✓ RW   ✓ RW    ✓ RW    ✓ RW    ✓ RW
-Записна книжка   ✓ RW   ✓ RW    ✓ RW    ✓ RW    ✓ RW
-(UI людини)
-
-R = читає, W = змінює, — = не має доступу
+```bash
+git add -A && git commit -m "fix: note pinning realtime update, context file finds PDFs in subfolders" && git push origin main
 ```
 
-notes.general[] — поки відкриті для перегляду всім.
-Деталізація по мірі розвитку системи.
+## ЧЕКЛІСТ
 
-Ця структура доступу по категоріях нотаток — основа для побудови
-системи повноважень і горизонтальних зв'язків між модулями в майбутньому.
+- [ ] Прикріпив нотатку в досьє → одразу відображається без F5
+- [ ] Прикріпив нотатку → в Notebook показує 📌 одразу
+- [ ] Можна прикріпити кілька нотаток до однієї справи
+- [ ] Кнопки прикріплення активні для нотаток типу "case"
+- [ ] "Створити контекст" → знаходить PDF в 02_ОБРОБЛЕНІ
+- [ ] Якщо 02_ОБРОБЛЕНІ порожня → шукає в 01_ОРИГІНАЛИ + попереджає
 
----
-
-## ЧАСТИНА 5 — ІЄРАРХІЯ АГЕНТІВ
-
-```
-РІВЕНЬ 1 — Головний агент системи (Opus)
-│
-└── РІВЕНЬ 2 — Агенти модулів
-    ├── QI агент
-    ├── Дашборд агент
-    ├── Агент досьє
-    │   └── РІВЕНЬ 3: Document Processor (субагент)
-    ├── Агент Content Hub
-    │   └── РІВЕНЬ 3: Агент розвідки
-    │                  Агент генерації
-    │                  Агент відео
-    │                  Агент публікації
-    ├── Агент аналізу системи
-    └── Агент ЄСІТС (в розробці, деталі пізніше)
-```
-
-Принципи:
-- Горизонтальні агенти не спілкуються напряму
-- Передача між агентами — з повним контекстом розмови
-- Агент модуля керує своїми субагентами
-- Будь-який агент може перейти в інший з контекстом
-
----
-
-## ЧАСТИНА 6 — ПОВНОВАЖЕННЯ АГЕНТІВ
-
-### QI агент
-```
-Читає:  Рівень 0 — cases[] базові поля
-        notes.cases[] — читає
-Змінює: hearings[] — додати нове засідання
-        deadline, deadline_type
-        next_action, status
-        notes.cases[] — додає нотатки
-        створює справи (єдиний флоу як в досьє)
-НЕ може: видалити справу
-         змінювати storage{}
-         змінювати documents[]
-         змінювати pinnedNoteIds[]
-         змінювати agent_history.json
-Все з підтвердженням адвоката
-```
-
-### Дашборд агент
-```
-Читає:  Рівень 0 — cases[] + hearings[] для календаря
-        calendarEvents[] повністю
-        notes.cases[] — pinnedNoteIds тільки
-Змінює: hearings[] — дата і час засідання
-        deadline
-        calendarEvents[] — додає/редагує/видаляє
-НЕ може: інші поля справи
-         notes{} крім читання pinned
-         documents[], storage{}
-Перехід: в досьє або головного агента з контекстом
-```
-
-### Агент досьє
-```
-Читає:  Рівень 0 + Рівень 1 — повна картина справи
-        інші справи — Рівень 0 і глибше по потребі
-        (без запиту до головного агента)
-        notes.cases[] своєї справи повністю
-Змінює: будь-яке поле СВОЄЇ справи крім storage{}
-        notes.cases[] своєї справи
-        pinnedNoteIds[] своєї справи
-        documents[] своєї справи
-        agent_history.json автоматично після розмови
-        створює нові справи (єдиний флоу)
-НЕ може: видалити справу
-         змінювати storage{}
-         змінювати дані ІНШИХ справ
-Керує:  Document Processor (субагент)
-        запускає командою з чату
-Перехід: в будь-який агент з контекстом
-```
-
-### Головний агент (Opus)
-```
-Читає:  абсолютно все включно з файлами на Drive
-Змінює: дані через функції системи
-        (все що QI + дашборд + більше)
-        institutional_memory.md
-        agent_history.json після розмови
-НЕ може: змінювати файли на Drive напряму
-         змінювати код репозиторію
-         видаляти справи
-Запускається: щотижня через n8n о 23:00
-              по запиту через вікно спілкування
-              при передачі питання від іншого агента
-```
-
-### Агент аналізу системи
-```
-Читає:  абсолютно все:
-        всі категорії notes{}
-        case_context.md будь-якої справи
-        institutional_memory.md
-        agent_history.json будь-якої справи
-        логи використання і рішень адвоката
-        код репозиторію через GitHub API
-        CLAUDE.md, LESSONS.md, архітектурні документи
-        будь-які файли справ на Drive
-Змінює: нічого абсолютно
-Результат: тижневий звіт в Telegram
-           готовий TASK.md для виправлень
-           річний звіт перед очищенням засідань
-```
-
----
-
-## ЧАСТИНА 7 — case_context.md
-
-### Алгоритм створення/оновлення
+## ДОПИСАТИ В LESSONS.md
 
 ```
-Натиснув "Створити контекст"
-          ↓
-Перевірити чи є вже case_context.md
-          ↓
-    НЕ МАЄ                    МАЄ
-      ↓                         ↓
-  створити новий       Перевірити актуальність
-                       (всі documents[] враховані?)
-                           ↓           ↓
-                       АКТУАЛЬНИЙ  НЕ АКТУАЛЬНИЙ
-                           ↓              ↓
-                      Замінити /    Оновити /
-                      Зберегти /    Перестворити /
-                      Скасувати     Скасувати
-                           ↓
-               Старий → archive/case_context_[YYYY-MM-DD].md
-               Новий → case_context.md
-```
+### [2026-04-09] Drive підпапки — шукати в JS не в query
+Кирилиця в q= ненадійна. Отримати всі підпапки без фільтра,
+знайти потрібну в JS: folders.find(f => f.name === '02_ОБРОБЛЕНІ')
 
-### Джерело даних
-
-```
-1. 02_ОБРОБЛЕНІ — пріоритет
-2. 01_ОРИГІНАЛИ — якщо 02 порожня + попередження
-3. Обидві порожні → просити додати файли
-```
-
-### Запит до Claude
-
-```
-≤ 25 МБ → один запит всі файли як document blocks
-> 25 МБ → пакети по ~20 МБ
-```
-
-### Зв'язок з нарізкою
-
-Після нарізки система питає:
-"Створити контекстний файл?" → Так / Ні / Пізніше
-
-### Структура папки справи
-
-```
-Брановський_450/2275/25/
-├── 00_INBOX/
-├── 01_ОРИГІНАЛИ/
-├── 02_ОБРОБЛЕНІ/
-├── 03_ФРАГМЕНТИ/
-├── 04_ПОЗИЦІЯ/
-├── 05_ЗОВНІШНІ/
-├── agent_history.json
-├── case_context.md
-└── archive/
-    ├── case_context_2026-03-15.md
-    └── case_context_2026-04-01.md
-```
-
----
-
-## ЧАСТИНА 8 — INSTITUTIONAL MEMORY
-
-### Формат — MD файл
-
-```markdown
-# Інституційна пам'ять АБ Левицького
-Оновлено: 08.04.2026
-
-## Процесуальні патерни
-По лізингових справах запит до банку — перший крок...
-
-## Тактичні рішення
-Суддя Добош — схильна до мирової угоди...
-
-## Профіль адвоката
-Стиль роботи, вподобання, типові запити...
-```
-
-### Інтерфейс в розділі Аналіз системи
-
-```
-[ІНСТИТУЦІЙНА ПАМ'ЯТЬ]
-───────────────────────────────────
-# Інституційна пам'ять АБ Левицького
-Оновлено: 06.04.2026 23:00
-...
-───────────────────────────────────
-[Переглянути]  [Редагувати]
-[Завантажити]  [Оновити зараз]
-
-Наступне автооновлення: 13.04.2026 23:00
-```
-
-### Чотири способи оновлення
-
-```
-1. Автоматично — Opus щонеділі о 23:00 через n8n
-2. Вручну — кнопка "Оновити зараз"
-3. Редагувати текст — пряме редагування в інтерфейсі
-4. Завантажити файл — підставити готовий MD файл
-```
-
-### Кнопка "⭐ В базу знань"
-
-Доступна в нотатках і досьє.
-Адвокат пише спостереження → Opus структурує і дописує
-в правильний розділ institutional_memory.md.
-Перетворює локальне спостереження по одній справі
-на глобальне знання системи для всіх справ.
-
----
-
-## ПОРЯДОК РЕАЛІЗАЦІЇ
-
-### Зараз (пріоритет):
-1. Замінити hearing_date/time на hearings[] в cases[]
-2. Перенести agentHistory в agent_history.json
-3. Замінити pinnedNotes[] на pinnedNoteIds[]
-4. Виправити структуру notes{} з категоріями
-5. Виправити calendarEvents — hearing посилається на hearingId
-6. Додати резервне копіювання registry_data.json
-7. Реалізувати case_context.md
-
-### Пізніше:
-8. institutional_memory.md + інтерфейс в Аналізі системи
-9. n8n тижневий запуск Opus
-10. Валідація повноважень в App.jsx
-11. Агент аналізу системи з доступом до GitHub
-12. Річне очищення засідань з архівним звітом
-13. RAG коли буде достатньо документів
-
----
-
-## ПІСЛЯ ВИКОНАННЯ — ДОПИСАТИ В LESSONS.md
-
-```
-### [2026-04-08] Архітектура даних v3 — ключові зміни
-hearing_date/time → hearings[] масив об'єктів зі статусами
-agentHistory[] → окремий agent_history.json в папці справи
-pinnedNotes[] → pinnedNoteIds[] без дублювання тексту
-calendarEvents: hearing → hearingId (без дати), reminder → власна дата
-documents[] — метадані, не самі файли
-Резервне копіювання: _backups/ на Drive, останні 7 копій
-
-### [2026-04-08] Повноваження по нотатках
-notes розділені по категоріях: cases, general, content, system, records
-Кожен агент отримує тільки потрібні категорії
-Основа для горизонтальних зв'язків між модулями в майбутньому
-
-### [2026-04-08] institutional_memory — MD не JSON
-Інтерфейс в Аналізі системи: перегляд, редагування, файл, оновити зараз
-Кнопка ⭐ В базу знань — локальне спостереження → глобальна пам'ять
+### [2026-04-09] pinNote — оновлення стану без F5
+pinnedNoteIds[] оновлюється через setCases в App.jsx.
+Компонент автоматично перерендериться якщо отримує caseData через props.
 ```
