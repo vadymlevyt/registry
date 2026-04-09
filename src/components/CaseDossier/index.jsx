@@ -977,17 +977,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
                     >{"🗑️"}</button>
                     <button
-                      onClick={() => {
-                        alert('noteId=' + note.id + ' type=' + typeof note.id + ' pinnedIds=' + JSON.stringify(caseData.pinnedNoteIds));
-                        onPinNote && onPinNote(note.id, caseData.id);
-                      }}
+                      onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
                       title={isPinned(note.id) ? "Відкріпити" : "Закріпити"}
                       style={{
                         background: "none", border: "none", cursor: "pointer",
                         fontSize: 16, padding: "2px 4px", flexShrink: 0,
                         transform: isPinned(note.id) ? "rotate(0deg)" : "rotate(-45deg)",
-                        transition: "transform 0.2s ease, color 0.2s ease",
-                        color: isPinned(note.id) ? "#e53935" : "#666",
+                        transition: "transform 0.2s, opacity 0.2s",
+                        opacity: isPinned(note.id) ? 1 : 0.35,
                       }}
                     >{"📌"}</button>
                   </div>
