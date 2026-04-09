@@ -59,6 +59,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── Знайти PDF для контексту ────────────────────────────────────────────────
   const findPDFsForContext = async (caseFolderId, token) => {
+    console.log("findPDFsForContext: folderId =", caseFolderId);
+
     // Отримати підпапки без фільтра по назві (кирилиця в query ненадійна)
     const subRes = await fetch(
       `https://www.googleapis.com/drive/v3/files?` +
@@ -69,38 +71,39 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     );
     const subData = await subRes.json();
     const folders = subData.files || [];
+    console.log("Підпапки знайдено:", folders.map(f => f.name));
 
     const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
     const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
+    console.log("02_ОБРОБЛЕНІ:", processed?.id || "НЕ ЗНАЙДЕНО");
+    console.log("01_ОРИГІНАЛИ:", originals?.id || "НЕ ЗНАЙДЕНО");
 
     // Отримати ВСІ файли (без фільтра mimeType — скановані PDF можуть мати інший MIME)
-    const getFilesFromFolder = async (folderId) => {
+    const getFiles = async (fid) => {
       const res = await fetch(
         `https://www.googleapis.com/drive/v3/files?` +
         `q=${encodeURIComponent(
-          `'${folderId}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
+          `'${fid}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
         )}&fields=files(id,name,size,mimeType)&pageSize=100&orderBy=name`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       const data = await res.json();
+      console.log(`Файли в папці ${fid}:`, (data.files || []).map(f => `${f.name} (${f.mimeType})`));
       return data.files || [];
     };
 
     if (processed) {
-      const files = await getFilesFromFolder(processed.id);
-      if (files.length > 0) {
-        return { files, source: "02_ОБРОБЛЕНІ", warn: false };
-      }
+      const files = await getFiles(processed.id);
+      if (files.length > 0) return { files, source: "02_ОБРОБЛЕНІ", warn: false };
     }
 
     if (originals) {
-      const files = await getFilesFromFolder(originals.id);
-      if (files.length > 0) {
-        return { files, source: "01_ОРИГІНАЛИ", warn: true };
-      }
+      const files = await getFiles(originals.id);
+      if (files.length > 0) return { files, source: "01_ОРИГІНАЛИ", warn: true };
     }
 
-    return { files: [], source: null, warn: false };
+    console.log("Файли не знайдено в жодній підпапці");
+    return { files: [], source: null };
   };
 
   // ── Створити case_context.md ──────────────────────────────────────────────
@@ -922,9 +925,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       style={{
                         background: "none", border: "none", cursor: "pointer",
                         fontSize: 16, padding: "2px 4px", flexShrink: 0,
-                        filter: isPinned(note.id) ? "none" : "grayscale(1) opacity(0.3)",
-                        transform: isPinned(note.id) ? "rotate(-45deg)" : "none",
-                        transition: "all 0.2s"
+                        transform: isPinned(note.id) ? "rotate(-45deg)" : "rotate(0deg)",
+                        transition: "transform 0.2s ease, color 0.2s ease",
+                        color: isPinned(note.id) ? "#e53935" : "#666",
                       }}
                     >{"📌"}</button>
                   </div>

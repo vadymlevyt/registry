@@ -1,4 +1,4 @@
-# TASK.md — Два фікси: pinNote + контекст сканованих PDF
+# TASK.md — Кнопка 📌 з Notebook + діагностика контексту
 Дата: 09.04.2026
 
 ## КРОК 0 — ПРОЧИТАТИ LESSONS.md
@@ -8,80 +8,74 @@ cat LESSONS.md
 
 ---
 
-## КРОК 1 — ДІАГНОСТИКА
+## КРОК 1 — ПРОЧИТАТИ КОД NOTEBOOK І CASEDOSSIER
 
 ```bash
-# Знайти pinNote в App.jsx — чи оновлює setCases
-grep -n -A 15 "const pinNote\|pinNote =" src/App.jsx | head -40
+# Знайти ПОВНИЙ код кнопки прикріплення в Notebook
+grep -n -B 2 -A 20 "isPinned\|rotate.*deg\|📌\|pinNote\|unpinNote" src/components/Notebook/index.jsx | head -80
 
-# Знайти як шукає файли для контексту
-grep -n -A 20 "findPDFs\|getContextSource\|mimeType.*pdf\|application/pdf" src/components/CaseDossier/index.jsx | head -50
+# Знайти як реалізована кнопка в CaseDossier зараз
+grep -n -B 2 -A 20 "isPinned\|rotate.*deg\|📌\|pinNote\|unpinNote" src/components/CaseDossier/index.jsx | head -80
 ```
 
-Показати результати перед змінами.
+Показати обидва результати повністю.
 
 ---
 
-## БАГ 1 — pinNote НЕ ОНОВЛЮЄ REACT STATE
+## БАГ 1 — КНОПКА 📌 В CASEDOSSIER
 
-### Причина:
-pinNote зберігає на Drive але не викликає setCases.
-Тому компонент не перерендерюється — потрібне F5.
+### Задача:
+НЕ намагатись виправити — скопіювати КОД ПОВНІСТЮ з Notebook в CaseDossier.
 
-### Фікс в App.jsx:
+Після читання коду Notebook:
+1. Знайти в CaseDossier де рендериться кнопка 📌
+2. Замінити її код на точну копію з Notebook
+3. Перевірити що `isPinned` читається з `caseData.pinnedNoteIds` (props), не з локального state
 
-```js
-const pinNote = (noteId, caseId) => {
-  // 1. Оновити React state ОДРАЗУ
-  setCases(prev => prev.map(c =>
-    c.id === caseId
-      ? {
-          ...c,
-          pinnedNoteIds: [...new Set([...(c.pinnedNoteIds || []), noteId])]
-        }
-      : c
-  ));
-  // 2. Зберегти на Drive (async, без await — не блокувати UI)
-  saveToD rive();
-};
+Якщо в Notebook кнопка виглядає так:
+```jsx
+const isPinned = (activeCaseData?.pinnedNoteIds || []).includes(note.id);
 
-const unpinNote = (noteId, caseId) => {
-  // 1. Оновити React state ОДРАЗУ
-  setCases(prev => prev.map(c =>
-    c.id === caseId
-      ? {
-          ...c,
-          pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== noteId)
-        }
-      : c
-  ));
-  // 2. Зберегти на Drive
-  saveToDrive();
-};
+<button
+  onClick={() => isPinned
+    ? onUnpinNote(note.id, note.caseId)
+    : onPinNote(note.id, note.caseId)
+  }
+  style={{
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: 16,
+    transform: isPinned ? 'rotate(-45deg)' : 'rotate(0deg)',
+    transition: 'transform 0.2s ease, color 0.2s ease',
+    color: isPinned ? '#e53935' : '#666',
+    padding: '2px 4px',
+  }}
+  title={isPinned ? 'Відкріпити' : 'Прикріпити до справи'}
+>
+  📌
+</button>
 ```
 
-### Перевірити що CaseDossier читає pinnedNoteIds з props:
-
-```bash
-grep -n "pinnedNoteIds\|localPinned\|useState.*pin" src/components/CaseDossier/index.jsx | head -10
+То в CaseDossier має бути ТОЧНО ТАК САМО але з `caseData.pinnedNoteIds`:
+```jsx
+const isPinned = (caseData?.pinnedNoteIds || []).includes(note.id);
 ```
-
-Якщо є `const [pinnedNoteIds, setPinnedNoteIds] = useState(...)` —
-видалити локальний state і читати напряму з `caseData.pinnedNoteIds`.
 
 ---
 
-## БАГ 2 — КОНТЕКСТ НЕ ЗНАХОДИТЬ СКАНОВАНІ PDF
+## БАГ 2 — КОНТЕКСТ: ДІАГНОСТИКА + ФІКС
 
-### Причина:
-Drive API query `mimeType='application/pdf'` може не знаходити
-скановані PDF якщо вони завантажені з іншим MIME type.
+### Задача:
+Додати console.log щоб побачити що Drive повертає, потім виправити.
 
-### Фікс — шукати ВСІ файли без фільтра по mimeType:
+### Додати логування в findPDFsForContext:
 
 ```js
 const findPDFsForContext = async (caseFolderId, token) => {
-  // Отримати підпапки без фільтра по назві
+  console.log('findPDFsForContext: folderId =', caseFolderId);
+
+  // Отримати підпапки
   const subRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?` +
     `q=${encodeURIComponent(
@@ -91,81 +85,71 @@ const findPDFsForContext = async (caseFolderId, token) => {
   );
   const subData = await subRes.json();
   const folders = subData.files || [];
+  console.log('Підпапки знайдено:', folders.map(f => f.name));
 
-  // Знайти папки в JS (не в query — кирилиця ненадійна)
   const processed = folders.find(f => f.name === '02_ОБРОБЛЕНІ');
   const originals = folders.find(f => f.name === '01_ОРИГІНАЛИ');
+  console.log('02_ОБРОБЛЕНІ:', processed?.id || 'НЕ ЗНАЙДЕНО');
+  console.log('01_ОРИГІНАЛИ:', originals?.id || 'НЕ ЗНАЙДЕНО');
 
-  // Функція отримати файли з папки — БЕЗ фільтра по mimeType
-  const getFilesFromFolder = async (folderId) => {
+  // Отримати файли БЕЗ фільтра mimeType (крім папок)
+  const getFiles = async (fid) => {
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files?` +
       `q=${encodeURIComponent(
-        `'${folderId}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
+        `'${fid}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
       )}&fields=files(id,name,size,mimeType)&pageSize=100&orderBy=name`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const data = await res.json();
+    console.log(`Файли в папці ${fid}:`, (data.files || []).map(f => `${f.name} (${f.mimeType})`));
     return data.files || [];
   };
 
-  // Спробувати 02_ОБРОБЛЕНІ
   if (processed) {
-    const files = await getFilesFromFolder(processed.id);
-    if (files.length > 0) {
-      return { files, source: '02_ОБРОБЛЕНІ', warn: false };
-    }
+    const files = await getFiles(processed.id);
+    if (files.length > 0) return { files, source: '02_ОБРОБЛЕНІ', warn: false };
   }
 
-  // Спробувати 01_ОРИГІНАЛИ
   if (originals) {
-    const files = await getFilesFromFolder(originals.id);
-    if (files.length > 0) {
-      return { files, source: '01_ОРИГІНАЛИ', warn: true };
-    }
+    const files = await getFiles(originals.id);
+    if (files.length > 0) return { files, source: '01_ОРИГІНАЛИ', warn: true };
   }
 
+  console.log('Файли не знайдено в жодній підпапці');
   return { files: [], source: null };
 };
 ```
 
-### При завантаженні файлу для Claude — підтримувати різні MIME types:
-
-```js
-// При конвертації файлу в base64 для document block:
-const getMediaType = (file) => {
-  // Скановані PDF з Drive можуть мати різні MIME types
-  if (file.mimeType === 'application/pdf') return 'application/pdf';
-  if (file.mimeType?.includes('pdf')) return 'application/pdf';
-  // За замовчуванням — PDF (Claude впорається)
-  return 'application/pdf';
-};
-```
+### Після деплою:
+1. Відкрити DevTools (F12) → Console
+2. Натиснути "Створити контекст" в досьє Брановського
+3. Подивитись що виводить console.log
+4. Надіслати скрін консолі — це покаже де проблема
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: pinNote updates React state instantly, context finds scanned PDFs" && git push origin main
+git add -A && git commit -m "fix: copy pin button from Notebook to Dossier, add context diagnostics" && git push origin main
 ```
 
 ## ЧЕКЛІСТ
 
-- [ ] Прикріпив нотатку → 📌 одразу стає червоним і перевертається без F5
-- [ ] Відкріпив → одразу повертається в сірий стан
-- [ ] "Створити контекст" → знаходить PDF в 02_ОБРОБЛЕНІ (навіть скановані)
-- [ ] Показує кількість знайдених файлів
+- [ ] Кнопка 📌 в досьє перевертається і стає червоною одразу при прикріпленні
+- [ ] Кнопка повертається в сірий і розвертається при відкріпленні
+- [ ] В консолі видно що findPDFsForContext знаходить підпапки і файли
 
 ## ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-09] pinNote — setCases має бути СИНХРОННИМ
-pinNote оновлює setCases ОДРАЗУ, Drive зберігає async без await.
-Якщо setCases не викликається — компонент не перерендерюється.
+### [2026-04-09] Копіювати робочий компонент замість виправляти
+Якщо кнопка вже працює в Notebook — скопіювати код в CaseDossier.
+Не намагатись виправити — скопіювати точно.
+isPinned читається з props.caseData.pinnedNoteIds — не з локального state.
 
-### [2026-04-09] Drive — шукати файли БЕЗ фільтра mimeType
-Скановані PDF можуть мати різний MIME type на Drive.
-Фільтр: trashed=false and mimeType != folder
-Потім фільтрувати по розширенню .pdf в JS якщо потрібно.
+### [2026-04-09] Drive пошук файлів — додавати console.log для діагностики
+Якщо Drive не знаходить файли — логувати кожен крок:
+folderId, знайдені підпапки, файли в кожній підпапці.
 ```

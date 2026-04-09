@@ -329,9 +329,9 @@ function NoteCard({ note, cases, onDelete, onEdit, onPin }) {
             style={{
               background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
               padding: '2px 4px',
-              filter: isPinned ? 'none' : 'grayscale(1) opacity(0.3)',
-              transform: isPinned ? 'rotate(-45deg)' : 'none',
-              transition: 'all 0.2s'
+              transform: isPinned ? 'rotate(-45deg)' : 'rotate(0deg)',
+              transition: 'transform 0.2s ease, color 0.2s ease',
+              color: isPinned ? '#e53935' : '#666',
             }}
           >
             {"📌"}
