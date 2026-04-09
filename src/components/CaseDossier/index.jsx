@@ -57,86 +57,82 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setTimeout(() => setStorageMsg(''), 3000);
   };
 
-  // ── Знайти PDF для контексту ────────────────────────────────────────────────
-  const findPDFsForContext = async (caseFolderId, token) => {
-    console.log("findPDFsForContext: folderId =", caseFolderId);
-
-    // Отримати підпапки без фільтра по назві (кирилиця в query ненадійна)
-    const subRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files?` +
-      `q=${encodeURIComponent(
-        `'${caseFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
-      )}&fields=files(id,name)&pageSize=20`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const subData = await subRes.json();
-    const folders = subData.files || [];
-    console.log("Підпапки знайдено:", folders.map(f => f.name));
-
-    const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
-    const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
-    console.log("02_ОБРОБЛЕНІ:", processed?.id || "НЕ ЗНАЙДЕНО");
-    console.log("01_ОРИГІНАЛИ:", originals?.id || "НЕ ЗНАЙДЕНО");
-
-    // Отримати ВСІ файли (без фільтра mimeType — скановані PDF можуть мати інший MIME)
-    const getFiles = async (fid) => {
-      const res = await fetch(
-        `https://www.googleapis.com/drive/v3/files?` +
-        `q=${encodeURIComponent(
-          `'${fid}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
-        )}&fields=files(id,name,size,mimeType)&pageSize=100&orderBy=name`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const data = await res.json();
-      console.log(`Файли в папці ${fid}:`, (data.files || []).map(f => `${f.name} (${f.mimeType})`));
-      return data.files || [];
-    };
-
-    if (processed) {
-      const files = await getFiles(processed.id);
-      if (files.length > 0) return { files, source: "02_ОБРОБЛЕНІ", warn: false };
-    }
-
-    if (originals) {
-      const files = await getFiles(originals.id);
-      if (files.length > 0) return { files, source: "01_ОРИГІНАЛИ", warn: true };
-    }
-
-    console.log("Файли не знайдено в жодній підпапці");
-    return { files: [], source: null };
-  };
-
   // ── Створити case_context.md ──────────────────────────────────────────────
   async function handleCreateContext() {
     const token = localStorage.getItem("levytskyi_drive_token");
     const folderId = storageState?.driveFolderId;
     if (!token || !folderId) {
-      setContextMsg("Спочатку створіть папку справи на Drive");
+      setContextMsg("❌ Немає folderId. Перевірте блок Сховище.");
       return;
     }
     setContextLoading(true);
-    setContextMsg("🔍 Шукаю документи...");
+    setContextMsg(`🔍 Шукаю в папці: ${storageState.driveFolderName || ''} (${folderId})`);
     try {
-      const { files, source, warn } = await findPDFsForContext(folderId, token);
+      // Отримати підпапки
+      const subRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?` +
+        `q=${encodeURIComponent(
+          `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+        )}&fields=files(id,name)&pageSize=20`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const subData = await subRes.json();
+      const folders = subData.files || [];
 
-      if (files.length === 0) {
-        setContextMsg("❌ PDF не знайдено. Нарізайте документи у вкладці \"Робота з документами\"");
+      const folderNames = folders.map(f => f.name).join(", ") || "жодної підпапки";
+      setContextMsg(`📁 Підпапки: ${folderNames}`);
+
+      const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
+      const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
+
+      if (!processed && !originals) {
+        setContextMsg(`❌ Не знайдено 02_ОБРОБЛЕНІ і 01_ОРИГІНАЛИ серед: ${folderNames}`);
         setContextLoading(false);
         return;
       }
 
-      if (warn) {
-        setContextMsg(`⚠️ Читаю з 01_ОРИГІНАЛИ (${files.length} файлів). Рекомендую спочатку нарізати.`);
-      } else {
-        setContextMsg(`📄 Знайдено ${files.length} файлів в ${source}. Читаю...`);
+      // Отримати файли БЕЗ фільтра mimeType (крім папок)
+      const getFiles = async (fid, name) => {
+        const res = await fetch(
+          `https://www.googleapis.com/drive/v3/files?` +
+          `q=${encodeURIComponent(
+            `'${fid}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
+          )}&fields=files(id,name,size,mimeType)&pageSize=100`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const data = await res.json();
+        const files = data.files || [];
+        setContextMsg(`📄 В папці ${name}: ${files.length} файлів`);
+        return files;
+      };
+
+      let sourceFiles = [];
+      let sourceName = "";
+
+      if (processed) {
+        sourceFiles = await getFiles(processed.id, "02_ОБРОБЛЕНІ");
+        sourceName = "02_ОБРОБЛЕНІ";
       }
+
+      if (sourceFiles.length === 0 && originals) {
+        sourceFiles = await getFiles(originals.id, "01_ОРИГІНАЛИ");
+        sourceName = "01_ОРИГІНАЛИ";
+      }
+
+      if (sourceFiles.length === 0) {
+        setContextMsg("❌ Файлів не знайдено. Нарізайте документи у вкладці \"Робота з документами\"");
+        setContextLoading(false);
+        return;
+      }
+
+      setContextMsg(`✅ Знайдено ${sourceFiles.length} файлів в ${sourceName}. Починаю читання...`);
 
       // Зібрати base64 документів (до 25MB)
       const documentBlocks = [];
       let totalSize = 0;
       const MAX_SIZE = 25 * 1024 * 1024;
 
-      for (const file of files) {
+      for (const file of sourceFiles) {
         if (totalSize > MAX_SIZE) break;
         const res = await fetch(
           `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
@@ -149,16 +145,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         const arrayBuf = await blob.arrayBuffer();
         const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
 
-        // Скановані PDF можуть мати різний MIME type на Drive
-        const mediaType = (file.mimeType && file.mimeType.includes("pdf")) ? "application/pdf" : "application/pdf";
         documentBlocks.push({
           type: "document",
-          source: { type: "base64", media_type: mediaType, data: base64 }
+          source: { type: "base64", media_type: "application/pdf", data: base64 }
         });
       }
 
-      // 4. Запит до Claude
-      setContextMsg("Аналізую документи...");
+      // Запит до Claude
+      setContextMsg(`Аналізую ${documentBlocks.length} документів...`);
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
         setContextMsg("Потрібен API ключ Claude. Введіть у налаштуваннях.");
@@ -261,7 +255,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         token
       );
 
-      setContextMsg(`Контекст створено (${documentBlocks.length} документів, джерело: ${sourceLabel})`);
+      setContextMsg(`Контекст створено (${documentBlocks.length} документів, джерело: ${sourceName})`);
     } catch (err) {
       console.error("Context creation error:", err);
       setContextMsg(`Помилка: ${err.message}`);
