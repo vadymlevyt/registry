@@ -104,7 +104,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         return;
       }
       const checkData = await checkRes.json();
-      setContextMsg(`Папка: ${JSON.stringify(checkData)}`);
+      setContextMsg(`Папка: ${safeStringify(checkData)}`);
 
       if (checkData.error) {
         setContextMsg(`❌ Помилка доступу: ${checkData.error.message}`);
@@ -198,7 +198,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         if (totalSize > MAX_SIZE) break;
 
         const arrayBuf = await blob.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
+        const bytes = new Uint8Array(arrayBuf);
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+        }
+        const base64 = btoa(binary);
 
         documentBlocks.push({
           type: "document",
