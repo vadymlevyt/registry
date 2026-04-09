@@ -343,7 +343,7 @@ function NoteCard({ note, cases, pinnedIds, onDelete, onEdit, onPin }) {
               padding: '2px 4px',
               transform: isPinned ? 'rotate(0deg)' : 'rotate(-45deg)',
               transition: 'transform 0.2s, opacity 0.2s',
-              opacity: isPinned ? 1 : 0.35,
+              opacity: isPinned ? 1 : 0.4,
             }}
           >
             {"📌"}

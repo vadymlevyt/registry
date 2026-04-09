@@ -84,8 +84,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     const token = localStorage.getItem("levytskyi_drive_token");
     const folderId = storageState?.driveFolderId;
 
-    // Діагностика storage
-    setContextMsg(`Storage: ${safeStringify(caseData?.storage || storageState)}`);
+    setContextMsg("Перевіряю Drive...");
 
     if (!token) { setContextMsg("❌ Немає токена Drive"); handleCreateContext.running = false; return; }
     if (!folderId) { setContextMsg("❌ Немає folderId в storage"); handleCreateContext.running = false; return; }
@@ -309,14 +308,28 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       }
 
       // Завантажити новий
-      await uploadFileToDrive(
+      const uploadResult = await uploadFileToDrive(
         "case_context.md",
         new Blob([contextMd], { type: "text/markdown" }),
         folderId,
         token
       );
 
-      setContextMsg(`Контекст створено (${documentBlocks.length} документів, джерело: ${sourceName})`);
+      if (uploadResult?.error) {
+        setContextMsg(`❌ Не вдалося зберегти на Drive: ${uploadResult.error.message || JSON.stringify(uploadResult.error)}`);
+        setContextLoading(false);
+        handleCreateContext.running = false;
+        return;
+      }
+
+      if (!uploadResult?.id) {
+        setContextMsg("❌ Drive не повернув id файлу — збереження не підтверджено");
+        setContextLoading(false);
+        handleCreateContext.running = false;
+        return;
+      }
+
+      setContextMsg(`✅ Контекст створено (${documentBlocks.length} документів, джерело: ${sourceName})`);
     } catch (err) {
       console.error("Context creation error:", err);
       setContextMsg(`Помилка: ${err.message}`);
@@ -516,7 +529,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   }, []);
 
 
-  async function uploadFileToDrive(file, cData) {
+  async function uploadFileLocal(file, cData) {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) throw new Error("No Drive token");
     const metadata = {
@@ -984,7 +997,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                         fontSize: 16, padding: "2px 4px", flexShrink: 0,
                         transform: isPinned(note.id) ? "rotate(0deg)" : "rotate(-45deg)",
                         transition: "transform 0.2s, opacity 0.2s",
-                        opacity: isPinned(note.id) ? 1 : 0.35,
+                        opacity: isPinned(note.id) ? 1 : 0.4,
                       }}
                     >{"📌"}</button>
                   </div>
@@ -1062,7 +1075,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                     try {
                       if (driveConnected) {
                         const prepared = await prepareFile(dropQueue[i].file);
-                        await uploadFileToDrive(prepared, caseData);
+                        await uploadFileLocal(prepared, caseData);
                       }
                       setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "done" } : item));
                     } catch {
@@ -1571,7 +1584,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 if (newDoc.file && driveConnected) {
                   try {
                     const prepared = await prepareFile(newDoc.file);
-                    driveId = await uploadFileToDrive(prepared, caseData);
+                    driveId = await uploadFileLocal(prepared, caseData);
                   } catch (err) {
                     console.error("Drive upload error:", err);
                   }
