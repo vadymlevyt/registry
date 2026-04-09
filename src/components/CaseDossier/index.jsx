@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
 import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive } from "../../services/driveService.js";
+import { systemAlert, systemConfirm } from "../SystemModal";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -109,8 +110,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       if (searchData.files && searchData.files.length > 0) {
         const existing = searchData.files[0];
         const modDate = new Date(existing.modifiedTime).toLocaleDateString('uk-UA');
-        const replace = window.confirm(
-          `Контекст справи вже існує (оновлено ${modDate}).\n\nЗамінити на новий?`
+        const replace = await systemConfirm(
+          `Контекст справи вже існує (оновлено ${modDate}).\n\nЗамінити на новий?`,
+          "Контекст справи"
         );
         if (!replace) {
           setContextMsg("Скасовано");
@@ -599,7 +601,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   function startAgentVoice() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert("Мікрофон не підтримується в цьому браузері"); return; }
+    if (!SR) { systemAlert("Мікрофон не ��ідтримується в цьому браузері"); return; }
     if (agentRecognitionRef.current) { stopAgentVoice(); return; }
     const recognition = new SR();
     recognition.lang = 'uk-UA';
@@ -1034,13 +1036,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       return (
                         <button
                           onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
-                          title={isNotePinned ? "Відкріпити" : "Закріпити"}
+                          title={isNotePinned ? "Закріпити" : "Відкріпити"}
                           style={{
                             background: 'none', border: 'none', cursor: 'pointer',
                             fontSize: 16, padding: '2px 4px', display: 'inline-block',
-                            transform: isNotePinned ? 'rotate(0deg)' : 'rotate(-45deg)',
-                            opacity: isNotePinned ? 1 : 0.4,
-                            color: isNotePinned ? '#e53935' : '#888',
+                            transform: isNotePinned ? 'rotate(-45deg)' : 'rotate(0deg)',
+                            opacity: isNotePinned ? 0.4 : 1,
+                            color: isNotePinned ? '#888' : '#e53935',
                             transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
                           }}
                         >📌</button>
@@ -1398,8 +1400,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(231,76,60,.1)", color: "#e74c3c" }}>{"⚠️ Без папки"}</span>
           )}
           {caseData.status !== "closed" && onCloseCase && (
-            <button onClick={() => {
-              if (window.confirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.")) {
+            <button onClick={async () => {
+              if (await systemConfirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.", "Закриття справи")) {
                 onCloseCase(caseData.id);
                 onClose();
               }

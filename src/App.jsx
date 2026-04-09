@@ -5,6 +5,7 @@ import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
 import { backupRegistryData } from './services/driveService';
+import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import './App.css';
 
 const Notebook = React.lazy(() => import('./components/Notebook'));
@@ -286,8 +287,8 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
           <button className="btn-lg secondary">📄 Генерувати документ</button>
           <button className="btn-lg secondary">💡 Ідея для контенту</button>
           {c.status !== 'closed' && (
-            <button className="btn-lg secondary" onClick={() => {
-              if (window.confirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.")) {
+            <button className="btn-lg secondary" onClick={async () => {
+              if (await systemConfirm("Закрити справу? Вона перейде в архів. Видалити можна буде звідти.", "Закриття справи")) {
                 onCloseCase(c.id);
                 onClose();
               }
@@ -1060,7 +1061,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   const saveAsNote = () => {
     if (!text.trim()) return;
     saveNoteToStorage(text, null);
-    alert('Нотатку збережено');
+    systemAlert('Нотатку збережено');
     onClose();
   };
 
@@ -1098,7 +1099,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         const newHearings = data.hearing_date ? [{ id: `hrg_${Date.now()}`, date: data.hearing_date, time: data.hearing_time || '', court: data.court || '', notes: '', status: 'scheduled' }] : [];
         return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearings: newHearings, deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes ? [{id:Date.now(), text:data.notes, category:'case', source:'form', ts:new Date().toISOString()}] : [], pinnedNoteIds:[] }];
       });
-      alert(`Дані внесено: ${caseName}`);
+      systemAlert(`Дані внесено: ${caseName}`);
       onClose();
       setLoading(false);
       return;
@@ -1193,10 +1194,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       const hearing_date = _analysisResult.extracted?.hearing_date;
       const hearing_time = _analysisResult.extracted?.hearing_time;
       const caseName = _analysisResult.case_match?.case_name;
-      if (!hearing_date) { alert('Дату засідання не визначено'); return; }
-      if (!caseName)     { alert('Справу не визначено — уточніть вручну'); return; }
+      if (!hearing_date) { systemAlert('Дату засідання не визначено'); return; }
+      if (!caseName)     { systemAlert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
-      if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
+      if (!matched) { systemAlert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
       const newHearing = {
         id: `hrg_${Date.now()}`,
         date: hearing_date,
@@ -1216,10 +1217,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       const deadline_date = _analysisResult.extracted?.deadline_date;
       const deadline_type = _analysisResult.extracted?.deadline_type;
       const caseName = _analysisResult.case_match?.case_name;
-      if (!deadline_date) { alert('Дату дедлайну не визначено'); return; }
-      if (!caseName) { alert('Справу не визначено — уточніть вручну'); return; }
+      if (!deadline_date) { systemAlert('Дату дедлайну не визначено'); return; }
+      if (!caseName) { systemAlert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
-      if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
+      if (!matched) { systemAlert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
       setCases(prev => prev.map(c =>
         c.id === matched.id
           ? { ...c, deadline: deadline_date, ...(deadline_type ? { deadline_type } : {}) }
@@ -1231,9 +1232,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
     if (action === 'update_case_status') {
       const caseName = _analysisResult.case_match?.case_name;
-      if (!caseName) { alert('Справу не визначено'); return; }
+      if (!caseName) { systemAlert('Справу не визначено'); return; }
       const matched = findCaseForAction(caseName, cases);
-      if (!matched) { alert(`Справу "${caseName}" не знайдено`); return; }
+      if (!matched) { systemAlert(`Справу "${caseName}" не знайдено`); return; }
       setPendingStatusChange({ caseId: matched.id, caseName: matched.name });
       return;
     }
@@ -1311,12 +1312,12 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
     if (action === 'save_to_drive' || action === 'create_drive_folder') {
       if (!driveConnected) return; // button should be disabled, but guard anyway
-      alert('Функція збереження в Drive ще не реалізована в Quick Input.');
+      systemAlert('Функція збереження в Drive ще не реалізована в Quick Input.');
       markDone();
       return;
     }
 
-    alert(`Дія "${QI_ACTION_LABELS[action] || action}" ще не реалізована в цій версії`);
+    systemAlert(`Дія "${QI_ACTION_LABELS[action] || action}" ще не реалізована в цій версії`);
     markDone();
   };
 
@@ -1324,7 +1325,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   function startVoiceInput(targetSetter, targetKey) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      alert('Мікрофон не підтримується в цьому браузері');
+      systemAlert('Мікрофон не підтримується в цьому браузері');
       return;
     }
     // If already recording — stop current first
@@ -1627,7 +1628,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             if (matched) {
               if (matched.status === 'closed') {
                 // Вже закрита — пропонуємо видалити назавжди
-                if (!window.confirm(`Справа "${matched.name}" вже закрита. Видалити назавжди? Цю дію не можна скасувати.`)) {
+                if (!await systemConfirm(`Справа "${matched.name}" вже закрита. Видалити назавжди? Цю дію не можна скасувати.`, "Видалення справи", "Видалити")) {
                   setConversationHistory(prev => [...prev, {
                     role: 'assistant',
                     content: `Видалення справи "${matched.name}" скасовано.`
@@ -1642,7 +1643,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                 }]);
               } else {
                 // Спочатку закриваємо
-                if (!window.confirm(`Закрити справу "${matched.name}"? Вона перейде в архів.`)) {
+                if (!await systemConfirm(`Закрити справу "${matched.name}"? Вона перейде в архів.`, "Закриття справи")) {
                   setConversationHistory(prev => [...prev, {
                     role: 'assistant',
                     content: `Закриття справи "${matched.name}" скасовано.`
@@ -2400,7 +2401,7 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
 
   const saveApiKey = () => {
     const val = apiKeyInput.trim();
-    if (!val) { alert('Введіть API ключ'); return; }
+    if (!val) { systemAlert('Введіть API ключ'); return; }
     localStorage.setItem('claude_api_key', val);
     setApiKeySaved(true);
   };
@@ -2417,16 +2418,16 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
   const importData = (file) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const parsed = JSON.parse(e.target.result);
-        if (!Array.isArray(parsed)) { alert('Невірний формат файлу. Очікується масив справ.'); return; }
-        if (!confirm(`Буде завантажено ${parsed.length} справ. Поточні дані будуть замінені. Продовжити?`)) return;
+        if (!Array.isArray(parsed)) { systemAlert('Невірний формат файлу. Очікується масив справ.'); return; }
+        if (!await systemConfirm(`Буде завантажено ${parsed.length} справ. Поточні дані будуть замінені. Продовжити?`, 'Імпорт')) return;
         const normalized = normalizeCases(parsed);
         setCases(normalized);
         localStorage.setItem('levytskyi_cases', JSON.stringify(normalized));
-        alert(`Імпортовано ${parsed.length} справ.`);
-      } catch(err) { alert('Помилка читання файлу: ' + err.message); }
+        systemAlert(`Імпортовано ${parsed.length} справ.`);
+      } catch(err) { systemAlert('Помилка читання файлу: ' + err.message); }
     };
     reader.readAsText(file);
   };
@@ -2435,15 +2436,14 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
     try {
       const token = await driveService.authorize();
       setDriveConnected(true);
-      alert('Google Drive підключено успішно!');
-      // Try to load cases from Drive right away
+      await systemAlert('Google Drive підключено успішно!');
       const driveCases = await driveService.readCases(token);
       if (driveCases && Array.isArray(driveCases)) {
-        if (confirm(`На Google Drive знайдено ${driveCases.length} справ. Завантажити і замінити поточні?`)) {
+        if (await systemConfirm(`На Google Drive знайдено ${driveCases.length} справ. Завантажити і замінити поточні?`, 'Google Drive')) {
           setCases(normalizeCases(driveCases));
         }
       }
-    } catch(err) { alert('Помилка підключення: ' + err.message); }
+    } catch(err) { await systemAlert('Помилка підключення: ' + err.message); }
   };
 
   const disconnectDrive = () => {
@@ -2999,23 +2999,22 @@ function App() {
         setDossierCase(null);
       }
       setSelected(null);
-      alert(`Справу "${caseItem.name}" видалено.`);
+      systemAlert(`Справу "${caseItem.name}" видалено.`);
     } catch (err) {
       console.error("Помилка видалення:", err);
-      alert("Помилка при видаленні. Спробуйте ще раз.");
+      systemAlert("Помилка при видаленні. Спробуйте ще раз.");
     }
   };
 
-  const handleDeleteCase = (caseItem) => {
-    const first = window.confirm(
-      `Видалити справу "${caseItem.name}"?\n\nСправа буде видалена з реєстру.`
+  const handleDeleteCase = async (caseItem) => {
+    const first = await systemConfirm(
+      `Видалити справу "${caseItem.name}"?\n\nСправа буде видалена з реєстру.`,
+      "Видалення справи"
     );
     if (!first) return;
-    const second = window.confirm(
-      "УВАГА! Незворотна операція!\n\n" +
-      `Буде видалено справу "${caseItem.name}" з реєстру\n` +
-      "та папку справи на Google Drive з усіма файлами.\n\n" +
-      "Це неможливо скасувати. Продовжити?"
+    const second = await systemConfirm(
+      `Буде видалено справу "${caseItem.name}" з реєстру та папку справи на Google Drive з усіма файлами.\n\nЦе неможливо скасувати. Продовжити?`,
+      "УВАГА! Незворотна операція!", "Видалити", "Скасувати"
     );
     if (!second) return;
     deleteCasePermanently(caseItem);
@@ -3028,8 +3027,8 @@ function App() {
         <div className="topbar-logo">АБ <span>Левицького</span></div>
         <div className="topbar-right" style={{display:'flex',gap:8,alignItems:'center'}}>
           {lastSaved && <span style={{fontSize:10,color:'var(--text3)',letterSpacing:'0.04em'}}>збережено {lastSaved}</span>}
-          <button className="btn-sm btn-ghost" onClick={() => {
-            if(confirm('Скинути всі дані і повернути тестові справи?')) {
+          <button className="btn-sm btn-ghost" onClick={async () => {
+            if(await systemConfirm('Скинути всі дані і повернути тестові справи?', 'Скидання даних')) {
               localStorage.removeItem('levytskyi_cases');
               setCases(normalizeCases(INITIAL_CASES));
             }
@@ -3232,6 +3231,7 @@ function App() {
           setShowUniversalPanel(true);
         }}
       >⚡</button>}
+      <SystemModalRoot />
     </div>
   );
 }

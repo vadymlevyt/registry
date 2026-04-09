@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { systemConfirm } from "../SystemModal";
 
 const MONTHS_UK = [
   "Січень","Лютий","Березень","Квітень","Травень","Червень",
@@ -788,7 +789,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
     return String(h).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
   }
 
-  function saveEvent() {
+  async function saveEvent() {
     if (!modalTitle.trim()) return;
     const day = modalDate || selectedDay;
 
@@ -799,7 +800,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
 
     const existingHearings = getEventsForDay(day).filter(e => e.type === "hearing" && e.time);
     if (modalType === "hearing" && existingHearings.length > 0) {
-      const ok = window.confirm("В цей день вже є засідання. Зберегти попри накладку?");
+      const ok = await systemConfirm("В цей день вже є засідання. Зберегти попри накладку?", "Накладка засідань");
       if (!ok) return;
     }
 

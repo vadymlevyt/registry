@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { systemAlert, systemConfirm } from '../SystemModal';
 
 const CAT_META = {
   general: { label: '📝 Загальні',  icon: '📝' },
@@ -339,13 +340,13 @@ function NoteCard({ note, cases, pinnedIds, onDelete, onEdit, onPin }) {
           return (
             <button
               onClick={() => onPin(note.id, note.caseId)}
-              title={isNotePinned ? "Відкріпити" : "Закріпити до досьє"}
+              title={isNotePinned ? "Закріпити до досьє" : "Відкріпити"}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
                 fontSize: 16, padding: '2px 4px', display: 'inline-block',
-                transform: isNotePinned ? 'rotate(0deg)' : 'rotate(-45deg)',
-                opacity: isNotePinned ? 1 : 0.4,
-                color: isNotePinned ? '#e53935' : '#888',
+                transform: isNotePinned ? 'rotate(-45deg)' : 'rotate(0deg)',
+                opacity: isNotePinned ? 0.4 : 1,
+                color: isNotePinned ? '#888' : '#e53935',
                 transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
               }}
             >📌</button>
@@ -595,9 +596,9 @@ function RecordsTab() {
     saveRecords(updated);
   }
 
-  function deleteActive() {
+  async function deleteActive() {
     if (!active) return;
-    if (!window.confirm('Видалити цей запис?')) return;
+    if (!await systemConfirm('Видалити цей запис?', 'Видалення')) return;
     const updated = records.filter(r => r.id !== active.id);
     setRecords(updated);
     saveRecords(updated);
@@ -607,7 +608,7 @@ function RecordsTab() {
   function startDictation() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      window.alert('Голосовий ввід не підтримується в цьому браузері');
+      systemAlert('Голосовий ввід не підтримується в цьому браузері');
       return;
     }
     if (isListening && recognitionRef.current) {
@@ -627,7 +628,7 @@ function RecordsTab() {
     };
     recognition.onerror = (e) => {
       if (e.error === 'not-allowed') {
-        alert("Дозвольте доступ до мікрофона в налаштуваннях браузера.");
+        systemAlert("Дозвольте доступ до мікрофона в налаштуваннях браузера.");
       }
       setIsListening(false);
     };
@@ -641,9 +642,9 @@ function RecordsTab() {
     // Просто копіюємо в буфер обміну — QI-модуль можна буде інтегрувати пізніше.
     try {
       navigator.clipboard.writeText(text);
-      window.alert('Текст скопійовано в буфер. Вставте в Quick Input.');
+      systemAlert('Текст скопійовано в буфер. Вставте в Quick Input.');
     } catch {
-      window.alert('Не вдалося скопіювати в буфер.');
+      systemAlert('Не вдалося скопіювати в буфер.');
     }
   }
 
