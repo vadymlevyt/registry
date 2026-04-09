@@ -44,6 +44,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [storageMsg, setStorageMsg] = useState('');
   const [contextLoading, setContextLoading] = useState(false);
   const [contextMsg, setContextMsg] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editingNoteText, setEditingNoteText] = useState('');
 
   useEffect(() => {
     setStorageState(caseData.storage || {});
@@ -55,6 +57,52 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setTimeout(() => setStorageMsg(''), 3000);
   };
 
+  // ── Знайти PDF для контексту ────────────────────────────────────────────────
+  const findPDFsForContext = async (caseFolderId, token) => {
+    const subRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files?` +
+      `q=${encodeURIComponent(
+        `'${caseFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+      )}&fields=files(id,name)&pageSize=20`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const subData = await subRes.json();
+    const folders = subData.files || [];
+
+    const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
+    const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
+
+    if (processed) {
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?` +
+        `q=${encodeURIComponent(
+          `'${processed.id}' in parents and mimeType='application/pdf' and trashed=false`
+        )}&fields=files(id,name,size)&pageSize=100&orderBy=name`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      if ((data.files || []).length > 0) {
+        return { files: data.files, source: "02_ОБРОБЛЕНІ", warn: false };
+      }
+    }
+
+    if (originals) {
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?` +
+        `q=${encodeURIComponent(
+          `'${originals.id}' in parents and mimeType='application/pdf' and trashed=false`
+        )}&fields=files(id,name,size)&pageSize=100&orderBy=name`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      if ((data.files || []).length > 0) {
+        return { files: data.files, source: "01_ОРИГІНАЛИ", warn: true };
+      }
+    }
+
+    return { files: [], source: null, warn: false };
+  };
+
   // ── Створити case_context.md ──────────────────────────────────────────────
   async function handleCreateContext() {
     const token = localStorage.getItem("levytskyi_drive_token");
@@ -64,34 +112,23 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       return;
     }
     setContextLoading(true);
-    setContextMsg("Збираю документи...");
+    setContextMsg("🔍 Шукаю документи...");
     try {
-      // 1. Знайти 02_ОБРОБЛЕНІ
-      const subfolders = await listFolderFiles(folderId, token);
-      let processedFolder = subfolders.find(f => f.name === "02_ОБРОБЛЕНІ" && f.mimeType === "application/vnd.google-apps.folder");
-      let sourceLabel = "02_ОБРОБЛЕНІ";
-
-      // 2. Якщо порожня — спробувати 01_ОРИГІНАЛИ
-      let files = processedFolder ? await listFolderFiles(processedFolder.id, token) : [];
-      files = files.filter(f => f.mimeType === "application/pdf");
+      const { files, source, warn } = await findPDFsForContext(folderId, token);
 
       if (files.length === 0) {
-        const origFolder = subfolders.find(f => f.name === "01_ОРИГІНАЛИ" && f.mimeType === "application/vnd.google-apps.folder");
-        if (origFolder) {
-          files = (await listFolderFiles(origFolder.id, token)).filter(f => f.mimeType === "application/pdf");
-          sourceLabel = "01_ОРИГІНАЛИ (оброблених немає!)";
-          processedFolder = origFolder;
-        }
-      }
-
-      if (files.length === 0) {
-        setContextMsg("Немає PDF файлів у папці справи. Додайте документи.");
+        setContextMsg("❌ PDF не знайдено. Нарізайте документи у вкладці \"Робота з документами\"");
         setContextLoading(false);
         return;
       }
 
-      // 3. Зібрати base64 документів (до 25MB)
-      setContextMsg(`Завантажую ${files.length} документів з ${sourceLabel}...`);
+      if (warn) {
+        setContextMsg(`⚠️ Читаю з 01_ОРИГІНАЛИ (${files.length} файлів). Рекомендую спочатку нарізати.`);
+      } else {
+        setContextMsg(`📄 Знайдено ${files.length} файлів в ${source}. Читаю...`);
+      }
+
+      // Зібрати base64 документів (до 25MB)
       const documentBlocks = [];
       let totalSize = 0;
       const MAX_SIZE = 25 * 1024 * 1024;
@@ -845,23 +882,53 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               borderLeft: isPinned(note.id) ? "2px solid #4f7cff" : "2px solid transparent",
               transition: "all 0.2s"
             }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-                <div style={{ flex: 1 }}>
-                  {String(note.text || "")}
-                </div>
-                <button
-                  onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
-                  title={isPinned(note.id) ? "Відкріпити" : "Закріпити"}
-                  style={{
-                    background: "none", border: "none", cursor: "pointer",
-                    fontSize: 16, padding: "2px 4px", flexShrink: 0,
-                    filter: isPinned(note.id) ? "none" : "grayscale(1) opacity(0.3)",
-                    transform: isPinned(note.id) ? "rotate(-45deg)" : "none",
-                    transition: "all 0.2s"
-                  }}
-                >{"📌"}</button>
-              </div>
-              <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
+              {editingNoteId === note.id ? (
+                <>
+                  <textarea
+                    value={editingNoteText}
+                    onChange={e => setEditingNoteText(e.target.value)}
+                    style={{ width: "100%", minHeight: 80, background: "#0d0f1a", color: "#e8eaf0", border: "1px solid #4f7cff", borderRadius: 6, padding: 8, fontSize: 13, resize: "vertical", boxSizing: "border-box" }}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                    <button onClick={() => { onUpdateNote && onUpdateNote(note.id, { text: editingNoteText }); setEditingNoteId(null); setEditingNoteText(""); }} style={{ background: "#1a4a8a", color: "#fff", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
+                      {"✓ Зберегти"}
+                    </button>
+                    <button onClick={() => setEditingNoteId(null)} style={{ background: "#333", color: "#aaa", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
+                      {"Скасувати"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                    <div style={{ flex: 1 }}>
+                      {String(note.text || "")}
+                    </div>
+                    <button
+                      onClick={() => { setEditingNoteId(note.id); setEditingNoteText(note.text || ""); }}
+                      title="Редагувати"
+                      style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+                    >{"✏️"}</button>
+                    <button
+                      onClick={() => onDeleteNote && onDeleteNote(note.id)}
+                      title="Видалити"
+                      style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+                    >{"🗑️"}</button>
+                    <button
+                      onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
+                      title={isPinned(note.id) ? "Відкріпити" : "Закріпити"}
+                      style={{
+                        background: "none", border: "none", cursor: "pointer",
+                        fontSize: 16, padding: "2px 4px", flexShrink: 0,
+                        filter: isPinned(note.id) ? "none" : "grayscale(1) opacity(0.3)",
+                        transform: isPinned(note.id) ? "rotate(-45deg)" : "none",
+                        transition: "all 0.2s"
+                      }}
+                    >{"📌"}</button>
+                  </div>
+                  <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
+                </>
+              )}
             </div>
           ))}
         </div>

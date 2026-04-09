@@ -1,4 +1,4 @@
-# TASK.md — Два баги: нотатки + контекстний файл
+# TASK.md — Три фікси: контекстний файл + нотатки в досьє
 Дата: 09.04.2026
 
 ## КРОК 0 — ПРОЧИТАТИ LESSONS.md
@@ -8,104 +8,50 @@ cat LESSONS.md
 
 ---
 
-## БАГ 1 — НОТАТКИ: ПРИКРІПЛЕННЯ
+## КРОК 1 — ДІАГНОСТИКА
 
-### Симптоми:
-- В записній книжці показує неправильно які прикріплені
-- В досьє прикріплення відображається тільки після F5
-- Кнопки прикріплення сірі/неактивні
-- Потрібно мати можливість прикріпити КІЛЬКА нотаток до одного досьє
-
-### Діагностика:
 ```bash
-grep -n "pinNote\|pinnedNoteIds\|pinned\|setPinned\|handlePin" src/components/CaseDossier/index.jsx | head -20
-grep -n "pinNote\|pinnedNoteIds\|pinned\|handlePin" src/components/Notebook/index.jsx | head -20
-grep -n "pinNote\|pinnedNoteIds\|pinNote" src/App.jsx | head -20
+# Як зараз шукає файли для контексту
+grep -n "createContext\|caseContext\|getFiles\|getPDF\|02_ОБРОБЛЕНІ\|driveFolderId" src/components/CaseDossier/index.jsx | head -30
+
+# Як виглядає список нотаток в досьє
+grep -n "editNote\|updateNote\|handleEdit\|note.*edit\|setEditingNote" src/components/CaseDossier/index.jsx | head -20
+
+# Як реалізовано прикріплення в Notebook (еталон)
+grep -n "isPinned\|pinNote\|rotate\|📌\|pinnedNoteIds" src/components/Notebook/index.jsx | head -20
 ```
 
-### Що перевірити:
-
-1. Функція `pinNote` в App.jsx — чи оновлює стан React одразу:
-```js
-// Має бути так:
-const pinNote = (noteId, caseId) => {
-  setCases(prev => prev.map(c =>
-    c.id === caseId
-      ? { ...c, pinnedNoteIds: [...(c.pinnedNoteIds || []), noteId] }
-      : c
-  ));
-  // + зберегти на Drive
-};
-
-const unpinNote = (noteId, caseId) => {
-  setCases(prev => prev.map(c =>
-    c.id === caseId
-      ? { ...c, pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== noteId) }
-      : c
-  ));
-};
-```
-
-2. Кнопка прикріплення в Notebook — чи передається caseId:
-```bash
-grep -n "pinNote\|caseId\|onClick.*pin" src/components/Notebook/index.jsx | head -20
-```
-Якщо нотатка типу "case" — кнопка має бути активна і передавати caseId.
-Якщо нотатка типу "general" — кнопка неактивна (не можна прикріпити до справи).
-
-3. Відображення в Notebook — чи перечитує pinnedNoteIds після pin:
-```jsx
-// В Notebook — кнопка прикріплення:
-const isPinned = caseData?.pinnedNoteIds?.includes(note.id);
-
-<button
-  onClick={() => isPinned
-    ? onUnpinNote(note.id, note.caseId)
-    : onPinNote(note.id, note.caseId)
-  }
-  style={{ opacity: note.caseId ? 1 : 0.3, cursor: note.caseId ? 'pointer' : 'default' }}
-  title={note.caseId ? (isPinned ? 'Відкріпити' : 'Прикріпити') : 'Лише нотатки справ можна прикріпити'}
->
-  📌
-</button>
-```
-
-4. В CaseDossier — перевірити чи props оновлюються без F5:
-```bash
-grep -n "pinnedNoteIds\|pinned\|notes" src/components/CaseDossier/index.jsx | head -20
-```
-Якщо компонент читає pinnedNoteIds з props.caseData — має оновлюватись автоматично при зміні стану в App.jsx.
-
-### Фікс кнопки (якщо сіра):
-Кнопка прикріплення має бути активна для всіх нотаток типу "case".
-Для "general", "content", "system", "records" — кнопка прихована або disabled.
-
-### Кілька нотаток:
-pinnedNoteIds[] — масив, тому кілька нотаток підтримуються автоматично.
-Перевірити що немає обмеження "якщо вже є pinned — не додавати".
+Показати результати перед змінами.
 
 ---
 
-## БАГ 2 — КОНТЕКСТНИЙ ФАЙЛ: НЕ ЗНАХОДИТЬ PDF
+## БАГ 1 — КОНТЕКСТНИЙ ФАЙЛ: ПРАВИЛЬНИЙ ПОШУК PDF
 
-### Симптом:
-Пише "Немає PDF файлів у папці справи" але в 02_ОБРОБЛЕНІ є 27 нарізаних PDF.
+### Алгоритм:
 
-### Діагностика:
-```bash
-grep -n "createCaseContext\|02_ОБРОБЛЕНІ\|listFiles\|driveFolderId\|getSubfolder" src/components/CaseDossier/index.jsx | head -30
-grep -n "createCaseContext\|listDriveFiles\|getFilesIn" src/services/driveService.js | head -20
+```
+1. Взяти caseData.storage.driveFolderId — це папка справи
+   (зараз це папка в 01_АКТИВНІ_СПРАВИ, пізніше може бути інша)
+
+2. Отримати ВСІ підпапки цієї папки БЕЗ фільтра по назві
+   (кирилиця в Drive query ненадійна — шукати в JS)
+
+3. Знайти 02_ОБРОБЛЕНІ в JS:
+   folders.find(f => f.name === '02_ОБРОБЛЕНІ')
+
+4. Якщо 02_ОБРОБЛЕНІ є і не порожня → брати PDF звідти
+
+5. Якщо 02_ОБРОБЛЕНІ порожня або немає →
+   знайти 01_ОРИГІНАЛИ → брати PDF звідти + попередити
+
+6. Якщо обидві порожні → повідомити і зупинитись
 ```
 
-### Найімовірніша причина:
-Функція шукає файли напряму в driveFolderId (корінь папки справи),
-а не в підпапці 02_ОБРОБЛЕНІ.
-
-### Алгоритм пошуку файлів (правильний):
+### Функція пошуку PDF:
 
 ```js
-const getContextFiles = async (caseFolderId, token) => {
-  // Крок 1: знайти підпапку 02_ОБРОБЛЕНІ
+const findPDFsForContext = async (caseFolderId, token) => {
+  // Отримати всі підпапки без фільтра по назві
   const subRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?` +
     `q=${encodeURIComponent(
@@ -116,112 +62,205 @@ const getContextFiles = async (caseFolderId, token) => {
   const subData = await subRes.json();
   const folders = subData.files || [];
 
-  // Знайти 02_ОБРОБЛЕНІ в JS (не в query — кирилиця ненадійна)
-  const processedFolder = folders.find(f => f.name === '02_ОБРОБЛЕНІ');
+  // Знайти потрібні папки в JS (не в query)
+  const processed = folders.find(f => f.name === '02_ОБРОБЛЕНІ');
+  const originals = folders.find(f => f.name === '01_ОРИГІНАЛИ');
 
-  // Крок 2: якщо є 02_ОБРОБЛЕНІ — шукати PDF там
-  let targetFolderId = processedFolder?.id || null;
-
-  // Крок 3: якщо 02_ОБРОБЛЕНІ порожня — спробувати 01_ОРИГІНАЛИ
-  if (targetFolderId) {
-    const pdfRes = await fetch(
+  // Спробувати 02_ОБРОБЛЕНІ
+  if (processed) {
+    const res = await fetch(
       `https://www.googleapis.com/drive/v3/files?` +
       `q=${encodeURIComponent(
-        `'${targetFolderId}' in parents and mimeType='application/pdf' and trashed=false`
-      )}&fields=files(id,name,size)&pageSize=100`,
+        `'${processed.id}' in parents and mimeType='application/pdf' and trashed=false`
+      )}&fields=files(id,name,size)&pageSize=100&orderBy=name`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    const pdfData = await pdfRes.json();
-    const pdfs = pdfData.files || [];
-
-    if (pdfs.length > 0) return { files: pdfs, source: '02_ОБРОБЛЕНІ' };
-  }
-
-  // Крок 4: спробувати 01_ОРИГІНАЛИ
-  const originalsFolder = folders.find(f => f.name === '01_ОРИГІНАЛИ');
-  if (originalsFolder) {
-    const origRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files?` +
-      `q=${encodeURIComponent(
-        `'${originalsFolder.id}' in parents and mimeType='application/pdf' and trashed=false`
-      )}&fields=files(id,name,size)&pageSize=100`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const origData = await origRes.json();
-    const origPdfs = origData.files || [];
-
-    if (origPdfs.length > 0) {
-      return { files: origPdfs, source: '01_ОРИГІНАЛИ', warning: true };
+    const data = await res.json();
+    if ((data.files || []).length > 0) {
+      return { files: data.files, source: '02_ОБРОБЛЕНІ', warn: false };
     }
   }
 
-  return { files: [], source: null };
+  // Спробувати 01_ОРИГІНАЛИ
+  if (originals) {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files?` +
+      `q=${encodeURIComponent(
+        `'${originals.id}' in parents and mimeType='application/pdf' and trashed=false`
+      )}&fields=files(id,name,size)&pageSize=100&orderBy=name`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const data = await res.json();
+    if ((data.files || []).length > 0) {
+      return { files: data.files, source: '01_ОРИГІНАЛИ', warn: true };
+    }
+  }
+
+  return { files: [], source: null, warn: false };
 };
 ```
 
-### Після отримання файлів — завантажити і відправити в Claude:
+### Використання в handleCreateCaseContext:
 
 ```js
-const createContextFile = async () => {
+const handleCreateCaseContext = async () => {
   const token = localStorage.getItem('levytskyi_drive_token');
-  const folderId = caseData.storage?.driveFolderId;
-  if (!token || !folderId) { showMsg('❌ Підключіть Drive'); return; }
+  const folderId = caseData?.storage?.driveFolderId;
 
-  showMsg('🔍 Шукаю документи...');
-  const { files, source, warning } = await getContextFiles(folderId, token);
-
-  if (files.length === 0) {
-    showMsg('❌ Немає PDF файлів. Спочатку нарізайте документи.');
+  if (!token || !folderId) {
+    showMsg('❌ Підключіть Drive і створіть папку справи');
     return;
   }
 
-  if (warning) {
-    showMsg(`⚠️ Читаю з 01_ОРИГІНАЛИ (${files.length} файлів). Рекомендую спочатку нарізати.`);
-  } else {
-    showMsg(`📄 Знайдено ${files.length} файлів в ${source}`);
+  showMsg('🔍 Шукаю документи...');
+
+  const { files, source, warn } = await findPDFsForContext(folderId, token);
+
+  if (files.length === 0) {
+    showMsg('❌ PDF не знайдено. Нарізайте документи у вкладці "Робота з документами"');
+    return;
   }
 
-  // Завантажити файли і відправити в Claude
-  showMsg('📥 Завантажую файли...');
-  // ... далі document blocks
+  if (warn) {
+    showMsg(`⚠️ Читаю з 01_ОРИГІНАЛИ (${files.length} файлів). Рекомендую спочатку нарізати.`);
+  } else {
+    showMsg(`📄 Знайдено ${files.length} файлів в ${source}. Читаю...`);
+  }
+
+  // Далі — існуючий код завантаження і відправки в Claude
 };
 ```
 
 ---
 
-## ПОРЯДОК ВИКОНАННЯ
+## БАГ 2 — РЕДАГУВАННЯ НОТАТОК В ДОСЬЄ
 
-1. Діагностика (показати результати grep)
-2. Фікс pinNote/unpinNote в App.jsx
-3. Фікс відображення в Notebook
-4. Фікс кнопок прикріплення
-5. Фікс getContextFiles — шукати в підпапках
+### Що треба:
+- Кожна нотатка має кнопку ✏️ Редагувати
+- При кліку — нотатка перетворюється в textarea
+- Кнопки Зберегти / Скасувати
+- Після збереження — оновлюється в notes{} і в pinnedNoteIds якщо прикріплена
+
+### Стан:
+```jsx
+const [editingNoteId, setEditingNoteId] = useState(null);
+const [editingNoteText, setEditingNoteText] = useState('');
+```
+
+### UI нотатки:
+```jsx
+{caseNotes.map(note => (
+  <div key={note.id} style={{ background: '#1a1d2e', borderRadius: 8, padding: 12, marginBottom: 8 }}>
+    {editingNoteId === note.id ? (
+      // Режим редагування
+      <>
+        <textarea
+          value={editingNoteText}
+          onChange={e => setEditingNoteText(e.target.value)}
+          style={{ width: '100%', minHeight: 80, background: '#0d0f1a', color: '#fff', border: '1px solid #4a9eff', borderRadius: 6, padding: 8, fontSize: 13 }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+          <button onClick={() => handleSaveNote(note.id)} style={{ background: '#1a4a8a', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}>
+            ✓ Зберегти
+          </button>
+          <button onClick={() => setEditingNoteId(null)} style={{ background: '#333', color: '#aaa', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 12 }}>
+            Скасувати
+          </button>
+        </div>
+      </>
+    ) : (
+      // Режим перегляду
+      <>
+        <div style={{ fontSize: 13, color: '#ccc', marginBottom: 6 }}>{note.text}</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: '#555' }}>{note.ts?.split('T')[0]}</span>
+          <button
+            onClick={() => { setEditingNoteId(note.id); setEditingNoteText(note.text); }}
+            style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 12 }}
+          >
+            ✏️
+          </button>
+          <button
+            onClick={() => handleDeleteNote(note.id)}
+            style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 12 }}
+          >
+            🗑️
+          </button>
+          {/* Кнопка прикріплення — точно як в Notebook */}
+          <button
+            onClick={() => {
+              const isPinned = (caseData?.pinnedNoteIds || []).includes(note.id);
+              isPinned ? onUnpinNote(note.id, caseData.id) : onPinNote(note.id, caseData.id);
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 16,
+              transform: (caseData?.pinnedNoteIds || []).includes(note.id) ? 'rotate(-45deg)' : 'none',
+              transition: 'transform 0.2s, color 0.2s',
+              color: (caseData?.pinnedNoteIds || []).includes(note.id) ? '#e53935' : '#666',
+            }}
+            title={(caseData?.pinnedNoteIds || []).includes(note.id) ? 'Відкріпити' : 'Прикріпити'}
+          >
+            📌
+          </button>
+        </div>
+      </>
+    )}
+  </div>
+))}
+```
+
+### Функція збереження:
+```jsx
+const handleSaveNote = (noteId) => {
+  onUpdateNote(noteId, editingNoteText); // функція з App.jsx
+  setEditingNoteId(null);
+  setEditingNoteText('');
+};
+```
+
+---
+
+## БАГ 3 — ПРИКРІПЛЕННЯ В ДОСЬЄ БЕЗ F5
+
+Якщо після БАГ 2 прикріплення все ще не оновлюється без F5:
+
+```bash
+# Перевірити чи є локальний state для pinnedNoteIds в CaseDossier
+grep -n "useState.*pinned\|localPinned\|setPinned" src/components/CaseDossier/index.jsx
+```
+
+Якщо є — видалити локальний state.
+Читати напряму з props: `caseData.pinnedNoteIds`
+Тоді при зміні в App.jsx компонент автоматично перерендериться.
 
 ---
 
 ## ДЕПЛОЙ
 
 ```bash
-git add -A && git commit -m "fix: note pinning realtime update, context file finds PDFs in subfolders" && git push origin main
+git add -A && git commit -m "fix: context file finds PDFs in subfolders, note editing in dossier" && git push origin main
 ```
 
 ## ЧЕКЛІСТ
 
-- [ ] Прикріпив нотатку в досьє → одразу відображається без F5
-- [ ] Прикріпив нотатку → в Notebook показує 📌 одразу
-- [ ] Можна прикріпити кілька нотаток до однієї справи
-- [ ] Кнопки прикріплення активні для нотаток типу "case"
-- [ ] "Створити контекст" → знаходить PDF в 02_ОБРОБЛЕНІ
+- [ ] "Створити контекст" → знаходить PDF в 02_ОБРОБЛЕНІ папки справи
 - [ ] Якщо 02_ОБРОБЛЕНІ порожня → шукає в 01_ОРИГІНАЛИ + попереджає
+- [ ] Якщо обидві порожні → чітке повідомлення що робити
+- [ ] Нотатка в досьє → кнопка ✏️ → textarea → Зберегти/Скасувати
+- [ ] Кнопка 📌 в досьє — та сама анімація і колір як в Notebook
+- [ ] Прикріплення в досьє → оновлюється без F5
 
 ## ДОПИСАТИ В LESSONS.md
 
 ```
-### [2026-04-09] Drive підпапки — шукати в JS не в query
-Кирилиця в q= ненадійна. Отримати всі підпапки без фільтра,
-знайти потрібну в JS: folders.find(f => f.name === '02_ОБРОБЛЕНІ')
+### [2026-04-09] Drive — НІКОЛИ не фільтрувати по кирилиці в query
+Отримати всі підпапки без фільтра по назві.
+Знайти потрібну в JS: folders.find(f => f.name === '02_ОБРОБЛЕНІ')
+Це стосується будь-якого пошуку по назві з кирилицею в Drive API.
 
-### [2026-04-09] pinNote — оновлення стану без F5
-pinnedNoteIds[] оновлюється через setCases в App.jsx.
-Компонент автоматично перерендериться якщо отримує caseData через props.
+### [2026-04-09] Редагування нотаток — локальний state editingNoteId
+useState(null) → при кліці встановити id → показати textarea → зберегти через onUpdateNote
 ```
