@@ -2496,7 +2496,7 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
             {driveSyncStatus === 'syncing' && <span style={{fontSize:11,color:'var(--text3)'}}>⏳ Збереження...</span>}
             {driveSyncStatus === 'synced'  && <span style={{fontSize:11,color:'var(--text3)'}}>✓ Синхронізовано</span>}
             {driveSyncStatus === 'error'   && <span style={{fontSize:11,color:'var(--red)'}}>⚠ Помилка синхронізації</span>}
-            <button className="btn-sm btn-ghost" onClick={() => { driveService.clearToken(); setDriveConnected(false); window.location.reload(); }} title="Очистити токен і запросити нові дозволи">{"🔄 Оновити дозволи"}</button>
+            <button className="btn-sm btn-ghost" onClick={async () => { driveService.clearToken(); setDriveConnected(false); await connectDrive(); }} title="Очистити токен і запросити нові дозволи">{"🔄 Оновити дозволи"}</button>
             <button className="btn-sm btn-ghost" style={{marginLeft:'auto'}} onClick={disconnectDrive}>Відключити</button>
           </div>
         ) : (

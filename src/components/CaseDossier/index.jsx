@@ -90,8 +90,37 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     if (!folderId) { setContextMsg("❌ Немає folderId в storage"); handleCreateContext.running = false; return; }
 
     setContextLoading(true);
-    setContextMsg(`🔍 folderId = ${folderId}`);
     try {
+      // Перевірити чи контекст вже існує
+      setContextMsg("Перевіряю існуючий контекст...");
+      const searchRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          `'${folderId}' in parents and name='case_context.md' and trashed=false`
+        )}&fields=files(id,name,modifiedTime)`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (searchRes.status === 401) {
+        setContextMsg("❌ Токен Drive протух. Натисніть \"Підключити Drive\" і спробуйте знову.");
+        setContextLoading(false);
+        handleCreateContext.running = false;
+        return;
+      }
+      const searchData = await searchRes.json();
+      if (searchData.files && searchData.files.length > 0) {
+        const existing = searchData.files[0];
+        const modDate = new Date(existing.modifiedTime).toLocaleDateString('uk-UA');
+        const replace = window.confirm(
+          `Контекст справи вже існує (оновлено ${modDate}).\n\nЗамінити на новий?`
+        );
+        if (!replace) {
+          setContextMsg("Скасовано");
+          setContextLoading(false);
+          handleCreateContext.running = false;
+          return;
+        }
+      }
+
+      setContextMsg("Перевіряю папку...");
       // Перевірити чи папка існує
       const checkRes = await fetch(
         `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
@@ -1001,19 +1030,20 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                       style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
                     >{"🗑️"}</button>
                     {(() => {
-                      const pinned = (caseData.pinnedNoteIds || []).includes(String(note.id));
+                      const isNotePinned = (caseData.pinnedNoteIds || []).includes(String(note.id));
                       return (
                         <button
                           onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
-                          title={pinned ? "Відкріпити" : "Закріпити"}
+                          title={isNotePinned ? "Відкріпити" : "Закріпити"}
                           style={{
-                            background: "none", border: "none", cursor: "pointer",
-                            fontSize: 16, padding: "2px 4px", flexShrink: 0,
-                            transform: pinned ? "rotate(0deg)" : "rotate(-45deg)",
-                            opacity: pinned ? 1 : 0.4,
-                            transition: "transform 0.2s, opacity 0.2s"
+                            background: 'none', border: 'none', cursor: 'pointer',
+                            fontSize: 16, padding: '2px 4px', display: 'inline-block',
+                            transform: isNotePinned ? 'rotate(0deg)' : 'rotate(-45deg)',
+                            opacity: isNotePinned ? 1 : 0.4,
+                            color: isNotePinned ? '#e53935' : '#888',
+                            transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
                           }}
-                        >{"📌"}</button>
+                        >📌</button>
                       );
                     })()}
                   </div>

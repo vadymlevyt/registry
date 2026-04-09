@@ -334,21 +334,23 @@ function NoteCard({ note, cases, pinnedIds, onDelete, onEdit, onPin }) {
         <span style={{ fontSize: 10, color: '#5a6080', marginLeft: 'auto' }}>
           {note.source ? `${note.source} · ` : ''}{formatTs(note.ts)}
         </span>
-        {onPin && note.caseId && (
-          <button
-            onClick={() => onPin(note.id, note.caseId)}
-            title={isPinned ? "Відкріпити" : "Закріпити до досьє"}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
-              padding: '2px 4px',
-              transform: isPinned ? 'rotate(0deg)' : 'rotate(-45deg)',
-              transition: 'transform 0.2s, opacity 0.2s',
-              opacity: isPinned ? 1 : 0.4,
-            }}
-          >
-            {"📌"}
-          </button>
-        )}
+        {onPin && note.caseId && (() => {
+          const isNotePinned = (pinnedIds || []).includes(String(note.id));
+          return (
+            <button
+              onClick={() => onPin(note.id, note.caseId)}
+              title={isNotePinned ? "Відкріпити" : "Закріпити до досьє"}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 16, padding: '2px 4px', display: 'inline-block',
+                transform: isNotePinned ? 'rotate(0deg)' : 'rotate(-45deg)',
+                opacity: isNotePinned ? 1 : 0.4,
+                color: isNotePinned ? '#e53935' : '#888',
+                transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
+              }}
+            >📌</button>
+          );
+        })()}
         {!editing && (
           <button
             onClick={() => { setEditText(note.text || ''); setEditing(true); }}
