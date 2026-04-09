@@ -132,6 +132,48 @@ export async function selectLocalFolder() {
   }
 }
 
+// ── BACKUP ──────────────────────────────────────────────────────────────────
+// Зберегти резервну копію registry_data.json в _backups/ на Drive
+export async function backupRegistryData(token, casesData) {
+  try {
+    // Знайти або створити _backups папку
+    const backupFolder = await findOrCreateFolder("_backups", null, token);
+
+    // Ім'я файлу з датою
+    const now = new Date();
+    const ts = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_${ts}.json`;
+
+    // Завантажити бекап
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(casesData, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+
+    // Очистити старі бекапи (залишити останні 7)
+    const files = await listFolderFiles(backupFolder.id, token);
+    const backups = files
+      .filter(f => f.name.startsWith('registry_data_'))
+      .sort((a, b) => (b.modifiedTime || b.name).localeCompare(a.modifiedTime || a.name));
+
+    if (backups.length > 7) {
+      for (const old of backups.slice(7)) {
+        await fetch(`https://www.googleapis.com/drive/v3/files/${old.id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        }).catch(() => {});
+      }
+    }
+
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 export async function saveFileLocally(dirHandle, relativePath, fileBlob) {
   const parts = relativePath.split("/");
   let currentDir = dirHandle;

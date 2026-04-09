@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
-import { createCaseStructure } from "../../services/driveService.js";
+import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive } from "../../services/driveService.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -42,6 +42,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [creatingStructure, setCreatingStructure] = useState(false);
   const [storageState, setStorageState] = useState(caseData.storage || {});
   const [storageMsg, setStorageMsg] = useState('');
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextMsg, setContextMsg] = useState('');
 
   useEffect(() => {
     setStorageState(caseData.storage || {});
@@ -53,13 +55,182 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     setTimeout(() => setStorageMsg(''), 3000);
   };
 
+  // ── Створити case_context.md ──────────────────────────────────────────────
+  async function handleCreateContext() {
+    const token = localStorage.getItem("levytskyi_drive_token");
+    const folderId = storageState?.driveFolderId;
+    if (!token || !folderId) {
+      setContextMsg("Спочатку створіть папку справи на Drive");
+      return;
+    }
+    setContextLoading(true);
+    setContextMsg("Збираю документи...");
+    try {
+      // 1. Знайти 02_ОБРОБЛЕНІ
+      const subfolders = await listFolderFiles(folderId, token);
+      let processedFolder = subfolders.find(f => f.name === "02_ОБРОБЛЕНІ" && f.mimeType === "application/vnd.google-apps.folder");
+      let sourceLabel = "02_ОБРОБЛЕНІ";
+
+      // 2. Якщо порожня — спробувати 01_ОРИГІНАЛИ
+      let files = processedFolder ? await listFolderFiles(processedFolder.id, token) : [];
+      files = files.filter(f => f.mimeType === "application/pdf");
+
+      if (files.length === 0) {
+        const origFolder = subfolders.find(f => f.name === "01_ОРИГІНАЛИ" && f.mimeType === "application/vnd.google-apps.folder");
+        if (origFolder) {
+          files = (await listFolderFiles(origFolder.id, token)).filter(f => f.mimeType === "application/pdf");
+          sourceLabel = "01_ОРИГІНАЛИ (оброблених немає!)";
+          processedFolder = origFolder;
+        }
+      }
+
+      if (files.length === 0) {
+        setContextMsg("Немає PDF файлів у папці справи. Додайте документи.");
+        setContextLoading(false);
+        return;
+      }
+
+      // 3. Зібрати base64 документів (до 25MB)
+      setContextMsg(`Завантажую ${files.length} документів з ${sourceLabel}...`);
+      const documentBlocks = [];
+      let totalSize = 0;
+      const MAX_SIZE = 25 * 1024 * 1024;
+
+      for (const file of files) {
+        if (totalSize > MAX_SIZE) break;
+        const res = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const blob = await res.blob();
+        totalSize += blob.size;
+        if (totalSize > MAX_SIZE) break;
+
+        const arrayBuf = await blob.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
+
+        documentBlocks.push({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: base64 }
+        });
+      }
+
+      // 4. Запит до Claude
+      setContextMsg("Аналізую документи...");
+      const apiKey = localStorage.getItem("claude_api_key");
+      if (!apiKey) {
+        setContextMsg("Потрібен API ключ Claude. Введіть у налаштуваннях.");
+        setContextLoading(false);
+        return;
+      }
+
+      const systemPrompt = `Ти — юридичний аналітик. Створи контекстний файл справи на основі наданих документів.
+
+Структура файлу:
+# Справа ${caseData.name} ${caseData.case_no || ''}
+Створено: ${new Date().toISOString().split('T')[0]}
+
+## Огляд справи
+(Коротке резюме: хто позивач, хто відповідач, суть спору, стадія)
+
+## Сторони і позиції
+(Кожна сторона: хто, чого вимагає, на що посилається)
+
+## Документи
+(Для кожного документа: назва, дата, суть без шапок і реквізитів)
+
+## Ключові факти і докази
+(Все що може впливати на результат)
+
+## Хронологія подій
+(Послідовно від початку)
+
+## Слабкі місця
+(Вразливості позиції, ризики)
+
+## Спостереження
+(Тактичні рекомендації)
+
+МОВА: українська. Формат: Markdown. Без зайвих вступів.`;
+
+      const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages: [{
+            role: "user",
+            content: [
+              ...documentBlocks,
+              { type: "text", text: `Проаналізуй ці ${documentBlocks.length} документів і створи контекстний файл справи "${caseData.name}".` }
+            ]
+          }]
+        })
+      });
+
+      if (!apiRes.ok) {
+        const err = await apiRes.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `API помилка: ${apiRes.status}`);
+      }
+
+      const data = await apiRes.json();
+      const contextMd = data?.content?.[0]?.text || "";
+
+      if (!contextMd) {
+        setContextMsg("Claude не повернув результат");
+        setContextLoading(false);
+        return;
+      }
+
+      // 5. Зберегти case_context.md на Drive
+      setContextMsg("Зберігаю case_context.md...");
+
+      // Архівувати існуючий
+      const existingFiles = await listFolderFiles(folderId, token);
+      const existingCtx = existingFiles.find(f => f.name === "case_context.md");
+      if (existingCtx) {
+        const archiveFolder = await findOrCreateFolder("archive", folderId, token);
+        const archiveName = `case_context_${new Date().toISOString().split('T')[0]}.md`;
+        // Скопіювати в архів
+        await fetch(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}/copy`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ name: archiveName, parents: [archiveFolder.id] })
+        });
+        // Видалити старий
+        await fetch(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+
+      // Завантажити новий
+      await uploadFileToDrive(
+        "case_context.md",
+        new Blob([contextMd], { type: "text/markdown" }),
+        folderId,
+        token
+      );
+
+      setContextMsg(`Контекст створено (${documentBlocks.length} документів, джерело: ${sourceLabel})`);
+    } catch (err) {
+      console.error("Context creation error:", err);
+      setContextMsg(`Помилка: ${err.message}`);
+    }
+    setContextLoading(false);
+  }
+
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
   const [agentWidth, setAgentWidth] = useState(() => Math.min(500, Math.max(280, Math.round(window.innerWidth * 0.35))));
-  const [agentMessages, setAgentMessages] = useState(() => {
-    const history = caseData.agentHistory || [];
-    return history.slice(-20);
-  });
+  const [agentMessages, setAgentMessages] = useState([]);
   const [agentInput, setAgentInput] = useState('');
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
@@ -115,7 +286,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const documents = caseData.documents || [];
 
   const caseNotes = (notesProp || []).slice().sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
-  const pinnedNote = caseNotes.find(n => n.pinned) || caseNotes[0];
+  const pinnedIds = caseData.pinnedNoteIds || [];
+  const isPinned = (noteId) => pinnedIds.includes(String(noteId));
+  const pinnedNote = caseNotes.find(n => isPinned(n.id)) || caseNotes[0];
 
   const filteredDocs = documents.filter(d => {
     if (docFilters.proc !== "all" && d.procId !== docFilters.proc) return false;
@@ -375,20 +548,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         const data = await response.json();
         const reply = data.content?.[0]?.text || "Помилка відповіді";
         const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };
-        setAgentMessages(prev => {
-          const updated = [...prev, assistantEntry];
-          const trimmed = updated.slice(-50);
-          updateCase && updateCase(caseData.id, 'agentHistory', trimmed);
-          return updated;
-        });
+        setAgentMessages(prev => [...prev, assistantEntry].slice(-50));
       } catch (err) {
         const errEntry = { role: 'assistant', content: "Помилка з'єднання з агентом.", ts: new Date().toISOString() };
-        setAgentMessages(prev => {
-          const updated = [...prev, errEntry];
-          const trimmed = updated.slice(-50);
-          updateCase && updateCase(caseData.id, 'agentHistory', trimmed);
-          return updated;
-        });
+        setAgentMessages(prev => [...prev, errEntry].slice(-50));
       }
       setAgentLoading(false);
     }
@@ -491,7 +654,6 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 <button
                   onClick={() => {
                     setAgentMessages([]);
-                    updateCase && updateCase(caseData.id, 'agentHistory', []);
                     setConfirmClearOpen(false);
                   }}
                   style={{
@@ -520,18 +682,18 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             { label: "Номер справи", field: "case_no", value: caseData.case_no },
             { label: "Категорія", field: "category", value: categoryLabel },
             { label: "Наступна дія", field: "next_action", value: caseData.next_action },
-            { label: "Дата засідання", field: "hearing_date", value: caseData.hearing_date },
+            { label: "Дата засідання", field: "_hearing_date", value: (() => { const h = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return h ? `${h.date}${h.time ? ' о ' + h.time : ''}` : ''; })(), readOnly: true },
             { label: "Дедлайн", field: "deadline", value: caseData.deadline }
           ].map(row => (
             <div key={row.field} style={{ display: "flex", gap: 12, marginBottom: 10, alignItems: "flex-start" }}>
               <div style={{ width: 130, fontSize: 11, color: "#5a6080", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
               <div
-                contentEditable
+                contentEditable={!row.readOnly}
                 suppressContentEditableWarning
-                onBlur={e => updateCase && updateCase(caseData.id, row.field, e.target.innerText.trim())}
-                onFocus={e => e.target.style.borderColor = "#4f7cff"}
+                onBlur={e => !row.readOnly && updateCase && updateCase(caseData.id, row.field, e.target.innerText.trim())}
+                onFocus={e => { if (!row.readOnly) e.target.style.borderColor = "#4f7cff"; }}
                 onBlurCapture={e => e.target.style.borderColor = "transparent"}
-                style={{ flex: 1, fontSize: 12, color: row.value ? "#e8eaf0" : "#3a3f58", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 4, border: "1px solid transparent", cursor: "text", transition: "border-color .15s" }}
+                style={{ flex: 1, fontSize: 12, color: row.value ? "#e8eaf0" : "#3a3f58", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 4, border: "1px solid transparent", cursor: row.readOnly ? "default" : "text", transition: "border-color .15s" }}
               >{row.value || "\u2014"}</div>
             </div>
           ))}
@@ -540,7 +702,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <div style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 4 }}>{"Нотатки до справи"}</div>
             {(() => {
-              const pinned = caseNotes.filter(n => n.pinned);
+              const pinned = caseNotes.filter(n => isPinned(n.id));
               if (pinned.length > 0) {
                 return (
                   <div style={{
@@ -611,6 +773,33 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           )}
         </div>
 
+        {/* Контекст справи */}
+        {storageState?.driveFolderId && (
+          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Контекст справи"}</div>
+            <div style={{ fontSize: 12, color: "#9aa0b8", marginBottom: 10 }}>
+              {"Автоматичний аналіз всіх документів справи — огляд, сторони, хронологія, слабкі місця."}
+            </div>
+            <button
+              disabled={contextLoading}
+              onClick={handleCreateContext}
+              style={{
+                background: contextLoading ? "#2e3148" : "rgba(79,124,255,.12)",
+                color: contextLoading ? "#5a6080" : "#4f7cff",
+                border: "none", borderRadius: 6, padding: "8px 16px",
+                fontSize: 12, fontWeight: 600, cursor: contextLoading ? "wait" : "pointer"
+              }}
+            >
+              {contextLoading ? "Створюю..." : "Створити контекст"}
+            </button>
+            {contextMsg && (
+              <div style={{ marginTop: 8, fontSize: 11, color: contextMsg.startsWith("Помилка") ? "#e74c3c" : "#9aa0b8" }}>
+                {contextMsg}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Провадження */}
         {proceedings.length > 0 && (
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
@@ -652,8 +841,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           ) : (notesExpanded ? caseNotes : [pinnedNote]).filter(Boolean).map(note => (
             <div key={note.id} style={{
               padding: "8px 10px", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6,
-              background: note.pinned ? "rgba(79,124,255,0.08)" : "#222536",
-              borderLeft: note.pinned ? "2px solid #4f7cff" : "2px solid transparent",
+              background: isPinned(note.id) ? "rgba(79,124,255,0.08)" : "#222536",
+              borderLeft: isPinned(note.id) ? "2px solid #4f7cff" : "2px solid transparent",
               transition: "all 0.2s"
             }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
@@ -661,13 +850,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                   {String(note.text || "")}
                 </div>
                 <button
-                  onClick={() => onPinNote && onPinNote(note.id)}
-                  title={note.pinned ? "Відкріпити" : "Закріпити"}
+                  onClick={() => onPinNote && onPinNote(note.id, caseData.id)}
+                  title={isPinned(note.id) ? "Відкріпити" : "Закріпити"}
                   style={{
                     background: "none", border: "none", cursor: "pointer",
                     fontSize: 16, padding: "2px 4px", flexShrink: 0,
-                    filter: note.pinned ? "none" : "grayscale(1) opacity(0.3)",
-                    transform: note.pinned ? "rotate(-45deg)" : "none",
+                    filter: isPinned(note.id) ? "none" : "grayscale(1) opacity(0.3)",
+                    transform: isPinned(note.id) ? "rotate(-45deg)" : "none",
                     transition: "all 0.2s"
                   }}
                 >{"📌"}</button>
@@ -1014,7 +1203,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
-          {caseData.hearing_date && <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{caseData.hearing_date}</span>}
+          {(() => { const _nh = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return _nh ? <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{_nh.date}{_nh.time ? ` о ${_nh.time}` : ''}</span> : null; })()}
           {storageState?.driveFolderId ? (
             <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer" }} title={storageState.driveFolderName || "Drive папка"}>{"☁️ Drive 🔗"}</button>
           ) : (

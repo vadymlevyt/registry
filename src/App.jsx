@@ -4,6 +4,7 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
+import { backupRegistryData } from './services/driveService';
 import './App.css';
 
 const Notebook = React.lazy(() => import('./components/Notebook'));
@@ -51,12 +52,17 @@ const d = (daysFromNow) => {
   return dt.toISOString().split('T')[0];
 };
 
+// Хелпер для створення засідання в INITIAL_CASES
+const mkHearing = (daysFromNow, court, status = 'scheduled') => daysFromNow != null ? [{
+  id: `hrg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+  date: d(daysFromNow), time: '10:00', court, notes: '', status
+}] : [];
+
 const INITIAL_CASES = [
-  { id:1,  name:'Салун',            client:'Салун Ж./Салун І.',  category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/2241/24', hearing_date:d(2),  deadline:d(1),  deadline_type:'Заява про витрати (ст.141)',  next_action:'Подати заяву про судові витрати', notes:'' },
-  { id:2,  name:'Корева',           client:'Корева М.В.',        category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearing_date:d(5),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'' },
-  { id:3,  name:'Рубан',            client:'Рубан О.П.',         category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/3312/23', hearing_date:d(8),  deadline:d(6),  deadline_type:'Відповідь на позов',          next_action:'Підготувати заперечення',         notes:'' },
-  { id:4,  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearing_date:d(12), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'',
-    agentHistory: [],
+  { id:1,  name:'Салун',            client:'Салун Ж./Салун І.',  category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/2241/24', hearings:mkHearing(2,'Рівненський райсуд'),  deadline:d(1),  deadline_type:'Заява про витрати (ст.141)',  next_action:'Подати заяву про судові витрати', notes:'', pinnedNoteIds:[] },
+  { id:2,  name:'Корева',           client:'Корева М.В.',        category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearings:mkHearing(5,'Костопільський райсуд'),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'', pinnedNoteIds:[] },
+  { id:3,  name:'Рубан',            client:'Рубан О.П.',         category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/3312/23', hearings:mkHearing(8,'Печерський райсуд м.Київ'),  deadline:d(6),  deadline_type:'Відповідь на позов',          next_action:'Підготувати заперечення',         notes:'', pinnedNoteIds:[] },
+  { id:4,  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearings:mkHearing(12,'Господарський суд Київ'), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'', pinnedNoteIds:[],
     proceedings: [
       { id: "proc_main", type: "first", title: "Основне провадження", court: "Пустомитівський районний суд Львівської обл.", status: "paused", parentProcId: null, parentEventId: null },
       { id: "proc_appeal_1", type: "appeal", title: "Апеляція: ухвала 03.2024", court: "Київський апеляційний суд", status: "active", parentProcId: "proc_main", parentEventId: "event_4" }
@@ -76,22 +82,22 @@ const INITIAL_CASES = [
       { id: 12, procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
     ]
   },
-  { id:5,  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearing_date:d(15), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'' },
-  { id:6,  name:'Голобля',          client:'Голобля Т.В.',       category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/2109/25', hearing_date:d(18), deadline:d(16), deadline_type:'Процесуальна заява',          next_action:'Надіслати заяву',                 notes:'' },
-  { id:7,  name:'Манолюк',          client:'Манолюк В.О.',       category:'admin',    status:'active',  court:'Рівненський окружний адмінсуд',case_no:'460/5543/24',hearing_date:d(20), deadline:null,  deadline_type:null,                          next_action:'Чекаємо на ухвалу суду',          notes:'' },
-  { id:8,  name:'Голдбері',         client:'Голдбері О.Ю.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/4412/23', hearing_date:d(22), deadline:d(20), deadline_type:'Відповідь на апеляцію',       next_action:'Підготувати відзив',              notes:'' },
-  { id:9,  name:'Кісельова',        client:'Кісельова Н.І.',     category:'civil',    status:'active',  court:'Київський апеляційний суд',  case_no:'22-ц/824/22', hearing_date:d(25), deadline:null,  deadline_type:null,                          next_action:'Очікуємо засідання',             notes:'' },
-  { id:10, name:'Смолій Андрій',    client:'Смолій А.В.',        category:'criminal', status:'active',  court:'Рівненський суд присяжних',  case_no:'190/2345/24', hearing_date:d(28), deadline:null,  deadline_type:null,                          next_action:'Підготувати позицію захисту',    notes:'' },
-  { id:11, name:'Варфоломєєв',      client:'Варфоломєєв С.М.',   category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/3341/25', hearing_date:d(30), deadline:d(28), deadline_type:'Клопотання про докази',       next_action:'Подати клопотання',              notes:'' },
-  { id:12, name:'Липовцев',         client:'Липовцев І.О.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/1122/24', hearing_date:null,  deadline:d(7),  deadline_type:'Позовна заява',               next_action:'Подати позов',                   notes:'' },
-  { id:13, name:'Цзян',             client:'Цзян Хуей',          category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/8821/25', hearing_date:d(35), deadline:null,  deadline_type:null,                          next_action:'Очікуємо відповідь',             notes:'' },
-  { id:14, name:'Бабенко',          client:'Бабенко О.В.',       category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/9012/24', hearing_date:d(40), deadline:null,  deadline_type:null,                          next_action:'Підготовка документів',          notes:'' },
-  { id:15, name:'Конах',            client:'Конах В.П.',         category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/4453/25', hearing_date:d(14), deadline:d(12), deadline_type:'Запит до ТЦК',               next_action:'Надіслати запит',                notes:'' },
-  { id:16, name:'Сипко',            client:'Сипко Р.Д.',         category:'criminal', status:'paused',  court:'Рівненський суд',            case_no:'190/5544/23', hearing_date:null,  deadline:null,  deadline_type:null,                          next_action:'Очікуємо процесуального рішення',notes:'' },
-  { id:17, name:'Квант',            client:'ТОВ «Квант»',        category:'admin',    status:'active',  court:'Господарський суд Рівне',    case_no:'918/2211/25', hearing_date:d(45), deadline:null,  deadline_type:null,                          next_action:'Підготовка позиції',             notes:'' },
-  { id:18, name:'Янченко',          client:'Янченко Л.С.',       category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/7734/24', hearing_date:d(50), deadline:null,  deadline_type:null,                          next_action:'Збираємо докази',                notes:'' },
-  { id:19, name:'Махді',            client:'Махді Карім',        category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/3312/25', hearing_date:d(55), deadline:null,  deadline_type:null,                          next_action:'Очікуємо ухвали',                notes:'' },
-  { id:20, name:'Колесник',         client:'Колесник Н.О.',      category:'civil',    status:'active',  court:'Рівненський апеляційний суд',case_no:'22-ц/824/8821/24', hearing_date:d(60), deadline:null, deadline_type:null,                   next_action:'Підготовка апеляції',            notes:'' },
+  { id:5,  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearings:mkHearing(15,'Рівненський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'', pinnedNoteIds:[] },
+  { id:6,  name:'Голобля',          client:'Голобля Т.В.',       category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/2109/25', hearings:mkHearing(18,'Костопільський райсуд'), deadline:d(16), deadline_type:'Процесуальна заява',          next_action:'Надіслати заяву',                 notes:'', pinnedNoteIds:[] },
+  { id:7,  name:'Манолюк',          client:'Манолюк В.О.',       category:'admin',    status:'active',  court:'Рівненський окружний адмінсуд',case_no:'460/5543/24',hearings:mkHearing(20,'Рівненський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Чекаємо на ухвалу суду',          notes:'', pinnedNoteIds:[] },
+  { id:8,  name:'Голдбері',         client:'Голдбері О.Ю.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/4412/23', hearings:mkHearing(22,'Рівненський райсуд'), deadline:d(20), deadline_type:'Відповідь на апеляцію',       next_action:'Підготувати відзив',              notes:'', pinnedNoteIds:[] },
+  { id:9,  name:'Кісельова',        client:'Кісельова Н.І.',     category:'civil',    status:'active',  court:'Київський апеляційний суд',  case_no:'22-ц/824/22', hearings:mkHearing(25,'Київський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо засідання',             notes:'', pinnedNoteIds:[] },
+  { id:10, name:'Смолій Андрій',    client:'Смолій А.В.',        category:'criminal', status:'active',  court:'Рівненський суд присяжних',  case_no:'190/2345/24', hearings:mkHearing(28,'Рівненський суд присяжних'), deadline:null,  deadline_type:null,                          next_action:'Підготувати позицію захисту',    notes:'', pinnedNoteIds:[] },
+  { id:11, name:'Варфоломєєв',      client:'Варфоломєєв С.М.',   category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/3341/25', hearings:mkHearing(30,'Костопільський райсуд'), deadline:d(28), deadline_type:'Клопотання про докази',       next_action:'Подати клопотання',              notes:'', pinnedNoteIds:[] },
+  { id:12, name:'Липовцев',         client:'Липовцев І.О.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/1122/24', hearings:[],  deadline:d(7),  deadline_type:'Позовна заява',               next_action:'Подати позов',                   notes:'', pinnedNoteIds:[] },
+  { id:13, name:'Цзян',             client:'Цзян Хуей',          category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/8821/25', hearings:mkHearing(35,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо відповідь',             notes:'', pinnedNoteIds:[] },
+  { id:14, name:'Бабенко',          client:'Бабенко О.В.',       category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/9012/24', hearings:mkHearing(40,'Печерський райсуд м.Київ'), deadline:null,  deadline_type:null,                          next_action:'Підготовка документів',          notes:'', pinnedNoteIds:[] },
+  { id:15, name:'Конах',            client:'Конах В.П.',         category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/4453/25', hearings:mkHearing(14,'Костопільський райсуд'), deadline:d(12), deadline_type:'Запит до ТЦК',               next_action:'Надіслати запит',                notes:'', pinnedNoteIds:[] },
+  { id:16, name:'Сипко',            client:'Сипко Р.Д.',         category:'criminal', status:'paused',  court:'Рівненський суд',            case_no:'190/5544/23', hearings:[],  deadline:null,  deadline_type:null,                          next_action:'Очікуємо процесуального рішення',notes:'', pinnedNoteIds:[] },
+  { id:17, name:'Квант',            client:'ТОВ «Квант»',        category:'admin',    status:'active',  court:'Господарський суд Рівне',    case_no:'918/2211/25', hearings:mkHearing(45,'Господарський суд Рівне'), deadline:null,  deadline_type:null,                          next_action:'Підготовка позиції',             notes:'', pinnedNoteIds:[] },
+  { id:18, name:'Янченко',          client:'Янченко Л.С.',       category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/7734/24', hearings:mkHearing(50,'Рівненський райсуд'), deadline:null,  deadline_type:null,                          next_action:'Збираємо докази',                notes:'', pinnedNoteIds:[] },
+  { id:19, name:'Махді',            client:'Махді Карім',        category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/3312/25', hearings:mkHearing(55,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо ухвали',                notes:'', pinnedNoteIds:[] },
+  { id:20, name:'Колесник',         client:'Колесник Н.О.',      category:'civil',    status:'active',  court:'Рівненський апеляційний суд',case_no:'22-ц/824/8821/24', hearings:mkHearing(60,'Рівненський апеляційний суд'), deadline:null, deadline_type:null,                   next_action:'Підготовка апеляції',            notes:'', pinnedNoteIds:[] },
 ];
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -135,10 +141,31 @@ function daysLabel(days) {
   return `${days} дн`;
 }
 
+// Знайти найближче заплановане засідання зі справи
+function getNextHearing(c) {
+  if (!Array.isArray(c.hearings) || c.hearings.length === 0) return null;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const scheduled = c.hearings
+    .filter(h => h.status === 'scheduled' && h.date >= todayStr)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return scheduled[0] || null;
+}
+
+// Сумісний доступ до дати/часу засідання (для поступової міграції)
+function getHearingDate(c) {
+  const next = getNextHearing(c);
+  return next ? next.date : null;
+}
+function getHearingTime(c) {
+  const next = getNextHearing(c);
+  return next ? next.time : null;
+}
+
 // ── COMPONENTS ────────────────────────────────────────────────────────────────
 
 function CaseCard({ c, onClick }) {
-  const hearingDays = daysUntil(c.hearing_date);
+  const hDate = getHearingDate(c);
+  const hearingDays = daysUntil(hDate);
   const deadlineDays = daysUntil(c.deadline);
   const urg = urgencyClass(deadlineDays) || urgencyClass(hearingDays);
 
@@ -160,12 +187,12 @@ function CaseCard({ c, onClick }) {
           <span className="case-row-icon">🏛</span>
           <span className="case-row-label" style={{fontSize:'11px', color:'var(--text2)'}}>{c.court}</span>
         </div>
-        {c.hearing_date && (
+        {hDate && (
           <div className="case-row">
             <span className="case-row-icon">📅</span>
             <span className="case-row-label">Засідання:</span>
             <span className={`case-row-val ${urgencyClass(hearingDays) || ''}`}>
-              {formatDate(c.hearing_date)}
+              {formatDate(hDate)}
               {hearingDays !== null && <span style={{marginLeft:5,fontSize:'10px',opacity:0.7}}>({daysLabel(hearingDays)})</span>}
             </span>
           </div>
@@ -196,7 +223,9 @@ function CaseCard({ c, onClick }) {
 }
 
 function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
-  const hearingDays = daysUntil(c.hearing_date);
+  const hDate = getHearingDate(c);
+  const hTime = getHearingTime(c);
+  const hearingDays = daysUntil(hDate);
   const deadlineDays = daysUntil(c.deadline);
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -221,8 +250,8 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
           <div className="modal-field">
             <span className="modal-field-label">Наступне засідання</span>
             <span className={`modal-field-val ${urgencyClass(hearingDays) || ''}`}>
-              {formatDate(c.hearing_date)}
-              {c.hearing_time && <span style={{marginLeft:6}}>о {c.hearing_time}</span>}
+              {formatDate(hDate)}
+              {hTime && <span style={{marginLeft:6}}>о {hTime}</span>}
               {hearingDays !== null && <span style={{marginLeft:6,fontSize:'11px',opacity:0.7}}>({daysLabel(hearingDays)})</span>}
             </span>
           </div>
@@ -291,9 +320,10 @@ function Calendar({ cases, onSelectCase }) {
   const eventsByDate = useMemo(() => {
     const map = {};
     cases.forEach(c => {
-      if (c.hearing_date) {
-        if (!map[c.hearing_date]) map[c.hearing_date] = [];
-        map[c.hearing_date].push({ ...c, eventType:'hearing' });
+      const hDate = getHearingDate(c);
+      if (hDate) {
+        if (!map[hDate]) map[hDate] = [];
+        map[hDate].push({ ...c, eventType:'hearing' });
       }
       if (c.deadline) {
         if (!map[c.deadline]) map[c.deadline] = [];
@@ -638,8 +668,13 @@ function findCaseForAction(caseName, cases) {
 // Helper: save note to localStorage
 function saveNoteToStorage(text, resultPayload, caseId, caseName, source, category) {
   try {
-    const notes = JSON.parse(localStorage.getItem('levytskyi_notes') || '[]');
-    notes.unshift({
+    const EMPTY = { cases: [], general: [], content: [], system: [], records: [] };
+    let stored = JSON.parse(localStorage.getItem('levytskyi_notes') || 'null');
+    if (Array.isArray(stored)) stored = EMPTY; // міграція
+    if (!stored || typeof stored !== 'object') stored = EMPTY;
+    const catKey = (category === 'case' || caseId) ? 'cases' : (category || 'general');
+    const arr = stored[catKey] || [];
+    arr.unshift({
       id: Date.now(),
       text: text || '',
       result: resultPayload || null,
@@ -649,8 +684,9 @@ function saveNoteToStorage(text, resultPayload, caseId, caseName, source, catego
       source: source || 'manual',
       ts: new Date().toISOString(),
     });
-    if (notes.length > 500) notes.splice(500);
-    localStorage.setItem('levytskyi_notes', JSON.stringify(notes));
+    if (arr.length > 500) arr.splice(500);
+    stored[catKey] = arr;
+    localStorage.setItem('levytskyi_notes', JSON.stringify(stored));
   } catch(e) {}
 }
 
@@ -687,7 +723,7 @@ function buildSystemContext(cases) {
 
   const hot = active.filter(c => {
     const dd = daysFrom(c.deadline);
-    const hd = daysFrom(c.hearing_date);
+    const hd = daysFrom(getHearingDate(c));
     return (dd !== null && dd >= 0 && dd <= 3) || (hd !== null && hd >= 0 && hd <= 3);
   });
 
@@ -698,9 +734,10 @@ function buildSystemContext(cases) {
     ctx += `\n⚡ ГАРЯЧІ (дедлайн або засідання ≤ 3 дні):\n`;
     hot.forEach(c => {
       const dd = daysFrom(c.deadline);
-      const hd = daysFrom(c.hearing_date);
+      const _hDate = getHearingDate(c);
+      const hd = daysFrom(_hDate);
       ctx += `  • ${c.name}`;
-      if (hd !== null && hd >= 0 && hd <= 3) ctx += ` | Засідання: ${formatDate(c.hearing_date, c.hearing_time)}`;
+      if (hd !== null && hd >= 0 && hd <= 3) ctx += ` | Засідання: ${formatDate(_hDate, getHearingTime(c))}`;
       if (dd !== null && dd >= 0 && dd <= 3) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
       if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
       ctx += '\n';
@@ -713,27 +750,29 @@ function buildSystemContext(cases) {
   const detail = totalActive <= 15 ? 'full' : totalActive <= 30 ? 'medium' : 'compact';
 
   active.forEach(c => {
+    const _hDate = getHearingDate(c);
+    const _hTime = getHearingTime(c);
     if (detail === 'full') {
       ctx += `• ${c.name}`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
       ctx += ` | ${catMap[c.category] || c.category || '—'}`;
       if (c.court) ctx += ` | ${c.court}`;
       if (c.client) ctx += ` | Клієнт: ${c.client}`;
-      if (c.hearing_date) ctx += ` | Засідання: ${formatDate(c.hearing_date, c.hearing_time)}`;
+      if (_hDate) ctx += ` | Засідання: ${formatDate(_hDate, _hTime)}`;
       if (c.deadline) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
       if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
       ctx += '\n';
     } else if (detail === 'medium') {
       ctx += `• ${c.name}`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
-      if (c.hearing_date) ctx += ` | Зас: ${formatDate(c.hearing_date, c.hearing_time)}`;
+      if (_hDate) ctx += ` | Зас: ${formatDate(_hDate, _hTime)}`;
       if (c.deadline) ctx += ` | Дед: ${formatDate(c.deadline)}`;
       if (c.next_action) ctx += ` | ${c.next_action}`;
       ctx += '\n';
     } else {
       ctx += `• ${c.name}`;
-      const nearest = c.hearing_date || c.deadline;
-      if (nearest) ctx += ` (${formatDate(nearest, c.hearing_date ? c.hearing_time : null)})`;
+      const nearest = _hDate || c.deadline;
+      if (nearest) ctx += ` (${formatDate(nearest, _hDate ? _hTime : null)})`;
       ctx += '\n';
     }
   });
@@ -1056,7 +1095,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       setCases(prev => {
         const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
         if (existing) return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
-        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearing_date: data.hearing_date||'', hearing_time: data.hearing_time||'', deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes ? [{id:Date.now(), text:data.notes, category:'case', source:'form', ts:new Date().toISOString()}] : [] }];
+        const newHearings = data.hearing_date ? [{ id: `hrg_${Date.now()}`, date: data.hearing_date, time: data.hearing_time || '', court: data.court || '', notes: '', status: 'scheduled' }] : [];
+        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearings: newHearings, deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes ? [{id:Date.now(), text:data.notes, category:'case', source:'form', ts:new Date().toISOString()}] : [], pinnedNoteIds:[] }];
       });
       alert(`Дані внесено: ${caseName}`);
       onClose();
@@ -1157,8 +1197,16 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       if (!caseName)     { alert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
       if (!matched) { alert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
+      const newHearing = {
+        id: `hrg_${Date.now()}`,
+        date: hearing_date,
+        time: hearing_time || '',
+        court: matched.court || '',
+        notes: '',
+        status: 'scheduled',
+      };
       setCases(prev => prev.map(c =>
-        c.id === matched.id ? { ...c, hearing_date, ...(hearing_time ? { hearing_time } : {}) } : c
+        c.id === matched.id ? { ...c, hearings: [...(c.hearings || []), newHearing] } : c
       ));
       markDone();
       return;
@@ -1221,6 +1269,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       const category = isCriminal ? 'criminal' : 'civil';
 
       // Побудувати новий об'єкт справи
+      const _hd = ext.hearing_date || '';
+      const _ht = ext.hearing_time || '';
+      const newHearings = _hd ? [{ id: `hrg_${Date.now()}`, date: _hd, time: _ht, court: ext.court || '', notes: '', status: 'scheduled' }] : [];
       const newCase = {
         id: Date.now(),
         name: caseName,
@@ -1229,22 +1280,23 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
         status: 'active',
         court: ext.court || '',
         case_no: ext.case_number || '',
-        hearing_date: ext.hearing_date || '',
-        hearing_time: ext.hearing_time || '',
+        hearings: newHearings,
         deadline: '',
         deadline_type: '',
         next_action: '',
         notes: [],
+        pinnedNoteIds: [],
         storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
       };
 
       // Показати підтвердження з даними
+      const _nextH = getNextHearing(newCase);
       const preview = [
         `Назва: ${newCase.name}`,
         newCase.client    && `Клієнт: ${newCase.client}`,
         newCase.court     && `Суд: ${newCase.court}`,
         newCase.case_no   && `Номер: ${newCase.case_no}`,
-        newCase.hearing_date && `Засідання: ${newCase.hearing_date}${newCase.hearing_time ? ' о ' + newCase.hearing_time : ''}`,
+        _nextH && `Засідання: ${_nextH.date}${_nextH.time ? ' о ' + _nextH.time : ''}`,
         `Категорія: ${category === 'criminal' ? 'Кримінальна' : 'Цивільна'}`,
       ].filter(Boolean).join('\n');
 
@@ -1455,6 +1507,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const caseName = extractShortName(rawPerson) || 'Нова справа';
             const isCriminal = /кпк|кримінал|\d+\s*кк|обвинувач|підозрюван/i.test(JSON.stringify(actionResult));
 
+            const _chatHd = ext.hearing_date || '';
+            const _chatHt = ext.hearing_time || '';
+            const _chatHearings = _chatHd ? [{ id: `hrg_${Date.now()}`, date: _chatHd, time: _chatHt, court: ext.court || '', notes: '', status: 'scheduled' }] : [];
             const newCase = {
               id: Date.now(),
               name: caseName,
@@ -1463,9 +1518,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
               status: 'active',
               court: ext.court || '',
               case_no: ext.case_number || '',
-              hearing_date: ext.hearing_date || '',
-              hearing_time: ext.hearing_time || '',
+              hearings: _chatHearings,
               deadline: '', deadline_type: '', next_action: '', notes: [],
+              pinnedNoteIds: [],
               storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
             };
 
@@ -1483,9 +1538,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const caseName = actionResult.case_match?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
             if (matched && hearing_date) {
+              const newHrg = { id: `hrg_${Date.now()}`, date: hearing_date, time: hearing_time || '', court: matched.court || '', notes: '', status: 'scheduled' };
               setCases(prev => prev.map(c =>
                 c.id === matched.id
-                  ? { ...c, hearing_date, ...(hearing_time ? { hearing_time } : {}) }
+                  ? { ...c, hearings: [...(c.hearings || []), newHrg] }
                   : c
               ));
               const timeStr = hearing_time ? ` о ${hearing_time}` : '';
@@ -1529,9 +1585,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const value = actionResult.extracted?.value
               || actionResult.extracted?.status; // fallback для статусу
 
-            // Дозволені поля (не чіпаємо hearing_date і deadline — у них свої обробники)
+            // Дозволені поля (не чіпаємо hearings і deadline — у них свої обробники)
             const allowedFields = ['status', 'category', 'court', 'case_no',
-              'next_action', 'notes', 'hearing_time'];
+              'next_action', 'notes'];
 
             if (matched && field && value && allowedFields.includes(field)) {
               setCases(prev => prev.map(c =>
@@ -1545,7 +1601,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                 case_no: 'Номер справи',
                 next_action: 'Наступна дія',
                 notes: 'Нотатки',
-                hearing_time: 'Час засідання',
               };
               const statusLabels = {
                 active: 'Активна', paused: 'Призупинена', closed: 'Закрита'
@@ -2001,6 +2056,7 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
         ? [{ id: Date.now(), text: initialData.notes, category: 'case', source: 'form', ts: new Date().toISOString() }]
         : []);
 
+  const nextH = initialData ? getNextHearing(initialData) : null;
   const [form, setForm] = useState(initialData ? {
     name: initialData.name || '',
     client: initialData.client || '',
@@ -2008,8 +2064,8 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
     status: initialData.status || 'active',
     court: initialData.court || '',
     case_no: initialData.case_no || '',
-    hearing_date: initialData.hearing_date || '',
-    hearing_time: initialData.hearing_time || '',
+    hearing_date: nextH?.date || '',
+    hearing_time: nextH?.time || '',
     deadline: initialData.deadline || '',
     deadline_type: initialData.deadline_type || '',
     next_action: initialData.next_action || '',
@@ -2149,9 +2205,21 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
               }]
             : [];
           const mergedNotes = [...formNoteArr, ...nonFormNotes];
+          // Конвертуємо hearing_date/time форми назад у hearings[]
+          const { hearing_date: _fd, hearing_time: _ft, ...formWithoutHearing } = form;
+          let newHearings = initialData?.hearings ? [...initialData.hearings] : [];
+          if (_fd) {
+            // Оновити існуюче scheduled засідання або додати нове
+            const existingIdx = newHearings.findIndex(h => h.status === 'scheduled' && h.id === nextH?.id);
+            if (existingIdx >= 0) {
+              newHearings[existingIdx] = { ...newHearings[existingIdx], date: _fd, time: _ft || '' };
+            } else {
+              newHearings.push({ id: `hrg_${Date.now()}`, date: _fd, time: _ft || '', court: form.court || '', notes: '', status: 'scheduled' });
+            }
+          }
           const payload = initialData
-            ? { ...form, id: initialData.id, notes: mergedNotes }
-            : { ...form, notes: mergedNotes };
+            ? { ...formWithoutHearing, id: initialData.id, hearings: newHearings, notes: mergedNotes, pinnedNoteIds: initialData.pinnedNoteIds || [] }
+            : { ...formWithoutHearing, hearings: newHearings, notes: mergedNotes, pinnedNoteIds: [] };
           onSave(payload);
         }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
         <button className="btn-lg secondary" onClick={onCancel}>Скасувати</button>
@@ -2508,25 +2576,56 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
   );
 }
 
-// Нормалізує cases[].notes → завжди масив нотаток
-// (підтримує стару версію де notes був рядком)
+// Нормалізує cases[] — міграція старих форматів
 function normalizeCases(cases) {
   if (!Array.isArray(cases)) return [];
   return cases.map(c => {
-    if (Array.isArray(c.notes)) return c;
-    if (typeof c.notes === 'string' && c.notes.trim()) {
-      return {
-        ...c,
-        notes: [{
-          id: Date.now() + Math.random(),
-          text: c.notes,
-          category: 'case',
-          source: 'form',
-          ts: new Date().toISOString(),
-        }],
-      };
+    let updated = { ...c };
+
+    // notes: рядок → масив
+    if (typeof updated.notes === 'string' && updated.notes.trim()) {
+      updated.notes = [{
+        id: Date.now() + Math.random(),
+        text: updated.notes,
+        category: 'case',
+        source: 'form',
+        ts: new Date().toISOString(),
+      }];
+    } else if (!Array.isArray(updated.notes)) {
+      updated.notes = [];
     }
-    return { ...c, notes: [] };
+
+    // hearing_date/hearing_time → hearings[] (міграція v2 → v3)
+    if (updated.hearing_date && !Array.isArray(updated.hearings)) {
+      updated.hearings = [{
+        id: `hrg_migrated_${updated.id}`,
+        date: updated.hearing_date,
+        time: updated.hearing_time || '',
+        court: updated.court || '',
+        notes: '',
+        status: 'scheduled',
+      }];
+      delete updated.hearing_date;
+      delete updated.hearing_time;
+    }
+    if (!Array.isArray(updated.hearings)) {
+      updated.hearings = [];
+    }
+    // Очистити старі поля якщо hearings[] вже є
+    if (updated.hearing_date !== undefined) delete updated.hearing_date;
+    if (updated.hearing_time !== undefined) delete updated.hearing_time;
+
+    // pinnedNoteIds[] — додати якщо немає
+    if (!Array.isArray(updated.pinnedNoteIds)) {
+      updated.pinnedNoteIds = [];
+    }
+
+    // agentHistory — видалити з об'єкта справи (живе окремо на Drive)
+    if (updated.agentHistory !== undefined) {
+      delete updated.agentHistory;
+    }
+
+    return updated;
   });
 }
 
@@ -2553,15 +2652,32 @@ function App() {
     } catch(e) {}
     return [];
   });
+  const EMPTY_NOTES = { cases: [], general: [], content: [], system: [], records: [] };
   const [notes, setNotes] = useState(() => {
     try {
+      // Міграція: старий плоский масив → об'єкт з категоріями
       const saved = localStorage.getItem('levytskyi_notes');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          // Міграція зі старого формату
+          const migrated = { ...EMPTY_NOTES };
+          parsed.forEach(n => {
+            const cat = n.category === 'case' ? 'cases' : (n.category || 'general');
+            if (migrated[cat]) migrated[cat].push(n);
+            else migrated.general.push(n);
+          });
+          // Додати system/content з окремих LS ключів
+          try { const sys = JSON.parse(localStorage.getItem('levytskyi_system_notes') || '[]'); migrated.system.push(...sys); } catch {}
+          try { const cnt = JSON.parse(localStorage.getItem('levytskyi_content_ideas') || '[]'); migrated.content.push(...cnt); } catch {}
+          return migrated;
+        }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return { ...EMPTY_NOTES, ...parsed };
+        }
       }
     } catch(e) {}
-    return [];
+    return { ...EMPTY_NOTES };
   });
   const [lastSaved, setLastSaved] = useState(null);
   const [driveConnected, setDriveConnected] = useState(() => driveService.isConnected());
@@ -2637,6 +2753,14 @@ function App() {
       const token = driveService.getToken();
       if (token) {
         setDriveSyncStatus('syncing');
+        // Бекап раз на добу перед sync
+        const lastBackup = localStorage.getItem('levytskyi_last_backup') || '';
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (lastBackup !== todayStr) {
+          backupRegistryData(token, cases).then(res => {
+            if (res.success) localStorage.setItem('levytskyi_last_backup', todayStr);
+          }).catch(() => {});
+        }
         driveService.writeCases(token, cases)
           .then(() => setDriveSyncStatus('synced'))
           .catch(() => setDriveSyncStatus('error'));
@@ -2668,12 +2792,12 @@ function App() {
   }, []);
 
   const hotCases = useMemo(() => cases
-    .filter(c => c.status==='active' && (c.deadline || c.hearing_date))
+    .filter(c => c.status==='active' && (c.deadline || getHearingDate(c)))
     .map(c => ({
       ...c,
       minDays: Math.min(
         c.deadline ? (daysUntil(c.deadline) ?? 999) : 999,
-        c.hearing_date ? (daysUntil(c.hearing_date) ?? 999) : 999
+        getHearingDate(c) ? (daysUntil(getHearingDate(c)) ?? 999) : 999
       )
     }))
     .filter(c => c.minDays <= 14)
@@ -2692,8 +2816,8 @@ function App() {
   const stats = useMemo(() => ({
     total: cases.filter(c=>c.status==='active').length,
     hot: cases.filter(c=>c.deadline && daysUntil(c.deadline)!==null && daysUntil(c.deadline)<=3).length,
-    thisWeek: cases.filter(c=>c.hearing_date && daysUntil(c.hearing_date)!==null && daysUntil(c.hearing_date)>=0 && daysUntil(c.hearing_date)<=7).length,
-    noDeadline: cases.filter(c=>c.status==='active'&&!c.deadline&&!c.hearing_date).length,
+    thisWeek: cases.filter(c=>{ const hd = getHearingDate(c); return hd && daysUntil(hd)!==null && daysUntil(hd)>=0 && daysUntil(hd)<=7; }).length,
+    noDeadline: cases.filter(c=>c.status==='active'&&!c.deadline&&!getHearingDate(c)).length,
   }), [cases]);
 
   const addCase = (form) => {
@@ -2744,8 +2868,13 @@ function App() {
     });
   };
 
-  // ── notes CRUD ─────────────────────────────────────────────────────────────
+  // ── notes CRUD (категоризовані) ─────────────────────────────────────────
+  const saveNotesToLS = (notesObj) => {
+    try { localStorage.setItem('levytskyi_notes', JSON.stringify(notesObj)); } catch(e) {}
+  };
+
   const addNote = (note) => {
+    const cat = note.category === 'case' ? 'cases' : (note.category || 'general');
     const newNote = {
       id: Date.now().toString(),
       text: note.text || '',
@@ -2753,14 +2882,13 @@ function App() {
       caseId: note.caseId || null,
       caseName: note.caseName || null,
       source: note.source || 'manual',
-      pinned: note.pinned || false,
       result: note.result || null,
       ts: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
     setNotes(prev => {
-      const updated = [...prev, newNote];
-      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      const updated = { ...prev, [cat]: [...(prev[cat] || []), newNote] };
+      saveNotesToLS(updated);
       return updated;
     });
     return newNote;
@@ -2768,29 +2896,54 @@ function App() {
 
   const deleteNote = (noteId) => {
     setNotes(prev => {
-      const updated = prev.filter(n => n.id !== noteId);
-      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      const updated = {};
+      for (const cat of Object.keys(prev)) {
+        updated[cat] = prev[cat].filter(n => n.id !== noteId);
+      }
+      saveNotesToLS(updated);
       return updated;
     });
+    // Прибрати з pinnedNoteIds всіх справ
+    setCases(prev => prev.map(c => {
+      if (!c.pinnedNoteIds?.length) return c;
+      const strId = String(noteId);
+      return c.pinnedNoteIds.includes(strId)
+        ? { ...c, pinnedNoteIds: c.pinnedNoteIds.filter(id => id !== strId) }
+        : c;
+    }));
   };
 
   const updateNote = (noteId, changes) => {
     setNotes(prev => {
-      const updated = prev.map(n => n.id === noteId ? { ...n, ...changes } : n);
-      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
+      const updated = {};
+      for (const cat of Object.keys(prev)) {
+        updated[cat] = prev[cat].map(n => n.id === noteId ? { ...n, ...changes } : n);
+      }
+      saveNotesToLS(updated);
       return updated;
     });
   };
 
-  const pinNote = (noteId) => {
-    setNotes(prev => {
-      const updated = prev.map(n =>
-        String(n.id) === String(noteId) ? { ...n, pinned: !n.pinned } : n
-      );
-      try { localStorage.setItem('levytskyi_notes', JSON.stringify(updated)); } catch(e) {}
-      return updated;
-    });
+  // pinNote(noteId, caseId) — прикріпити/відкріпити нотатку до справи
+  const pinNote = (noteId, caseId) => {
+    if (!caseId) return;
+    setCases(prev => prev.map(c => {
+      if (c.id !== caseId) return c;
+      const ids = c.pinnedNoteIds || [];
+      const strId = String(noteId);
+      const already = ids.includes(strId);
+      return { ...c, pinnedNoteIds: already ? ids.filter(id => id !== strId) : [...ids, strId] };
+    }));
   };
+
+  // Хелпер: плоский масив всіх нотаток (для компонентів що очікують масив)
+  const allNotesFlat = useMemo(() => {
+    const all = [];
+    for (const cat of Object.keys(notes)) {
+      (notes[cat] || []).forEach(n => all.push(n));
+    }
+    return all.sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+  }, [notes]);
 
   const handleEdit = (c) => {
     setSelected(null);
@@ -2977,7 +3130,7 @@ function App() {
                 onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
                 onCloseCase={closeCase}
                 onDeleteCase={handleDeleteCase}
-                notes={notes.filter(n => n.caseId === dossierCase.id || n.caseName === dossierCase.name)}
+                notes={(notes.cases || []).filter(n => n.caseId === dossierCase.id || n.caseName === dossierCase.name)}
                 onAddNote={addNote}
                 onUpdateNote={updateNote}
                 onDeleteNote={deleteNote}

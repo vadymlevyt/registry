@@ -33,15 +33,17 @@ function writeLS(key, arr) {
 }
 
 function getAllNotes(cases, notesProp) {
-  // Джерело 1: нотатки зі спільного стану App.jsx (levytskyi_notes)
-  const sharedNotes = (notesProp || []).map(n => ({ ...n, category: n.category || 'general' }));
-
-  // Джерело 2: системні та контент нотатки з localStorage
-  const systemNotes  = readLS(LS_KEYS.system).map(n  => ({ ...n, category: 'system' }));
-  const contentNotes = readLS(LS_KEYS.content).map(n => ({ ...n, category: 'content' }));
-
-  return [...sharedNotes, ...systemNotes, ...contentNotes]
-    .sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+  // notesProp — об'єкт {cases:[], general:[], content:[], system:[], records:[]}
+  if (notesProp && typeof notesProp === 'object' && !Array.isArray(notesProp)) {
+    const all = [];
+    for (const cat of Object.keys(notesProp)) {
+      (notesProp[cat] || []).forEach(n => all.push({ ...n, category: cat === 'cases' ? 'case' : (n.category || cat) }));
+    }
+    return all.sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+  }
+  // Fallback для масиву (стара сумісність)
+  const sharedNotes = (Array.isArray(notesProp) ? notesProp : []).map(n => ({ ...n, category: n.category || 'general' }));
+  return sharedNotes.sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
 }
 
 export default function Notebook({ cases, onUpdateCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote }) {
@@ -321,12 +323,12 @@ function NoteCard({ note, onDelete, onEdit, onPin }) {
         {onPin && (
           <button
             onClick={() => onPin(note.id)}
-            title={note.pinned ? "Відкріпити" : "Закріпити"}
+            title={"Закріпити (з досьє справи)"}
             style={{
               background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
               padding: '2px 4px',
-              filter: note.pinned ? 'none' : 'grayscale(1) opacity(0.3)',
-              transform: note.pinned ? 'rotate(-45deg)' : 'none',
+              filter: 'grayscale(1) opacity(0.3)',
+              transform: 'none',
               transition: 'all 0.2s'
             }}
           >

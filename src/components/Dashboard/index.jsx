@@ -247,12 +247,19 @@ const MONTHS_GEN = [
   "липня","серпня","вересня","жовтня","листопада","грудня"
 ];
 
+function _getNextHearing(c) {
+  if (!Array.isArray(c.hearings) || c.hearings.length === 0) return null;
+  const todayStr = new Date().toISOString().split('T')[0];
+  return c.hearings.filter(h => h.status === 'scheduled' && h.date >= todayStr).sort((a, b) => a.date.localeCompare(b.date))[0] || null;
+}
+
 function findConflicts(cases, calendarEvents) {
   const byDate = {};
   cases.forEach(c => {
-    if (c.hearing_date && c.hearing_time) {
-      if (!byDate[c.hearing_date]) byDate[c.hearing_date] = [];
-      byDate[c.hearing_date].push({ name: c.name, time: c.hearing_time, id: c.id });
+    const nh = _getNextHearing(c);
+    if (nh && nh.time) {
+      if (!byDate[nh.date]) byDate[nh.date] = [];
+      byDate[nh.date].push({ name: c.name, time: nh.time, id: c.id });
     }
   });
   (calendarEvents || []).forEach(e => {
@@ -271,7 +278,8 @@ function buildDashboardContext(cases, calendarEvents) {
   const casesText = cases.map(c => {
     const parts = [`[id:${c.id}] ${c.name}`];
     if (c.court) parts.push(c.court);
-    if (c.hearing_date) parts.push(`засідання ${c.hearing_date}${c.hearing_time ? " " + c.hearing_time : ""}`);
+    const _nh = _getNextHearing(c);
+    if (_nh) parts.push(`засідання ${_nh.date}${_nh.time ? " " + _nh.time : ""}`);
     if (c.deadline) parts.push(`дедлайн ${c.deadline}${c.deadline_type ? " (" + c.deadline_type + ")" : ""}`);
     if (c.status) parts.push(c.status);
     if (c.next_action) parts.push(`→ ${c.next_action}`);
@@ -420,18 +428,19 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
   function getAllEvents() {
     const events = [];
     cases.forEach(c => {
-      if (c.hearing_date) {
+      (c.hearings || []).filter(h => h.status === 'scheduled').forEach(h => {
         events.push({
-          id: "h_" + c.id,
+          id: "h_" + c.id + "_" + h.id,
           type: "hearing",
           title: c.name,
-          date: c.hearing_date,
-          time: c.hearing_time || null,
-          court: c.court || null,
+          date: h.date,
+          time: h.time || null,
+          court: h.court || c.court || null,
           duration: 120,
-          caseId: c.id
+          caseId: c.id,
+          hearingId: h.id
         });
-      }
+      });
       if (c.deadline) {
         events.push({
           id: "d_" + c.id,
@@ -606,8 +615,10 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
       case "update_hearing": {
         const c = findCase(action.case_name);
         if (!c) return null;
-        if (action.hearing_date) onUpdateCase(c.id, "hearing_date", action.hearing_date);
-        if (action.hearing_time) onUpdateCase(c.id, "hearing_time", action.hearing_time);
+        if (action.hearing_date) {
+          const newHrg = { id: `hrg_${Date.now()}`, date: action.hearing_date, time: action.hearing_time || '', court: c.court || '', notes: '', status: 'scheduled' };
+          onUpdateCase(c.id, "hearings", [...(c.hearings || []), newHrg]);
+        }
         return `✅ Засідання "${c.name}": ${action.hearing_date || ""}${action.hearing_time ? " о " + action.hearing_time : ""}`;
       }
       case "update_deadline": {
