@@ -313,9 +313,16 @@ notes розділені по категоріях: cases, general, content, sys
 
 ---
 
-### [2026-04-09] pinNote — оновлення стану без F5
-pinnedNoteIds[] оновлюється через setCases в App.jsx.
-Компонент автоматично перерендериться якщо отримує caseData через props.
+### [2026-04-09] pinNote — setCases має бути СИНХРОННИМ
+pinNote оновлює setCases ОДРАЗУ, Drive зберігає async через useEffect на [cases].
+Якщо setCases не викликається — компонент не перерендерюється.
+
+---
+
+### [2026-04-09] Drive — шукати файли БЕЗ фільтра mimeType
+Скановані PDF можуть мати різний MIME type на Drive.
+Фільтр: trashed=false and mimeType != folder
+Потім фільтрувати по розширенню .pdf в JS якщо потрібно.
 
 ---
 

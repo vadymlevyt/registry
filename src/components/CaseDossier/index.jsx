@@ -59,6 +59,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── Знайти PDF для контексту ────────────────────────────────────────────────
   const findPDFsForContext = async (caseFolderId, token) => {
+    // Отримати підпапки без фільтра по назві (кирилиця в query ненадійна)
     const subRes = await fetch(
       `https://www.googleapis.com/drive/v3/files?` +
       `q=${encodeURIComponent(
@@ -72,31 +73,30 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
     const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
 
-    if (processed) {
+    // Отримати ВСІ файли (без фільтра mimeType — скановані PDF можуть мати інший MIME)
+    const getFilesFromFolder = async (folderId) => {
       const res = await fetch(
         `https://www.googleapis.com/drive/v3/files?` +
         `q=${encodeURIComponent(
-          `'${processed.id}' in parents and mimeType='application/pdf' and trashed=false`
-        )}&fields=files(id,name,size)&pageSize=100&orderBy=name`,
+          `'${folderId}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
+        )}&fields=files(id,name,size,mimeType)&pageSize=100&orderBy=name`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       const data = await res.json();
-      if ((data.files || []).length > 0) {
-        return { files: data.files, source: "02_ОБРОБЛЕНІ", warn: false };
+      return data.files || [];
+    };
+
+    if (processed) {
+      const files = await getFilesFromFolder(processed.id);
+      if (files.length > 0) {
+        return { files, source: "02_ОБРОБЛЕНІ", warn: false };
       }
     }
 
     if (originals) {
-      const res = await fetch(
-        `https://www.googleapis.com/drive/v3/files?` +
-        `q=${encodeURIComponent(
-          `'${originals.id}' in parents and mimeType='application/pdf' and trashed=false`
-        )}&fields=files(id,name,size)&pageSize=100&orderBy=name`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const data = await res.json();
-      if ((data.files || []).length > 0) {
-        return { files: data.files, source: "01_ОРИГІНАЛИ", warn: true };
+      const files = await getFilesFromFolder(originals.id);
+      if (files.length > 0) {
+        return { files, source: "01_ОРИГІНАЛИ", warn: true };
       }
     }
 
@@ -146,9 +146,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         const arrayBuf = await blob.arrayBuffer();
         const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuf)));
 
+        // Скановані PDF можуть мати різний MIME type на Drive
+        const mediaType = (file.mimeType && file.mimeType.includes("pdf")) ? "application/pdf" : "application/pdf";
         documentBlocks.push({
           type: "document",
-          source: { type: "base64", media_type: "application/pdf", data: base64 }
+          source: { type: "base64", media_type: mediaType, data: base64 }
         });
       }
 
