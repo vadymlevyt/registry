@@ -1,258 +1,193 @@
-# TASK.md — Фікс 📌, контекст файл, Drive токен, пам'ять агента
-# Дата: 10.04.2026
-# Гілка: main
+# TASK.md — Точкові фікси Quick Input
+# Legal BMS | АБ Левицького
+# Дата: 11.04.2026
+# Статус: ВИКОНАТИ
 
-## КРИТИЧНЕ ПРАВИЛО
-Після успішного npm run build — ЗАВЖДИ без запитань:
+---
+
+## КРОК 0 — ПРОЧИТАТИ LESSONS.md
+
 ```bash
-git add -A && git commit -m "fix: pin icon separate from display, context file exists check, drive token refresh, agent memory in API" && git push origin main
+cat LESSONS.md
 ```
 
 ---
 
-## БАГ 1 — Кнопка 📌 (КРИТИЧНИЙ — шоста спроба)
+## ФІКС 1 — update_deadline з null (рядок 1557)
 
-### Кореневе розуміння проблеми
+**Проблема:** Обробник ігнорує порожнє значення — дедлайн неможливо очистити через агента.
 
-В CaseDossier є ДВА місця з 📌:
-
-**Місце А — ІКОНКА в блоці "Нотатки до справи" (рядки ~819-829):**
-Це ВІДОБРАЖЕННЯ закріплених нотаток. Тут 📌 ЗАВЖДИ яскрава і нахилена.
-Це правильно — вона просто показує що нотатка закріплена.
-
-**Місце Б — КНОПКА toggle в списку "НОТАТКИ ПО СПРАВІ" (рядки ~987-992):**
-Це КНОПКА яку натискає користувач. Тут 📌 має змінюватись:
-- Прикріплена → вертикальна (0deg) + яскрава (opacity 1) + червона
-- Відкріплена → нахилена (-45deg) + тьмяна (opacity 0.4) + сіра
-
-Claude Code ймовірно бере стиль з Місця А і застосовує до Місця Б — тому кнопка завжди яскрава і нахилена.
-
-### Діагностика
-
+**Знайти:**
 ```bash
-# Знайти ВСІ 📌 в файлі і показати контекст кожної:
-grep -n "📌" src/components/CaseDossier/index.jsx
-grep -n "📌" src/components/Notebook/index.jsx
-
-# Показати стилі кожного місця:
-sed -n '815,835p' src/components/CaseDossier/index.jsx
-sed -n '980,995p' src/components/CaseDossier/index.jsx
+grep -n "update_deadline\|deadline_date" src/App.jsx | head -20
 ```
 
-### Рішення
+**Змінити умову:**
+```javascript
+// Зараз (зламано):
+if (matched && deadline_date) { ... }
 
-**Місце А (іконка в блоці закріплених)** — залишити як є:
-```jsx
-<span style={{ fontSize: 10 }}>📌</span>  // просто іконка, без rotate/opacity
+// Треба:
+if (matched && deadline_date !== undefined) { ... }
 ```
 
-**Місце Б (кнопка toggle)** — ПОВНІСТЮ замінити на цей код.
-ВАЖЛИВО: НЕ використовувати функцію isPinned. Обчислювати inline:
-
-```jsx
-{(() => {
-  const isNotePinned = (caseData.pinnedNoteIds || []).includes(String(note.id));
-  return (
-    <button
-      onClick={() => onPinNote(note.id, caseData.id)}
-      title={isNotePinned ? "Відкріпити" : "Закріпити"}
-      style={{
-        background: 'none',
-        border: 'none',
-        cursor: 'pointer',
-        fontSize: 16,
-        padding: '2px 4px',
-        display: 'inline-block',
-        transform: isNotePinned ? 'rotate(0deg)' : 'rotate(-45deg)',
-        opacity: isNotePinned ? 1 : 0.4,
-        color: isNotePinned ? '#e53935' : '#888',
-        transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
-      }}
-    >📌</button>
-  );
-})()}
-```
-
-УВАГА:
-- Змінна називається `isNotePinned` (НЕ `isPinned` — щоб не конфліктувати з іншими)
-- Читає `caseData.pinnedNoteIds` напряму з props (НЕ з локального state)
-- #888 замість #666 для кращої видимості на темному фоні
-
-**В Notebook** — те саме, тільки pinnedNoteIds береться з відповідного джерела.
-
-### Тест
-1. Відкрити досьє → в списку нотаток 📌 відкріплена = нахилена + тьмяна + сіра
-2. Натиснути → стає вертикальна + яскрава + червона ОДРАЗУ
-3. Натиснути знову → назад нахилена + тьмяна + сіра ОДРАЗУ
-4. В блоці "Нотатки до справи" зверху — 📌 залишається яскравою іконкою
-5. Те саме в Записній книжці
+Тепер `null` і `""` проходять — поле очищається.
 
 ---
 
-## БАГ 2 — Пам'ять агента в API messages[]
+## ФІКС 2 — PDF Vision поріг (рядок ~895)
 
-### Симптом
-Агент каже "немає пам'яті між сесіями". Переписка показується в інтерфейсі (візуально зберігається), але агент її не бачить.
+**Проблема:** Поріг 20 символів — занизький. Артефакти сканів (колонтитули, номери сторінок) помилково вважаються текстом.
 
-### Діагностика
-
+**Знайти:**
 ```bash
-# Перевірити чи agentHistory існує в даних і в нормалізації:
-grep -n "agentHistory" src/components/CaseDossier/index.jsx | head -15
-grep -n "agentHistory" src/App.jsx | head -10
-
-# Головне — що передається в API:
-grep -B2 -A20 "messages:" src/components/CaseDossier/index.jsx | head -30
+grep -n "length > 20\|length > 50\|fullText\|extractPdfText" src/App.jsx | head -20
 ```
 
-### Що перевірити
-Знайти fetch до api.anthropic.com в CaseDossier.
-Подивитись body.messages — якщо там тільки:
-```jsx
-messages: [{ role: 'user', content: userMessage }]
+**Змінити:**
+```javascript
+// Зараз:
+if (fullText.trim().length > 20)
+
+// Треба:
+if (fullText.trim().length > 50)
 ```
-То це причина — історія не включається.
-
-### Рішення
-Замінити messages на:
-```jsx
-// Підготувати історію:
-const historyForAPI = agentMessages
-  .filter(m => m.role === 'user' || m.role === 'assistant')
-  .slice(-10)
-  .map(m => ({ role: m.role, content: m.content }));
-
-// Перший елемент ОБОВ'ЯЗКОВО role: 'user':
-const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
-const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
-
-// В fetch body:
-messages: [
-  ...cleanHistory,
-  { role: 'user', content: userMessage }
-]
-```
-
-Також перевірити що agentHistory зберігається після відповіді:
-```bash
-grep -n "updateCase.*agentHistory\|agentHistory.*updateCase" src/components/CaseDossier/index.jsx | head -5
-```
-
-Якщо немає — додати збереження після кожної відповіді.
 
 ---
 
-## БАГ 3 — Контекстний файл: перевірка існування
+## ФІКС 3 — Видалити debug console.log (рядки 928, 929, 932, 934, 2995)
 
-### Симптом
-При повторному натисканні "Створити контекст" — починає створювати новий з нуля.
-Має перевірити чи файл вже існує і запитати що робити.
+**Проблема:** Залишились тимчасові записи від діагностики. Засмічують консоль.
 
-### Рішення
-В handleCreateContext ПЕРЕД аналізом документів:
+**Знайти:**
+```bash
+grep -n "readImageAsBase64 called\|FileReader onload\|base64 length\|driveConnected changed" src/App.jsx
+```
 
-```jsx
-async function handleCreateContext() {
-  // 1. Перевірити чи файл вже існує на Drive
-  const folderId = caseData.storage?.driveFolderId;
-  if (!folderId) { showMsg('Папка справи не знайдена'); return; }
-  
-  const token = localStorage.getItem('levytskyi_drive_token');
-  
+**Видалити** знайдені рядки повністю.
+
+---
+
+## ФІКС 4 — Дублікат extractShortName (рядки 1249 і 1497)
+
+**Проблема:** Одна і та сама функція існує двічі. При зміні логіки треба міняти в двох місцях.
+
+**Знайти:**
+```bash
+grep -n "extractShortName" src/App.jsx
+```
+
+**Дія:**
+1. Залишити одну реалізацію — винести на рівень модуля (до першого `const` компонента)
+2. Видалити дублікат
+3. Перевірити що обидва місця використання посилаються на одну функцію
+
+---
+
+## ФІКС 5 — try/catch для analyzeImageWithVision
+
+**Проблема:** Виклик `analyzeImageWithVision` всередині `FileReader.onload` не захищений зовнішнім try/catch. При помилці Vision API — тиша або blank page.
+
+**Знайти:**
+```bash
+grep -n "analyzeImageWithVision\|FileReader\|onload" src/App.jsx | head -20
+```
+
+**Обгорнути виклик:**
+```javascript
+reader.onload = async () => {
   try {
-    // Пошук існуючого case_context.md
-    const searchRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+name='case_context.md'+and+trashed=false&fields=files(id,name,modifiedTime)`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    const searchData = await searchRes.json();
-    
-    if (searchData.files && searchData.files.length > 0) {
-      const existing = searchData.files[0];
-      const modDate = new Date(existing.modifiedTime).toLocaleDateString('uk-UA');
-      
-      // Показати модалку замість confirm:
-      const action = window.confirm(
-        `Контекст справи вже існує (оновлено ${modDate}).\n\nЗамінити на новий?`
-      );
-      // TODO: замінити на власну модалку з 3 кнопками: Замінити / Скасувати
-      
-      if (!action) return;
-      
-      // Архівувати старий
-      // ... (перемістити в archive/ або перейменувати)
-    }
-  } catch (e) {
-    if (e.message === 'DRIVE_TOKEN_EXPIRED') {
-      showMsg('❌ Токен Drive протух. Натисніть "Підключити Drive" і спробуйте знову.');
-      return;
-    }
-    // Якщо помилка пошуку — продовжити створення
+    const result = await analyzeImageWithVision(base64);
+    // ... існуючий код
+  } catch (err) {
+    console.error('Vision API error:', err);
+    setQiResult('Не вдалось обробити зображення. Спробуйте ще раз.');
   }
-  
-  // 2. Далі — існуючий код аналізу документів
-  // ...
-}
+};
 ```
 
 ---
 
-## БАГ 4 — Drive токен: авторизація не перекидає на головну
+## ФІКС 6 — Прибрати save_to_drive з HAIKU_SYSTEM_PROMPT (рядок ~446)
 
-### Симптом
-1. Токен Drive протухає через ~1 годину
-2. Кнопка "Підключити Drive" на сторінці "Аналіз системи" перекидає на головну сторінку
-3. Має авторизувати на місці без переходу
+**Проблема:** Haiku рекомендує дію `save_to_drive` але в коді вона показує `systemAlert("ще не реалізовано")`. Невідповідність між промптом і кодом.
 
-### Діагностика
+**Знайти:**
 ```bash
-grep -n "connectDrive\|initDrive\|handleDriveAuth\|gapi\|oauth" src/App.jsx | head -15
-grep -n "Підключити Drive\|Drive.*кнопка\|Drive.*connect" src/App.jsx | head -10
+grep -n "save_to_drive\|create_drive_folder" src/App.jsx | head -20
 ```
 
-### Рішення
-1. Знайти функцію авторизації Drive
-2. Переконатись що після авторизації НЕ робиться setCurrentView або навігація
-3. Авторизація має відкрити popup Google OAuth і після успіху — залишитись на поточній сторінці
-4. Якщо зараз робиться redirect — замінити на popup flow
+**Дія:**
+1. В `HAIKU_SYSTEM_PROMPT` — видалити згадку `save_to_drive` і `create_drive_folder`
+2. `systemAlert` рядки залишити — вони захищають від випадкового виклику
 
-Мінімальний фікс — після авторизації повертатись на попередню сторінку:
-```jsx
-const previousView = currentView; // зберегти перед авторизацією
-// ... авторизація ...
-setCurrentView(previousView); // повернутись назад
+---
+
+## ФІКС 7 — Прибрати navigate_calendar / navigate_week з SONNET_CHAT_PROMPT QI
+
+**Проблема:** QI агент знає про навігацію календаря але це не його зона — це зона дашборду. Агент може запропонувати дію яку не може виконати.
+
+**Знайти:**
+```bash
+grep -n "navigate_calendar\|navigate_week" src/App.jsx | head -20
+```
+
+**Дія:**
+1. В `SONNET_CHAT_PROMPT` — видалити `navigate_calendar` і `navigate_week` з переліку доступних дій
+2. Обробники в дашборді — не чіпати
+
+---
+
+## ФІКС 8 — Принцип перевірки перед дією в SONNET_CHAT_PROMPT
+
+**Проблема:** Агент виконує команди без звірки з реєстром. При суперечливих даних — робить щось не те мовчки.
+
+**Знайти:**
+```bash
+grep -n "SONNET_CHAT_PROMPT" src/App.jsx | head -5
+```
+
+**Додати на початок SONNET_CHAT_PROMPT** (після першого рядка системного промпту):
+
+```
+Перед будь-якою дією — звір те що збираєшся зробити з тим що є в реєстрі.
+Якщо є суперечність між вхідними даними і реальністю — повідом адвоката одним чітким питанням і чекай відповіді.
+Не вигадуй і не обирай мовчки. Незворотні дії (видалення) — завжди підтверджуй.
 ```
 
 ---
 
-## ПОРЯДОК ВИКОНАННЯ
-
-1. БАГ 1 — 📌 кнопка (isNotePinned inline)
-2. БАГ 2 — пам'ять агента (messages[] в API)
-3. БАГ 3 — перевірка існування контексту
-4. БАГ 4 — Drive авторизація без перекидання
-
----
-
-## ЗБІРКА І ДЕПЛОЙ
+## ПЕРЕВІРКА ПІСЛЯ ФІКСІВ
 
 ```bash
-npm run build 2>&1 | tail -5
-git add -A && git commit -m "fix: pin icon separate from display, context file exists check, drive token refresh, agent memory in API" && git push origin main
+# Перевірити що немає залишків старих рядків:
+grep -n "length > 20" src/App.jsx
+grep -n "readImageAsBase64 called\|FileReader onload\|base64 length" src/App.jsx
+grep -n "navigate_calendar\|navigate_week" src/App.jsx
+grep -n "save_to_drive" src/App.jsx
+
+# Перевірити що extractShortName одна:
+grep -n "extractShortName" src/App.jsx
 ```
 
 ---
 
-## КРИТЕРІЇ ЗАВЕРШЕННЯ
+## ДЕПЛОЙ
 
-- [ ] 📌 КНОПКА: прикріплена = вертикальна + яскрава + червона
-- [ ] 📌 КНОПКА: відкріплена = нахилена + тьмяна + сіра
-- [ ] 📌 ІКОНКА в блоці закріплених = завжди яскрава (не змінюється)
-- [ ] Зміна кнопки ОДРАЗУ при кліку без F5
-- [ ] Працює в Досьє і Записній книжці однаково
-- [ ] Агент пам'ятає переписку між сесіями (тест: ім'я → закрити → відкрити → запитати)
-- [ ] messages[] в API fetch включає cleanHistory
-- [ ] "Створити контекст" перевіряє чи файл існує перед створенням
-- [ ] Drive авторизація не перекидає на головну сторінку
-- [ ] npm run build без помилок
-- [ ] git push origin main виконано
+```bash
+git add -A && git commit -m "fix: QI точкові фікси — deadline null, PDF поріг, промпти, try/catch" && git push origin main
+```
+
+---
+
+## ДОПИСАТИ В LESSONS.md ПІСЛЯ ВИКОНАННЯ
+
+```
+### [2026-04-11] QI точкові фікси
+- update_deadline: deadline_date !== undefined замість truthy перевірки
+- PDF Vision поріг: 20 → 50 символів
+- extractShortName: одна функція на рівні модуля
+- SONNET_CHAT_PROMPT: прибрати navigate_calendar/week — це зона дашборду
+- HAIKU_SYSTEM_PROMPT: прибрати save_to_drive — не реалізовано
+- Принцип перевірки: агент звіряє з реєстром перед дією
+```

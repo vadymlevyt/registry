@@ -44,6 +44,22 @@ class ErrorBoundary extends React.Component {
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
+// Коротке ім'я справи з повного ПІБ: "Брановський І.В."
+function extractShortName(fullName) {
+  if (!fullName) return '';
+  const clean = fullName.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
+  const withoutLev = clean.replace(/левицьк\S+\s+\S+\s+\S+\s*/gi, '').trim();
+  const parts = withoutLev.split(/\s+/);
+  if (parts.length >= 2) {
+    const lastName = parts[0];
+    const initials = parts.slice(1)
+      .map(p => p[0] ? p[0].toUpperCase() + '.' : '')
+      .join('');
+    return `${lastName} ${initials}`;
+  }
+  return withoutLev || fullName;
+}
+
 
 // ── MOCK DATA ─────────────────────────────────────────────────────────────────
 const today = new Date();
@@ -443,7 +459,7 @@ Return this exact JSON structure:
     "deadlines": [],
     "person": "string or null"
   },
-  "recommended_actions": ["update_case_date", "update_deadline", "update_case_field", "save_to_drive", "create_case", "save_note", "update_case_status"],
+  "recommended_actions": ["update_case_date", "update_deadline", "update_case_field", "create_case", "save_note", "update_case_status"],
   "human_message": "Short Ukrainian-language summary for the lawyer",
   "warnings": [],
   "confidence": 0.0 to 1.0,
@@ -460,7 +476,7 @@ Rules:
 - If unsure about anything = needs_review: true
 - hearing_date must be YYYY-MM-DD format
 - human_message must be in Ukrainian
-- recommended_actions must only contain values from the allowed list above: update_case_date, update_deadline, save_to_drive, create_case, save_note, update_case_status
+- recommended_actions must only contain values from the allowed list above: update_case_date, update_deadline, create_case, save_note, update_case_status
 - Use update_case_date when document contains a HEARING date (судове засідання)
 - Use update_deadline when document contains a DEADLINE for filing/response (процесуальний строк, дедлайн подачі)
 - extracted.deadline_date — дата дедлайну (YYYY-MM-DD)
@@ -470,6 +486,11 @@ Rules:
 
 // Для Sonnet — чат-команди, розмовна мова
 const SONNET_CHAT_PROMPT = `You are an AI assistant for a Ukrainian law office (Advocate Bureau Levytskyi, Kyiv).
+
+Перед будь-якою дією — звір те що збираєшся зробити з тим що є в реєстрі.
+Якщо є суперечність між вхідними даними і реальністю — повідом адвоката одним чітким питанням і чекай відповіді.
+Не вигадуй і не обирай мовчки. Незворотні дії (видалення) — завжди підтверджуй.
+
 You help the lawyer manage cases through natural voice and text commands.
 You have full context of all cases in the registry, provided in each message.
 Use this context to answer questions about specific cases, deadlines, hearings.
@@ -825,7 +846,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       setTimeout(() => chatInputRef.current?.focus(), 150);
     }
   }, []);
-  useEffect(() => { console.log('QI driveConnected changed:', driveConnected); }, [driveConnected]);
 
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -892,7 +912,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
           fullText += content.items.map(item => item.str).join(' ') + '\n';
         }
         const pageWarning = pdf.numPages > 5 ? `\n[Оброблено перші 5 з ${pdf.numPages} сторінок]` : '';
-        if (fullText.trim().length > 20) {
+        if (fullText.trim().length > 50) {
           setText(fullText.trim() + pageWarning);
         } else {
           renderPdfPageAsBase64(pdf, file.name);
@@ -925,15 +945,17 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
   };
 
   const readImageAsBase64 = (file) => {
-    // DEBUG — видалити після діагностики
-    console.log('readImageAsBase64 called:', file.name, file.type, file.size);
     const reader = new FileReader();
-    reader.onload = (e) => {
-      console.log('FileReader onload, result length:', e.target.result?.length);
-      const base64 = e.target.result.split(',')[1];
-      console.log('base64 length:', base64?.length);
-      const mediaType = file.type || 'image/jpeg';
-      analyzeImageWithVision(base64, mediaType, file.name);
+    reader.onload = async (e) => {
+      try {
+        const base64 = e.target.result.split(',')[1];
+        const mediaType = file.type || 'image/jpeg';
+        await analyzeImageWithVision(base64, mediaType, file.name);
+      } catch (err) {
+        console.error('Vision API error:', err);
+        setErrorCategory('llm_failed');
+        setErrorDetail('Vision API: ' + (err?.message || 'невідома помилка'));
+      }
     };
     reader.onerror = (e) => {
       console.error('FileReader error:', e);
@@ -1245,22 +1267,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
 
       // Визначити назву справи
       const rawPerson = ext.person || caseMatch.case_name || '';
-
-      function extractShortName(fullName) {
-        if (!fullName) return '';
-        const clean = fullName.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
-        const withoutLev = clean.replace(/левицьк\S+\s+\S+\s+\S+\s*/gi, '').trim();
-        const parts = withoutLev.split(/\s+/);
-        if (parts.length >= 2) {
-          const lastName = parts[0];
-          const initials = parts.slice(1)
-            .map(p => p[0] ? p[0].toUpperCase() + '.' : '')
-            .join('');
-          return `${lastName} ${initials}`;
-        }
-        return withoutLev || fullName;
-      }
-
       const caseName = extractShortName(rawPerson) || 'Нова справа';
 
       // Визначити категорію
@@ -1493,18 +1499,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
           if (action === 'create_case') {
             const ext = actionResult.extracted || {};
             const rawPerson = ext.person || actionResult.case_match?.case_name || '';
-
-            function extractShortName(fullName) {
-              if (!fullName) return '';
-              const clean = fullName.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim();
-              const withoutLev = clean.replace(/левицьк\S+\s+\S+\s+\S+\s*/gi, '').trim();
-              const parts = withoutLev.split(/\s+/);
-              if (parts.length >= 2) {
-                return parts[0] + ' ' + parts.slice(1).map(p => p[0] ? p[0].toUpperCase() + '.' : '').join('');
-              }
-              return withoutLev || fullName;
-            }
-
             const caseName = extractShortName(rawPerson) || 'Нова справа';
             const isCriminal = /кпк|кримінал|\d+\s*кк|обвинувач|підозрюван/i.test(JSON.stringify(actionResult));
 
@@ -1559,16 +1553,17 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const deadline_type = actionResult.extracted?.deadline_type;
             const caseName = actionResult.case_match?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
-            if (matched && deadline_date) {
+            if (matched && deadline_date !== undefined) {
               setCases(prev => prev.map(c =>
                 c.id === matched.id
-                  ? { ...c, deadline: deadline_date, ...(deadline_type ? { deadline_type } : {}) }
+                  ? { ...c, deadline: deadline_date || '', ...(deadline_type ? { deadline_type } : {}) }
                   : c
               ));
               const typeStr = deadline_type ? ` (${deadline_type})` : '';
+              const dateStr = deadline_date ? `встановлено: ${deadline_date}` : 'очищено';
               setConversationHistory(prev => [...prev, {
                 role: 'assistant',
-                content: `✅ Дедлайн у справі "${matched.name}" встановлено: ${deadline_date}${typeStr}`
+                content: `✅ Дедлайн у справі "${matched.name}" ${dateStr}${typeStr}`
               }]);
               setChatLoading(false);
               return;

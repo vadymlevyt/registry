@@ -349,3 +349,13 @@ isPinned = (caseData?.pinnedNoteIds || []).includes(note.id)
 ### [2026-04-09] Drive токен — перехоплювати 401
 status 401 = токен протух, не баг коду.
 Показати: "Токен Drive протух. Натисніть Підключити Drive."
+
+---
+
+### [2026-04-11] QI точкові фікси
+- update_deadline: deadline_date !== undefined замість truthy перевірки (дозволяє очищення)
+- PDF Vision поріг: 20 → 50 символів (фільтрує артефакти сканів)
+- extractShortName: одна функція на рівні модуля (було дублювання)
+- SONNET_CHAT_PROMPT: прибрати navigate_calendar/week — це зона дашборду
+- HAIKU_SYSTEM_PROMPT: прибрати save_to_drive — не реалізовано
+- Принцип перевірки: агент звіряє з реєстром перед дією
