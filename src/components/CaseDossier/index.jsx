@@ -62,7 +62,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       setAgentMessages(history);
     };
     loadData();
-  }, [caseData.id]); // залежність від caseData.id, щоб перезавантажувати при зміні справи
+  }, [caseData.storage?.driveFolderId]); // залежність від folderId
 
   const showMsg = (text) => {
     setStorageMsg(text);
