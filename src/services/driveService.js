@@ -189,3 +189,57 @@ export async function saveFileLocally(dirHandle, relativePath, fileBlob) {
   await writable.write(fileBlob);
   await writable.close();
 }
+
+// ── Нові функції для читання файлів ──────────────────────────────────────────
+
+export async function getDriveFiles(folderId, token) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+      `'${folderId}' in parents and trashed=false`
+    )}&fields=files(id,name,mimeType,modifiedTime)&pageSize=100`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const data = await res.json();
+  return data.files || [];
+}
+
+export async function readDriveFile(fileId, token) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error(`Failed to read file: ${res.status}`);
+  return await res.text();
+}
+
+export async function createDriveFile(folderId, fileName, content, token) {
+  const metadata = {
+    name: fileName,
+    parents: [folderId],
+  };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', new Blob([content], { type: 'text/plain' }));
+
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Failed to create file: ${data.error?.message || res.status}`);
+  return data;
+}
+
+export async function updateDriveFile(fileId, content, token) {
+  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'text/plain',
+    },
+    body: content,
+  });
+  if (!res.ok) throw new Error(`Failed to update file: ${res.status}`);
+  return await res.json();
+}

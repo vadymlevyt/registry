@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
-import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive } from "../../services/driveService.js";
+import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
 
 const CATEGORY_LABELS = {
@@ -48,14 +48,65 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [editingNoteText, setEditingNoteText] = useState('');
 
+  const [caseContext, setCaseContext] = useState(null);
+
   useEffect(() => {
     setStorageState(caseData.storage || {});
   }, [caseData.storage]);
 
+  // ── Завантаження контексту та історії при відкритті досьє ────────────────
+  useEffect(() => {
+    const loadData = async () => {
+      const [context, history] = await Promise.all([loadCaseContext(), loadAgentHistory()]);
+      setCaseContext(context);
+      setAgentMessages(history);
+    };
+    loadData();
+  }, [caseData.id]); // залежність від caseData.id, щоб перезавантажувати при зміні справи
 
   const showMsg = (text) => {
     setStorageMsg(text);
     setTimeout(() => setStorageMsg(''), 3000);
+  };
+
+  // ── Завантаження case_context.md ──────────────────────────────────────────
+  const loadCaseContext = async () => {
+    if (!caseData?.storage?.driveFolderId) return null;
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token) return null;
+    try {
+      const folderId = caseData.storage.driveFolderId;
+      const files = await getDriveFiles(folderId, token);
+      const contextFile = files.find(f => f.name === 'case_context.md');
+      if (!contextFile) return null;
+      const content = await readDriveFile(contextFile.id, token);
+      return content;
+    } catch (e) {
+      console.log('case_context.md не знайдено або помилка читання:', e);
+      return null;
+    }
+  };
+
+  // ── Побудова system prompt для агента ───────────────────────────────────
+  const buildAgentSystemPrompt = () => {
+    let prompt = `Ти агент справи "${caseData.name}".
+Знаєш про справу:
+- Суд: ${caseData.court || "не вказано"}
+- Номер: ${caseData.case_no || "не вказано"}
+- Категорія: ${caseData.category || "не вказано"}
+- Статус: ${caseData.status || "не вказано"}
+- Провадження: ${JSON.stringify(caseData.proceedings || [])}
+- Документів: ${(caseData.documents || []).length}`;
+
+    if (caseContext) {
+      prompt += `\n\n## КОНТЕКСТ СПРАВИ\n${caseContext}`;
+    } else {
+      prompt += `\n\nКонтекстний файл справи відсутній.`;
+    }
+
+    prompt += `\n\nВідповідай українською. Допомагай з аналізом і тактикою по справі.`;
+
+    return prompt;
   };
 
   // ── Створити case_context.md ──────────────────────────────────────────────
@@ -373,10 +424,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
   const [agentWidth, setAgentWidth] = useState(() => Math.min(500, Math.max(280, Math.round(window.innerWidth * 0.35))));
-  const [agentMessages, setAgentMessages] = useState(() => {
-    const history = caseData.agentHistory || [];
-    return history.slice(-20);
-  });
+  const [agentMessages, setAgentMessages] = useState([]);
   const [agentInput, setAgentInput] = useState('');
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
@@ -656,15 +704,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       setAgentLoading(true);
       try {
         const apiKey = localStorage.getItem('claude_api_key');
-        const systemPrompt = `Ти агент справи "${caseData.name}".
-Знаєш про справу:
-- Суд: ${caseData.court || "не вказано"}
-- Номер: ${caseData.case_no || "не вказано"}
-- Категорія: ${caseData.category || "не вказано"}
-- Статус: ${caseData.status || "не вказано"}
-- Провадження: ${JSON.stringify(caseData.proceedings || [])}
-- Документів: ${(caseData.documents || []).length}
-Відповідай українською. Допомагай з аналізом і тактикою по справі.`;
+        const systemPrompt = buildAgentSystemPrompt();
 
         // Send last 10 messages as context for API (token economy)
         const historyForAPI = agentMessages
@@ -697,6 +737,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         setAgentMessages(prev => {
           const updated = [...prev, assistantEntry].slice(-50);
           updateCase && updateCase(caseData.id, 'agentHistory', updated);
+          saveAgentHistory(updated); // Зберегти на Drive
           return updated;
         });
       } catch (err) {
@@ -704,6 +745,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         setAgentMessages(prev => {
           const updated = [...prev, errEntry].slice(-50);
           updateCase && updateCase(caseData.id, 'agentHistory', updated);
+          saveAgentHistory(updated); // Зберегти на Drive
           return updated;
         });
       }
@@ -716,7 +758,10 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           <span style={{ fontSize: 14 }}>{"🤖"}</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
-            <div style={{ fontSize: 10, color: '#5a6080' }}>{"Sonnet · знає справу"}</div>
+            <div style={{ fontSize: 10, color: '#5a6080' }}>
+              {"Sonnet · знає справу"}
+              {caseContext && <span style={{ marginLeft: 4, color: '#2ecc71' }}>📄</span>}
+            </div>
           </div>
           <button onClick={() => setConfirmClearOpen(true)} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
         </div>
@@ -808,6 +853,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
                 <button
                   onClick={() => {
                     setAgentMessages([]);
+                    saveAgentHistory([]); // Очистити історію на Drive
                     setConfirmClearOpen(false);
                   }}
                   style={{
