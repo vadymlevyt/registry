@@ -59,51 +59,16 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   }, [caseData.storage]);
 
   // ── Завантаження контексту та історії при відкритті досьє ────────────────
-  // Інлайн, без зовнішніх замикань — щоб гарантовано виконувалось при монтуванні
   useEffect(() => {
     console.log('[CaseDossier] Mount effect fired, caseId:', caseData.id, 'folderId:', caseData.storage?.driveFolderId);
     let cancelled = false;
     (async () => {
-      const token = localStorage.getItem("levytskyi_drive_token");
-      const folderId = caseData?.storage?.driveFolderId;
-      if (!token || !folderId) {
-        console.log('[CaseDossier] Пропуск завантаження з Drive: token=', !!token, 'folderId=', !!folderId);
-        return;
-      }
-      try {
-        const files = await getDriveFiles(folderId, token);
-        console.log(`[CaseDossier] Drive повернув ${files.length} файлів у папці справи`);
+      const ctx = await loadCaseContext();
+      if (!cancelled && ctx) setCaseContext(ctx);
 
-        // case_context.md
-        const ctxFile = files.find(f => f.name === 'case_context.md');
-        if (ctxFile && !cancelled) {
-          try {
-            const ctx = await readDriveFile(ctxFile.id, token);
-            if (!cancelled) {
-              setCaseContext(ctx);
-              console.log('[CaseDossier] case_context.md завантажено');
-            }
-          } catch (e) { console.log('[CaseDossier] context read fail:', e); }
-        }
-
-        // agent_history.json
-        const histFile = files.find(f => f.name === 'agent_history.json');
-        if (histFile && !cancelled) {
-          try {
-            const content = await readDriveFile(histFile.id, token);
-            const parsed = JSON.parse(content);
-            if (Array.isArray(parsed) && parsed.length > 0 && !cancelled) {
-              console.log(`[CaseDossier] Завантажено ${parsed.length} повідомлень історії з Drive`);
-              setAgentMessages(parsed);
-            } else {
-              console.log('[CaseDossier] agent_history.json порожній або не масив');
-            }
-          } catch (e) { console.log('[CaseDossier] history read/parse fail:', e); }
-        } else if (!histFile) {
-          console.log('[CaseDossier] agent_history.json не знайдено серед файлів');
-        }
-      } catch (e) {
-        console.log('[CaseDossier] Помилка getDriveFiles:', e);
+      const messages = await loadAgentHistory();
+      if (!cancelled && Array.isArray(messages) && messages.length > 0) {
+        setAgentMessages(messages);
       }
     })();
     return () => { cancelled = true; };
@@ -116,37 +81,46 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── Завантаження case_context.md ──────────────────────────────────────────
   const loadCaseContext = async () => {
+    console.log('[CaseContext] loading for case:', caseData?.id);
+    console.log('[CaseContext] folderId:', caseData?.storage?.driveFolderId);
     if (!caseData?.storage?.driveFolderId) return null;
     const token = localStorage.getItem("levytskyi_drive_token");
-    if (!token) return null;
+    if (!token) { console.log('[CaseContext] no drive token'); return null; }
     try {
       const folderId = caseData.storage.driveFolderId;
       const files = await getDriveFiles(folderId, token);
+      console.log('[CaseContext] found files:', files?.length);
       const contextFile = files.find(f => f.name === 'case_context.md');
-      if (!contextFile) return null;
+      if (!contextFile) { console.log('[CaseContext] case_context.md not found'); return null; }
       const content = await readDriveFile(contextFile.id, token);
+      console.log('[CaseContext] loaded length:', content?.length);
       return content;
     } catch (e) {
-      console.log('case_context.md не знайдено або помилка читання:', e);
+      console.log('[CaseContext] load error:', e);
       return null;
     }
   };
 
   // ── Завантаження agent_history.json з Drive ──────────────────────────────
   const loadAgentHistory = async () => {
+    console.log('[AgentHistory] loading for case:', caseData?.id);
+    console.log('[AgentHistory] folderId:', caseData?.storage?.driveFolderId);
     if (!caseData?.storage?.driveFolderId) return caseData.agentHistory || [];
     const token = localStorage.getItem("levytskyi_drive_token");
-    if (!token) return caseData.agentHistory || [];
+    if (!token) { console.log('[AgentHistory] no drive token'); return caseData.agentHistory || []; }
     try {
       const folderId = caseData.storage.driveFolderId;
       const files = await getDriveFiles(folderId, token);
+      console.log('[AgentHistory] found files:', files?.length);
       const histFile = files.find(f => f.name === 'agent_history.json');
-      if (!histFile) return caseData.agentHistory || [];
+      if (!histFile) { console.log('[AgentHistory] agent_history.json not found'); return caseData.agentHistory || []; }
       const content = await readDriveFile(histFile.id, token);
       const parsed = JSON.parse(content);
-      return Array.isArray(parsed) ? parsed : (caseData.agentHistory || []);
+      const messages = Array.isArray(parsed) ? parsed : (caseData.agentHistory || []);
+      console.log('[AgentHistory] loaded messages:', messages?.length);
+      return messages;
     } catch (e) {
-      console.log('agent_history.json не знайдено або помилка читання:', e);
+      console.log('[AgentHistory] load error:', e);
       return caseData.agentHistory || [];
     }
   };
@@ -596,6 +570,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       }
 
       setContextMsg(`✅ Контекст створено (${totalProcessed} документів: ${textDocs.length} текст + ${scanBlocks.length} сканів, джерело: ${sourceName})`);
+
+      // Оновити caseContext в стані — щоб агент побачив новий/оновлений файл одразу
+      try {
+        const fresh = await loadCaseContext();
+        if (fresh) setCaseContext(fresh);
+      } catch (e) { console.log('[CaseContext] refresh after save failed:', e); }
     } catch (err) {
       console.error("Context creation error:", err);
       setContextMsg(`Помилка: ${err.message}`);
