@@ -55,24 +55,55 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   }, [caseData.storage]);
 
   // ── Завантаження контексту та історії при відкритті досьє ────────────────
+  // Інлайн, без зовнішніх замикань — щоб гарантовано виконувалось при монтуванні
   useEffect(() => {
-    const loadData = async () => {
+    console.log('[CaseDossier] Mount effect fired, caseId:', caseData.id, 'folderId:', caseData.storage?.driveFolderId);
+    let cancelled = false;
+    (async () => {
+      const token = localStorage.getItem("levytskyi_drive_token");
+      const folderId = caseData?.storage?.driveFolderId;
+      if (!token || !folderId) {
+        console.log('[CaseDossier] Пропуск завантаження з Drive: token=', !!token, 'folderId=', !!folderId);
+        return;
+      }
       try {
-        const [context, history] = await Promise.all([loadCaseContext(), loadAgentHistory()]);
-        setCaseContext(context);
-        // Не затираємо існуючу історію порожнім масивом (Drive міг не прочитатись)
-        if (Array.isArray(history) && history.length > 0) {
-          console.log(`[CaseDossier] Завантажено ${history.length} повідомлень з Drive`);
-          setAgentMessages(history);
-        } else {
-          console.log('[CaseDossier] Drive не повернув історію, залишаємо локальну');
+        const files = await getDriveFiles(folderId, token);
+        console.log(`[CaseDossier] Drive повернув ${files.length} файлів у папці справи`);
+
+        // case_context.md
+        const ctxFile = files.find(f => f.name === 'case_context.md');
+        if (ctxFile && !cancelled) {
+          try {
+            const ctx = await readDriveFile(ctxFile.id, token);
+            if (!cancelled) {
+              setCaseContext(ctx);
+              console.log('[CaseDossier] case_context.md завантажено');
+            }
+          } catch (e) { console.log('[CaseDossier] context read fail:', e); }
+        }
+
+        // agent_history.json
+        const histFile = files.find(f => f.name === 'agent_history.json');
+        if (histFile && !cancelled) {
+          try {
+            const content = await readDriveFile(histFile.id, token);
+            const parsed = JSON.parse(content);
+            if (Array.isArray(parsed) && parsed.length > 0 && !cancelled) {
+              console.log(`[CaseDossier] Завантажено ${parsed.length} повідомлень історії з Drive`);
+              setAgentMessages(parsed);
+            } else {
+              console.log('[CaseDossier] agent_history.json порожній або не масив');
+            }
+          } catch (e) { console.log('[CaseDossier] history read/parse fail:', e); }
+        } else if (!histFile) {
+          console.log('[CaseDossier] agent_history.json не знайдено серед файлів');
         }
       } catch (e) {
-        console.log('[CaseDossier] Помилка завантаження контексту/історії:', e);
+        console.log('[CaseDossier] Помилка getDriveFiles:', e);
       }
-    };
-    loadData();
-  }, [caseData.storage?.driveFolderId, caseData.id]);
+    })();
+    return () => { cancelled = true; };
+  }, [caseData.id, caseData.storage?.driveFolderId]);
 
   const showMsg = (text) => {
     setStorageMsg(text);
@@ -289,8 +320,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           { headers: { Authorization: `Bearer ${token}` } }
         );
         const data = await res.json();
-        const files = data.files || [];
-        setContextMsg(`📄 В папці ${name}: ${files.length} файлів`);
+        const allFiles = data.files || [];
+        // Додатковий JS-фільтр: виключити папки (якщо Drive проігнорував query-фільтр)
+        // і взяти тільки PDF (Claude API приймає application/pdf)
+        const files = allFiles.filter(f =>
+          f.mimeType !== 'application/vnd.google-apps.folder' &&
+          (f.mimeType === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+        );
+        console.log(`[CaseDossier] ${name}: знайдено ${allFiles.length}, PDF: ${files.length}`, allFiles.map(f => `${f.name} (${f.mimeType}, ${f.size}b)`));
+        setContextMsg(`📄 В папці ${name}: ${files.length} PDF з ${allFiles.length} файлів`);
         return files;
       };
 
@@ -315,34 +353,51 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       setContextMsg(`✅ Знайдено ${sourceFiles.length} файлів в ${sourceName}. Починаю читання...`);
 
-      // Зібрати base64 документів (до 25MB)
+      // Зібрати base64 документів (до 25MB сумарно)
       const documentBlocks = [];
       let totalSize = 0;
       const MAX_SIZE = 25 * 1024 * 1024;
 
       for (const file of sourceFiles) {
-        if (totalSize > MAX_SIZE) break;
-        const res = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        const blob = await res.blob();
-        totalSize += blob.size;
-        if (totalSize > MAX_SIZE) break;
-
-        const arrayBuf = await blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuf);
-        let binary = "";
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+        // Перевірити розмір ДО завантаження через metadata
+        const fileSize = parseInt(file.size || 0, 10);
+        if (fileSize > 0 && totalSize + fileSize > MAX_SIZE) {
+          console.log(`[CaseDossier] Пропущено ${file.name} — перевищує ліміт`);
+          continue;
         }
-        const base64 = btoa(binary);
+        try {
+          const res = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!res.ok) {
+            console.log(`[CaseDossier] Помилка ${res.status} для ${file.name}`);
+            continue;
+          }
+          const blob = await res.blob();
+          if (totalSize + blob.size > MAX_SIZE) {
+            console.log(`[CaseDossier] Пропущено ${file.name} — сума після завантаження >${MAX_SIZE}`);
+            continue;
+          }
 
-        documentBlocks.push({
-          type: "document",
-          source: { type: "base64", media_type: "application/pdf", data: base64 }
-        });
+          const arrayBuf = await blob.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuf);
+          let binary = "";
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+          }
+          const base64 = btoa(binary);
+
+          documentBlocks.push({
+            type: "document",
+            source: { type: "base64", media_type: "application/pdf", data: base64 }
+          });
+          totalSize += blob.size;
+          console.log(`[CaseDossier] ✅ ${file.name} (${Math.round(blob.size/1024)} КБ)`);
+        } catch (e) {
+          console.log(`[CaseDossier] Виняток для ${file.name}:`, e);
+        }
       }
 
       // Запит до Claude
