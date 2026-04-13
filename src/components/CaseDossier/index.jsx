@@ -87,6 +87,45 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
   };
 
+  // ── Завантаження agent_history.json з Drive ──────────────────────────────
+  const loadAgentHistory = async () => {
+    if (!caseData?.storage?.driveFolderId) return caseData.agentHistory || [];
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token) return caseData.agentHistory || [];
+    try {
+      const folderId = caseData.storage.driveFolderId;
+      const files = await getDriveFiles(folderId, token);
+      const histFile = files.find(f => f.name === 'agent_history.json');
+      if (!histFile) return caseData.agentHistory || [];
+      const content = await readDriveFile(histFile.id, token);
+      const parsed = JSON.parse(content);
+      return Array.isArray(parsed) ? parsed : (caseData.agentHistory || []);
+    } catch (e) {
+      console.log('agent_history.json не знайдено або помилка читання:', e);
+      return caseData.agentHistory || [];
+    }
+  };
+
+  // ── Збереження agent_history.json на Drive ───────────────────────────────
+  const saveAgentHistory = async (history) => {
+    if (!caseData?.storage?.driveFolderId) return;
+    const token = localStorage.getItem("levytskyi_drive_token");
+    if (!token) return;
+    try {
+      const folderId = caseData.storage.driveFolderId;
+      const content = JSON.stringify(history.slice(-50), null, 2);
+      const files = await getDriveFiles(folderId, token);
+      const existing = files.find(f => f.name === 'agent_history.json');
+      if (existing) {
+        await updateDriveFile(existing.id, content, token);
+      } else {
+        await createDriveFile(folderId, 'agent_history.json', content, token);
+      }
+    } catch (e) {
+      console.log('Помилка збереження agent_history.json:', e);
+    }
+  };
+
   // ── Побудова system prompt для агента ───────────────────────────────────
   const buildAgentSystemPrompt = () => {
     let prompt = `Ти агент справи "${caseData.name}".
