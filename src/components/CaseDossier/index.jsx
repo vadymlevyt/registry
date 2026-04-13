@@ -331,114 +331,101 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       setContextMsg(`✅ Знайдено ${sourceFiles.length} файлів в ${sourceName}. Читаю вміст...`);
 
-      // Читаємо КОЖЕН файл: текст через pdfjs/export, скани як base64 PDF для vision
-      const textDocs = []; // { name, text }
-      const scanBlocks = []; // { name, block }
-      let scanTotalSize = 0;
-      const MAX_SCAN_SIZE = 25 * 1024 * 1024;
-
-      const arrayBufferToBase64 = (arrBuf) => {
-        const bytes = new Uint8Array(arrBuf);
-        let binary = "";
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      // Читаємо КОЖЕН файл: три типи PDF + Google Docs + текстові формати
+      // Тип 1 — текстовий PDF → text block
+      // Тип 2 — PDF скан → PNG сторінки через canvas → image blocks (max 5)
+      // Тип 3 — ZIP замаскований під PDF (ЄСІТС) → поки не підтримується, але помилка фіксується
+      async function readFileContent(file, accessToken) {
+        // Google Doc → export text/plain
+        if (file.mimeType === 'application/vnd.google-apps.document') {
+          const exportResp = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (!exportResp.ok) throw new Error(`export ${exportResp.status}`);
+          return { type: 'text', content: (await exportResp.text()).trim() || '[Порожній документ]', name: file.name };
         }
-        return btoa(binary);
-      };
+
+        // Завантажити байти один раз
+        const dlResp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!dlResp.ok) throw new Error(`download ${dlResp.status}`);
+        const arrayBuffer = await dlResp.arrayBuffer();
+
+        const isPdf = file.mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        if (isPdf) {
+          // Тип 3 — перевірка ZIP (ЄСІТС): сигнатура PK\x03\x04
+          const head = new Uint8Array(arrayBuffer.slice(0, 4));
+          if (head[0] === 0x50 && head[1] === 0x4B && head[2] === 0x03 && head[3] === 0x04) {
+            throw new Error('ZIP замаскований під PDF (ЄСІТС) — розпакування не підтримується');
+          }
+
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+          // Тип 1 — текстовий шар
+          let fullText = '';
+          const textPages = Math.min(pdf.numPages, 10);
+          for (let i = 1; i <= textPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            fullText += content.items.map(item => item.str).join(' ') + '\n';
+          }
+          if (fullText.trim().length > 50) {
+            return { type: 'text', content: fullText.trim(), name: file.name };
+          }
+
+          // Тип 2 — скан → конвертувати в PNG через canvas (max 5 сторінок)
+          const images = [];
+          const scanPages = Math.min(pdf.numPages, 5);
+          for (let i = 1; i <= scanPages; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale: 1.5 });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+            images.push(canvas.toDataURL('image/png').split(',')[1]);
+          }
+          return { type: 'images', content: images, name: file.name };
+        }
+
+        // Інші формати → UTF-8 декодування
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
+        if (text && text.trim().length > 0) {
+          return { type: 'text', content: text.slice(0, 100000), name: file.name };
+        }
+        return { type: 'text', content: `[Порожньо, mime=${file.mimeType}]`, name: file.name };
+      }
+
+      // textDocs — {name, text}; imageDocs — {name, images[]}; failed — {name, error}
+      const textDocs = [];
+      const imageDocs = [];
+      const failed = [];
 
       for (let idx = 0; idx < sourceFiles.length; idx++) {
         const file = sourceFiles[idx];
         setContextMsg(`📖 Читаю ${idx + 1}/${sourceFiles.length}: ${file.name}`);
         try {
-          // 1. Google Doc → export text/plain
-          if (file.mimeType === 'application/vnd.google-apps.document') {
-            const exportRes = await fetch(
-              `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
-            if (!exportRes.ok) {
-              console.log(`[CaseDossier] ❌ Export ${file.name}: ${exportRes.status}`);
-              textDocs.push({ name: file.name, text: `[Не вдалося експортувати: ${exportRes.status}]` });
-              continue;
-            }
-            const text = await exportRes.text();
-            textDocs.push({ name: file.name, text: text.trim() || '[Порожній документ]' });
-            console.log(`[CaseDossier] ✅ GDoc ${file.name} (${text.length} симв)`);
-            continue;
-          }
-
-          // 2. Завантажити байти
-          const dlRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          if (!dlRes.ok) {
-            console.log(`[CaseDossier] ❌ DL ${file.name}: ${dlRes.status}`);
-            textDocs.push({ name: file.name, text: `[Помилка завантаження: ${dlRes.status}]` });
-            continue;
-          }
-          const arrBuf = await dlRes.arrayBuffer();
-
-          // 3. PDF → спочатку pdfjs текст
-          const isPdf = file.mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-          if (isPdf) {
-            let extractedText = '';
-            try {
-              const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrBuf) }).promise;
-              const maxPages = Math.min(pdf.numPages, 30);
-              for (let p = 1; p <= maxPages; p++) {
-                const page = await pdf.getPage(p);
-                const content = await page.getTextContent();
-                extractedText += content.items.map(it => it.str).join(' ') + '\n';
-              }
-            } catch (e) {
-              console.log(`[CaseDossier] pdfjs fail ${file.name}:`, e.message);
-            }
-
-            if (extractedText.trim().length >= 50) {
-              // Текстовий PDF
-              textDocs.push({ name: file.name, text: extractedText.trim() });
-              console.log(`[CaseDossier] ✅ PDF-text ${file.name} (${extractedText.length} симв)`);
-            } else {
-              // Скан → base64 для vision
-              if (scanTotalSize + arrBuf.byteLength > MAX_SCAN_SIZE) {
-                console.log(`[CaseDossier] ⚠️ Скан ${file.name} пропущено — перевищує ліміт vision`);
-                textDocs.push({ name: file.name, text: `[Скан не проаналізовано — перевищує ліміт ${Math.round(MAX_SCAN_SIZE/1024/1024)}MB]` });
-                continue;
-              }
-              const base64 = arrayBufferToBase64(arrBuf);
-              scanBlocks.push({
-                name: file.name,
-                block: { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
-              });
-              scanTotalSize += arrBuf.byteLength;
-              console.log(`[CaseDossier] 📷 PDF-scan ${file.name} (${Math.round(arrBuf.byteLength/1024)} КБ) → vision`);
-            }
-            continue;
-          }
-
-          // 4. Інші формати → спроба як UTF-8 текст
-          try {
-            const text = new TextDecoder('utf-8', { fatal: false }).decode(arrBuf);
-            if (text && text.trim().length > 0) {
-              textDocs.push({ name: file.name, text: text.slice(0, 100000) });
-              console.log(`[CaseDossier] ✅ TEXT ${file.name} (${text.length} симв)`);
-            } else {
-              textDocs.push({ name: file.name, text: `[Порожньо, mime=${file.mimeType}]` });
-            }
-          } catch (e) {
-            textDocs.push({ name: file.name, text: `[Не вдалося декодувати, mime=${file.mimeType}]` });
+          const result = await readFileContent(file, token);
+          if (result.type === 'text') {
+            textDocs.push({ name: result.name, text: result.content });
+            console.log(`[CaseDossier] ✅ TEXT ${file.name} (${result.content.length} симв)`);
+          } else if (result.type === 'images') {
+            imageDocs.push({ name: result.name, images: result.content });
+            console.log(`[CaseDossier] 📷 SCAN ${file.name} (${result.content.length} стор. PNG)`);
           }
         } catch (e) {
-          console.log(`[CaseDossier] Виняток ${file.name}:`, e);
-          textDocs.push({ name: file.name, text: `[Помилка: ${e.message}]` });
+          console.log(`[CaseDossier] ❌ ${file.name}:`, e.message);
+          failed.push({ name: file.name, error: e.message });
+          // Жоден файл не пропускається мовчки — додаємо в текст як запис про помилку
+          textDocs.push({ name: file.name, text: `[Файл: ${file.name} — помилка читання: ${e.message}]` });
         }
       }
 
-      const totalProcessed = textDocs.length + scanBlocks.length;
-      console.log(`[CaseDossier] Оброблено: ${textDocs.length} текстових + ${scanBlocks.length} сканів = ${totalProcessed}/${sourceFiles.length}`);
-      setContextMsg(`Аналізую ${totalProcessed} документів (${scanBlocks.length} через vision)...`);
+      const totalProcessed = textDocs.length + imageDocs.length;
+      console.log(`[CaseDossier] Оброблено: ${textDocs.length} текст + ${imageDocs.length} сканів, помилок: ${failed.length}`);
+      setContextMsg(`Аналізую ${totalProcessed} документів (${imageDocs.length} через vision, ${failed.length} помилок)...`);
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
         setContextMsg("Потрібен API ключ Claude. Введіть у налаштуваннях.");
@@ -481,10 +468,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         : '';
 
       const userContent = [];
-      // Скани (base64 PDF) — Claude vision
-      scanBlocks.forEach(sb => {
-        userContent.push({ type: "text", text: `Наступний PDF — скан "${sb.name}". Витягни з нього текст і врахуй у аналізі.` });
-        userContent.push(sb.block);
+      // Скани — PNG сторінки як image blocks (один image block на сторінку)
+      imageDocs.forEach(doc => {
+        userContent.push({ type: "text", text: `Наступний документ — скан "${doc.name}" (${doc.images.length} стор.). Витягни з нього текст і врахуй у аналізі.` });
+        doc.images.forEach(b64 => {
+          userContent.push({
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: b64 }
+          });
+        });
       });
       // Текстовий корпус
       if (textBlock) {
@@ -492,7 +484,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       }
       userContent.push({
         type: "text",
-        text: `Проаналізуй усі ${totalProcessed} документів (${textDocs.length} текстових + ${scanBlocks.length} сканів) і створи контекстний файл справи "${caseData.name}" за заданою структурою. Жоден документ не ігноруй.`
+        text: `Проаналізуй усі ${totalProcessed} документів (${textDocs.length} текстових + ${imageDocs.length} сканів) і створи контекстний файл справи "${caseData.name}" за заданою структурою. Жоден документ не ігноруй.`
       });
 
       const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
@@ -569,7 +561,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         return;
       }
 
-      setContextMsg(`✅ Контекст створено (${totalProcessed} документів: ${textDocs.length} текст + ${scanBlocks.length} сканів, джерело: ${sourceName})`);
+      setContextMsg(`✅ Контекст створено (${totalProcessed} документів: ${textDocs.length} текст + ${imageDocs.length} сканів${failed.length ? `, ${failed.length} помилок` : ''}, джерело: ${sourceName})`);
 
       // Оновити caseContext в стані — щоб агент побачив новий/оновлений файл одразу
       try {
