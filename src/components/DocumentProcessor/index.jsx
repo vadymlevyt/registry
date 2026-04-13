@@ -823,15 +823,19 @@ ${filesList}
       if (drToken && folderId) {
         addAgentMessage("☁️ Записую на Drive...");
 
-        // Знайти 02_ОБРОБЛЕНІ
+        // Знайти 02_ОБРОБЛЕНІ — отримати всі підпапки і знайти в JS
+        // (пряма фільтрація по кирилічному name в Drive API ненадійна)
         const subRes = await fetch(
           `https://www.googleapis.com/drive/v3/files?` +
-          `q=${encodeURIComponent(`'${folderId}' in parents and name='02_ОБРОБЛЕНІ' and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
-          `&fields=files(id)`,
+          `q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
+          `&fields=files(id,name)&pageSize=50`,
           { headers: { Authorization: `Bearer ${drToken}` } }
         );
         const subData = await subRes.json();
-        const targetFolderId = subData.files?.[0]?.id || folderId;
+        const subFolders = subData.files || [];
+        const processed = subFolders.find(f => f.name.normalize('NFC') === "02_ОБРОБЛЕНІ".normalize('NFC'))
+          || subFolders.find(f => f.name.startsWith('02_'));
+        const targetFolderId = processed?.id || folderId;
 
         for (const result of results) {
           const safeName = result.name.replace(/[/\\:*?"<>|]/g, "_");

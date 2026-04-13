@@ -57,12 +57,22 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // ── Завантаження контексту та історії при відкритті досьє ────────────────
   useEffect(() => {
     const loadData = async () => {
-      const [context, history] = await Promise.all([loadCaseContext(), loadAgentHistory()]);
-      setCaseContext(context);
-      setAgentMessages(history);
+      try {
+        const [context, history] = await Promise.all([loadCaseContext(), loadAgentHistory()]);
+        setCaseContext(context);
+        // Не затираємо існуючу історію порожнім масивом (Drive міг не прочитатись)
+        if (Array.isArray(history) && history.length > 0) {
+          console.log(`[CaseDossier] Завантажено ${history.length} повідомлень з Drive`);
+          setAgentMessages(history);
+        } else {
+          console.log('[CaseDossier] Drive не повернув історію, залишаємо локальну');
+        }
+      } catch (e) {
+        console.log('[CaseDossier] Помилка завантаження контексту/історії:', e);
+      }
     };
     loadData();
-  }, [caseData.storage?.driveFolderId]); // залежність від folderId
+  }, [caseData.storage?.driveFolderId, caseData.id]);
 
   const showMsg = (text) => {
     setStorageMsg(text);
@@ -257,8 +267,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       const aboutData = await aboutRes.json();
       setContextMsg(`Drive user: ${aboutData.user?.emailAddress || "невідомо"}`);
 
-      const processed = folders.find(f => f.name === "02_ОБРОБЛЕНІ");
-      const originals = folders.find(f => f.name === "01_ОРИГІНАЛИ");
+      // Нормалізація NFC для надійного порівняння кирилічних назв
+      const processed = folders.find(f => f.name.normalize('NFC') === "02_ОБРОБЛЕНІ".normalize('NFC'))
+        || folders.find(f => f.name.startsWith('02_'));
+      const originals = folders.find(f => f.name.normalize('NFC') === "01_ОРИГІНАЛИ".normalize('NFC'))
+        || folders.find(f => f.name.startsWith('01_'));
 
       if (!processed && !originals) {
         setContextMsg(`❌ Не знайдено 02_ОБРОБЛЕНІ і 01_ОРИГІНАЛИ серед: ${folders.map(f => f.name).join(", ") || "жодної"}`);
@@ -463,7 +476,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // Agent panel state
   const [agentOpen, setAgentOpen] = useState(true);
   const [agentWidth, setAgentWidth] = useState(() => Math.min(500, Math.max(280, Math.round(window.innerWidth * 0.35))));
-  const [agentMessages, setAgentMessages] = useState([]);
+  const [agentMessages, setAgentMessages] = useState(() => caseData.agentHistory || []);
   const [agentInput, setAgentInput] = useState('');
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
