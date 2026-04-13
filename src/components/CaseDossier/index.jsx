@@ -50,6 +50,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   const [caseContext, setCaseContext] = useState(null);
 
+  // Agent state — має бути ВИЩЕ useEffect щоб setAgentMessages був доступний при маунті
+  const [agentMessages, setAgentMessages] = useState(() => caseData.agentHistory || []);
+
   useEffect(() => {
     setStorageState(caseData.storage || {});
   }, [caseData.storage]);
@@ -321,14 +324,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         );
         const data = await res.json();
         const allFiles = data.files || [];
-        // Додатковий JS-фільтр: виключити папки (якщо Drive проігнорував query-фільтр)
-        // і взяти тільки PDF (Claude API приймає application/pdf)
+        // Брати ВСІ файли крім: agent_history.json, case_context.md, папок
+        const EXCLUDED_NAMES = new Set(['agent_history.json', 'case_context.md']);
         const files = allFiles.filter(f =>
           f.mimeType !== 'application/vnd.google-apps.folder' &&
-          (f.mimeType === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+          !EXCLUDED_NAMES.has(f.name)
         );
-        console.log(`[CaseDossier] ${name}: знайдено ${allFiles.length}, PDF: ${files.length}`, allFiles.map(f => `${f.name} (${f.mimeType}, ${f.size}b)`));
-        setContextMsg(`📄 В папці ${name}: ${files.length} PDF з ${allFiles.length} файлів`);
+        console.log(`[CaseDossier] ${name}: знайдено ${allFiles.length}, до аналізу: ${files.length}`, allFiles.map(f => `${f.name} (${f.mimeType}, ${f.size}b)`));
+        setContextMsg(`📄 В папці ${name}: ${files.length} документів з ${allFiles.length} файлів`);
         return files;
       };
 
@@ -359,6 +362,12 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       const MAX_SIZE = 25 * 1024 * 1024;
 
       for (const file of sourceFiles) {
+        // Claude API document-блоки приймають тільки PDF (base64) — інші типи скіпаємо з логом
+        const isPdf = file.mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        if (!isPdf) {
+          console.log(`[CaseDossier] Пропущено ${file.name} — не PDF (${file.mimeType})`);
+          continue;
+        }
         // Перевірити розмір ДО завантаження через metadata
         const fileSize = parseInt(file.size || 0, 10);
         if (fileSize > 0 && totalSize + fileSize > MAX_SIZE) {
@@ -528,10 +537,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
   }
 
-  // Agent panel state
+  // Agent panel state (agentMessages — вище, біля caseContext)
   const [agentOpen, setAgentOpen] = useState(true);
   const [agentWidth, setAgentWidth] = useState(() => Math.min(500, Math.max(280, Math.round(window.innerWidth * 0.35))));
-  const [agentMessages, setAgentMessages] = useState(() => caseData.agentHistory || []);
   const [agentInput, setAgentInput] = useState('');
   const [agentLoading, setAgentLoading] = useState(false);
   const agentDragRef = useRef(false);
