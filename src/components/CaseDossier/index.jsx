@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import * as pdfjsLib from 'pdfjs-dist';
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
 import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
@@ -354,63 +355,116 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         return;
       }
 
-      setContextMsg(`✅ Знайдено ${sourceFiles.length} файлів в ${sourceName}. Починаю читання...`);
+      setContextMsg(`✅ Знайдено ${sourceFiles.length} файлів в ${sourceName}. Читаю вміст...`);
 
-      // Зібрати base64 документів (до 25MB сумарно)
-      const documentBlocks = [];
-      let totalSize = 0;
-      const MAX_SIZE = 25 * 1024 * 1024;
+      // Читаємо КОЖЕН файл: текст через pdfjs/export, скани як base64 PDF для vision
+      const textDocs = []; // { name, text }
+      const scanBlocks = []; // { name, block }
+      let scanTotalSize = 0;
+      const MAX_SCAN_SIZE = 25 * 1024 * 1024;
 
-      for (const file of sourceFiles) {
-        // Claude API document-блоки приймають тільки PDF (base64) — інші типи скіпаємо з логом
-        const isPdf = file.mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-        if (!isPdf) {
-          console.log(`[CaseDossier] Пропущено ${file.name} — не PDF (${file.mimeType})`);
-          continue;
+      const arrayBufferToBase64 = (arrBuf) => {
+        const bytes = new Uint8Array(arrBuf);
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
         }
-        // Перевірити розмір ДО завантаження через metadata
-        const fileSize = parseInt(file.size || 0, 10);
-        if (fileSize > 0 && totalSize + fileSize > MAX_SIZE) {
-          console.log(`[CaseDossier] Пропущено ${file.name} — перевищує ліміт`);
-          continue;
-        }
+        return btoa(binary);
+      };
+
+      for (let idx = 0; idx < sourceFiles.length; idx++) {
+        const file = sourceFiles[idx];
+        setContextMsg(`📖 Читаю ${idx + 1}/${sourceFiles.length}: ${file.name}`);
         try {
-          const res = await fetch(
+          // 1. Google Doc → export text/plain
+          if (file.mimeType === 'application/vnd.google-apps.document') {
+            const exportRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (!exportRes.ok) {
+              console.log(`[CaseDossier] ❌ Export ${file.name}: ${exportRes.status}`);
+              textDocs.push({ name: file.name, text: `[Не вдалося експортувати: ${exportRes.status}]` });
+              continue;
+            }
+            const text = await exportRes.text();
+            textDocs.push({ name: file.name, text: text.trim() || '[Порожній документ]' });
+            console.log(`[CaseDossier] ✅ GDoc ${file.name} (${text.length} симв)`);
+            continue;
+          }
+
+          // 2. Завантажити байти
+          const dlRes = await fetch(
             `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
             { headers: { Authorization: `Bearer ${token}` } }
           );
-          if (!res.ok) {
-            console.log(`[CaseDossier] Помилка ${res.status} для ${file.name}`);
+          if (!dlRes.ok) {
+            console.log(`[CaseDossier] ❌ DL ${file.name}: ${dlRes.status}`);
+            textDocs.push({ name: file.name, text: `[Помилка завантаження: ${dlRes.status}]` });
             continue;
           }
-          const blob = await res.blob();
-          if (totalSize + blob.size > MAX_SIZE) {
-            console.log(`[CaseDossier] Пропущено ${file.name} — сума після завантаження >${MAX_SIZE}`);
+          const arrBuf = await dlRes.arrayBuffer();
+
+          // 3. PDF → спочатку pdfjs текст
+          const isPdf = file.mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+          if (isPdf) {
+            let extractedText = '';
+            try {
+              const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrBuf) }).promise;
+              const maxPages = Math.min(pdf.numPages, 30);
+              for (let p = 1; p <= maxPages; p++) {
+                const page = await pdf.getPage(p);
+                const content = await page.getTextContent();
+                extractedText += content.items.map(it => it.str).join(' ') + '\n';
+              }
+            } catch (e) {
+              console.log(`[CaseDossier] pdfjs fail ${file.name}:`, e.message);
+            }
+
+            if (extractedText.trim().length >= 50) {
+              // Текстовий PDF
+              textDocs.push({ name: file.name, text: extractedText.trim() });
+              console.log(`[CaseDossier] ✅ PDF-text ${file.name} (${extractedText.length} симв)`);
+            } else {
+              // Скан → base64 для vision
+              if (scanTotalSize + arrBuf.byteLength > MAX_SCAN_SIZE) {
+                console.log(`[CaseDossier] ⚠️ Скан ${file.name} пропущено — перевищує ліміт vision`);
+                textDocs.push({ name: file.name, text: `[Скан не проаналізовано — перевищує ліміт ${Math.round(MAX_SCAN_SIZE/1024/1024)}MB]` });
+                continue;
+              }
+              const base64 = arrayBufferToBase64(arrBuf);
+              scanBlocks.push({
+                name: file.name,
+                block: { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
+              });
+              scanTotalSize += arrBuf.byteLength;
+              console.log(`[CaseDossier] 📷 PDF-scan ${file.name} (${Math.round(arrBuf.byteLength/1024)} КБ) → vision`);
+            }
             continue;
           }
 
-          const arrayBuf = await blob.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuf);
-          let binary = "";
-          const chunkSize = 0x8000;
-          for (let i = 0; i < bytes.length; i += chunkSize) {
-            binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+          // 4. Інші формати → спроба як UTF-8 текст
+          try {
+            const text = new TextDecoder('utf-8', { fatal: false }).decode(arrBuf);
+            if (text && text.trim().length > 0) {
+              textDocs.push({ name: file.name, text: text.slice(0, 100000) });
+              console.log(`[CaseDossier] ✅ TEXT ${file.name} (${text.length} симв)`);
+            } else {
+              textDocs.push({ name: file.name, text: `[Порожньо, mime=${file.mimeType}]` });
+            }
+          } catch (e) {
+            textDocs.push({ name: file.name, text: `[Не вдалося декодувати, mime=${file.mimeType}]` });
           }
-          const base64 = btoa(binary);
-
-          documentBlocks.push({
-            type: "document",
-            source: { type: "base64", media_type: "application/pdf", data: base64 }
-          });
-          totalSize += blob.size;
-          console.log(`[CaseDossier] ✅ ${file.name} (${Math.round(blob.size/1024)} КБ)`);
         } catch (e) {
-          console.log(`[CaseDossier] Виняток для ${file.name}:`, e);
+          console.log(`[CaseDossier] Виняток ${file.name}:`, e);
+          textDocs.push({ name: file.name, text: `[Помилка: ${e.message}]` });
         }
       }
 
-      // Запит до Claude
-      setContextMsg(`Аналізую ${documentBlocks.length} документів...`);
+      const totalProcessed = textDocs.length + scanBlocks.length;
+      console.log(`[CaseDossier] Оброблено: ${textDocs.length} текстових + ${scanBlocks.length} сканів = ${totalProcessed}/${sourceFiles.length}`);
+      setContextMsg(`Аналізую ${totalProcessed} документів (${scanBlocks.length} через vision)...`);
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
         setContextMsg("Потрібен API ключ Claude. Введіть у налаштуваннях.");
@@ -447,6 +501,26 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
 МОВА: українська. Формат: Markdown. Без зайвих вступів.`;
 
+      // Зібрати текстовий блок з усіх розпарсених документів
+      const textBlock = textDocs.length > 0
+        ? textDocs.map((d, i) => `### ДОКУМЕНТ ${i + 1}: ${d.name}\n\n${d.text}`).join('\n\n---\n\n')
+        : '';
+
+      const userContent = [];
+      // Скани (base64 PDF) — Claude vision
+      scanBlocks.forEach(sb => {
+        userContent.push({ type: "text", text: `Наступний PDF — скан "${sb.name}". Витягни з нього текст і врахуй у аналізі.` });
+        userContent.push(sb.block);
+      });
+      // Текстовий корпус
+      if (textBlock) {
+        userContent.push({ type: "text", text: `Текстові документи справи:\n\n${textBlock}` });
+      }
+      userContent.push({
+        type: "text",
+        text: `Проаналізуй усі ${totalProcessed} документів (${textDocs.length} текстових + ${scanBlocks.length} сканів) і створи контекстний файл справи "${caseData.name}" за заданою структурою. Жоден документ не ігноруй.`
+      });
+
       const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -459,19 +533,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           model: "claude-sonnet-4-20250514",
           max_tokens: 8192,
           system: systemPrompt,
-          messages: [{
-            role: "user",
-            content: [
-              ...documentBlocks,
-              { type: "text", text: `Проаналізуй ці ${documentBlocks.length} документів і створи контекстний файл справи "${caseData.name}".` }
-            ]
-          }]
+          messages: [{ role: "user", content: userContent }]
         })
       });
 
       if (!apiRes.ok) {
-        const err = await apiRes.json().catch(() => ({}));
-        throw new Error(err?.error?.message || `API помилка: ${apiRes.status}`);
+        const errText = await apiRes.text();
+        throw new Error(`API ${apiRes.status}: ${errText.slice(0, 500)}`);
       }
 
       const data = await apiRes.json();
@@ -527,7 +595,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         return;
       }
 
-      setContextMsg(`✅ Контекст створено (${documentBlocks.length} документів, джерело: ${sourceName})`);
+      setContextMsg(`✅ Контекст створено (${totalProcessed} документів: ${textDocs.length} текст + ${scanBlocks.length} сканів, джерело: ${sourceName})`);
     } catch (err) {
       console.error("Context creation error:", err);
       setContextMsg(`Помилка: ${err.message}`);
@@ -846,8 +914,20 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             messages: [...cleanHistory, { role: 'user', content: userMsg }]
           })
         });
+        if (!response.ok) {
+          const errText = await response.text();
+          const errEntry = { role: 'assistant', content: `⚠️ Помилка ${response.status}: ${errText.slice(0, 300)}`, ts: new Date().toISOString() };
+          setAgentMessages(prev => {
+            const updated = [...prev, errEntry].slice(-50);
+            updateCase && updateCase(caseData.id, 'agentHistory', updated);
+            saveAgentHistory(updated);
+            return updated;
+          });
+          setAgentLoading(false);
+          return;
+        }
         const data = await response.json();
-        const reply = data.content?.[0]?.text || "Помилка відповіді";
+        const reply = data.content?.[0]?.text || `⚠️ Порожня відповідь. Payload: ${JSON.stringify(data).slice(0, 300)}`;
         const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };
         setAgentMessages(prev => {
           const updated = [...prev, assistantEntry].slice(-50);
@@ -856,7 +936,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           return updated;
         });
       } catch (err) {
-        const errEntry = { role: 'assistant', content: "Помилка з'єднання з агентом.", ts: new Date().toISOString() };
+        const errEntry = { role: 'assistant', content: `⚠️ Мережева помилка: ${err.message}`, ts: new Date().toISOString() };
         setAgentMessages(prev => {
           const updated = [...prev, errEntry].slice(-50);
           updateCase && updateCase(caseData.id, 'agentHistory', updated);
