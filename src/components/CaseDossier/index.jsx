@@ -900,7 +900,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           },
           body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
-            max_tokens: 1024,
+            max_tokens: 4000,
             system: systemPrompt,
             messages: [...cleanHistory, { role: 'user', content: userMsg }]
           })
