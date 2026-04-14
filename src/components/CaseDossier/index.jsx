@@ -948,6 +948,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
               {"Sonnet · знає справу"}
               {caseContext && <span style={{ marginLeft: 4, color: '#2ecc71' }}>📄</span>}
             </div>
+            <div style={{ fontSize: 10, color: agentMessages.length > 0 ? '#2ecc71' : '#5a6080', marginTop: 2 }}>
+              {agentMessages.length > 0
+                ? `📂 Завантажено ${agentMessages.length} повідомлень з попередньої розмови`
+                : "🆕 Нова розмова"}
+            </div>
           </div>
           <button onClick={() => setConfirmClearOpen(true)} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
         </div>
