@@ -5,6 +5,7 @@ import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
 import { backupRegistryData } from './services/driveService';
+import { driveRequest, refreshDriveToken, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import './App.css';
 
@@ -2258,8 +2259,8 @@ const usageLog = {
 };
 
 // ── GOOGLE DRIVE SERVICE ──────────────────────────────────────────────────────
-const GOOGLE_CLIENT_ID = '73468500916-sn02gdk7qvp40q04hdjj44g5pir48btb.apps.googleusercontent.com'; // Replace with your Google Cloud Console Client ID
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+const GOOGLE_CLIENT_ID = DRIVE_CLIENT_ID;
+const DRIVE_SCOPE = DRIVE_SCOPE_IMPORT;
 const DRIVE_FILE_NAME = 'registry_data.json';
 
 const driveService = {
@@ -2288,9 +2289,8 @@ const driveService = {
 
   async _findFileId(token) {
     if (this._fileId) return this._fileId;
-    const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}'+and+trashed=false&fields=files(id)`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const res = await driveRequest(
+      `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}'+and+trashed=false&fields=files(id)`
     );
     const data = await res.json();
     if (data.files && data.files.length > 0) { this._fileId = data.files[0].id; }
@@ -2300,9 +2300,8 @@ const driveService = {
   async readCases(token) {
     const id = await this._findFileId(token);
     if (!id) return null;
-    const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${id}?alt=media`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const res = await driveRequest(
+      `https://www.googleapis.com/drive/v3/files/${id}?alt=media`
     );
     if (!res.ok) return null;
     return await res.json();
@@ -2312,18 +2311,17 @@ const driveService = {
     const body = JSON.stringify(cases);
     const id = await this._findFileId(token);
     if (id) {
-      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+      await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body
       });
     } else {
       const form = new FormData();
       form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'application/json' })], { type: 'application/json' }));
       form.append('file', new Blob([body], { type: 'application/json' }));
-      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      const res = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: form
       });
       const created = await res.json();
@@ -2973,9 +2971,9 @@ function App() {
   const deleteDriveFolder = async (folderId) => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token || !folderId) return;
-    const response = await fetch(
+    const response = await driveRequest(
       `https://www.googleapis.com/drive/v3/files/${folderId}`,
-      { method: "DELETE", headers: { "Authorization": `Bearer ${token}` } }
+      { method: "DELETE" }
     );
     if (!response.ok && response.status !== 204) {
       throw new Error(`Drive API error: ${response.status}`);

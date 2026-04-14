@@ -1,6 +1,12 @@
 // ── DRIVE DOCUMENT SERVICE ───────────────────────────────────────────────────
 // Функції для роботи з папками і файлами на Google Drive
 // Окремо від основного driveService в App.jsx (який працює тільки з registry_data.json)
+//
+// УВАГА: всі запити до Drive йдуть через driveRequest — він автоматично
+// оновлює токен на 401 і повторює запит. Параметр token залишено для
+// зворотної сумісності сигнатур, але фактично не використовується —
+// актуальний токен читається з localStorage всередині driveRequest.
+import { driveRequest } from "./driveAuth.js";
 
 const CASE_FOLDER_STRUCTURE = [
   "01_ОРИГІНАЛИ",
@@ -31,9 +37,8 @@ export async function findOrCreateFolder(name, parentId, token) {
     ? `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`
     : `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
 
-  const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
-    { headers: { Authorization: `Bearer ${token}` } }
+  const searchRes = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`
   );
   const searchData = await searchRes.json();
 
@@ -47,12 +52,9 @@ export async function findOrCreateFolder(name, parentId, token) {
     ...(parentId && { parents: [parentId] }),
   };
 
-  const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+  const createRes = await driveRequest("https://www.googleapis.com/drive/v3/files", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(metadata),
   });
 
@@ -92,11 +94,10 @@ export async function uploadFileToDrive(fileName, fileBlob, parentFolderId, toke
   );
   form.append("file", fileBlob);
 
-  const res = await fetch(
+  const res = await driveRequest(
     "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
       body: form,
     }
   );
@@ -106,9 +107,8 @@ export async function uploadFileToDrive(fileName, fileBlob, parentFolderId, toke
 
 export async function listFolderFiles(folderId, token) {
   const q = `'${folderId}' in parents and trashed=false`;
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=100`,
-    { headers: { Authorization: `Bearer ${token}` } }
+  const res = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=100`
   );
   const data = await res.json();
   return data.files || [];
@@ -161,9 +161,8 @@ export async function backupRegistryData(token, casesData) {
 
     if (backups.length > 7) {
       for (const old of backups.slice(7)) {
-        await fetch(`https://www.googleapis.com/drive/v3/files/${old.id}`, {
+        await driveRequest(`https://www.googleapis.com/drive/v3/files/${old.id}`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
         }).catch(() => {});
       }
     }
@@ -193,20 +192,18 @@ export async function saveFileLocally(dirHandle, relativePath, fileBlob) {
 // ── Нові функції для читання файлів ──────────────────────────────────────────
 
 export async function getDriveFiles(folderId, token) {
-  const res = await fetch(
+  const res = await driveRequest(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
       `'${folderId}' in parents and trashed=false`
-    )}&fields=files(id,name,mimeType,modifiedTime)&pageSize=100`,
-    { headers: { Authorization: `Bearer ${token}` } }
+    )}&fields=files(id,name,mimeType,modifiedTime)&pageSize=100`
   );
   const data = await res.json();
   return data.files || [];
 }
 
 export async function readDriveFile(fileId, token) {
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-    { headers: { Authorization: `Bearer ${token}` } }
+  const res = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
   );
   if (!res.ok) throw new Error(`Failed to read file: ${res.status}`);
   return await res.text();
@@ -221,9 +218,8 @@ export async function createDriveFile(folderId, fileName, content, token) {
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
   form.append('file', new Blob([content], { type: 'text/plain' }));
 
-  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+  const res = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
     body: form,
   });
   const data = await res.json();
@@ -232,12 +228,9 @@ export async function createDriveFile(folderId, fileName, content, token) {
 }
 
 export async function updateDriveFile(fileId, content, token) {
-  const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+  const res = await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
     method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'text/plain',
-    },
+    headers: { 'Content-Type': 'text/plain' },
     body: content,
   });
   if (!res.ok) throw new Error(`Failed to update file: ${res.status}`);

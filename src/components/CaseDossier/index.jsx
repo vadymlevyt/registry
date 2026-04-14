@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import * as pdfjsLib from 'pdfjs-dist';
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
 import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
+import { driveRequest } from "../../services/driveAuth.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
 
 const CATEGORY_LABELS = {
@@ -84,6 +85,22 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       }
     })();
     return () => { cancelled = true; };
+  }, [caseData.id, caseData.storage?.driveFolderId]);
+
+  // Автоматичне перезавантаження контексту і історії після silent-refresh токена.
+  // Подія 'drive-token-refreshed' емітиться з driveAuth.js коли driveRequest
+  // обробив 401 і оновив токен без участі користувача.
+  useEffect(() => {
+    const onRefresh = async () => {
+      try {
+        const ctx = await loadCaseContext();
+        if (ctx) setCaseContext(ctx);
+        const messages = await loadAgentHistory();
+        if (Array.isArray(messages) && messages.length > 0) setAgentMessages(messages);
+      } catch (e) { console.log('[CaseDossier] reload after token refresh failed:', e); }
+    };
+    window.addEventListener('drive-token-refreshed', onRefresh);
+    return () => window.removeEventListener('drive-token-refreshed', onRefresh);
   }, [caseData.id, caseData.storage?.driveFolderId]);
 
   const showMsg = (text) => {
@@ -222,14 +239,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     try {
       // Перевірити чи контекст вже існує
       setContextMsg("Перевіряю існуючий контекст...");
-      const searchRes = await fetch(
+      const searchRes = await driveRequest(
         `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
           `'${folderId}' in parents and name='case_context.md' and trashed=false`
-        )}&fields=files(id,name,modifiedTime)`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        )}&fields=files(id,name,modifiedTime)`
       );
       if (searchRes.status === 401) {
-        setContextMsg("❌ Токен Drive протух. Натисніть \"Підключити Drive\" і спробуйте знову.");
+        setContextMsg("❌ Не вдалося оновити токен Drive. Перевірте підключення.");
         setContextLoading(false);
         handleCreateContext.running = false;
         return;
@@ -252,12 +268,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       setContextMsg("Перевіряю папку...");
       // Перевірити чи папка існує
-      const checkRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const checkRes = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`
       );
       if (checkRes.status === 401) {
-        setContextMsg("❌ Токен Drive протух. Натисніть \"Підключити Drive\" і спробуйте знову.");
+        setContextMsg("❌ Не вдалося оновити токен Drive. Перевірте підключення.");
         setContextLoading(false);
         return;
       }
@@ -276,21 +291,19 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       }
 
       // Отримати підпапки
-      const subRes = await fetch(
+      const subRes = await driveRequest(
         `https://www.googleapis.com/drive/v3/files?` +
         `q=${encodeURIComponent(
           `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
-        )}&fields=files(id,name)&pageSize=20`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        )}&fields=files(id,name)&pageSize=20`
       );
       const subData = await subRes.json();
       const folders = subData.files || [];
       setContextMsg(`Підпапки (${folders.length}): ${folders.map(f => f.name).join(", ") || "жодної"}`);
 
       // Перевірити scope токена
-      const aboutRes = await fetch(
-        "https://www.googleapis.com/drive/v3/about?fields=user",
-        { headers: { Authorization: `Bearer ${token}` } }
+      const aboutRes = await driveRequest(
+        "https://www.googleapis.com/drive/v3/about?fields=user"
       );
       const aboutData = await aboutRes.json();
       setContextMsg(`Drive user: ${aboutData.user?.emailAddress || "невідомо"}`);
@@ -309,12 +322,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
       // Отримати файли БЕЗ фільтра mimeType (крім папок)
       const getFiles = async (fid, name) => {
-        const res = await fetch(
+        const res = await driveRequest(
           `https://www.googleapis.com/drive/v3/files?` +
           `q=${encodeURIComponent(
             `'${fid}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
-          )}&fields=files(id,name,size,mimeType)&pageSize=100`,
-          { headers: { Authorization: `Bearer ${token}` } }
+          )}&fields=files(id,name,size,mimeType)&pageSize=100`
         );
         const data = await res.json();
         const allFiles = data.files || [];
@@ -357,18 +369,16 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       async function readFileContent(file, accessToken) {
         // Google Doc → export text/plain
         if (file.mimeType === 'application/vnd.google-apps.document') {
-          const exportResp = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
+          const exportResp = await driveRequest(
+            `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`
           );
           if (!exportResp.ok) throw new Error(`export ${exportResp.status}`);
           return { type: 'text', content: (await exportResp.text()).trim() || '[Порожній документ]', name: file.name };
         }
 
         // Завантажити байти один раз
-        const dlResp = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
-          { headers: { Authorization: `Bearer ${accessToken}` } }
+        const dlResp = await driveRequest(
+          `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
         );
         if (!dlResp.ok) throw new Error(`download ${dlResp.status}`);
         const arrayBuffer = await dlResp.arrayBuffer();
@@ -546,15 +556,14 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
         const archiveFolder = await findOrCreateFolder("archive", folderId, token);
         const archiveName = `case_context_${new Date().toISOString().split('T')[0]}.md`;
         // Скопіювати в архів
-        await fetch(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}/copy`, {
+        await driveRequest(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}/copy`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: archiveName, parents: [archiveFolder.id] })
         });
         // Видалити старий
-        await fetch(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}`, {
+        await driveRequest(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}`, {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` }
         });
       }
 
@@ -795,9 +804,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     const form = new FormData();
     form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
     form.append("file", file);
-    const response = await fetch(
+    const response = await driveRequest(
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
-      { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form }
+      { method: "POST", body: form }
     );
     if (!response.ok) throw new Error(`Drive upload failed: ${response.status}`);
     const data = await response.json();

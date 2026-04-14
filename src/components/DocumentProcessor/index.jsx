@@ -8,6 +8,7 @@ import {
   selectLocalFolder,
   saveFileLocally,
 } from "../../services/driveService.js";
+import { driveRequest } from "../../services/driveAuth.js";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -825,11 +826,10 @@ ${filesList}
 
         // Знайти 02_ОБРОБЛЕНІ — отримати всі підпапки і знайти в JS
         // (пряма фільтрація по кирилічному name в Drive API ненадійна)
-        const subRes = await fetch(
+        const subRes = await driveRequest(
           `https://www.googleapis.com/drive/v3/files?` +
           `q=${encodeURIComponent(`'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`)}` +
-          `&fields=files(id,name)&pageSize=50`,
-          { headers: { Authorization: `Bearer ${drToken}` } }
+          `&fields=files(id,name)&pageSize=50`
         );
         const subData = await subRes.json();
         const subFolders = subData.files || [];
@@ -847,9 +847,9 @@ ${filesList}
           })], { type: "application/json" }));
           form.append("file", blob);
 
-          await fetch(
+          await driveRequest(
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name",
-            { method: "POST", headers: { Authorization: `Bearer ${drToken}` }, body: form }
+            { method: "POST", body: form }
           );
         }
 
