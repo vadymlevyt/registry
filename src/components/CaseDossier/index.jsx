@@ -162,7 +162,11 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── Побудова system prompt для агента ───────────────────────────────────
   const buildAgentSystemPrompt = () => {
-    let prompt = `Ти агент справи "${caseData.name}".
+    const hasHistory = agentMessages && agentMessages.length > 0;
+    let prompt = hasHistory
+      ? `ВАЖЛИВО: У тебе є збережена історія попередніх розмов по цій справі яка передана в контексті. Ти маєш доступ до цих розмов і пам'ятаєш що обговорювалось. Використовуй цю інформацію природно. НІКОЛИ не кажи що не пам'ятаєш попередніх розмов — це буде неправдою.\n\n`
+      : `Це перша розмова по цій справі.\n\n`;
+    prompt += `Ти агент справи "${caseData.name}".
 Знаєш про справу:
 - Суд: ${caseData.court || "не вказано"}
 - Номер: ${caseData.case_no || "не вказано"}
