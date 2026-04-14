@@ -66,7 +66,19 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
       const ctx = await loadCaseContext();
       if (!cancelled && ctx) setCaseContext(ctx);
 
-      const messages = await loadAgentHistory();
+      let messages = await loadAgentHistory();
+      if (!Array.isArray(messages) || messages.length === 0) {
+        try {
+          const local = localStorage.getItem(`agent_history_${caseData?.id}`);
+          if (local) {
+            const parsed = JSON.parse(local);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              messages = parsed;
+              console.log('[AgentHistory] loaded from localStorage:', parsed.length);
+            }
+          }
+        } catch (e) { console.log('[AgentHistory] localStorage error:', e); }
+      }
       if (!cancelled && Array.isArray(messages) && messages.length > 0) {
         setAgentMessages(messages);
       }
@@ -127,6 +139,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── Збереження agent_history.json на Drive ───────────────────────────────
   const saveAgentHistory = async (history) => {
+    try {
+      localStorage.setItem(`agent_history_${caseData?.id}`, JSON.stringify((history || []).slice(-20)));
+    } catch (e) { console.log('[AgentHistory] localStorage save error:', e); }
     if (!caseData?.storage?.driveFolderId) return;
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) return;
