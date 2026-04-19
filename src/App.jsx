@@ -179,12 +179,27 @@ function getHearingTime(c) {
   return next ? next.time : null;
 }
 
+// Найближчий дедлайн справи
+function getNextDeadline(caseItem) {
+  if (!Array.isArray(caseItem.deadlines) || caseItem.deadlines.length === 0) return null;
+  const today = new Date().toISOString().split('T')[0];
+  return caseItem.deadlines
+    .filter(d => d.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date))[0] || null;
+}
+
+// Сумісний доступ до дати дедлайну (для поступової міграції з c.deadline)
+function getDeadlineDate(c) {
+  const next = getNextDeadline(c);
+  return next ? next.date : null;
+}
+
 // ── COMPONENTS ────────────────────────────────────────────────────────────────
 
 function CaseCard({ c, onClick }) {
   const hDate = getHearingDate(c);
   const hearingDays = daysUntil(hDate);
-  const deadlineDays = daysUntil(c.deadline);
+  const deadlineDays = daysUntil(getDeadlineDate(c));
   const urg = urgencyClass(deadlineDays) || urgencyClass(hearingDays);
 
   return (
@@ -215,20 +230,20 @@ function CaseCard({ c, onClick }) {
             </span>
           </div>
         )}
-        {c.deadline && (
+        {getDeadlineDate(c) && (
           <div className="case-row">
             <span className="case-row-icon">⚡</span>
             <span className="case-row-label">Дедлайн:</span>
             <span className={`case-row-val ${urgencyClass(deadlineDays) || ''}`}>
-              {formatDate(c.deadline)}
+              {formatDate(getDeadlineDate(c))}
               {deadlineDays !== null && <span style={{marginLeft:5,fontSize:'10px',opacity:0.7}}>({daysLabel(deadlineDays)})</span>}
             </span>
           </div>
         )}
-        {c.deadline_type && (
+        {getNextDeadline(c)?.name && (
           <div className="case-row">
             <span className="case-row-icon" style={{opacity:0}}>·</span>
-            <span className="case-row-label" style={{fontSize:'11px',color:'var(--text3)',fontStyle:'italic'}}>{c.deadline_type}</span>
+            <span className="case-row-label" style={{fontSize:'11px',color:'var(--text3)',fontStyle:'italic'}}>{getNextDeadline(c).name}</span>
           </div>
         )}
         <div className="case-row" style={{marginTop:2}}>
@@ -244,7 +259,8 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
   const hDate = getHearingDate(c);
   const hTime = getHearingTime(c);
   const hearingDays = daysUntil(hDate);
-  const deadlineDays = daysUntil(c.deadline);
+  const deadlineDays = daysUntil(getDeadlineDate(c));
+  const nextDl = getNextDeadline(c);
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel" onClick={e => e.stopPropagation()}>
@@ -273,17 +289,15 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
               {hearingDays !== null && <span style={{marginLeft:6,fontSize:'11px',opacity:0.7}}>({daysLabel(hearingDays)})</span>}
             </span>
           </div>
-          {c.deadline && (
+          {nextDl && (
             <div className="modal-field">
               <span className="modal-field-label">Дедлайн</span>
               <span className={`modal-field-val ${urgencyClass(deadlineDays) || ''}`}>
-                {formatDate(c.deadline)}
+                {formatDate(nextDl.date)}
                 {deadlineDays !== null && <span style={{marginLeft:6,fontSize:'11px',opacity:0.7}}>({daysLabel(deadlineDays)})</span>}
+                {nextDl.name && <span style={{marginLeft:6,fontSize:'11px',color:'var(--text3)',fontStyle:'italic'}}>({nextDl.name})</span>}
               </span>
             </div>
-          )}
-          {c.deadline_type && (
-            <div className="modal-field"><span className="modal-field-label">Тип дедлайну</span><span className="modal-field-val">{c.deadline_type}</span></div>
           )}
         </div>
 
@@ -343,10 +357,12 @@ function Calendar({ cases, onSelectCase }) {
         if (!map[hDate]) map[hDate] = [];
         map[hDate].push({ ...c, eventType:'hearing' });
       }
-      if (c.deadline) {
-        if (!map[c.deadline]) map[c.deadline] = [];
-        map[c.deadline].push({ ...c, eventType:'deadline' });
-      }
+      (c.deadlines || []).forEach(dl => {
+        if (dl.date) {
+          if (!map[dl.date]) map[dl.date] = [];
+          map[dl.date].push({ ...c, eventType:'deadline', deadlineName: dl.name });
+        }
+      });
     });
     return map;
   }, [cases]);
@@ -745,7 +761,7 @@ function buildSystemContext(cases) {
   const closed = cases.filter(c => c.status === 'closed');
 
   const hot = active.filter(c => {
-    const dd = daysFrom(c.deadline);
+    const dd = daysFrom(getDeadlineDate(c));
     const hd = daysFrom(getHearingDate(c));
     return (dd !== null && dd >= 0 && dd <= 3) || (hd !== null && hd >= 0 && hd <= 3);
   });
@@ -756,12 +772,13 @@ function buildSystemContext(cases) {
   if (hot.length > 0) {
     ctx += `\n⚡ ГАРЯЧІ (дедлайн або засідання ≤ 3 дні):\n`;
     hot.forEach(c => {
-      const dd = daysFrom(c.deadline);
+      const _dlDate = getDeadlineDate(c);
+      const dd = daysFrom(_dlDate);
       const _hDate = getHearingDate(c);
       const hd = daysFrom(_hDate);
       ctx += `  • ${c.name}`;
       if (hd !== null && hd >= 0 && hd <= 3) ctx += ` | Засідання: ${formatDate(_hDate, getHearingTime(c))}`;
-      if (dd !== null && dd >= 0 && dd <= 3) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
+      if (dd !== null && dd >= 0 && dd <= 3) ctx += ` | Дедлайн: ${formatDate(_dlDate)}`;
       if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
       ctx += '\n';
     });
@@ -775,6 +792,7 @@ function buildSystemContext(cases) {
   active.forEach(c => {
     const _hDate = getHearingDate(c);
     const _hTime = getHearingTime(c);
+    const _dlDate = getDeadlineDate(c);
     if (detail === 'full') {
       ctx += `• ${c.name}`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
@@ -782,19 +800,19 @@ function buildSystemContext(cases) {
       if (c.court) ctx += ` | ${c.court}`;
       if (c.client) ctx += ` | Клієнт: ${c.client}`;
       if (_hDate) ctx += ` | Засідання: ${formatDate(_hDate, _hTime)}`;
-      if (c.deadline) ctx += ` | Дедлайн: ${formatDate(c.deadline)}`;
+      if (_dlDate) ctx += ` | Дедлайн: ${formatDate(_dlDate)}`;
       if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
       ctx += '\n';
     } else if (detail === 'medium') {
       ctx += `• ${c.name}`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
       if (_hDate) ctx += ` | Зас: ${formatDate(_hDate, _hTime)}`;
-      if (c.deadline) ctx += ` | Дед: ${formatDate(c.deadline)}`;
+      if (_dlDate) ctx += ` | Дед: ${formatDate(_dlDate)}`;
       if (c.next_action) ctx += ` | ${c.next_action}`;
       ctx += '\n';
     } else {
       ctx += `• ${c.name}`;
-      const nearest = _hDate || c.deadline;
+      const nearest = _hDate || _dlDate;
       if (nearest) ctx += ` (${formatDate(nearest, _hDate ? _hTime : null)})`;
       ctx += '\n';
     }
@@ -1244,9 +1262,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       if (!caseName) { systemAlert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
       if (!matched) { systemAlert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
+      const newDl = { id: `dl_${Date.now()}`, name: deadline_type || "Дедлайн", date: deadline_date };
       setCases(prev => prev.map(c =>
         c.id === matched.id
-          ? { ...c, deadline: deadline_date, ...(deadline_type ? { deadline_type } : {}) }
+          ? { ...c, deadlines: [...(c.deadlines || []), newDl] }
           : c
       ));
       markDone();
@@ -1555,9 +1574,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const caseName = actionResult.case_match?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
             if (matched && deadline_date !== undefined) {
+              const chatDl = { id: `dl_${Date.now()}`, name: deadline_type || "Дедлайн", date: deadline_date };
               setCases(prev => prev.map(c =>
                 c.id === matched.id
-                  ? { ...c, deadline: deadline_date || '', ...(deadline_type ? { deadline_type } : {}) }
+                  ? { ...c, deadlines: [...(c.deadlines || []), chatDl] }
                   : c
               ));
               const typeStr = deadline_type ? ` (${deadline_type})` : '';
@@ -2063,8 +2083,8 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
     case_no: initialData.case_no || '',
     hearing_date: nextH?.date || '',
     hearing_time: nextH?.time || '',
-    deadline: initialData.deadline || '',
-    deadline_type: initialData.deadline_type || '',
+    deadline: getDeadlineDate(initialData) || '',
+    deadline_type: getNextDeadline(initialData)?.name || '',
     next_action: initialData.next_action || '',
     notes: extractFormNoteText(initialData.notes),
   } : {
@@ -2203,7 +2223,7 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
             : [];
           const mergedNotes = [...formNoteArr, ...nonFormNotes];
           // Конвертуємо hearing_date/time форми назад у hearings[]
-          const { hearing_date: _fd, hearing_time: _ft, ...formWithoutHearing } = form;
+          const { hearing_date: _fd, hearing_time: _ft, deadline: _fDl, deadline_type: _fDlType, ...formWithoutTempFields } = form;
           let newHearings = initialData?.hearings ? [...initialData.hearings] : [];
           if (_fd) {
             // Оновити існуюче scheduled засідання або додати нове
@@ -2214,9 +2234,20 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
               newHearings.push({ id: `hrg_${Date.now()}`, date: _fd, time: _ft || '', court: form.court || '', notes: '', status: 'scheduled' });
             }
           }
+          // Конвертуємо deadline/deadline_type форми назад у deadlines[]
+          let newDeadlines = initialData?.deadlines ? [...initialData.deadlines] : [];
+          const nextDlForm = initialData ? getNextDeadline(initialData) : null;
+          if (_fDl) {
+            const existingDlIdx = newDeadlines.findIndex(d => d.id === nextDlForm?.id);
+            if (existingDlIdx >= 0) {
+              newDeadlines[existingDlIdx] = { ...newDeadlines[existingDlIdx], date: _fDl, name: _fDlType || newDeadlines[existingDlIdx].name };
+            } else {
+              newDeadlines.push({ id: `dl_${Date.now()}`, name: _fDlType || "Дедлайн", date: _fDl });
+            }
+          }
           const payload = initialData
-            ? { ...formWithoutHearing, id: initialData.id, hearings: newHearings, notes: mergedNotes, pinnedNoteIds: initialData.pinnedNoteIds || [] }
-            : { ...formWithoutHearing, hearings: newHearings, notes: mergedNotes, pinnedNoteIds: [] };
+            ? { ...formWithoutTempFields, id: initialData.id, hearings: newHearings, deadlines: newDeadlines, notes: mergedNotes, pinnedNoteIds: initialData.pinnedNoteIds || [] }
+            : { ...formWithoutTempFields, hearings: newHearings, deadlines: newDeadlines, notes: mergedNotes, pinnedNoteIds: [] };
           onSave(payload);
         }}>{initialData ? 'Зберегти зміни' : 'Зберегти справу'}</button>
         <button className="btn-lg secondary" onClick={onCancel}>Скасувати</button>
@@ -2575,6 +2606,13 @@ function normalizeCases(cases) {
   return cases.map(c => {
     let updated = { ...c };
 
+    // userId — додати якщо немає
+    if (!updated.userId) updated.userId = 'vadym';
+
+    // createdAt / updatedAt — додати якщо немає
+    if (!updated.createdAt) updated.createdAt = new Date().toISOString();
+    if (!updated.updatedAt) updated.updatedAt = new Date().toISOString();
+
     // notes: рядок → масив
     if (typeof updated.notes === 'string' && updated.notes.trim()) {
       updated.notes = [{
@@ -2607,6 +2645,28 @@ function normalizeCases(cases) {
     // Очистити старі поля якщо hearings[] вже є
     if (updated.hearing_date !== undefined) delete updated.hearing_date;
     if (updated.hearing_time !== undefined) delete updated.hearing_time;
+
+    // deadline/deadline_type → deadlines[] (міграція v3 → v4)
+    if (updated.deadline && !Array.isArray(updated.deadlines)) {
+      updated.deadlines = [{
+        id: `dl_migrated_${updated.id}`,
+        name: updated.deadline_type || "Дедлайн",
+        date: updated.deadline,
+      }];
+      delete updated.deadline;
+      delete updated.deadline_type;
+    }
+    if (!Array.isArray(updated.deadlines)) {
+      updated.deadlines = [];
+    }
+    // Очистити старі поля якщо deadlines[] вже є
+    if (updated.deadline !== undefined) delete updated.deadline;
+    if (updated.deadline_type !== undefined) delete updated.deadline_type;
+
+    // timeLog[] — додати якщо немає
+    if (!Array.isArray(updated.timeLog)) {
+      updated.timeLog = [];
+    }
 
     // pinnedNoteIds[] — додати якщо немає
     if (!Array.isArray(updated.pinnedNoteIds)) {
@@ -2795,11 +2855,11 @@ function App() {
   }, []);
 
   const hotCases = useMemo(() => cases
-    .filter(c => c.status==='active' && (c.deadline || getHearingDate(c)))
+    .filter(c => c.status==='active' && (getDeadlineDate(c) || getHearingDate(c)))
     .map(c => ({
       ...c,
       minDays: Math.min(
-        c.deadline ? (daysUntil(c.deadline) ?? 999) : 999,
+        getDeadlineDate(c) ? (daysUntil(getDeadlineDate(c)) ?? 999) : 999,
         getHearingDate(c) ? (daysUntil(getHearingDate(c)) ?? 999) : 999
       )
     }))
@@ -2818,9 +2878,9 @@ function App() {
 
   const stats = useMemo(() => ({
     total: cases.filter(c=>c.status==='active').length,
-    hot: cases.filter(c=>c.deadline && daysUntil(c.deadline)!==null && daysUntil(c.deadline)<=3).length,
+    hot: cases.filter(c=>{ const dd = getDeadlineDate(c); return dd && daysUntil(dd)!==null && daysUntil(dd)<=3; }).length,
     thisWeek: cases.filter(c=>{ const hd = getHearingDate(c); return hd && daysUntil(hd)!==null && daysUntil(hd)>=0 && daysUntil(hd)<=7; }).length,
-    noDeadline: cases.filter(c=>c.status==='active'&&!c.deadline&&!getHearingDate(c)).length,
+    noDeadline: cases.filter(c=>c.status==='active'&&!getDeadlineDate(c)&&!getHearingDate(c)).length,
   }), [cases]);
 
   const addCase = (form) => {

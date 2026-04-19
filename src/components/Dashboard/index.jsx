@@ -281,7 +281,8 @@ function buildDashboardContext(cases, calendarEvents) {
     if (c.court) parts.push(c.court);
     const _nh = _getNextHearing(c);
     if (_nh) parts.push(`засідання ${_nh.date}${_nh.time ? " " + _nh.time : ""}`);
-    if (c.deadline) parts.push(`дедлайн ${c.deadline}${c.deadline_type ? " (" + c.deadline_type + ")" : ""}`);
+    const _nd = (c.deadlines || []).filter(d => d.date >= today).sort((a,b) => a.date.localeCompare(b.date))[0];
+    if (_nd) parts.push(`дедлайн ${_nd.date}${_nd.name ? " (" + _nd.name + ")" : ""}`);
     if (c.status) parts.push(c.status);
     if (c.next_action) parts.push(`→ ${c.next_action}`);
     return parts.join(" | ");
@@ -442,17 +443,18 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
           hearingId: h.id
         });
       });
-      if (c.deadline) {
+      (c.deadlines || []).forEach(dl => {
         events.push({
-          id: "d_" + c.id,
+          id: "d_" + c.id + "_" + dl.id,
           type: "deadline",
           title: c.name,
-          date: c.deadline,
+          date: dl.date,
           time: null,
-          label: c.deadline_type || "дедлайн",
-          caseId: c.id
+          label: dl.name || "дедлайн",
+          caseId: c.id,
+          deadlineId: dl.id
         });
-      }
+      });
     });
     return [...events, ...calendarEvents];
   }
@@ -625,7 +627,10 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
       case "update_deadline": {
         const c = findCase(action.case_name);
         if (!c) return null;
-        if (action.deadline) onUpdateCase(c.id, "deadline", action.deadline);
+        if (action.deadline) {
+          const newDl = { id: `dl_${Date.now()}`, name: action.deadline_type || "Дедлайн", date: action.deadline };
+          onUpdateCase(c.id, "deadlines", [...(c.deadlines || []), newDl]);
+        }
         return `✅ Дедлайн "${c.name}": ${action.deadline}`;
       }
       case "navigate_calendar": {

@@ -1083,7 +1083,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
             { label: "Категорія", field: "category", value: categoryLabel },
             { label: "Наступна дія", field: "next_action", value: caseData.next_action },
             { label: "Дата засідання", field: "_hearing_date", value: (() => { const h = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return h ? `${h.date}${h.time ? ' о ' + h.time : ''}` : ''; })(), readOnly: true },
-            { label: "Дедлайн", field: "deadline", value: caseData.deadline }
+            { label: "Дедлайн", field: "_deadline", value: (() => { const d = (caseData.deadlines || []).filter(d => d.date >= new Date().toISOString().split('T')[0]).sort((a,b) => a.date.localeCompare(b.date))[0]; return d ? `${d.date}${d.name ? ' (' + d.name + ')' : ''}` : ''; })(), readOnly: true }
           ].map(row => (
             <div key={row.field} style={{ display: "flex", gap: 12, marginBottom: 10, alignItems: "flex-start" }}>
               <div style={{ width: 130, fontSize: 11, color: "#5a6080", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
