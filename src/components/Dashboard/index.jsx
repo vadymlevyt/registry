@@ -407,7 +407,7 @@ const vBtnActive = {
   color: "#fff"
 };
 
-export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEvent, onUpdateEvent, onDeleteEvent, sonnetPrompt, buildSystemContext }) {
+export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEvent, onUpdateEvent, onDeleteEvent, sonnetPrompt, buildSystemContext, onExecuteAction }) {
   const [curMonth, setCurMonth] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [calView, setCalView] = useState("month");
@@ -618,9 +618,12 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
       case "update_hearing": {
         const c = findCase(action.case_name);
         if (!c) return null;
-        if (action.hearing_date) {
-          const newHrg = { id: `hrg_${Date.now()}`, date: action.hearing_date, time: action.hearing_time || '', court: c.court || '', notes: '', status: 'scheduled' };
-          onUpdateCase(c.id, "hearings", [...(c.hearings || []), newHrg]);
+        if (action.hearing_date && onExecuteAction) {
+          onExecuteAction('dashboard_agent', 'add_hearing', {
+            caseId: c.id,
+            date: action.hearing_date,
+            time: action.hearing_time || '',
+          });
         }
         return `✅ Засідання "${c.name}": ${action.hearing_date || ""}${action.hearing_time ? " о " + action.hearing_time : ""}`;
       }
@@ -628,6 +631,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
         const c = findCase(action.case_name);
         if (!c) return null;
         if (action.deadline) {
+          // dashboard_agent не має дозволу на deadline — fallback на onUpdateCase
           const newDl = { id: `dl_${Date.now()}`, name: action.deadline_type || "Дедлайн", date: action.deadline };
           onUpdateCase(c.id, "deadlines", [...(c.deadlines || []), newDl]);
         }

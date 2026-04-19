@@ -835,7 +835,7 @@ function buildSystemContext(cases) {
   return ctx;
 }
 
-function QuickInput({ cases, setCases, onClose, driveConnected }) {
+function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction }) {
   const [text, setText]                   = useState('');
   const [loading, setLoading]             = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -1198,10 +1198,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     setLoading(false);
   };
 
-  // ── Action execution ───────────────────────────────────────────────────────
-  const executeAction = (action, overrideData) => {
+  // ── Action execution (QI) — використовує onExecuteAction (ACTIONS + PERMISSIONS) ──
+  const executeQiAction = (action, overrideData) => {
     const markDone = () => setExecutedActions(prev => [...prev, action]);
-    // Build effective result from analysisResult and/or overrideData (chat ACTION_JSON)
     const baseResult = analysisResult || { extracted: {}, case_match: { found: false }, recommended_actions: [] };
     const effectiveResult = overrideData
       ? {
@@ -1219,14 +1218,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     if (action === 'save_note') {
       const caseName = _analysisResult.case_match?.case_name;
       const matched = caseName ? findCaseForAction(caseName, cases) : null;
-      saveNoteToStorage(
-        text || '',
-        null,
-        matched?.id || null,
-        matched?.name || caseName || null,
-        'chat',
-        matched ? 'case' : 'general'
-      );
+      onExecuteAction('qi_agent', 'add_note', {
+        text: text || '',
+        category: matched ? 'case' : 'general',
+        caseId: matched?.id || null,
+      });
       markDone();
       return;
     }
@@ -1239,17 +1235,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       if (!caseName)     { systemAlert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
       if (!matched) { systemAlert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
-      const newHearing = {
-        id: `hrg_${Date.now()}`,
+      onExecuteAction('qi_agent', 'add_hearing', {
+        caseId: matched.id,
         date: hearing_date,
         time: hearing_time || '',
-        court: matched.court || '',
-        notes: '',
-        status: 'scheduled',
-      };
-      setCases(prev => prev.map(c =>
-        c.id === matched.id ? { ...c, hearings: [...(c.hearings || []), newHearing] } : c
-      ));
+      });
       markDone();
       return;
     }
@@ -1262,12 +1252,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
       if (!caseName) { systemAlert('Справу не визначено — уточніть вручну'); return; }
       const matched = findCaseForAction(caseName, cases);
       if (!matched) { systemAlert(`Справу "${caseName}" не знайдено в реєстрі`); return; }
-      const newDl = { id: `dl_${Date.now()}`, name: deadline_type || "Дедлайн", date: deadline_date };
-      setCases(prev => prev.map(c =>
-        c.id === matched.id
-          ? { ...c, deadlines: [...(c.deadlines || []), newDl] }
-          : c
-      ));
+      onExecuteAction('qi_agent', 'add_deadline', {
+        caseId: matched.id,
+        name: deadline_type || "Дедлайн",
+        date: deadline_date,
+      });
       markDone();
       return;
     }
@@ -1284,60 +1273,38 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
     if (action === 'create_case') {
       const ext = _analysisResult.extracted || {};
       const caseMatch = _analysisResult.case_match || {};
-
-      // Визначити назву справи
       const rawPerson = ext.person || caseMatch.case_name || '';
       const caseName = extractShortName(rawPerson) || 'Нова справа';
-
-      // Визначити категорію
-      // Кримінальна якщо є обвинувачений або КПК
       const isCriminal = (ext.person && /обвинувач|підозрюван|захисник/i.test(JSON.stringify(ext)))
         || /кпк|кримінал|122 кк|ст\.\s*\d+\s*кк/i.test(JSON.stringify(_analysisResult));
       const category = isCriminal ? 'criminal' : 'civil';
-
-      // Побудувати новий об'єкт справи
       const _hd = ext.hearing_date || '';
       const _ht = ext.hearing_time || '';
       const newHearings = _hd ? [{ id: `hrg_${Date.now()}`, date: _hd, time: _ht, court: ext.court || '', notes: '', status: 'scheduled' }] : [];
-      const newCase = {
-        id: Date.now(),
-        name: caseName,
-        client: ext.person || '',
-        category,
-        status: 'active',
-        court: ext.court || '',
-        case_no: ext.case_number || '',
-        hearings: newHearings,
-        deadline: '',
-        deadline_type: '',
-        next_action: '',
-        notes: [],
-        pinnedNoteIds: [],
-        storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
-      };
 
-      // Показати підтвердження з даними
-      const _nextH = getNextHearing(newCase);
-      const preview = [
-        `Назва: ${newCase.name}`,
-        newCase.client    && `Клієнт: ${newCase.client}`,
-        newCase.court     && `Суд: ${newCase.court}`,
-        newCase.case_no   && `Номер: ${newCase.case_no}`,
-        _nextH && `Засідання: ${_nextH.date}${_nextH.time ? ' о ' + _nextH.time : ''}`,
-        `Категорія: ${category === 'criminal' ? 'Кримінальна' : 'Цивільна'}`,
-      ].filter(Boolean).join('\n');
-
-      setCases(prev => [...prev, newCase]);
+      onExecuteAction('qi_agent', 'create_case', {
+        fields: {
+          name: caseName,
+          client: ext.person || '',
+          category,
+          status: 'active',
+          court: ext.court || '',
+          case_no: ext.case_number || '',
+          hearings: newHearings,
+          notes: [],
+          storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
+        }
+      });
       markDone();
       setConversationHistory(prev => [...prev, {
         role: 'assistant',
-        content: `✅ Справу "${newCase.name}" створено. Знайдіть її в реєстрі і доповніть деталі.`
+        content: `✅ Справу "${caseName}" створено. Знайдіть її в реєстрі і доповніть деталі.`
       }]);
       return;
     }
 
     if (action === 'save_to_drive' || action === 'create_drive_folder') {
-      if (!driveConnected) return; // button should be disabled, but guard anyway
+      if (!driveConnected) return;
       systemAlert('Функція збереження в Drive ще не реалізована в Quick Input.');
       markDone();
       return;
@@ -1521,28 +1488,26 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const rawPerson = ext.person || actionResult.case_match?.case_name || '';
             const caseName = extractShortName(rawPerson) || 'Нова справа';
             const isCriminal = /кпк|кримінал|\d+\s*кк|обвинувач|підозрюван/i.test(JSON.stringify(actionResult));
-
             const _chatHd = ext.hearing_date || '';
             const _chatHt = ext.hearing_time || '';
             const _chatHearings = _chatHd ? [{ id: `hrg_${Date.now()}`, date: _chatHd, time: _chatHt, court: ext.court || '', notes: '', status: 'scheduled' }] : [];
-            const newCase = {
-              id: Date.now(),
-              name: caseName,
-              client: rawPerson.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim(),
-              category: isCriminal ? 'criminal' : 'civil',
-              status: 'active',
-              court: ext.court || '',
-              case_no: ext.case_number || '',
-              hearings: _chatHearings,
-              deadline: '', deadline_type: '', next_action: '', notes: [],
-              pinnedNoteIds: [],
-              storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
-            };
 
-            setCases(prev => [...prev, newCase]);
+            onExecuteAction('qi_agent', 'create_case', {
+              fields: {
+                name: caseName,
+                client: rawPerson.replace(/\(.*?\)/g, '').replace(/,.*$/, '').trim(),
+                category: isCriminal ? 'criminal' : 'civil',
+                status: 'active',
+                court: ext.court || '',
+                case_no: ext.case_number || '',
+                hearings: _chatHearings,
+                notes: [],
+                storage: { driveFolderId: null, driveFolderName: null, localFolderPath: null, lastSyncAt: null },
+              }
+            });
             setConversationHistory(prev => [...prev, {
               role: 'assistant',
-              content: `✅ Справу "${newCase.name}" створено${newCase.court ? ' (' + newCase.court + ')' : ''}. Знайдіть її в реєстрі і доповніть деталі.`
+              content: `✅ Справу "${caseName}" створено${ext.court ? ' (' + ext.court + ')' : ''}. Знайдіть її в реєстрі і доповніть деталі.`
             }]);
             setChatLoading(false);
             return;
@@ -1553,12 +1518,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const caseName = actionResult.case_match?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
             if (matched && hearing_date) {
-              const newHrg = { id: `hrg_${Date.now()}`, date: hearing_date, time: hearing_time || '', court: matched.court || '', notes: '', status: 'scheduled' };
-              setCases(prev => prev.map(c =>
-                c.id === matched.id
-                  ? { ...c, hearings: [...(c.hearings || []), newHrg] }
-                  : c
-              ));
+              onExecuteAction('qi_agent', 'add_hearing', {
+                caseId: matched.id,
+                date: hearing_date,
+                time: hearing_time || '',
+              });
               const timeStr = hearing_time ? ` о ${hearing_time}` : '';
               setConversationHistory(prev => [...prev, {
                 role: 'assistant',
@@ -1574,12 +1538,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
             const caseName = actionResult.case_match?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
             if (matched && deadline_date !== undefined) {
-              const chatDl = { id: `dl_${Date.now()}`, name: deadline_type || "Дедлайн", date: deadline_date };
-              setCases(prev => prev.map(c =>
-                c.id === matched.id
-                  ? { ...c, deadlines: [...(c.deadlines || []), chatDl] }
-                  : c
-              ));
+              onExecuteAction('qi_agent', 'add_deadline', {
+                caseId: matched.id,
+                name: deadline_type || "Дедлайн",
+                date: deadline_date,
+              });
               const typeStr = deadline_type ? ` (${deadline_type})` : '';
               const dateStr = deadline_date ? `встановлено: ${deadline_date}` : 'очищено';
               setConversationHistory(prev => [...prev, {
@@ -1595,46 +1558,37 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
               || actionResult.extracted?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
 
-            // Для update_case_status — field завжди 'status'
             const field = action === 'update_case_status'
               ? 'status'
               : actionResult.extracted?.field;
             const value = actionResult.extracted?.value
-              || actionResult.extracted?.status; // fallback для статусу
+              || actionResult.extracted?.status;
 
-            // Дозволені поля (не чіпаємо hearings і deadline — у них свої обробники)
-            const allowedFields = ['status', 'category', 'court', 'case_no',
-              'next_action', 'notes'];
+            if (matched && field && value) {
+              const result = onExecuteAction('qi_agent', 'update_case_field', {
+                caseId: matched.id,
+                field,
+                value,
+              });
 
-            if (matched && field && value && allowedFields.includes(field)) {
-              setCases(prev => prev.map(c =>
-                c.id === matched.id ? { ...c, [field]: value } : c
-              ));
+              if (result?.error) {
+                // Поле не дозволене — fallback на текстову відповідь
+              } else {
+                const fieldLabels = {
+                  status: 'Статус', category: 'Категорія', court: 'Суд',
+                  case_no: 'Номер справи', next_action: 'Наступна дія', notes: 'Нотатки',
+                };
+                const statusLabels = { active: 'Активна', paused: 'Призупинена', closed: 'Закрита' };
+                const displayValue = field === 'status' ? (statusLabels[value] || value) : value;
 
-              const fieldLabels = {
-                status: 'Статус',
-                category: 'Категорія',
-                court: 'Суд',
-                case_no: 'Номер справи',
-                next_action: 'Наступна дія',
-                notes: 'Нотатки',
-              };
-              const statusLabels = {
-                active: 'Активна', paused: 'Призупинена', closed: 'Закрита'
-              };
-              const displayValue = field === 'status'
-                ? (statusLabels[value] || value)
-                : value;
-
-              setConversationHistory(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ ${fieldLabels[field] || field} справи "${matched.name}" змінено на "${displayValue}"`
-              }]);
-              setChatLoading(false);
-              return;
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ ${fieldLabels[field] || field} справи "${matched.name}" змінено на "${displayValue}"`
+                }]);
+                setChatLoading(false);
+                return;
+              }
             }
-
-            // Якщо не знайшли справу або поле — fallback на текстову відповідь
           }
           if (action === 'delete_case') {
             const caseName = actionResult.case_match?.case_name
@@ -1652,13 +1606,14 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                   setChatLoading(false);
                   return;
                 }
+                // destroy_case — тільки через UI, не через агента
                 setCases(prev => prev.filter(c => c.id !== matched.id));
                 setConversationHistory(prev => [...prev, {
                   role: 'assistant',
                   content: `✅ Справу "${matched.name}" видалено з реєстру назавжди.`
                 }]);
               } else {
-                // Спочатку закриваємо
+                // Спочатку закриваємо через executeAction
                 if (!await systemConfirm(`Закрити справу "${matched.name}"? Вона перейде в архів.`, "Закриття справи")) {
                   setConversationHistory(prev => [...prev, {
                     role: 'assistant',
@@ -1667,9 +1622,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                   setChatLoading(false);
                   return;
                 }
-                setCases(prev => prev.map(c =>
-                  c.id === matched.id ? { ...c, status: 'closed' } : c
-                ));
+                onExecuteAction('qi_agent', 'close_case', { caseId: matched.id });
                 setConversationHistory(prev => [...prev, {
                   role: 'assistant',
                   content: `✅ Справу "${matched.name}" закрито. Вона тепер у вкладці "Закриті". Звідти можна видалити назавжди.`
@@ -1912,7 +1865,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                           ? <button key={action} className="btn-sm btn-ghost" disabled title="Підключіть Google Drive в розділі «Аналіз системи»" style={{ opacity: 0.5, cursor: 'not-allowed' }}>
                               ☁️ Drive (не підключено)
                             </button>
-                          : <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action)}>
+                          : <button key={action} className="btn-sm btn-primary" onClick={() => executeQiAction(action)}>
                               {QI_ACTION_LABELS[action] || action}
                             </button>
                     )}
@@ -1935,7 +1888,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                         {[['active','Активна','var(--green)'],['paused','Призупинена','var(--orange)'],['closed','Закрита','var(--text3)']].map(([val, label, color]) => (
                           <button key={val} className="btn-sm btn-ghost" style={{ borderColor: color, color }}
                             onClick={() => {
-                              setCases(prev => prev.map(c => c.id === pendingStatusChange.caseId ? { ...c, status: val } : c));
+                              onExecuteAction('qi_agent', 'update_case_field', { caseId: pendingStatusChange.caseId, field: 'status', value: val });
                               setExecutedActions(prev => [...prev, 'update_case_status']);
                               setPendingStatusChange(null);
                             }}
@@ -1957,7 +1910,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected }) {
                   {msg.actionResult && (msg.actionResult.recommended_actions || []).length > 0 && (
                     <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                       {msg.actionResult.recommended_actions.map(action => (
-                        <button key={action} className="btn-sm btn-primary" onClick={() => executeAction(action, msg.actionResult)} style={{ fontSize: 11 }}>
+                        <button key={action} className="btn-sm btn-primary" onClick={() => executeQiAction(action, msg.actionResult)} style={{ fontSize: 11 }}>
                           {QI_ACTION_LABELS[action] || action}
                         </button>
                       ))}
@@ -3478,6 +3431,7 @@ function App() {
               onDeleteEvent={deleteCalendarEvent}
               sonnetPrompt={SONNET_CHAT_PROMPT}
               buildSystemContext={buildSystemContext}
+              onExecuteAction={executeAction}
             />
           )}
           {!dossierCase && tab === 'cases' && (
@@ -3600,7 +3554,7 @@ function App() {
             {/* Вміст вкладки */}
             <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               {universalTab === 'qi' && (
-                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} />
+                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} onExecuteAction={executeAction} />
               )}
               {universalTab === 'agent' && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5a6080', gap: 12, padding: 20 }}>
