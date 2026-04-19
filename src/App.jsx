@@ -548,7 +548,55 @@ When the user gives you a command:
 - If the case is NOT found in the registry AND the input describes a new court matter → use create_case action, NOT update_case_date
 - Only use update_case_date if the case EXISTS in the registry
 - If uncertain whether case exists — propose create_case
-- When creating case from chat: use short name format "Прізвище І.Б."`;
+- When creating case from chat: use short name format "Прізвище І.Б."
+
+## ПРАВИЛА РОБОТИ З ЗАСІДАННЯМИ (hearings[])
+
+Кожна справа має масив засідань hearings[]. Засідання мають два статуси:
+- scheduled — заплановане (майбутнє або сьогоднішнє)
+- completed — відбулось або минула дата (не чіпати без явної вказівки)
+
+Статусу "cancelled" не існує. Якщо засідання не відбулось — адвокат
+просто додає нотатку тією ж датою до тієї ж справи. Засідання
+автоматично стає "минулим" коли дата минула.
+
+ПЕРЕНЕСТИ засідання = update_hearing на найближче scheduled засідання.
+Дата старого засідання ЗНИКАЄ — з'являється нова. Це НЕ нове засідання.
+
+Алгоритм при команді "перенеси засідання":
+1. Якщо в справі одне scheduled засідання — переносимо його без питань
+2. Якщо scheduled засідань кілька — запитати ОДНЕ уточнення: "Яке саме? [дата1] чи [дата2]?"
+3. Якщо користувач вказав конкретну дату — шукати по ній без питань
+4. Минулі засідання (completed або дата < сьогодні) — НЕ чіпати якщо не вказано явно
+
+ДОДАТИ засідання = add_hearing. Існуючі засідання не чіпає.
+ВИДАЛИТИ засідання = delete_hearing. Вказати яке або найближче scheduled.
+
+НІКОЛИ не плутати:
+- "перенеси засідання" ≠ close_case
+- "видали засідання" ≠ close_case або delete_case
+- "відновити справу" ≠ питати деталі про справу
+
+## ПРАВИЛА РОБОТИ ЗІ СТАТУСАМИ СПРАВ
+
+Справи мають статуси: active, paused, closed.
+
+"Закрий справу X" → close_case → статус closed
+"Відновити справу X" → restore_case → статус active
+  - Шукати справу в УСІХ статусах включно з closed
+  - НЕ питати категорію, суд, номер — просто знайти по імені і відновити
+  - Якщо знайшов в закритих — відновити одразу
+
+## ПРАВИЛА РОБОТИ З ДЕДЛАЙНАМИ (deadlines[])
+
+Кожна справа має масив дедлайнів deadlines[]. Кожен дедлайн має id, name, date.
+
+"Видали дедлайн X" → delete_deadline → знайти по назві або даті і видалити
+"Встанови дедлайн" → add_deadline → додати новий запис в масив
+"Зміни дедлайн" → update_deadline → оновити існуючий запис (name І date разом)
+
+ВАЖЛИВО: після виконання дії — перевірити що вона справді виконалась.
+Не повідомляти про успіх якщо дія не виконана.`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -3181,19 +3229,32 @@ function App() {
     },
 
     update_hearing: ({ caseId, hearingId, date, time, duration, type }) => {
-      setCases(prev => prev.map(c =>
-        c.id === caseId
-          ? {
-              ...c,
-              hearings: (c.hearings || []).map(h =>
-                h.id === hearingId
-                  ? { ...h, date, time, duration: duration ?? h.duration, type: type ?? h.type }
-                  : h
-              ),
-              updatedAt: new Date().toISOString()
-            }
-          : c
-      ));
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+
+        let targetId = hearingId;
+
+        if (!targetId) {
+          const today = new Date().toISOString().split('T')[0];
+          const next = (c.hearings || [])
+            .filter(h => h.status === 'scheduled' && h.date >= today)
+            .sort((a, b) => a.date.localeCompare(b.date))[0];
+          if (next) targetId = next.id;
+        }
+
+        if (!targetId) return c;
+
+        return {
+          ...c,
+          hearings: (c.hearings || []).map(h =>
+            h.id === targetId
+              ? { ...h, date: date ?? h.date, time: time ?? h.time,
+                  duration: duration ?? h.duration, type: type ?? h.type }
+              : h
+          ),
+          updatedAt: new Date().toISOString()
+        };
+      }));
       return { success: true };
     },
 
@@ -3312,15 +3373,18 @@ function App() {
     qi_agent: [
       'create_case', 'close_case', 'restore_case',
       'update_case_field',
-      'add_deadline', 'update_deadline',
-      'add_hearing', 'update_hearing',
-      'add_note',
+      'add_deadline', 'update_deadline', 'delete_deadline',
+      'add_hearing', 'update_hearing', 'delete_hearing',
+      'add_note', 'update_note', 'delete_note',
+      'pin_note', 'unpin_note',
       'add_time_entry',
     ],
+
     dashboard_agent: [
-      'add_hearing', 'update_hearing',
-      'add_note',
+      'add_hearing', 'update_hearing', 'delete_hearing',
+      'add_note', 'update_note', 'delete_note',
     ],
+
     dossier_agent: [
       'create_case', 'close_case', 'restore_case',
       'update_case_field',
@@ -3331,16 +3395,8 @@ function App() {
       'add_time_entry',
       'track_session_start', 'track_session_end',
     ],
-    main_agent: [
-      'create_case', 'close_case', 'restore_case',
-      'update_case_field',
-      'add_deadline', 'update_deadline', 'delete_deadline',
-      'add_hearing', 'update_hearing', 'delete_hearing',
-      'add_note', 'update_note', 'delete_note',
-      'pin_note', 'unpin_note',
-      'add_time_entry',
-      'track_session_start', 'track_session_end',
-    ],
+
+    // destroy_case — жоден агент. Тільки UI.
   };
 
   // ── logAction — журнал дій для аналітики ───────────────────────────────────
@@ -3365,20 +3421,24 @@ function App() {
   const executeAction = (agentId, action, params, userId = 'vadym') => {
     const allowed = PERMISSIONS[agentId] || [];
     if (!allowed.includes(action)) {
-      console.warn(`executeAction: агент "${agentId}" не має права на "${action}"`);
+      console.warn(`executeAction BLOCKED: ${agentId} → ${action}`);
       return { error: `Немає повноважень: ${action}` };
     }
+
     if (!ACTIONS[action]) {
-      console.warn(`executeAction: дія "${action}" не знайдена в реєстрі`);
+      console.warn(`executeAction UNKNOWN: ${action}`);
       return { error: `Невідома дія: ${action}` };
     }
+
     logAction({ agentId, action, params, userId });
+
     try {
       const result = ACTIONS[action](params);
+      console.log(`executeAction OK: ${action}`, params, result);
       rebuildCalendarView();
       return result;
     } catch (e) {
-      console.error(`executeAction error [${action}]:`, e);
+      console.error(`executeAction ERROR [${action}]:`, e);
       return { error: e.message };
     }
   };
@@ -3509,6 +3569,7 @@ function App() {
                 onDeleteNote={deleteNote}
                 onPinNote={pinNote}
                 driveConnected={driveConnected}
+                onExecuteAction={executeAction}
               />
             </ErrorBoundary>
           )}

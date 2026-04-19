@@ -25,7 +25,7 @@ const PROC_COLORS = {
   cassation: "#f39c12"
 };
 
-export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected }) {
+export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected, onExecuteAction }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -199,6 +199,34 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     }
 
     prompt += `\n\nВідповідай українською. Допомагай з аналізом і тактикою по справі.`;
+
+    prompt += `
+
+## РЕЖИМ ВИКОНАННЯ
+
+Ти маєш технічну можливість змінювати дані справи через ACTION_JSON команди.
+
+Коли користувач просить змінити дані справи — ВИКОНУЙ через ACTION_JSON.
+НЕ пояснюй як це зробити вручну.
+НЕ питай підтвердження для простих дій (видалити засідання, змінити дату).
+НЕ кажи "я не маю доступу" — у тебе є доступ через ACTION_JSON.
+
+Формат ACTION_JSON (додавати в кінці відповіді):
+ACTION_JSON: {"action": "delete_hearing", "caseId": "${caseData.id}", "hearingId": "..."}
+ACTION_JSON: {"action": "delete_deadline", "caseId": "${caseData.id}", "deadlineId": "..."}
+ACTION_JSON: {"action": "update_hearing", "caseId": "${caseData.id}", "hearingId": "...", "date": "YYYY-MM-DD", "time": "HH:MM"}
+ACTION_JSON: {"action": "add_deadline", "caseId": "${caseData.id}", "name": "...", "date": "YYYY-MM-DD"}
+ACTION_JSON: {"action": "update_case_field", "caseId": "${caseData.id}", "field": "...", "value": "..."}
+
+Для delete_hearing і delete_deadline — якщо hearingId/deadlineId не відомий,
+взяти перший підходящий з контексту справи.
+
+Статуси засідань: тільки scheduled і completed. Cancelled не існує.
+Минуле засідання = дата менша за сьогодні. Не чіпати без явної вказівки.
+
+Поточна справа має caseId: "${caseData.id}".
+Hearings: ${JSON.stringify(caseData.hearings || [])}
+Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
     return prompt;
   };
@@ -877,6 +905,35 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── АГЕНТ ДОСЬЄ ────────────────────────────────────────────────────────────
   function renderAgentPanel() {
+    function parseAndExecuteDossierAction(responseText) {
+      const idx = responseText.indexOf('ACTION_JSON:');
+      if (idx === -1) return;
+
+      const start = responseText.indexOf('{', idx);
+      if (start === -1) return;
+
+      let depth = 0, end = -1;
+      for (let i = start; i < responseText.length; i++) {
+        if (responseText[i] === '{') depth++;
+        else if (responseText[i] === '}') {
+          depth--;
+          if (depth === 0) { end = i; break; }
+        }
+      }
+
+      if (end === -1) return;
+
+      try {
+        const actionData = JSON.parse(responseText.slice(start, end + 1));
+        const { action, ...params } = actionData;
+        if (action && onExecuteAction) {
+          onExecuteAction('dossier_agent', action, params);
+        }
+      } catch (e) {
+        console.warn('Dossier ACTION_JSON parse error:', e);
+      }
+    }
+
     async function sendAgentMessage() {
       if (!agentInput.trim() || agentLoading) return;
       const userMsg = agentInput.trim();
@@ -935,6 +992,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
           saveAgentHistory(updated); // Зберегти на Drive
           return updated;
         });
+        parseAndExecuteDossierAction(reply);
       } catch (err) {
         const errEntry = { role: 'assistant', content: `⚠️ Мережева помилка: ${err.message}`, ts: new Date().toISOString() };
         setAgentMessages(prev => {
