@@ -2732,6 +2732,13 @@ function App() {
     } catch(e) {}
     return { ...EMPTY_NOTES };
   });
+  // ── timeLog — облік часу ────────────────────────────────────────────────
+  const [timeLog, setTimeLog] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('levytskyi_timelog') || '[]');
+    } catch { return []; }
+  });
+
   const [lastSaved, setLastSaved] = useState(null);
   const [driveConnected, setDriveConnected] = useState(() => driveService.isConnected());
   const [driveSyncStatus, setDriveSyncStatus] = useState('idle');
@@ -2830,6 +2837,54 @@ function App() {
       }
     }
   }, [cases]);
+
+  // ── timeLog persistence ────────────────────────────────────────────────────
+  useEffect(() => {
+    localStorage.setItem('levytskyi_timelog', JSON.stringify(timeLog));
+  }, [timeLog]);
+
+  // ── rebuildCalendarView — збирає всі події для календаря ────────────────────
+  const rebuildCalendarView = () => {
+    const events = [];
+    // Джерело 1 — засідання (сині слоти)
+    cases.forEach(c => {
+      (c.hearings || []).forEach(h => {
+        if (h.status === 'scheduled') {
+          events.push({
+            type: 'hearing', caseId: c.id, caseName: c.name, hearingId: h.id,
+            date: h.date, time: h.time, duration: h.duration || 120, color: 'blue'
+          });
+        }
+      });
+    });
+    // Джерело 2 — дедлайни (червоні позначки)
+    cases.forEach(c => {
+      (c.deadlines || []).forEach(d => {
+        events.push({
+          type: 'deadline', caseId: c.id, caseName: c.name, deadlineId: d.id,
+          date: d.date, time: null, duration: null, title: d.name, color: 'red'
+        });
+      });
+    });
+    // Джерело 3 — нотатки з датою (жовті слоти)
+    const allNotes = [];
+    for (const cat of Object.keys(notes)) {
+      (notes[cat] || []).forEach(n => allNotes.push(n));
+    }
+    allNotes.forEach(n => {
+      if (n.date) {
+        events.push({
+          type: 'note', noteId: n.id, caseId: n.caseId || null,
+          caseName: n.caseId ? cases.find(c => c.id === n.caseId)?.name : null,
+          date: n.date, time: n.time || null,
+          duration: n.duration || (n.time ? 120 : null),
+          title: (n.text || '').slice(0, 60), color: 'yellow'
+        });
+      }
+    });
+    events.sort((a, b) => new Date(a.date) - new Date(b.date));
+    setCalendarEvents(events);
+  };
 
   // ── Universal Panel resize ──────────────────────────────────────────────────
   useEffect(() => {
@@ -3071,6 +3126,308 @@ function App() {
     );
     if (!second) return;
     deleteCasePermanently(caseItem);
+  };
+
+  // ── ACTIONS — єдиний реєстр дій системи ──────────────────────────────────
+  const ACTIONS = {
+    // ГРУПА 1 — Справи
+    create_case: ({ fields }) => {
+      const newCase = {
+        id: `case_${Date.now()}`,
+        userId: 'vadym',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        hearings: [],
+        deadlines: [],
+        timeLog: [],
+        pinnedNoteIds: [],
+        agentHistory: [],
+        ...fields
+      };
+      setCases(prev => [...prev, newCase]);
+      return { success: true, caseId: newCase.id };
+    },
+
+    close_case: ({ caseId }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, status: 'closed', updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true };
+    },
+
+    restore_case: ({ caseId }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, status: 'active', updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true };
+    },
+
+    update_case_field: ({ caseId, field, value }) => {
+      const allowedFields = [
+        'name', 'client', 'court', 'case_no', 'category',
+        'next_action', 'notes', 'judge', 'status'
+      ];
+      if (!allowedFields.includes(field)) {
+        return { error: `Поле "${field}" не дозволено змінювати через агента` };
+      }
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, [field]: value, updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true };
+    },
+
+    add_deadline: ({ caseId, name, date }) => {
+      const deadline = { id: `dl_${Date.now()}`, name, date };
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, deadlines: [...(c.deadlines || []), deadline], updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true, deadlineId: deadline.id };
+    },
+
+    update_deadline: ({ caseId, deadlineId, name, date }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              deadlines: (c.deadlines || []).map(d =>
+                d.id === deadlineId ? { ...d, name, date } : d
+              ),
+              updatedAt: new Date().toISOString()
+            }
+          : c
+      ));
+      return { success: true };
+    },
+
+    delete_deadline: ({ caseId, deadlineId }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, deadlines: (c.deadlines || []).filter(d => d.id !== deadlineId), updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true };
+    },
+
+    // ГРУПА 2 — Засідання
+    add_hearing: ({ caseId, date, time, duration = 120, type = null }) => {
+      const hearing = { id: `hrg_${Date.now()}`, date, time, duration, status: 'scheduled', type };
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, hearings: [...(c.hearings || []), hearing], updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true, hearingId: hearing.id };
+    },
+
+    update_hearing: ({ caseId, hearingId, date, time, duration, type }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              hearings: (c.hearings || []).map(h =>
+                h.id === hearingId
+                  ? { ...h, date, time, duration: duration ?? h.duration, type: type ?? h.type }
+                  : h
+              ),
+              updatedAt: new Date().toISOString()
+            }
+          : c
+      ));
+      return { success: true };
+    },
+
+    delete_hearing: ({ caseId, hearingId }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, hearings: (c.hearings || []).filter(h => h.id !== hearingId), updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true };
+    },
+
+    // ГРУПА 3 — Нотатки
+    add_note: ({ text, category = 'general', date = null, time = null, duration = null, caseId = null }) => {
+      const note = {
+        id: `note_${Date.now()}`,
+        userId: 'vadym',
+        category,
+        text,
+        date,
+        time,
+        duration,
+        caseId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      const catKey = (category === 'case' || caseId) ? 'cases' : (category || 'general');
+      setNotes(prev => {
+        const updated = { ...prev, [catKey]: [note, ...(prev[catKey] || [])] };
+        saveNotesToLS(updated);
+        return updated;
+      });
+      return { success: true, noteId: note.id };
+    },
+
+    update_note: ({ noteId, text, date, time, duration }) => {
+      setNotes(prev => {
+        const updated = {};
+        for (const cat of Object.keys(prev)) {
+          updated[cat] = prev[cat].map(n =>
+            n.id === noteId
+              ? { ...n, text, date: date ?? n.date, time: time ?? n.time, duration: duration ?? n.duration, updatedAt: new Date().toISOString() }
+              : n
+          );
+        }
+        saveNotesToLS(updated);
+        return updated;
+      });
+      return { success: true };
+    },
+
+    delete_note: ({ noteId }) => {
+      setNotes(prev => {
+        const updated = {};
+        for (const cat of Object.keys(prev)) {
+          updated[cat] = prev[cat].filter(n => n.id !== noteId);
+        }
+        saveNotesToLS(updated);
+        return updated;
+      });
+      setCases(prev => prev.map(c => ({
+        ...c,
+        pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== String(noteId))
+      })));
+      return { success: true };
+    },
+
+    pin_note: ({ noteId, caseId }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, pinnedNoteIds: [...new Set([...(c.pinnedNoteIds || []), String(noteId)])] }
+          : c
+      ));
+      return { success: true };
+    },
+
+    unpin_note: ({ noteId, caseId }) => {
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== String(noteId)) }
+          : c
+      ));
+      return { success: true };
+    },
+
+    // ГРУПА 4 — Час / Сесія
+    add_time_entry: ({ caseId = null, date, duration, description, type = 'billable', source = 'manual' }) => {
+      const entry = {
+        id: `tl_${Date.now()}`,
+        userId: 'vadym',
+        caseId,
+        date,
+        duration,
+        description,
+        type,
+        source,
+        createdAt: new Date().toISOString()
+      };
+      setTimeLog(prev => [entry, ...prev]);
+      return { success: true };
+    },
+
+    track_session_start: ({ caseId = null, sessionId }) => {
+      console.log(`Session started: ${sessionId}, case: ${caseId}`);
+      return { success: true };
+    },
+
+    track_session_end: ({ sessionId }) => {
+      console.log(`Session ended: ${sessionId}`);
+      return { success: true };
+    },
+  };
+
+  // ── PERMISSIONS — матриця повноважень агентів ──────────────────────────────
+  const PERMISSIONS = {
+    qi_agent: [
+      'create_case', 'close_case', 'restore_case',
+      'update_case_field',
+      'add_deadline', 'update_deadline',
+      'add_hearing', 'update_hearing',
+      'add_note',
+      'add_time_entry',
+    ],
+    dashboard_agent: [
+      'add_hearing', 'update_hearing',
+      'add_note',
+    ],
+    dossier_agent: [
+      'create_case', 'close_case', 'restore_case',
+      'update_case_field',
+      'add_deadline', 'update_deadline', 'delete_deadline',
+      'add_hearing', 'update_hearing', 'delete_hearing',
+      'add_note', 'update_note', 'delete_note',
+      'pin_note', 'unpin_note',
+      'add_time_entry',
+      'track_session_start', 'track_session_end',
+    ],
+    main_agent: [
+      'create_case', 'close_case', 'restore_case',
+      'update_case_field',
+      'add_deadline', 'update_deadline', 'delete_deadline',
+      'add_hearing', 'update_hearing', 'delete_hearing',
+      'add_note', 'update_note', 'delete_note',
+      'pin_note', 'unpin_note',
+      'add_time_entry',
+      'track_session_start', 'track_session_end',
+    ],
+  };
+
+  // ── logAction — журнал дій для аналітики ───────────────────────────────────
+  const logAction = ({ agentId, action, params, userId }) => {
+    const entry = {
+      ts: new Date().toISOString(),
+      userId,
+      agentId,
+      action,
+      caseId: params?.caseId || null,
+    };
+    try {
+      const log = JSON.parse(localStorage.getItem('levytskyi_action_log') || '[]');
+      log.unshift(entry);
+      localStorage.setItem('levytskyi_action_log', JSON.stringify(log.slice(0, 500)));
+    } catch (e) {
+      console.warn('logAction error:', e);
+    }
+  };
+
+  // ── executeAction — єдина точка входу для всіх дій агентів ─────────────────
+  const executeAction = (agentId, action, params, userId = 'vadym') => {
+    const allowed = PERMISSIONS[agentId] || [];
+    if (!allowed.includes(action)) {
+      console.warn(`executeAction: агент "${agentId}" не має права на "${action}"`);
+      return { error: `Немає повноважень: ${action}` };
+    }
+    if (!ACTIONS[action]) {
+      console.warn(`executeAction: дія "${action}" не знайдена в реєстрі`);
+      return { error: `Невідома дія: ${action}` };
+    }
+    logAction({ agentId, action, params, userId });
+    try {
+      const result = ACTIONS[action](params);
+      rebuildCalendarView();
+      return result;
+    } catch (e) {
+      console.error(`executeAction error [${action}]:`, e);
+      return { error: e.message };
+    }
   };
 
   return (
