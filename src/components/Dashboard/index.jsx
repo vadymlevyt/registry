@@ -305,14 +305,25 @@ function buildDashboardContext(cases, calendarEvents) {
 
 Формат ACTION_JSON:
 ACTION_JSON: {"action": "update_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}
-ACTION_JSON: {"action": "update_deadline", "case_name": "назва справи", "deadline": "YYYY-MM-DD"}
+// Перенос засідання — замінює існуюче (не додає нове). Якщо є кілька засідань — додай "hearing_id" з переліку.
+
+ACTION_JSON: {"action": "delete_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD"}
+// Видалити засідання по даті або найближче scheduled. Можна додати "hearing_id" замість дати.
+
+ACTION_JSON: {"action": "add_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}
+// Додати НОВЕ засідання (не чіпає існуючі).
+
+ACTION_JSON: {"action": "add_note", "case_name": "назва справи", "text": "...", "date": "YYYY-MM-DD"}
+// Нотатка з датою — відображається в календарі.
+
 ACTION_JSON: {"action": "navigate_calendar", "direction": "prev" | "next"}
 ACTION_JSON: {"action": "navigate_week", "direction": "prev" | "next"}
 
 Правила:
 - case_name має точно співпадати з назвою справи зі списку
-- hearing_date і deadline завжди у форматі YYYY-MM-DD
+- hearing_date завжди у форматі YYYY-MM-DD
 - hearing_time у форматі HH:MM (24-годинний)
+- Для update_hearing/delete_hearing — якщо у справи кілька засідань, краще передавати hearing_id з контексту
 - Якщо не можеш визначити справу або дату — запитай уточнення ОДИН РАЗ, не більше
 - Не ухиляйся від виконання — або виконуй або чітко кажи що не вистачає даних
 
@@ -619,13 +630,49 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
         const c = findCase(action.case_name);
         if (!c) return null;
         if (action.hearing_date && onExecuteAction) {
-          onExecuteAction('dashboard_agent', 'add_hearing', {
+          onExecuteAction('dashboard_agent', 'update_hearing', {
             caseId: c.id,
+            hearingId: action.hearing_id || null,
             date: action.hearing_date,
             time: action.hearing_time || '',
           });
         }
-        return `✅ Засідання "${c.name}": ${action.hearing_date || ""}${action.hearing_time ? " о " + action.hearing_time : ""}`;
+        return `✅ Засідання у справі "${c.name}" перенесено на ${action.hearing_date}${action.hearing_time ? " о " + action.hearing_time : ""}`;
+      }
+      case "add_hearing": {
+        const c = findCase(action.case_name);
+        if (!c || !onExecuteAction) return null;
+        if (action.hearing_date) {
+          onExecuteAction('dashboard_agent', 'add_hearing', {
+            caseId: c.id,
+            date: action.hearing_date,
+            time: action.hearing_time || '',
+            duration: 120,
+          });
+          return `✅ Нове засідання у справі "${c.name}" на ${action.hearing_date}${action.hearing_time ? " о " + action.hearing_time : ""}`;
+        }
+        return null;
+      }
+      case "delete_hearing": {
+        const c = findCase(action.case_name);
+        if (!c || !onExecuteAction) return null;
+        let hearingId = action.hearing_id || null;
+        if (!hearingId && action.hearing_date) {
+          const h = (c.hearings || []).find(h => h.date === action.hearing_date);
+          if (h) hearingId = h.id;
+        }
+        if (!hearingId) {
+          const today = new Date().toISOString().split('T')[0];
+          const next = (c.hearings || [])
+            .filter(h => h.date >= today)
+            .sort((a, b) => a.date.localeCompare(b.date))[0];
+          if (next) hearingId = next.id;
+        }
+        if (hearingId) {
+          onExecuteAction('dashboard_agent', 'delete_hearing', { caseId: c.id, hearingId });
+          return `✅ Засідання у справі "${c.name}" видалено`;
+        }
+        return null;
       }
       case "update_deadline": {
         const c = findCase(action.case_name);
