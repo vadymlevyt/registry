@@ -816,6 +816,9 @@ function buildSystemContext(cases) {
 
   let ctx = `КОНТЕКСТ СИСТЕМИ — АБ Левицького (${today.toLocaleDateString('uk-UA')})\n`;
   ctx += `Всього справ: ${cases.length} | Активних: ${active.length} | Призупинених: ${paused.length} | Закритих: ${closed.length}\n`;
+  ctx += `\nВАЖЛИВО: для update_hearing/delete_hearing використовуй id засідання з переліку. `;
+  ctx += `Для delete_deadline/update_deadline використовуй id дедлайну. `;
+  ctx += `Закриті справи listed нижче — restore_case поверне їх в активні.\n`;
 
   if (hot.length > 0) {
     ctx += `\n⚡ ГАРЯЧІ (дедлайн або засідання ≤ 3 дні):\n`;
@@ -837,29 +840,42 @@ function buildSystemContext(cases) {
   const totalActive = active.length;
   const detail = totalActive <= 15 ? 'full' : totalActive <= 30 ? 'medium' : 'compact';
 
+  const todayStr = new Date().toISOString().split('T')[0];
+  const fmtHearings = (c) => (c.hearings || [])
+    .map(h => {
+      const status = h.status || (h.date >= todayStr ? 'scheduled' : 'completed');
+      return `[id:${h.id}|${h.date}${h.time ? `|${h.time}` : ''}|${status}]`;
+    })
+    .join(', ');
+  const fmtDeadlines = (c) => (c.deadlines || [])
+    .map(d => `[id:${d.id}|${d.name}|${d.date}]`)
+    .join(', ');
+
   active.forEach(c => {
     const _hDate = getHearingDate(c);
     const _hTime = getHearingTime(c);
     const _dlDate = getDeadlineDate(c);
+    const hearingsStr = fmtHearings(c);
+    const deadlinesStr = fmtDeadlines(c);
     if (detail === 'full') {
-      ctx += `• ${c.name}`;
+      ctx += `• ${c.name} [id:${c.id}]`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
       ctx += ` | ${catMap[c.category] || c.category || '—'}`;
       if (c.court) ctx += ` | ${c.court}`;
       if (c.client) ctx += ` | Клієнт: ${c.client}`;
-      if (_hDate) ctx += ` | Засідання: ${formatDate(_hDate, _hTime)}`;
-      if (_dlDate) ctx += ` | Дедлайн: ${formatDate(_dlDate)}`;
+      if (hearingsStr) ctx += ` | Засідання: ${hearingsStr}`;
+      if (deadlinesStr) ctx += ` | Дедлайни: ${deadlinesStr}`;
       if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
       ctx += '\n';
     } else if (detail === 'medium') {
-      ctx += `• ${c.name}`;
+      ctx += `• ${c.name} [id:${c.id}]`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
-      if (_hDate) ctx += ` | Зас: ${formatDate(_hDate, _hTime)}`;
-      if (_dlDate) ctx += ` | Дед: ${formatDate(_dlDate)}`;
+      if (hearingsStr) ctx += ` | Зас: ${hearingsStr}`;
+      if (deadlinesStr) ctx += ` | Дед: ${deadlinesStr}`;
       if (c.next_action) ctx += ` | ${c.next_action}`;
       ctx += '\n';
     } else {
-      ctx += `• ${c.name}`;
+      ctx += `• ${c.name} [id:${c.id}]`;
       const nearest = _hDate || _dlDate;
       if (nearest) ctx += ` (${formatDate(nearest, _hDate ? _hTime : null)})`;
       ctx += '\n';
@@ -873,9 +889,18 @@ function buildSystemContext(cases) {
   if (paused.length > 0) {
     ctx += `\nПРИЗУПИНЕНІ СПРАВИ:\n`;
     paused.forEach(c => {
-      ctx += `• ${c.name}`;
+      ctx += `• ${c.name} [id:${c.id}]`;
       if (c.court) ctx += ` | ${c.court}`;
       if (c.next_action) ctx += ` | Дія: ${c.next_action}`;
+      ctx += '\n';
+    });
+  }
+
+  if (closed.length > 0) {
+    ctx += `\nЗАКРИТІ СПРАВИ (можна відновити через restore_case):\n`;
+    closed.forEach(c => {
+      ctx += `• ${c.name} [id:${c.id}]`;
+      if (c.court) ctx += ` | ${c.court}`;
       ctx += '\n';
     });
   }
@@ -1560,47 +1585,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
             setChatLoading(false);
             return;
           }
-          if (action === 'update_case_date') {
-            const hearing_date = actionResult.extracted?.hearing_date;
-            const hearing_time = actionResult.extracted?.hearing_time;
-            const caseName = actionResult.case_match?.case_name;
-            const matched = caseName ? findCaseForAction(caseName, cases) : null;
-            if (matched && hearing_date) {
-              onExecuteAction('qi_agent', 'add_hearing', {
-                caseId: matched.id,
-                date: hearing_date,
-                time: hearing_time || '',
-              });
-              const timeStr = hearing_time ? ` о ${hearing_time}` : '';
-              setConversationHistory(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Додано засідання у справі "${matched.name}" на ${hearing_date}${timeStr}`
-              }]);
-              setChatLoading(false);
-              return;
-            }
-          }
-          if (action === 'update_deadline') {
-            const deadline_date = actionResult.extracted?.deadline_date;
-            const deadline_type = actionResult.extracted?.deadline_type;
-            const caseName = actionResult.case_match?.case_name;
-            const matched = caseName ? findCaseForAction(caseName, cases) : null;
-            if (matched && deadline_date !== undefined) {
-              onExecuteAction('qi_agent', 'add_deadline', {
-                caseId: matched.id,
-                name: deadline_type || "Дедлайн",
-                date: deadline_date,
-              });
-              const typeStr = deadline_type ? ` (${deadline_type})` : '';
-              const dateStr = deadline_date ? `встановлено: ${deadline_date}` : 'очищено';
-              setConversationHistory(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Дедлайн у справі "${matched.name}" ${dateStr}${typeStr}`
-              }]);
-              setChatLoading(false);
-              return;
-            }
-          }
           if (action === 'update_case_field' || action === 'update_case_status') {
             const caseName = actionResult.case_match?.case_name
               || actionResult.extracted?.case_name;
@@ -1680,6 +1664,191 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
               return;
             }
           }
+
+          // --- НОВІ ДІЇ через onExecuteAction ---
+
+          if (action === 'close_case') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            if (matched) {
+              onExecuteAction('qi_agent', 'close_case', { caseId: matched.id });
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Справу "${matched.name}" закрито`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+
+          if (action === 'restore_case') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName
+              ? cases.find(c => c.name?.toLowerCase().includes(caseName.toLowerCase()))
+              : null;
+            if (matched) {
+              onExecuteAction('qi_agent', 'restore_case', { caseId: matched.id });
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Справу "${matched.name}" відновлено`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+
+          if (action === 'add_hearing') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            const date = actionResult.extracted?.hearing_date || actionResult.extracted?.date;
+            const time = actionResult.extracted?.hearing_time || actionResult.extracted?.time || '';
+            if (matched && date) {
+              onExecuteAction('qi_agent', 'add_hearing', {
+                caseId: matched.id, date, time, duration: 120
+              });
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Засідання у справі "${matched.name}" на ${date}${time ? ` о ${time}` : ''} додано`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+
+          if (action === 'update_hearing') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            const date = actionResult.extracted?.hearing_date || actionResult.extracted?.date;
+            const time = actionResult.extracted?.hearing_time || actionResult.extracted?.time;
+            const hearingId = actionResult.extracted?.hearing_id || null;
+            if (matched && date) {
+              onExecuteAction('qi_agent', 'update_hearing', {
+                caseId: matched.id, hearingId, date, time
+              });
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Засідання у справі "${matched.name}" перенесено на ${date}${time ? ` о ${time}` : ''}`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+
+          if (action === 'delete_hearing') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            const date = actionResult.extracted?.hearing_date || actionResult.extracted?.date;
+            const hearingId = actionResult.extracted?.hearing_id || null;
+            if (matched) {
+              let targetHearingId = hearingId;
+              if (!targetHearingId && date) {
+                const h = (matched.hearings || []).find(h => h.date === date);
+                if (h) targetHearingId = h.id;
+              }
+              if (!targetHearingId) {
+                const today = new Date().toISOString().split('T')[0];
+                const next = (matched.hearings || [])
+                  .filter(h => h.date >= today)
+                  .sort((a, b) => a.date.localeCompare(b.date))[0];
+                if (next) targetHearingId = next.id;
+              }
+              if (targetHearingId) {
+                onExecuteAction('qi_agent', 'delete_hearing', {
+                  caseId: matched.id, hearingId: targetHearingId
+                });
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ Засідання у справі "${matched.name}"${date ? ` на ${date}` : ''} видалено`
+                }]);
+                setChatLoading(false);
+                return;
+              }
+            }
+          }
+
+          if (action === 'add_deadline') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            const date = actionResult.extracted?.deadline_date || actionResult.extracted?.date;
+            const name = actionResult.extracted?.deadline_type || actionResult.extracted?.name || 'Дедлайн';
+            if (matched && date) {
+              onExecuteAction('qi_agent', 'add_deadline', {
+                caseId: matched.id, name, date
+              });
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Дедлайн "${name}" у справі "${matched.name}" на ${date} додано`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+
+          if (action === 'delete_deadline') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            const date = actionResult.extracted?.deadline_date || actionResult.extracted?.date;
+            const deadlineId = actionResult.extracted?.deadline_id || null;
+            if (matched) {
+              let targetDeadlineId = deadlineId;
+              if (!targetDeadlineId && date) {
+                const d = (matched.deadlines || []).find(d => d.date === date);
+                if (d) targetDeadlineId = d.id;
+              }
+              if (!targetDeadlineId && matched.deadlines?.length > 0) {
+                targetDeadlineId = matched.deadlines[0].id;
+              }
+              if (targetDeadlineId) {
+                onExecuteAction('qi_agent', 'delete_deadline', {
+                  caseId: matched.id, deadlineId: targetDeadlineId
+                });
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ Дедлайн у справі "${matched.name}"${date ? ` на ${date}` : ''} видалено`
+                }]);
+                setChatLoading(false);
+                return;
+              }
+            }
+          }
+
+          if (action === 'update_deadline') {
+            const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
+            const matched = caseName ? findCaseForAction(caseName, cases) : null;
+            const date = actionResult.extracted?.deadline_date || actionResult.extracted?.date;
+            const name = actionResult.extracted?.deadline_type || actionResult.extracted?.name;
+            const deadlineId = actionResult.extracted?.deadline_id || null;
+            if (matched && date) {
+              let targetDeadlineId = deadlineId;
+              if (!targetDeadlineId && matched.deadlines?.length > 0) {
+                targetDeadlineId = matched.deadlines[0].id;
+              }
+              if (targetDeadlineId) {
+                onExecuteAction('qi_agent', 'update_deadline', {
+                  caseId: matched.id, deadlineId: targetDeadlineId,
+                  name: name || matched.deadlines.find(d => d.id === targetDeadlineId)?.name || 'Дедлайн',
+                  date
+                });
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ Дедлайн у справі "${matched.name}" оновлено: ${date}`
+                }]);
+                setChatLoading(false);
+                return;
+              }
+              // Дедлайнів немає — створюємо новий
+              onExecuteAction('qi_agent', 'add_deadline', {
+                caseId: matched.id, name: name || 'Дедлайн', date
+              });
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Дедлайн "${name || 'Дедлайн'}" у справі "${matched.name}" на ${date} додано`
+              }]);
+              setChatLoading(false);
+              return;
+            }
+          }
+
           // Для інших дій або якщо не знайшли — показати кнопки як fallback
           setConversationHistory(prev => [...prev, { role: 'assistant', content: displayText, actionResult }]);
         } else {
