@@ -251,6 +251,46 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     }
   };
 
+  // Для legacy справ (створених до v2 без subFolders у storage):
+  // знаходить підпапки в Drive за NFC-нормалізованими іменами і оновлює
+  // caseData.storage.subFolders. Безпечно для повторного виклику.
+  async function ensureSubFolders(cData) {
+    if (cData.storage?.subFolders?.['01_ОРИГІНАЛИ'] &&
+        cData.storage?.subFolders?.['02_ОБРОБЛЕНІ']) {
+      return cData.storage.subFolders;
+    }
+
+    const folderId = cData.storage?.driveFolderId;
+    if (!folderId) return null;
+
+    const res = await driveRequest(
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+        `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+      )}&fields=files(id,name)&pageSize=20`
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const folders = data.files || [];
+
+    const findFolder = (target) =>
+      folders.find(f => f.name.normalize('NFC') === target.normalize('NFC')) ||
+      folders.find(f => f.name.startsWith(target.split('_')[0] + '_'));
+
+    const subFolders = {
+      '01_ОРИГІНАЛИ': findFolder('01_ОРИГІНАЛИ')?.id,
+      '02_ОБРОБЛЕНІ': findFolder('02_ОБРОБЛЕНІ')?.id,
+      '03_ФРАГМЕНТИ': findFolder('03_ФРАГМЕНТИ')?.id,
+      '04_ПОЗИЦІЯ': findFolder('04_ПОЗИЦІЯ')?.id,
+      '05_ЗОВНІШНІ': findFolder('05_ЗОВНІШНІ')?.id,
+    };
+
+    const newStorage = { ...(cData.storage || {}), subFolders };
+    updateCase(cData.id, 'storage', newStorage);
+    setStorageState(newStorage);
+
+    return subFolders;
+  }
+
   async function handleCreateContext() {
     if (typeof handleCreateContext.running !== 'undefined' && handleCreateContext.running) {
       setContextMsg("⏳ Операція вже виконується. Будь ласка, зачекайте.");
@@ -655,10 +695,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     setCreatingStructure(true);
     try {
       const caseName = `${caseData.name}_${caseData.case_no || caseData.id}`.replace(/[/\s\\:*?"<>|]+/g, "_");
-      const { caseFolderId, caseFolderName } = await createCaseStructure(caseName, token);
+      const { caseFolderId, caseFolderName, subFolders } = await createCaseStructure(caseName, token);
       const newStorage = {
         driveFolderId: caseFolderId,
         driveFolderName: caseFolderName,
+        subFolders,
         localFolderPath: null,
         lastSyncAt: new Date().toISOString(),
       };
@@ -828,9 +869,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   async function uploadFileLocal(file, cData) {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) throw new Error("No Drive token");
+
+    // Пріоритет: 01_ОРИГІНАЛИ → root папки справи → cData.driveFolderId (legacy)
+    const targetFolderId =
+      cData.storage?.subFolders?.['01_ОРИГІНАЛИ'] ||
+      cData.storage?.driveFolderId ||
+      cData.driveFolderId;
+
     const metadata = {
       name: file.name,
-      ...(cData.driveFolderId ? { parents: [cData.driveFolderId] } : {})
+      ...(targetFolderId ? { parents: [targetFolderId] } : {})
     };
     const form = new FormData();
     form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
