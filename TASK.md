@@ -1,561 +1,77 @@
-# TASK — Архітектура ACTIONS + PERMISSIONS
+# TASK — Фікси агентів v4 (на основі diagnostic_report_2.md)
 # Legal BMS | АБ Левицького
-# Дата: 19.04.2026
-# Версія: 1.0
+# Дата: 26.04.2026
 
 ---
 
 ## КРОК 0 — ПРОЧИТАТИ ПЕРЕД ПОЧАТКОМ
 
 ```bash
-cat LESSONS.md
 cat CLAUDE.md
-```
-
-Прочитати уважно. Не починати поки не прочитав.
-
----
-
-## ЩО РОБИМО І НАВІЩО
-
-Зараз обробники розкидані по трьох місцях: `sendChat()` в App.jsx, Dashboard/index.jsx, окремі функції App.jsx. Є дублювання, немає перевірки повноважень, немає логування.
-
-Реалізуємо єдиний реєстр дій ACTIONS + матрицю повноважень PERMISSIONS + єдину функцію виконання `executeAction`. Після цього кожен агент звертається тільки через `executeAction` — ніяких прямих викликів.
-
-Принцип: архіваріус. Хочеш щось змінити в даних — йди через нього.
-
----
-
-## КРОК 1 — АНАЛІЗ ПОТОЧНОГО КОДУ
-
-Перед будь-якими змінами:
-
-```bash
-grep -n "setCases\|setNotes\|setCalendarEvents" src/App.jsx | head -50
-grep -n "handleEventAdd\|handleEventUpdate\|handleEventDelete" src/components/Dashboard/index.jsx
-grep -n "saveNoteToStorage\|addNote\|deleteNote\|updateNote" src/App.jsx
-```
-
-Записати де що знаходиться. Не змінювати поки не зрозуміло де все лежить.
-
----
-
-## КРОК 2 — СТРУКТУРА ДАНИХ: registry_data.json
-
-### 2А. Додати глобальні поля
-
-```json
-{
-  "version": "4.0",
-  "userId": "vadym",
-  ...
-}
-```
-
-### 2Б. Оновити структуру справи (cases[])
-
-Кожна справа отримує нові поля:
-
-```json
-{
-  "id": "case_001",
-  "userId": "vadym",
-  "createdAt": "2026-04-19T10:00:00",
-  "updatedAt": "2026-04-19T10:00:00",
-  ...існуючі поля...
-}
-```
-
-### 2В. hearing_date і hearing_time → hearings[]
-
-БУЛО:
-```json
-{
-  "hearing_date": "2026-04-15",
-  "hearing_time": "10:00"
-}
-```
-
-СТАЛО:
-```json
-{
-  "hearings": [
-    {
-      "id": "hrg_001",
-      "date": "2026-04-15",
-      "time": "10:00",
-      "duration": 120,
-      "status": "scheduled",
-      "type": null
-    }
-  ]
-}
-```
-
-⚠ Міграція: для кожної справи де є `hearing_date` — створити перший елемент `hearings[]` з цими даними. Старі поля `hearing_date` і `hearing_time` — видалити після міграції.
-
-### 2Г. deadline і deadline_type → deadlines[]
-
-БУЛО:
-```json
-{
-  "deadline": "2026-04-20",
-  "deadline_type": "hearing"
-}
-```
-
-СТАЛО:
-```json
-{
-  "deadlines": [
-    {
-      "id": "dl_001",
-      "name": "Подати відзив",
-      "date": "2026-04-20"
-    }
-  ]
-}
-```
-
-⚠ Міграція: для кожної справи де є `deadline` — створити перший елемент `deadlines[]`. Старі поля — видалити після міграції.
-
-### 2Д. Додати timeLog[]
-
-```json
-{
-  "timeLog": []
-}
-```
-
-Поки порожній масив. Структура одного запису:
-```json
-{
-  "id": "tl_001",
-  "userId": "vadym",
-  "caseId": "case_001",
-  "date": "2026-04-19",
-  "duration": 45,
-  "description": "Підготовка до засідання",
-  "type": "billable",
-  "source": "manual",
-  "createdAt": "2026-04-19T10:30:00"
-}
-```
-
-### 2Е. calendarEvents[] — прибрати reminder
-
-З `calendarEvents[]` видалити всі події типу `reminder`. Залишити тільки `hearing` посилання:
-```json
-{
-  "type": "hearing",
-  "caseId": "case_001",
-  "hearingId": "hrg_001"
-}
-```
-
-### 2Є. notes[] — додати нові поля
-
-Кожна нотатка отримує:
-```json
-{
-  "id": "note_001",
-  "userId": "vadym",
-  "category": "general",
-  "text": "...",
-  "date": null,
-  "time": null,
-  "duration": null,
-  "caseId": null,
-  "createdAt": "2026-04-19T10:00:00",
-  "updatedAt": "2026-04-19T10:00:00"
-}
+cat LESSONS.md
 ```
 
 ---
 
-## КРОК 3 — РЕАЛІЗАЦІЯ ACTIONS в App.jsx
+## ЩО РОБИМО
 
-Додати в App.jsx після всіх існуючих функцій єдиний об'єкт ACTIONS:
+Чотири точкові правки на основі діагностики.
+Рядки вказані точно — не шукати, змінювати конкретні місця.
 
+---
+
+## ФІКС 1 — rebuildCalendarView: stale closure + дублювання (App.jsx)
+
+### 1А — Прибрати виклик з executeAction
+
+Файл: `src/App.jsx`, рядок ~3607
+
+ЗНАЙТИ:
 ```javascript
-const ACTIONS = {
-
-  // ГРУПА 1 — Справи
-  create_case: ({ fields }) => {
-    const newCase = {
-      id: `case_${Date.now()}`,
-      userId: 'vadym',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      hearings: [],
-      deadlines: [],
-      ...fields
-    };
-    setCases(prev => [...prev, newCase]);
-    return { success: true, caseId: newCase.id };
-  },
-
-  close_case: ({ caseId }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, status: 'closed', updatedAt: new Date().toISOString() }
-        : c
-    ));
-    return { success: true };
-  },
-
-  restore_case: ({ caseId }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, status: 'active', updatedAt: new Date().toISOString() }
-        : c
-    ));
-    return { success: true };
-  },
-
-  // destroy_case — НЕ додавати в ACTIONS. Тільки через UI.
-
-  update_case_field: ({ caseId, field, value }) => {
-    const allowedFields = [
-      'name', 'client', 'court', 'case_no', 'category',
-      'next_action', 'notes', 'judge', 'status'
-    ];
-    if (!allowedFields.includes(field)) {
-      return { error: `Поле "${field}" не дозволено змінювати через агента` };
-    }
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, [field]: value, updatedAt: new Date().toISOString() }
-        : c
-    ));
-    return { success: true };
-  },
-
-  add_deadline: ({ caseId, name, date }) => {
-    const deadline = {
-      id: `dl_${Date.now()}`,
-      name,
-      date
-    };
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, deadlines: [...(c.deadlines || []), deadline], updatedAt: new Date().toISOString() }
-        : c
-    ));
-    return { success: true, deadlineId: deadline.id };
-  },
-
-  update_deadline: ({ caseId, deadlineId, name, date }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? {
-            ...c,
-            deadlines: (c.deadlines || []).map(d =>
-              d.id === deadlineId ? { ...d, name, date } : d
-            ),
-            updatedAt: new Date().toISOString()
-          }
-        : c
-    ));
-    return { success: true };
-  },
-
-  delete_deadline: ({ caseId, deadlineId }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? {
-            ...c,
-            deadlines: (c.deadlines || []).filter(d => d.id !== deadlineId),
-            updatedAt: new Date().toISOString()
-          }
-        : c
-    ));
-    return { success: true };
-  },
-
-  // ГРУПА 2 — Засідання
-  add_hearing: ({ caseId, date, time, duration = 120, type = null }) => {
-    const hearing = {
-      id: `hrg_${Date.now()}`,
-      date,
-      time,
-      duration,
-      status: 'scheduled',
-      type
-    };
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, hearings: [...(c.hearings || []), hearing], updatedAt: new Date().toISOString() }
-        : c
-    ));
-    return { success: true, hearingId: hearing.id };
-  },
-
-  update_hearing: ({ caseId, hearingId, date, time, duration, type }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? {
-            ...c,
-            hearings: (c.hearings || []).map(h =>
-              h.id === hearingId
-                ? { ...h, date, time, duration: duration ?? h.duration, type: type ?? h.type }
-                : h
-            ),
-            updatedAt: new Date().toISOString()
-          }
-        : c
-    ));
-    return { success: true };
-  },
-
-  delete_hearing: ({ caseId, hearingId }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? {
-            ...c,
-            hearings: (c.hearings || []).filter(h => h.id !== hearingId),
-            updatedAt: new Date().toISOString()
-          }
-        : c
-    ));
-    return { success: true };
-  },
-
-  // ГРУПА 3 — Нотатки
-  add_note: ({ text, category = 'general', date = null, time = null, duration = null, caseId = null }) => {
-    const note = {
-      id: `note_${Date.now()}`,
-      userId: 'vadym',
-      category,
-      text,
-      date,
-      time,
-      duration,
-      caseId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    setNotes(prev => [note, ...prev]);
-    return { success: true, noteId: note.id };
-  },
-
-  update_note: ({ noteId, text, date, time, duration }) => {
-    setNotes(prev => prev.map(n =>
-      n.id === noteId
-        ? { ...n, text, date: date ?? n.date, time: time ?? n.time, duration: duration ?? n.duration, updatedAt: new Date().toISOString() }
-        : n
-    ));
-    return { success: true };
-  },
-
-  delete_note: ({ noteId }) => {
-    setNotes(prev => prev.filter(n => n.id !== noteId));
-    // також видалити з pinnedNoteIds всіх справ
-    setCases(prev => prev.map(c => ({
-      ...c,
-      pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== noteId)
-    })));
-    return { success: true };
-  },
-
-  pin_note: ({ noteId, caseId }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, pinnedNoteIds: [...new Set([...(c.pinnedNoteIds || []), noteId])] }
-        : c
-    ));
-    return { success: true };
-  },
-
-  unpin_note: ({ noteId, caseId }) => {
-    setCases(prev => prev.map(c =>
-      c.id === caseId
-        ? { ...c, pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== noteId) }
-        : c
-    ));
-    return { success: true };
-  },
-
-  // ГРУПА 4 — Час / Сесія
-  add_time_entry: ({ caseId = null, date, duration, description, type = 'billable', source = 'manual' }) => {
-    const entry = {
-      id: `tl_${Date.now()}`,
-      userId: 'vadym',
-      caseId,
-      date,
-      duration,
-      description,
-      type,
-      source,
-      createdAt: new Date().toISOString()
-    };
-    setTimeLog(prev => [entry, ...prev]);
-    return { success: true };
-  },
-
-  track_session_start: ({ caseId = null, sessionId }) => {
-    // Заглушка — реалізувати пізніше
-    console.log(`Session started: ${sessionId}, case: ${caseId}`);
-    return { success: true };
-  },
-
-  track_session_end: ({ sessionId }) => {
-    // Заглушка — реалізувати пізніше
-    console.log(`Session ended: ${sessionId}`);
-    return { success: true };
-  },
-};
+const result = ACTIONS[action](params);
+console.log(`executeAction OK: ${action}`, params, result);
+rebuildCalendarView();   // ← прибрати цей рядок
+return result;
 ```
 
----
-
-## КРОК 4 — МАТРИЦЯ PERMISSIONS в App.jsx
-
+ЗАМІНИТИ НА:
 ```javascript
-const PERMISSIONS = {
-  qi_agent: [
-    'create_case', 'close_case', 'restore_case',
-    'update_case_field',
-    'add_deadline', 'update_deadline',
-    'add_hearing', 'update_hearing',
-    'add_note',
-    'add_time_entry',
-  ],
-
-  dashboard_agent: [
-    'add_hearing', 'update_hearing',
-    'add_note',
-  ],
-
-  dossier_agent: [
-    'create_case', 'close_case', 'restore_case',
-    'update_case_field',
-    'add_deadline', 'update_deadline', 'delete_deadline',
-    'add_hearing', 'update_hearing', 'delete_hearing',
-    'add_note', 'update_note', 'delete_note',
-    'pin_note', 'unpin_note',
-    'add_time_entry',
-    'track_session_start', 'track_session_end',
-  ],
-
-  main_agent: [
-    'create_case', 'close_case', 'restore_case',
-    'update_case_field',
-    'add_deadline', 'update_deadline', 'delete_deadline',
-    'add_hearing', 'update_hearing', 'delete_hearing',
-    'add_note', 'update_note', 'delete_note',
-    'pin_note', 'unpin_note',
-    'add_time_entry',
-    'track_session_start', 'track_session_end',
-  ],
-
-  // destroy_case — жоден агент. Тільки UI.
-};
+const result = ACTIONS[action](params);
+console.log(`executeAction OK: ${action}`, params, result);
+return result;
 ```
 
----
+### 1Б — Додати useEffect замість прямого виклику
 
-## КРОК 5 — executeAction в App.jsx
+Файл: `src/App.jsx`, поряд з іншими useEffect (після useEffect для notes)
 
+ДОДАТИ:
 ```javascript
-const logAction = ({ agentId, action, params, userId }) => {
-  const entry = {
-    ts: new Date().toISOString(),
-    userId,
-    agentId,
-    action,
-    caseId: params?.caseId || null,
-  };
-  // зберігати в localStorage для майбутнього аналізу
-  try {
-    const log = JSON.parse(localStorage.getItem('levytskyi_action_log') || '[]');
-    log.unshift(entry);
-    // зберігати останні 500 записів
-    localStorage.setItem('levytskyi_action_log', JSON.stringify(log.slice(0, 500)));
-  } catch (e) {
-    console.warn('logAction error:', e);
-  }
-};
-
-const executeAction = (agentId, action, params, userId = 'vadym') => {
-  // Перевірка повноважень
-  const allowed = PERMISSIONS[agentId] || [];
-  if (!allowed.includes(action)) {
-    console.warn(`executeAction: агент "${agentId}" не має права на "${action}"`);
-    return { error: `Немає повноважень: ${action}` };
-  }
-
-  // Перевірка чи дія існує
-  if (!ACTIONS[action]) {
-    console.warn(`executeAction: дія "${action}" не знайдена в реєстрі`);
-    return { error: `Невідома дія: ${action}` };
-  }
-
-  // Логування
-  logAction({ agentId, action, params, userId });
-
-  // Виконання
-  try {
-    const result = ACTIONS[action](params);
-    // Після будь-якої зміни — перебудувати календар дашборду
-    rebuildCalendarView();
-    return result;
-  } catch (e) {
-    console.error(`executeAction error [${action}]:`, e);
-    return { error: e.message };
-  }
-};
+// rebuildCalendarView — автоматично після оновлення cases або notes
+useEffect(() => {
+  rebuildCalendarView();
+}, [cases, notes]);
 ```
 
----
+### 1В — Прибрати hearings і deadlines з rebuildCalendarView
 
-## КРОК 6 — rebuildCalendarView в App.jsx
+Файл: `src/App.jsx`, рядки ~3017–3057
+
+`rebuildCalendarView` більше НЕ повинна читати `cases.hearings` і `cases.deadlines`
+бо Dashboard вже бере їх напряму з `cases` prop.
+
+Залишити тільки Джерело 3 — нотатки з датою:
 
 ```javascript
 const rebuildCalendarView = () => {
-  // Збирає всі події для відображення в календарі з трьох джерел
-  // Викликається автоматично після кожної executeAction
-  // Результат зберігається в стані для дашборду
-
   const events = [];
 
-  // Джерело 1 — засідання (сині слоти)
-  cases.forEach(c => {
-    (c.hearings || []).forEach(h => {
-      if (h.status === 'scheduled') {
-        events.push({
-          type: 'hearing',
-          caseId: c.id,
-          caseName: c.name,
-          hearingId: h.id,
-          date: h.date,
-          time: h.time,
-          duration: h.duration || 120,
-          color: 'blue'
-        });
-      }
-    });
-  });
-
-  // Джерело 2 — дедлайни (червоні позначки без слоту)
-  cases.forEach(c => {
-    (c.deadlines || []).forEach(d => {
-      events.push({
-        type: 'deadline',
-        caseId: c.id,
-        caseName: c.name,
-        deadlineId: d.id,
-        date: d.date,
-        time: null,
-        duration: null,
-        title: d.name,
-        color: 'red'
-      });
-    });
-  });
-
-  // Джерело 3 — нотатки з датою (жовті слоти)
-  notes.forEach(n => {
+  // ТІЛЬКИ нотатки з датою (hearings і deadlines — Dashboard бере з cases напряму)
+  const allNotes = [];
+  for (const cat of Object.keys(notes)) {
+    (notes[cat] || []).forEach(n => allNotes.push(n));
+  }
+  allNotes.forEach(n => {
     if (n.date) {
       events.push({
         type: 'note',
@@ -565,134 +81,362 @@ const rebuildCalendarView = () => {
         date: n.date,
         time: n.time || null,
         duration: n.duration || (n.time ? 120 : null),
-        title: n.text.slice(0, 60),
+        title: (n.text || '').slice(0, 60),
         color: 'yellow'
       });
     }
   });
 
-  // Сортувати по даті
   events.sort((a, b) => new Date(a.date) - new Date(b.date));
-
   setCalendarEvents(events);
 };
 ```
 
-⚠ Додати `calendarEvents` і `setCalendarEvents` в useState якщо ще немає:
-```javascript
-const [calendarEvents, setCalendarEvents] = useState([]);
+---
+
+## ФІКС 2 — Промпти: онтологія засідань
+
+### 2А — SONNET_CHAT_PROMPT (App.jsx ~рядок 553)
+
+ДОДАТИ блок одразу після заголовку секції про засідання:
+
+```
+ОНТОЛОГІЯ ДАНИХ:
+- Засідання (hearing) існує ВИКЛЮЧНО як елемент масиву hearings[] конкретної справи.
+- Дедлайн (deadline) існує ВИКЛЮЧНО як елемент масиву deadlines[] конкретної справи.
+- Окремих "вільних" засідань або дедлайнів у системі НЕ ІСНУЄ.
+- Будь-яка дія над засіданням ОБОВ'ЯЗКОВО потребує caseId справи-власника.
+- Якщо в команді справу не названо явно — визнач її одним з трьох способів і ТІЛЬКИ потім дій:
+  1) шукай по даті в hearings[] усіх справ;
+  2) шукай по прізвищу клієнта, суду, номеру справи;
+  3) якщо неоднозначно — задай ОДНЕ уточнення "у якій справі — X чи Y?"
+- Заборонено формулювання "засідання не прив'язане до справи".
+```
+
+ТАКОЖ замінити рядок ~542:
+```
+Execute intent immediately — do NOT ask for confirmation for adding/updating hearing dates
+```
+НА:
+```
+Execute intent immediately ONLY коли таблиця уточнень (нижче) не вимагає питання.
+```
+
+### 2Б — buildDashboardContext (Dashboard/index.jsx ~рядок 300)
+
+ДОДАТИ блок на початку контексту:
+
+```
+ОНТОЛОГІЯ:
+Засідання існує ВИКЛЮЧНО всередині справи (hearings[]). Окремих засідань немає.
+Будь-яка дія над засіданням потребує case_name справи-власника.
+Заборонено: "засідання не прив'язане до справи".
+```
+
+ЗАМІНИТИ рядок ~328:
+```
+Не ухиляйся від виконання — або виконуй або чітко кажи що не вистачає даних
+```
+НА:
+```
+Не ухиляйся від виконання — або виконуй або став ОДНЕ конкретне питання.
+Заборонено: "не вистачає даних" без питання, "я не маю доступу".
 ```
 
 ---
 
-## КРОК 7 — СТАН timeLog в App.jsx
+## ФІКС 3 — Таблиця уточнень в промптах
 
-```javascript
-const [timeLog, setTimeLog] = useState(() => {
-  try {
-    return JSON.parse(localStorage.getItem('levytskyi_timelog') || '[]');
-  } catch { return []; }
-});
+### 3А — SONNET_CHAT_PROMPT (App.jsx)
 
-// Зберігати при змінах
-useEffect(() => {
-  localStorage.setItem('levytskyi_timelog', JSON.stringify(timeLog));
-}, [timeLog]);
+ДОДАТИ після блоку ОНТОЛОГІЯ:
+
+```
+ПРАВИЛО УТОЧНЕНЬ (питай ТІЛЬКИ ці випадки, в інших — виконуй негайно):
+
+add_hearing:
+- Немає справи → "У якій справі?"
+- Немає дати → "На яку дату?"
+- Немає часу → НЕ питай. Додай без часу, скажи "час не вказано — уточни пізніше"
+
+update_hearing (перенос):
+- Немає справи → "У якій справі?"
+- Є дата але немає часу → НЕ питай. Збережи попередній час.
+  Скажи: "Перенесено на [дата], час [старий час] збережено. Інший час?"
+- У справі кілька scheduled засідань → "Яке саме — [дата1] чи [дата2]?"
+- Одне scheduled засідання → виконуй без питань
+
+delete_hearing:
+- Немає справи → "У якій справі?"
+- Кілька scheduled → "Яке саме — [дата1] чи [дата2]?" НЕ обирай мовчки.
+- Одне scheduled → виконуй без питань
+
+add_deadline:
+- Немає справи → "У якій справі?"
+- Немає дати → "На яку дату?"
+
+close_case / restore_case:
+- Немає справи → "Яку саме справу?"
+
+ФОРМАТ ПИТАННЯ — одне коротке речення. Поки чекаєш відповіді — не додавай ACTION_JSON.
+ЗАБОРОНЕНО: мовчазний вибір першого варіанту коли їх кілька.
+```
+
+### 3Б — buildDashboardContext (Dashboard/index.jsx)
+
+ДОДАТИ аналогічну таблицю для дій які дозволені dashboard_agent:
+(add_hearing, update_hearing, delete_hearing, add_note, update_note, delete_note)
+
+### 3В — buildAgentSystemPrompt (CaseDossier/index.jsx ~рядок 211)
+
+ЗАМІНИТИ:
+```
+НЕ питай підтвердження для простих дій (видалити засідання, змінити дату).
+```
+НА:
+```
+НЕ питай підтвердження для простих дій якщо засідання одне.
+Якщо в hearings[] кілька scheduled — став одне питання "яке саме — [дата1] чи [дата2]?"
+```
+
+ЗАМІНИТИ рядки ~221-222:
+```
+Для delete_hearing і delete_deadline — якщо hearingId/deadlineId не відомий,
+взяти перший підходящий з контексту справи.
+```
+НА:
+```
+Для delete_hearing: якщо scheduled засідань рівно одне — беремо його без питань.
+Якщо кілька scheduled — питаємо "яке саме — [дата1] чи [дата2]?"
+Для delete_deadline: якщо дедлайн один — беремо без питань. Якщо кілька — питаємо.
 ```
 
 ---
 
-## КРОК 8 — ЗАМІНИТИ СТАРІ ВИКЛИКИ
+## ФІКС 4 — CaseDossier: редаговані секції Засідання і Дедлайни
 
-Після реалізації ACTIONS + executeAction — замінити всі прямі виклики в агентах.
+Файл: `src/components/CaseDossier/index.jsx`, рядки ~1138–1157
 
-### В sendChat() QI — замінити:
+### 4А — Прибрати read-only рядки з таблиці полів
 
-| Було | Стало |
-|---|---|
-| `setCases(prev => ...)` для hearing_date | `executeAction('qi_agent', 'add_hearing', {...})` |
-| `setCases(prev => ...)` для deadline | `executeAction('qi_agent', 'update_deadline', {...})` |
-| `setCases(prev => ...)` для update_case_field | `executeAction('qi_agent', 'update_case_field', {...})` |
-| `setCases(prev => ...)` для create_case | `executeAction('qi_agent', 'create_case', {...})` |
-| `setCases(prev => ...)` для close_case | `executeAction('qi_agent', 'close_case', {...})` |
-| `setNotes(...)` для save_note | `executeAction('qi_agent', 'add_note', {...})` |
+ЗНАЙТИ і ВИДАЛИТИ з масиву полів:
+```javascript
+{ label: "Дата засідання", field: "_hearing_date", ..., readOnly: true },
+{ label: "Дедлайн", field: "_deadline", ..., readOnly: true }
+```
 
-### В Dashboard/index.jsx — замінити:
+### 4Б — Додати секцію Засідання після таблиці полів
 
-| Було | Стало |
-|---|---|
-| `handleEventAdd` | `executeAction('dashboard_agent', 'add_hearing', {...})` або `add_note` |
-| `handleEventUpdate` | `executeAction('dashboard_agent', 'update_hearing', {...})` |
+```jsx
+{/* СЕКЦІЯ ЗАСІДАННЯ */}
+<div className="overview-section">
+  <div className="section-header">
+    <span>Засідання</span>
+    <button
+      className="btn-add-small"
+      onClick={() => {
+        const date = prompt('Дата засідання (YYYY-MM-DD):');
+        const time = prompt('Час (HH:MM, або залиш порожнім):');
+        if (date && onExecuteAction) {
+          onExecuteAction('dossier_agent', 'add_hearing', {
+            caseId: caseData.id, date, time: time || '', duration: 120
+          });
+        }
+      }}
+    >+ Додати</button>
+  </div>
 
-### Видалити дублі:
+  {(caseData.hearings || [])
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(h => {
+      const today = new Date().toISOString().split('T')[0];
+      const isPast = h.date < today;
+      return (
+        <div key={h.id} className={`hearing-row ${isPast ? 'past' : 'upcoming'}`}>
+          <input
+            type="date"
+            defaultValue={h.date}
+            onBlur={e => {
+              if (e.target.value && e.target.value !== h.date && onExecuteAction) {
+                onExecuteAction('dossier_agent', 'update_hearing', {
+                  caseId: caseData.id, hearingId: h.id,
+                  date: e.target.value, time: h.time, duration: h.duration
+                });
+              }
+            }}
+          />
+          <input
+            type="time"
+            defaultValue={h.time || ''}
+            onBlur={e => {
+              if (e.target.value !== (h.time || '') && onExecuteAction) {
+                onExecuteAction('dossier_agent', 'update_hearing', {
+                  caseId: caseData.id, hearingId: h.id,
+                  date: h.date, time: e.target.value, duration: h.duration
+                });
+              }
+            }}
+          />
+          <button
+            className="btn-delete-small"
+            onClick={() => {
+              if (onExecuteAction) {
+                onExecuteAction('dossier_agent', 'delete_hearing', {
+                  caseId: caseData.id, hearingId: h.id
+                });
+              }
+            }}
+          >🗑</button>
+        </div>
+      );
+    })
+  }
+  {(!caseData.hearings || caseData.hearings.length === 0) && (
+    <div className="empty-hint">Засідань немає</div>
+  )}
+</div>
+```
 
-- `saveNoteToStorage` — видалити, замінити на `executeAction('...', 'add_note', ...)`
-- `handleEventAdd/Update/Delete` в Dashboard — видалити після заміни
-- `addCalendarEvent/updateCalendarEvent/deleteCalendarEvent` в App.jsx — видалити після заміни
+### 4В — Додати секцію Дедлайни після секції Засідання
 
----
+```jsx
+{/* СЕКЦІЯ ДЕДЛАЙНИ */}
+<div className="overview-section">
+  <div className="section-header">
+    <span>Дедлайни</span>
+    <button
+      className="btn-add-small"
+      onClick={() => {
+        const name = prompt('Назва дедлайну:');
+        const date = prompt('Дата (YYYY-MM-DD):');
+        if (name && date && onExecuteAction) {
+          onExecuteAction('dossier_agent', 'add_deadline', {
+            caseId: caseData.id, name, date
+          });
+        }
+      }}
+    >+ Додати</button>
+  </div>
 
-## КРОК 9 — GETTERS для дашборду
+  {(caseData.deadlines || [])
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(d => (
+      <div key={d.id} className="deadline-row">
+        <input
+          type="text"
+          defaultValue={d.name}
+          onBlur={e => {
+            if (e.target.value !== d.name && onExecuteAction) {
+              onExecuteAction('dossier_agent', 'update_deadline', {
+                caseId: caseData.id, deadlineId: d.id,
+                name: e.target.value, date: d.date
+              });
+            }
+          }}
+        />
+        <input
+          type="date"
+          defaultValue={d.date}
+          onBlur={e => {
+            if (e.target.value && e.target.value !== d.date && onExecuteAction) {
+              onExecuteAction('dossier_agent', 'update_deadline', {
+                caseId: caseData.id, deadlineId: d.id,
+                name: d.name, date: e.target.value
+              });
+            }
+          }}
+        />
+        <button
+          className="btn-delete-small"
+          onClick={() => {
+            if (onExecuteAction) {
+              onExecuteAction('dossier_agent', 'delete_deadline', {
+                caseId: caseData.id, deadlineId: d.id
+              });
+            }
+          }}
+        >🗑</button>
+      </div>
+    ))
+  }
+  {(!caseData.deadlines || caseData.deadlines.length === 0) && (
+    <div className="empty-hint">Дедлайнів немає</div>
+  )}
+</div>
+```
 
-Додати допоміжні функції для швидкого доступу:
+### 4Г — Фікс category: зберігати канонічне значення
+
+В рядку де `onBlur` для поля `category` — замінити щоб зберігався код а не label:
 
 ```javascript
-// Наступне засідання справи
-const getNextHearing = (caseItem) => {
-  const today = new Date().toISOString().split('T')[0];
-  return (caseItem.hearings || [])
-    .filter(h => h.status === 'scheduled' && h.date >= today)
-    .sort((a, b) => a.date.localeCompare(b.date))[0] || null;
+// Знайти де обробляється blur для category і додати маппінг:
+const CATEGORY_MAP = {
+  'Цивільна': 'civil',
+  'Кримінальна': 'criminal',
+  'Адміністративна': 'administrative',
+  'Військова': 'military',
 };
 
-// Найближчий дедлайн справи
-const getNextDeadline = (caseItem) => {
-  const today = new Date().toISOString().split('T')[0];
-  return (caseItem.deadlines || [])
-    .filter(d => d.date >= today)
-    .sort((a, b) => a.date.localeCompare(b.date))[0] || null;
-};
+// В onBlur:
+const rawValue = e.target.innerText.trim();
+const canonicalValue = CATEGORY_MAP[rawValue] || rawValue;
+updateCase(caseData.id, 'category', canonicalValue);
 ```
 
 ---
 
-## КРОК 10 — ПЕРЕВІРКА
+## ПЕРЕВІРКА ПІСЛЯ ДЕПЛОЮ
 
-Після реалізації перевірити:
+### Тест 1 — rebuildCalendarView
+```
+Дашборд агент: "Перенеси засідання Янченко на 28 квітня"
+Очікується: стара дата ОДРАЗУ зникла без F5. Нова з'явилась.
+```
 
-1. QI: сказати "Додай засідання Брановський 25 квітня 11:00" → засідання з'явилось в `hearings[]` і в календарі дашборду
-2. QI: "Встанови дедлайн Рубан 30 квітня подати відзив" → дедлайн в `deadlines[]` і позначка в календарі
-3. QI: "Закрити справу Манолюк" → статус closed
-4. QI: "Відновити справу Манолюк" → статус active
-5. Дашборд агент: "Засідання Конах перенеси на 2 травня" → оновилось в `hearings[]`
-6. Консоль: перевірити `localStorage.getItem('levytskyi_action_log')` → там є записи
-7. Спроба з неіснуючим агентом → помилка "Немає повноважень"
+### Тест 2 — Онтологія
+```
+QI: "Перенеси засідання на 5 травня" (без назви справи)
+Очікується: "У якій справі?" — одне питання. Не "засідання не прив'язане".
+```
 
----
+### Тест 3 — Уточнення часу
+```
+QI: "Перенеси засідання Брановського на 10 травня" (без часу)
+Очікується: перенесено, час збережено зі старого засідання.
+Відповідь: "Перенесено на 10 травня, час 10:00 збережено. Інший час?"
+```
 
-## ВАЖЛИВІ ПРАВИЛА
+### Тест 4 — Кілька засідань
+```
+Якщо у справі два scheduled — QI: "Видали засідання по Манолюк"
+Очікується: "Яке саме — 21 квітня чи 7 травня?"
+```
 
-- `destroy_case` — НЕ додавати в ACTIONS і НЕ в PERMISSIONS. Тільки через UI реєстру.
-- Не чіпати існуючий UI — тільки логіку обробників
-- Всі зміни тільки в main гілці
-- Після кожного кроку — git commit з описом
-- Якщо щось зламалось — git reset до попереднього коміту, не латати поверх
+### Тест 5 — Досьє: вручну змінити дедлайн
+```
+Відкрити досьє справи з дедлайном.
+Клікнути на поле дати дедлайну — змінити — tabout.
+Очікується: дата оновилась без перезавантаження.
+```
+
+### Тест 6 — Досьє: додати засідання вручну
+```
+Відкрити досьє. Натиснути "+ Додати" в секції Засідання.
+Ввести дату і час.
+Очікується: засідання з'явилось в списку і в календарі.
+```
 
 ---
 
 ## ПОРЯДОК ВИКОНАННЯ
 
 ```
-1. Прочитати LESSONS.md і CLAUDE.md
-2. Аналіз поточного коду (Крок 1)
-3. Міграція registry_data.json (Крок 2) + git commit
-4. Додати ACTIONS (Крок 3) + git commit
-5. Додати PERMISSIONS (Крок 4) + git commit
-6. Додати executeAction (Крок 5) + git commit
-7. Додати rebuildCalendarView (Крок 6) + git commit
-8. Додати timeLog стан (Крок 7) + git commit
-9. Замінити старі виклики (Крок 8) + git commit
-10. Додати getters (Крок 9) + git commit
-11. Перевірка (Крок 10)
-12. git push → деплой → фінальна перевірка на сайті
+1. Фікс 1 — rebuildCalendarView (App.jsx) → git commit
+2. Фікс 2 — Онтологія в промптах → git commit
+3. Фікс 3 — Таблиця уточнень → git commit
+4. Фікс 4 — CaseDossier UI (секції Засідання і Дедлайни) → git commit
+5. git push → деплой → перевірка 6 тестів
 ```
+
+Не чіпати: ACTIONS, PERMISSIONS, executeAction, parseAndExecuteDossierAction — вони правильні.

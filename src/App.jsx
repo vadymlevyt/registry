@@ -3013,30 +3013,11 @@ function App() {
     localStorage.setItem('levytskyi_timelog', JSON.stringify(timeLog));
   }, [timeLog]);
 
-  // ── rebuildCalendarView — збирає всі події для календаря ────────────────────
+  // ── rebuildCalendarView — збирає лише нотатки з датою для календаря ─────────
+  // Засідання і дедлайни Dashboard читає напряму з cases.hearings[] / cases.deadlines[].
+  // Дублювати їх у calendarEvents не можна — отримаємо подвійні слоти.
   const rebuildCalendarView = () => {
     const events = [];
-    // Джерело 1 — засідання (сині слоти)
-    cases.forEach(c => {
-      (c.hearings || []).forEach(h => {
-        if (h.status === 'scheduled') {
-          events.push({
-            type: 'hearing', caseId: c.id, caseName: c.name, hearingId: h.id,
-            date: h.date, time: h.time, duration: h.duration || 120, color: 'blue'
-          });
-        }
-      });
-    });
-    // Джерело 2 — дедлайни (червоні позначки)
-    cases.forEach(c => {
-      (c.deadlines || []).forEach(d => {
-        events.push({
-          type: 'deadline', caseId: c.id, caseName: c.name, deadlineId: d.id,
-          date: d.date, time: null, duration: null, title: d.name, color: 'red'
-        });
-      });
-    });
-    // Джерело 3 — нотатки з датою (жовті слоти)
     const allNotes = [];
     for (const cat of Object.keys(notes)) {
       (notes[cat] || []).forEach(n => allNotes.push(n));
@@ -3055,6 +3036,9 @@ function App() {
     events.sort((a, b) => new Date(a.date) - new Date(b.date));
     setCalendarEvents(events);
   };
+
+  // Перебудова автоматично при кожній зміні cases або notes — гарантує свіжий стейт.
+  useEffect(() => { rebuildCalendarView(); }, [cases, notes]);
 
   // ── Universal Panel resize ──────────────────────────────────────────────────
   useEffect(() => {
@@ -3604,7 +3588,6 @@ function App() {
     try {
       const result = ACTIONS[action](params);
       console.log(`executeAction OK: ${action}`, params, result);
-      rebuildCalendarView();
       return result;
     } catch (e) {
       console.error(`executeAction ERROR [${action}]:`, e);
