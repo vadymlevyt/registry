@@ -1605,6 +1605,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         // Якщо є дії — виконати одразу з чату
         if (actionResult && (actionResult.recommended_actions || []).length > 0) {
           const action = actionResult.recommended_actions[0];
+          // [DBG] трасування — який action приходить з моделі і які поля extracted
+          console.log('[DBG sendChat] incoming action =', action, 'extracted =', actionResult.extracted);
           if (action === 'create_case') {
             const ext = actionResult.extracted || {};
             const rawPerson = ext.person || actionResult.case_match?.case_name || '';
@@ -1770,10 +1772,18 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
             const date = actionResult.extracted?.hearing_date || actionResult.extracted?.date;
             const time = actionResult.extracted?.hearing_time || actionResult.extracted?.time;
             const hearingId = actionResult.extracted?.hearing_id || null;
+            // [DBG] трасування input до executeAction
+            console.log('[DBG update_hearing IN]', {
+              caseName, matchedId: matched?.id, matchedName: matched?.name,
+              date, time, hearingId,
+              hearingsBefore: matched?.hearings,
+            });
             if (matched && date) {
-              onExecuteAction('qi_agent', 'update_hearing', {
+              const result = onExecuteAction('qi_agent', 'update_hearing', {
                 caseId: matched.id, hearingId, date, time
               });
+              // [DBG] результат executeAction
+              console.log('[DBG update_hearing OUT]', result);
               setConversationHistory(prev => [...prev, {
                 role: 'assistant',
                 content: `✅ Засідання у справі "${matched.name}" перенесено на ${date}${time ? ` о ${time}` : ''}`
@@ -1781,6 +1791,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
               setChatLoading(false);
               return;
             }
+            // [DBG] якщо умова не пройшла — лог
+            console.warn('[DBG update_hearing SKIPPED] matched && date == false', { matched: !!matched, date });
           }
 
           if (action === 'delete_hearing') {
