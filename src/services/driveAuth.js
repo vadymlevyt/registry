@@ -7,7 +7,7 @@
 
 export const GOOGLE_CLIENT_ID =
   '73468500916-sn02gdk7qvp40q04hdjj44g5pir48btb.apps.googleusercontent.com';
-export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/cloud-platform';
 const TOKEN_KEY = 'levytskyi_drive_token';
 const REFRESH_TOKEN_KEY = 'google_refresh_token';
 
@@ -92,6 +92,37 @@ export async function refreshDriveToken() {
   } finally {
     refreshInFlight = null;
   }
+}
+
+// Видимий consent для отримання нового scope. Викликається коли silent refresh
+// не може отримати токен з новими scope (наприклад, після зміни DRIVE_SCOPE).
+// Показує користувачу Google consent screen.
+export function forceConsentRefresh() {
+  return new Promise((resolve) => {
+    try {
+      if (!window.google?.accounts?.oauth2) { resolve(null); return; }
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        prompt: 'consent',
+        callback: (resp) => {
+          if (resp && resp.access_token) {
+            saveDriveToken(resp.access_token);
+            try {
+              window.dispatchEvent(new CustomEvent('drive-token-refreshed', { detail: { token: resp.access_token } }));
+            } catch (e) {}
+            resolve(resp.access_token);
+          } else {
+            resolve(null);
+          }
+        },
+        error_callback: () => resolve(null),
+      });
+      client.requestAccessToken({ prompt: 'consent' });
+    } catch (e) {
+      resolve(null);
+    }
+  });
 }
 
 // Єдиний wrapper для всіх запитів до Google Drive API.
