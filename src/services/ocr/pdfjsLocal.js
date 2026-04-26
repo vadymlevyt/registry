@@ -23,8 +23,13 @@ export default {
     if (file.mimeType === 'application/vnd.google-apps.document') return true;
     if (file.mimeType === 'text/plain') return true;
     if (file.mimeType === 'text/markdown') return true;
-    if (file.name?.toLowerCase().endsWith('.txt')) return true;
-    if (file.name?.toLowerCase().endsWith('.md')) return true;
+    if (file.mimeType === 'text/html') return true;
+    if (file.mimeType === 'application/xhtml+xml') return true;
+    const lname = file.name?.toLowerCase() || '';
+    if (lname.endsWith('.txt')) return true;
+    if (lname.endsWith('.md')) return true;
+    if (lname.endsWith('.html')) return true;
+    if (lname.endsWith('.htm')) return true;
     return false;
   },
 
@@ -62,6 +67,29 @@ export default {
     // 3. Текстові формати
     if (isText) {
       const text = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
+      return { text: text.trim().slice(0, 500000), pages: 1, warnings: [] };
+    }
+
+    // 4. HTML / XHTML (ухвали з ЄСІТС часто приходять у text/html)
+    //    Парсимо через DOMParser, видаляємо <script>/<style>, забираємо
+    //    видимий текст. Має йти ПЕРЕД PDF блоком, бо HTML — окремий
+    //    шлях і не повинен потрапити у pdfjs.
+    const isHtml =
+      file.mimeType === 'text/html' ||
+      file.mimeType === 'application/xhtml+xml' ||
+      lname.endsWith('.html') ||
+      lname.endsWith('.htm');
+
+    if (isHtml) {
+      const raw = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
+      let text;
+      try {
+        const doc = new DOMParser().parseFromString(raw, 'text/html');
+        doc.querySelectorAll('script, style, noscript').forEach((el) => el.remove());
+        text = (doc.body?.innerText || doc.body?.textContent || '').replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+      } catch (e) {
+        throw makeError('UNKNOWN', `HTML parse: ${e.message}`);
+      }
       return { text: text.trim().slice(0, 500000), pages: 1, warnings: [] };
     }
 
