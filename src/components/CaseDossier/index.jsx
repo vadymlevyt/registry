@@ -1476,12 +1476,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           <div style={{ fontSize: 13, fontWeight: 600, color: "#9aa0b8", marginBottom: 4 }}>
             {isDragOver ? "Відпустіть файли" : "Перетягніть або натисніть"}
           </div>
-          <div style={{ fontSize: 11, color: "#5a6080" }}>{"PDF, JPEG, PNG, HEIC, Word — будь-яка кількість"}</div>
+          <div style={{ fontSize: 11, color: "#5a6080" }}>{"PDF, JPEG, PNG, HEIC, Word, HTML — будь-яка кількість"}</div>
           <input
             id="dossierDropInput"
             type="file"
             multiple
-            accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx"
+            accept=".pdf,.jpeg,.jpg,.png,.heic,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm"
             style={{ display: "none" }}
             onChange={e => {
               const files = Array.from(e.target.files);
@@ -2016,7 +2016,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 4 }}>{"Файл (необов\u02BCязково)"}</div>
                 <input
                   type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,.heic,.doc,.docx"
+                  accept=".pdf,.jpeg,.jpg,.png,.heic,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm"
                   onChange={e => setNewDoc(d => ({ ...d, file: e.target.files[0] || null }))}
                   style={{ width: "100%", background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "6px 10px", borderRadius: 6, fontSize: 11, boxSizing: "border-box" }}
                 />
