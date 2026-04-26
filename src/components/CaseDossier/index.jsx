@@ -870,11 +870,28 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) throw new Error("No Drive token");
 
+    // Для legacy справ (створених до Phase 3): caseData.storage.subFolders
+    // може бути порожній. ensureSubFolders дозаповнить його з Drive і
+    // оновить state. Захищене try/catch — кеш/ensure не критичний для аплоаду.
+    let subFolders = cData.storage?.subFolders;
+    if (!subFolders?.['01_ОРИГІНАЛИ']) {
+      try {
+        const refreshed = await ensureSubFolders(cData);
+        if (refreshed) subFolders = refreshed;
+      } catch (e) {
+        console.warn('[uploadFileLocal] ensureSubFolders failed:', e?.message || e);
+      }
+    }
+
     // Пріоритет: 01_ОРИГІНАЛИ → root папки справи → cData.driveFolderId (legacy)
     const targetFolderId =
-      cData.storage?.subFolders?.['01_ОРИГІНАЛИ'] ||
+      subFolders?.['01_ОРИГІНАЛИ'] ||
       cData.storage?.driveFolderId ||
       cData.driveFolderId;
+
+    if (!targetFolderId) {
+      throw new Error('Не знайдено цільову папку Drive для справи (немає subFolders і немає driveFolderId)');
+    }
 
     const metadata = {
       name: file.name,
