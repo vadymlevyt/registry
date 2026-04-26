@@ -208,7 +208,9 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
 Коли користувач просить змінити дані справи — ВИКОНУЙ через ACTION_JSON.
 НЕ пояснюй як це зробити вручну.
-НЕ питай підтвердження для простих дій (видалити засідання, змінити дату).
+НЕ питай підтвердження для простих дій якщо засідання одне.
+Якщо в hearings[] кілька scheduled — постав одне питання "яке саме — [дата1] чи [дата2]?"
+Аналогічно для deadlines[] коли їх кілька.
 НЕ кажи "я не маю доступу" — у тебе є доступ через ACTION_JSON.
 
 Формат ACTION_JSON (додавати в кінці відповіді):
@@ -218,8 +220,9 @@ ACTION_JSON: {"action": "update_hearing", "caseId": "${caseData.id}", "hearingId
 ACTION_JSON: {"action": "add_deadline", "caseId": "${caseData.id}", "name": "...", "date": "YYYY-MM-DD"}
 ACTION_JSON: {"action": "update_case_field", "caseId": "${caseData.id}", "field": "...", "value": "..."}
 
-Для delete_hearing і delete_deadline — якщо hearingId/deadlineId не відомий,
-взяти перший підходящий з контексту справи.
+Для delete_hearing: якщо scheduled засідань рівно одне — беремо його без питань.
+Якщо кілька scheduled — питаємо "яке саме — [дата1] чи [дата2]?" і чекаємо відповідь.
+Для delete_deadline: якщо дедлайн один — беремо без питань. Якщо кілька — питаємо.
 
 Статуси засідань: тільки scheduled і completed. Cancelled не існує.
 Минуле засідання = дата менша за сьогодні. Не чіпати без явної вказівки.
