@@ -1143,21 +1143,171 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             { label: "Номер справи", field: "case_no", value: caseData.case_no },
             { label: "Категорія", field: "category", value: categoryLabel },
             { label: "Наступна дія", field: "next_action", value: caseData.next_action },
-            { label: "Дата засідання", field: "_hearing_date", value: (() => { const h = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return h ? `${h.date}${h.time ? ' о ' + h.time : ''}` : ''; })(), readOnly: true },
-            { label: "Дедлайн", field: "_deadline", value: (() => { const d = (caseData.deadlines || []).filter(d => d.date >= new Date().toISOString().split('T')[0]).sort((a,b) => a.date.localeCompare(b.date))[0]; return d ? `${d.date}${d.name ? ' (' + d.name + ')' : ''}` : ''; })(), readOnly: true }
           ].map(row => (
             <div key={row.field} style={{ display: "flex", gap: 12, marginBottom: 10, alignItems: "flex-start" }}>
               <div style={{ width: 130, fontSize: 11, color: "#5a6080", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
               <div
-                contentEditable={!row.readOnly}
+                contentEditable
                 suppressContentEditableWarning
-                onBlur={e => !row.readOnly && updateCase && updateCase(caseData.id, row.field, e.target.innerText.trim())}
-                onFocus={e => { if (!row.readOnly) e.target.style.borderColor = "#4f7cff"; }}
+                onBlur={e => {
+                  if (!updateCase) return;
+                  const raw = e.target.innerText.trim();
+                  const CATEGORY_MAP = {
+                    "Цивільна": "civil",
+                    "Кримінальна": "criminal",
+                    "Адміністративна": "administrative",
+                    "Військова": "military",
+                  };
+                  const value = row.field === "category" ? (CATEGORY_MAP[raw] || raw) : raw;
+                  updateCase(caseData.id, row.field, value);
+                }}
+                onFocus={e => { e.target.style.borderColor = "#4f7cff"; }}
                 onBlurCapture={e => e.target.style.borderColor = "transparent"}
-                style={{ flex: 1, fontSize: 12, color: row.value ? "#e8eaf0" : "#3a3f58", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 4, border: "1px solid transparent", cursor: row.readOnly ? "default" : "text", transition: "border-color .15s" }}
+                style={{ flex: 1, fontSize: 12, color: row.value ? "#e8eaf0" : "#3a3f58", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 4, border: "1px solid transparent", cursor: "text", transition: "border-color .15s" }}
               >{row.value || "\u2014"}</div>
             </div>
           ))}
+
+          {/* СЕКЦІЯ ЗАСІДАННЯ */}
+          <div style={{ marginTop: 16, marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: "#5a6080" }}>{"Засідання"}</div>
+              <button
+                onClick={() => {
+                  const date = window.prompt("Дата засідання (YYYY-MM-DD):");
+                  if (!date || !onExecuteAction) return;
+                  const time = window.prompt("Час (HH:MM, можна порожнім):") || "";
+                  onExecuteAction("dossier_agent", "add_hearing", {
+                    caseId: caseData.id, date, time, duration: 120
+                  });
+                }}
+                style={{ background: "transparent", border: "1px dashed #2e3148", color: "#9aa0b8", borderRadius: 6, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
+              >{"+ Додати"}</button>
+            </div>
+            {(caseData.hearings || [])
+              .slice()
+              .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+              .map(h => {
+                const today = new Date().toISOString().split("T")[0];
+                const isPast = (h.date || "") < today;
+                return (
+                  <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "#222536", borderRadius: 6, marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "#3a3f58" : "#4f7cff"}` }}>
+                    <input
+                      type="date"
+                      defaultValue={h.date || ""}
+                      onBlur={e => {
+                        const v = e.target.value;
+                        if (!v || v === h.date || !onExecuteAction) return;
+                        onExecuteAction("dossier_agent", "update_hearing", {
+                          caseId: caseData.id, hearingId: h.id,
+                          date: v, time: h.time, duration: h.duration
+                        });
+                      }}
+                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                    />
+                    <input
+                      type="time"
+                      defaultValue={h.time || ""}
+                      onBlur={e => {
+                        const v = e.target.value;
+                        if (v === (h.time || "") || !onExecuteAction) return;
+                        onExecuteAction("dossier_agent", "update_hearing", {
+                          caseId: caseData.id, hearingId: h.id,
+                          date: h.date, time: v, duration: h.duration
+                        });
+                      }}
+                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: "#5a6080", flex: 1 }}>{isPast ? "минуле" : (h.status || "scheduled")}</span>
+                    <button
+                      onClick={() => {
+                        if (!onExecuteAction) return;
+                        onExecuteAction("dossier_agent", "delete_hearing", {
+                          caseId: caseData.id, hearingId: h.id
+                        });
+                      }}
+                      style={{ background: "transparent", border: "none", color: "#9aa0b8", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                      title="Видалити засідання"
+                    >{"\u{1F5D1}"}</button>
+                  </div>
+                );
+              })
+            }
+            {(!caseData.hearings || caseData.hearings.length === 0) && (
+              <div style={{ fontSize: 12, color: "#3a3f58", fontStyle: "italic", padding: "4px 0" }}>{"Засідань немає"}</div>
+            )}
+          </div>
+
+          {/* СЕКЦІЯ ДЕДЛАЙНИ */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: "#5a6080" }}>{"Дедлайни"}</div>
+              <button
+                onClick={() => {
+                  const name = window.prompt("Назва дедлайну:");
+                  if (!name) return;
+                  const date = window.prompt("Дата (YYYY-MM-DD):");
+                  if (!date || !onExecuteAction) return;
+                  onExecuteAction("dossier_agent", "add_deadline", {
+                    caseId: caseData.id, name, date
+                  });
+                }}
+                style={{ background: "transparent", border: "1px dashed #2e3148", color: "#9aa0b8", borderRadius: 6, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
+              >{"+ Додати"}</button>
+            </div>
+            {(caseData.deadlines || [])
+              .slice()
+              .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+              .map(d => {
+                const today = new Date().toISOString().split("T")[0];
+                const isPast = (d.date || "") < today;
+                return (
+                  <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "#222536", borderRadius: 6, marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "#3a3f58" : "#f39c12"}` }}>
+                    <input
+                      type="text"
+                      defaultValue={d.name || ""}
+                      placeholder="Назва"
+                      onBlur={e => {
+                        const v = e.target.value.trim();
+                        if (v === (d.name || "") || !onExecuteAction) return;
+                        onExecuteAction("dossier_agent", "update_deadline", {
+                          caseId: caseData.id, deadlineId: d.id,
+                          name: v, date: d.date
+                        });
+                      }}
+                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12, flex: 1, minWidth: 80 }}
+                    />
+                    <input
+                      type="date"
+                      defaultValue={d.date || ""}
+                      onBlur={e => {
+                        const v = e.target.value;
+                        if (!v || v === d.date || !onExecuteAction) return;
+                        onExecuteAction("dossier_agent", "update_deadline", {
+                          caseId: caseData.id, deadlineId: d.id,
+                          name: d.name, date: v
+                        });
+                      }}
+                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                    />
+                    <button
+                      onClick={() => {
+                        if (!onExecuteAction) return;
+                        onExecuteAction("dossier_agent", "delete_deadline", {
+                          caseId: caseData.id, deadlineId: d.id
+                        });
+                      }}
+                      style={{ background: "transparent", border: "none", color: "#9aa0b8", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                      title="Видалити дедлайн"
+                    >{"\u{1F5D1}"}</button>
+                  </div>
+                );
+              })
+            }
+            {(!caseData.deadlines || caseData.deadlines.length === 0) && (
+              <div style={{ fontSize: 12, color: "#3a3f58", fontStyle: "italic", padding: "4px 0" }}>{"Дедлайнів немає"}</div>
+            )}
+          </div>
 
           {/* Нотатки до справи */}
           <div style={{ marginBottom: 12 }}>
