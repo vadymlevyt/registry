@@ -70,10 +70,10 @@ export default {
       return { text: text.trim().slice(0, 500000), pages: 1, warnings: [] };
     }
 
-    // 4. HTML / XHTML (ухвали з ЄСІТС часто приходять у text/html)
-    //    Парсимо через DOMParser, видаляємо <script>/<style>, забираємо
-    //    видимий текст. Має йти ПЕРЕД PDF блоком, бо HTML — окремий
-    //    шлях і не повинен потрапити у pdfjs.
+    // 4. HTML / XHTML (ухвали з ЄСІТС приходять у text/html, часто у
+    //    windows-1251 без явного <meta charset>). Має йти ПЕРЕД PDF
+    //    блоком — HTML потребує спеціальної обробки (DOMParser +
+    //    автодетекція кодування), яку plain text не дає.
     const isHtml =
       file.mimeType === 'text/html' ||
       file.mimeType === 'application/xhtml+xml' ||
@@ -81,16 +81,43 @@ export default {
       lname.endsWith('.htm');
 
     if (isHtml) {
-      const raw = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
-      let text;
-      try {
-        const doc = new DOMParser().parseFromString(raw, 'text/html');
-        doc.querySelectorAll('script, style, noscript').forEach((el) => el.remove());
-        text = (doc.body?.innerText || doc.body?.textContent || '').replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
-      } catch (e) {
-        throw makeError('UNKNOWN', `HTML parse: ${e.message}`);
+      // 4.1. Детекція кодування
+      const head = new TextDecoder('latin1').decode(arrayBuffer.slice(0, 4096));
+      const csMatch = head.match(/charset\s*=\s*["']?([^"'\s>]+)/i);
+
+      let encoding = 'utf-8';
+      if (csMatch) {
+        const cs = csMatch[1].toLowerCase().replace(/['"]/g, '');
+        encoding = (cs === 'cp1251' || cs === 'win-1251') ? 'windows-1251' : cs;
+      } else {
+        // Немає <meta charset> — пробуємо UTF-8, fallback на windows-1251.
+        // Понад 1% replacement chars (U+FFFD) = вочевидь не UTF-8.
+        const utf8Test = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
+        const replacements = (utf8Test.match(/�/g) || []).length;
+        if (replacements > utf8Test.length * 0.01) {
+          encoding = 'windows-1251';
+        }
       }
-      return { text: text.trim().slice(0, 500000), pages: 1, warnings: [] };
+
+      // 4.2. Декодування з фолбеком
+      let html;
+      try {
+        html = new TextDecoder(encoding, { fatal: false }).decode(arrayBuffer);
+      } catch (e) {
+        html = new TextDecoder('windows-1251', { fatal: false }).decode(arrayBuffer);
+        encoding = 'windows-1251';
+      }
+
+      // 4.3. Парсинг через нативний DOMParser
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('script, style').forEach((el) => el.remove());
+      const text = (doc.body?.innerText || doc.documentElement?.textContent || '').trim();
+
+      return {
+        text: text.slice(0, 500000),
+        pages: 1,
+        warnings: encoding === 'windows-1251' ? ['HTML декодовано як windows-1251'] : [],
+      };
     }
 
     const isPdf =
