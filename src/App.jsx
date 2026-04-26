@@ -519,8 +519,11 @@ Current year: ${new Date().getFullYear()}. Today: ${new Date().toISOString().spl
 When the user gives you a command:
 - Respond conversationally in Ukrainian (1-3 sentences)
 - If a system action is needed, append on a NEW LINE: ACTION_JSON: {"recommended_actions": ["action_id"], "extracted": {"case_name": "...", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}}
-- Available action_ids: update_case_date, update_deadline, save_note, create_case, update_case_status, update_case_field, delete_case
-- update_case_date: for hearing dates (засідання)
+- Available action_ids: update_hearing, add_hearing, delete_hearing, update_deadline, add_deadline, delete_deadline, save_note, create_case, close_case, restore_case, update_case_status, update_case_field, delete_case
+- update_hearing: ПЕРЕНЕСТИ існуюче засідання (нова дата/час) — для команд "перенеси", "змінити дату засідання"
+- add_hearing: ДОДАТИ нове засідання — для команд "додай засідання", "нове засідання"
+- delete_hearing: ВИДАЛИТИ засідання — для команд "видали засідання", "скасуй засідання"
+- update_case_date — ЛЕГАСІ alias до update_hearing; не використовуй якщо можеш обрати update_hearing або add_hearing
 - update_deadline: for procedural deadlines (дедлайни подачі документів, строки)
 - For update_deadline use: ACTION_JSON: {"recommended_actions": ["update_deadline"], "extracted": {"case_name": "...", "deadline_date": "YYYY-MM-DD", "deadline_type": "..."}}
 - update_case_field: change any case field (status, category, court, case_no, next_action, notes, hearing_time)
@@ -1605,8 +1608,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         // Якщо є дії — виконати одразу з чату
         if (actionResult && (actionResult.recommended_actions || []).length > 0) {
           const action = actionResult.recommended_actions[0];
-          // [DBG] трасування — який action приходить з моделі і які поля extracted
-          console.log('[DBG sendChat] incoming action =', action, 'extracted =', actionResult.extracted);
           if (action === 'create_case') {
             const ext = actionResult.extracted || {};
             const rawPerson = ext.person || actionResult.case_match?.case_name || '';
@@ -1766,33 +1767,42 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
             }
           }
 
-          if (action === 'update_hearing') {
+          // update_hearing + update_case_date (legacy alias) — однакова логіка переносу.
+          if (action === 'update_hearing' || action === 'update_case_date') {
             const caseName = actionResult.extracted?.case_name || actionResult.case_match?.case_name;
             const matched = caseName ? findCaseForAction(caseName, cases) : null;
             const date = actionResult.extracted?.hearing_date || actionResult.extracted?.date;
             const time = actionResult.extracted?.hearing_time || actionResult.extracted?.time;
             const hearingId = actionResult.extracted?.hearing_id || null;
-            // [DBG] трасування input до executeAction
-            console.log('[DBG update_hearing IN]', {
-              caseName, matchedId: matched?.id, matchedName: matched?.name,
-              date, time, hearingId,
-              hearingsBefore: matched?.hearings,
-            });
             if (matched && date) {
-              const result = onExecuteAction('qi_agent', 'update_hearing', {
-                caseId: matched.id, hearingId, date, time
-              });
-              // [DBG] результат executeAction
-              console.log('[DBG update_hearing OUT]', result);
-              setConversationHistory(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Засідання у справі "${matched.name}" перенесено на ${date}${time ? ` о ${time}` : ''}`
-              }]);
+              // Якщо немає жодного scheduled засідання — це не "перенос", а додавання нового.
+              const hasScheduled = (matched.hearings || []).some(h => h.status === 'scheduled');
+              if (hasScheduled) {
+                onExecuteAction('qi_agent', 'update_hearing', {
+                  caseId: matched.id,
+                  hearingId,
+                  date,
+                  time: time || '',
+                });
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ Засідання у справі "${matched.name}" перенесено на ${date}${time ? ` о ${time}` : ''}`
+                }]);
+              } else {
+                onExecuteAction('qi_agent', 'add_hearing', {
+                  caseId: matched.id,
+                  date,
+                  time: time || '',
+                  duration: 120,
+                });
+                setConversationHistory(prev => [...prev, {
+                  role: 'assistant',
+                  content: `✅ Засідання у справі "${matched.name}" додано на ${date}${time ? ` о ${time}` : ''}`
+                }]);
+              }
               setChatLoading(false);
               return;
             }
-            // [DBG] якщо умова не пройшла — лог
-            console.warn('[DBG update_hearing SKIPPED] matched && date == false', { matched: !!matched, date });
           }
 
           if (action === 'delete_hearing') {
