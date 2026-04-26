@@ -113,12 +113,17 @@ async function writeCache(file, text) {
 function pickProviderName(file) {
   if (file.mimeType === 'application/pdf') return 'pdfjsLocal';
   if (file.mimeType?.startsWith('image/')) return 'documentAi';
+  const lname = file.name?.toLowerCase() || '';
   if (
     file.mimeType === 'application/vnd.google-apps.document' ||
     file.mimeType === 'text/plain' ||
     file.mimeType === 'text/markdown' ||
-    file.name?.toLowerCase().endsWith('.txt') ||
-    file.name?.toLowerCase().endsWith('.md')
+    file.mimeType === 'text/html' ||
+    file.mimeType === 'application/xhtml+xml' ||
+    lname.endsWith('.txt') ||
+    lname.endsWith('.md') ||
+    lname.endsWith('.html') ||
+    lname.endsWith('.htm')
   ) {
     return 'pdfjsLocal';
   }
