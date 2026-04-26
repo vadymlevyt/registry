@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import * as pdfjsLib from 'pdfjs-dist';
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
 import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
-import { driveRequest } from "../../services/driveAuth.js";
+import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
+import * as ocrService from "../../services/ocrService.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
 
 const CATEGORY_LABELS = {
@@ -47,6 +47,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [storageMsg, setStorageMsg] = useState('');
   const [contextLoading, setContextLoading] = useState(false);
   const [contextMsg, setContextMsg] = useState('');
+  const [isCreatingContext, setIsCreatingContext] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [editingNoteText, setEditingNoteText] = useState('');
 
@@ -292,23 +293,21 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   }
 
   async function handleCreateContext() {
-    if (typeof handleCreateContext.running !== 'undefined' && handleCreateContext.running) {
+    if (isCreatingContext) {
       setContextMsg("⏳ Операція вже виконується. Будь ласка, зачекайте.");
       return;
     }
-    handleCreateContext.running = true;
-    
-    const token = localStorage.getItem("levytskyi_drive_token");
-    const folderId = storageState?.driveFolderId;
-
-    setContextMsg("Перевіряю Drive...");
-
-    if (!token) { setContextMsg("❌ Немає токена Drive"); handleCreateContext.running = false; return; }
-    if (!folderId) { setContextMsg("❌ Немає folderId в storage"); handleCreateContext.running = false; return; }
-
+    setIsCreatingContext(true);
     setContextLoading(true);
+
     try {
-      // Перевірити чи контекст вже існує
+      const token = localStorage.getItem("levytskyi_drive_token");
+      const folderId = storageState?.driveFolderId;
+
+      if (!token) { setContextMsg("❌ Немає токена Drive"); return; }
+      if (!folderId) { setContextMsg("❌ Немає folderId в storage"); return; }
+
+      // 1. Перевірити існуючий case_context.md
       setContextMsg("Перевіряю існуючий контекст...");
       const searchRes = await driveRequest(
         `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
@@ -317,8 +316,6 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       );
       if (searchRes.status === 401) {
         setContextMsg("❌ Не вдалося оновити токен Drive. Перевірте підключення.");
-        setContextLoading(false);
-        handleCreateContext.running = false;
         return;
       }
       const searchData = await searchRes.json();
@@ -331,208 +328,109 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         );
         if (!replace) {
           setContextMsg("Скасовано");
-          setContextLoading(false);
-          handleCreateContext.running = false;
           return;
         }
       }
 
-      setContextMsg("Перевіряю папку...");
-      // Перевірити чи папка існує
-      const checkRes = await driveRequest(
-        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`
-      );
-      if (checkRes.status === 401) {
-        setContextMsg("❌ Не вдалося оновити токен Drive. Перевірте підключення.");
-        setContextLoading(false);
-        return;
-      }
-      const checkData = await checkRes.json();
-      setContextMsg(`Папка: ${safeStringify(checkData)}`);
-
-      if (checkData.error) {
-        setContextMsg(`❌ Помилка доступу: ${checkData.error.message}`);
-        setContextLoading(false);
-        return;
-      }
-      if (checkData.trashed) {
-        setContextMsg("❌ Папка в кошику");
-        setContextLoading(false);
+      // 2. Гарантуємо що subFolders заповнені (legacy справи)
+      setContextMsg("Перевіряю структуру папок...");
+      const subFolders = await ensureSubFolders(caseData);
+      if (!subFolders?.['01_ОРИГІНАЛИ'] && !subFolders?.['02_ОБРОБЛЕНІ']) {
+        setContextMsg("❌ Не знайдено папок 01_ОРИГІНАЛИ і 02_ОБРОБЛЕНІ.");
         return;
       }
 
-      // Отримати підпапки
-      const subRes = await driveRequest(
-        `https://www.googleapis.com/drive/v3/files?` +
-        `q=${encodeURIComponent(
-          `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
-        )}&fields=files(id,name)&pageSize=20`
-      );
-      const subData = await subRes.json();
-      const folders = subData.files || [];
-      setContextMsg(`Підпапки (${folders.length}): ${folders.map(f => f.name).join(", ") || "жодної"}`);
-
-      // Перевірити scope токена
-      const aboutRes = await driveRequest(
-        "https://www.googleapis.com/drive/v3/about?fields=user"
-      );
-      const aboutData = await aboutRes.json();
-      setContextMsg(`Drive user: ${aboutData.user?.emailAddress || "невідомо"}`);
-
-      // Нормалізація NFC для надійного порівняння кирилічних назв
-      const processed = folders.find(f => f.name.normalize('NFC') === "02_ОБРОБЛЕНІ".normalize('NFC'))
-        || folders.find(f => f.name.startsWith('02_'));
-      const originals = folders.find(f => f.name.normalize('NFC') === "01_ОРИГІНАЛИ".normalize('NFC'))
-        || folders.find(f => f.name.startsWith('01_'));
-
-      if (!processed && !originals) {
-        setContextMsg(`❌ Не знайдено 02_ОБРОБЛЕНІ і 01_ОРИГІНАЛИ серед: ${folders.map(f => f.name).join(", ") || "жодної"}`);
-        setContextLoading(false);
-        return;
-      }
-
-      // Отримати файли БЕЗ фільтра mimeType (крім папок)
-      const getFiles = async (fid, name) => {
+      // 3. Зібрати джерельні файли. Виключаємо .txt (наш OCR-кеш),
+      //    agent_history.json, case_context.md.
+      setContextMsg("Збираю файли...");
+      const collectFromFolder = async (subFolderId, label) => {
+        if (!subFolderId) return [];
         const res = await driveRequest(
-          `https://www.googleapis.com/drive/v3/files?` +
-          `q=${encodeURIComponent(
-            `'${fid}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+            `'${subFolderId}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'`
           )}&fields=files(id,name,size,mimeType)&pageSize=100`
         );
         const data = await res.json();
-        const allFiles = data.files || [];
-        // Брати ВСІ файли крім: agent_history.json, case_context.md, папок
-        const EXCLUDED_NAMES = new Set(['agent_history.json', 'case_context.md']);
-        const files = allFiles.filter(f =>
-          f.mimeType !== 'application/vnd.google-apps.folder' &&
-          !EXCLUDED_NAMES.has(f.name)
-        );
-        console.log(`[CaseDossier] ${name}: знайдено ${allFiles.length}, до аналізу: ${files.length}`, allFiles.map(f => `${f.name} (${f.mimeType}, ${f.size}b)`));
-        setContextMsg(`📄 В папці ${name}: ${files.length} документів з ${allFiles.length} файлів`);
-        return files;
+        return (data.files || []).filter(f =>
+          f.name !== 'agent_history.json' &&
+          f.name !== 'case_context.md' &&
+          !f.name.toLowerCase().endsWith('.txt')
+        ).map(f => ({ ...f, sourceLabel: label }));
       };
 
-      let sourceFiles = [];
-      let sourceName = "";
-
-      if (processed) {
-        sourceFiles = await getFiles(processed.id, "02_ОБРОБЛЕНІ");
-        sourceName = "02_ОБРОБЛЕНІ";
+      const allFiles = [];
+      if (subFolders?.['01_ОРИГІНАЛИ']) {
+        allFiles.push(...(await collectFromFolder(subFolders['01_ОРИГІНАЛИ'], '01_ОРИГІНАЛИ')));
+      }
+      if (subFolders?.['02_ОБРОБЛЕНІ']) {
+        allFiles.push(...(await collectFromFolder(subFolders['02_ОБРОБЛЕНІ'], '02_ОБРОБЛЕНІ')));
       }
 
-      if (sourceFiles.length === 0 && originals) {
-        sourceFiles = await getFiles(originals.id, "01_ОРИГІНАЛИ");
-        sourceName = "01_ОРИГІНАЛИ";
-      }
-
-      if (sourceFiles.length === 0) {
-        setContextMsg("❌ Файлів не знайдено. Нарізайте документи у вкладці \"Робота з документами\"");
-        setContextLoading(false);
+      if (allFiles.length === 0) {
+        setContextMsg("❌ Файлів не знайдено в 01_ОРИГІНАЛИ та 02_ОБРОБЛЕНІ.");
         return;
       }
 
-      setContextMsg(`✅ Знайдено ${sourceFiles.length} файлів в ${sourceName}. Читаю вміст...`);
+      console.log(`[CaseDossier] OCR джерело: ${allFiles.length} файлів`, allFiles.map(f => `${f.name} (${f.sourceLabel})`));
+      setContextMsg(`📄 Знайдено ${allFiles.length} файлів. Запускаю обробку...`);
 
-      // Читаємо КОЖЕН файл: три типи PDF + Google Docs + текстові формати
-      // Тип 1 — текстовий PDF → text block
-      // Тип 2 — PDF скан → PNG сторінки через canvas → image blocks (max 5)
-      // Тип 3 — ZIP замаскований під PDF (ЄСІТС) → поки не підтримується, але помилка фіксується
-      async function readFileContent(file, accessToken) {
-        // Google Doc → export text/plain
-        if (file.mimeType === 'application/vnd.google-apps.document') {
-          const exportResp = await driveRequest(
-            `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`
-          );
-          if (!exportResp.ok) throw new Error(`export ${exportResp.status}`);
-          return { type: 'text', content: (await exportResp.text()).trim() || '[Порожній документ]', name: file.name };
+      // 4. OCR через сервіс — параллельно через Document AI з кешем
+      const filesForOcr = allFiles.map(f => ({
+        ...f,
+        driveFolderId: folderId,
+        subFolders,
+      }));
+
+      const results = await ocrService.extractTextBatch(filesForOcr, {
+        concurrency: 3,
+        onProgress: (done, total, current) => {
+          setContextMsg(`📖 Обробка ${done}/${total}: ${current?.name || '...'}`);
         }
+      });
 
-        // Завантажити байти один раз
-        const dlResp = await driveRequest(
-          `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
+      // 5. Якщо ВСІ помилки AUTH — пропонуємо forceConsentRefresh.
+      const allAuth = results.length > 0 && results.every(r => r.error?.code === 'AUTH');
+      if (allAuth) {
+        const goConsent = await systemConfirm(
+          'Потрібна повторна авторизація Google для використання OCR. Перепідключити?',
+          'OAuth scope'
         );
-        if (!dlResp.ok) throw new Error(`download ${dlResp.status}`);
-        const arrayBuffer = await dlResp.arrayBuffer();
-
-        const isPdf = file.mimeType === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-        if (isPdf) {
-          // Тип 3 — перевірка ZIP (ЄСІТС): сигнатура PK\x03\x04
-          const head = new Uint8Array(arrayBuffer.slice(0, 4));
-          if (head[0] === 0x50 && head[1] === 0x4B && head[2] === 0x03 && head[3] === 0x04) {
-            throw new Error('ZIP замаскований під PDF (ЄСІТС) — розпакування не підтримується');
-          }
-
-          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-          // Тип 1 — текстовий шар
-          let fullText = '';
-          const textPages = Math.min(pdf.numPages, 10);
-          for (let i = 1; i <= textPages; i++) {
-            const page = await pdf.getPage(i);
-            const content = await page.getTextContent();
-            fullText += content.items.map(item => item.str).join(' ') + '\n';
-          }
-          if (fullText.trim().length > 50) {
-            return { type: 'text', content: fullText.trim(), name: file.name };
-          }
-
-          // Тип 2 — скан → конвертувати в PNG через canvas (max 5 сторінок)
-          const images = [];
-          const scanPages = Math.min(pdf.numPages, 5);
-          for (let i = 1; i <= scanPages; i++) {
-            const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: 1.5 });
-            const canvas = document.createElement('canvas');
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-            images.push(canvas.toDataURL('image/png').split(',')[1]);
-          }
-          return { type: 'images', content: images, name: file.name };
+        if (goConsent) {
+          await forceConsentRefresh();
+          setContextMsg('🔑 Авторизацію оновлено. Натисніть "Створити контекст" ще раз.');
+        } else {
+          setContextMsg('❌ Скасовано — авторизація не оновлена.');
         }
-
-        // Інші формати → UTF-8 декодування
-        const text = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
-        if (text && text.trim().length > 0) {
-          return { type: 'text', content: text.slice(0, 100000), name: file.name };
-        }
-        return { type: 'text', content: `[Порожньо, mime=${file.mimeType}]`, name: file.name };
+        return;
       }
 
-      // textDocs — {name, text}; imageDocs — {name, images[]}; failed — {name, error}
+      // 6. Зібрати тексти і помилки
       const textDocs = [];
-      const imageDocs = [];
       const failed = [];
-
-      for (let idx = 0; idx < sourceFiles.length; idx++) {
-        const file = sourceFiles[idx];
-        setContextMsg(`📖 Читаю ${idx + 1}/${sourceFiles.length}: ${file.name}`);
-        try {
-          const result = await readFileContent(file, token);
-          if (result.type === 'text') {
-            textDocs.push({ name: result.name, text: result.content });
-            console.log(`[CaseDossier] ✅ TEXT ${file.name} (${result.content.length} симв)`);
-          } else if (result.type === 'images') {
-            imageDocs.push({ name: result.name, images: result.content });
-            console.log(`[CaseDossier] 📷 SCAN ${file.name} (${result.content.length} стор. PNG)`);
-          }
-        } catch (e) {
-          console.log(`[CaseDossier] ❌ ${file.name}:`, e.message);
-          failed.push({ name: file.name, error: e.message });
-          // Жоден файл не пропускається мовчки — додаємо в текст як запис про помилку
-          textDocs.push({ name: file.name, text: `[Файл: ${file.name} — помилка читання: ${e.message}]` });
+      let cacheHits = 0;
+      for (const r of results) {
+        if (r.result?.text) {
+          textDocs.push({ name: r.file.name, text: r.result.text });
+          if (r.result.fromCache) cacheHits++;
+          console.log(`[CaseDossier] ✅ ${r.file.name} via ${r.result.provider} (${r.result.fromCache ? 'cache' : 'fresh'}, ${r.result.text.length} симв)`);
+        } else if (r.error) {
+          failed.push({ name: r.file.name, error: r.error.message });
+          const localized = ocrService.localizeOcrError ? ocrService.localizeOcrError(r.error.code) : r.error.message;
+          textDocs.push({ name: r.file.name, text: `[Файл: ${r.file.name} — помилка: ${localized}]` });
+          console.log(`[CaseDossier] ❌ ${r.file.name}: ${r.error.code} ${r.error.message}`);
         }
       }
 
-      const totalProcessed = textDocs.length + imageDocs.length;
-      console.log(`[CaseDossier] Оброблено: ${textDocs.length} текст + ${imageDocs.length} сканів, помилок: ${failed.length}`);
-      setContextMsg(`Аналізую ${totalProcessed} документів (${imageDocs.length} через vision, ${failed.length} помилок)...`);
+      setContextMsg(`Аналізую ${textDocs.length} документів${cacheHits ? `, ${cacheHits} з кешу` : ''}${failed.length ? `, ${failed.length} помилок` : ''}...`);
+
+      // 7. API ключ Claude
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
         setContextMsg("Потрібен API ключ Claude. Введіть у налаштуваннях.");
-        setContextLoading(false);
         return;
       }
 
+      // 8. System prompt — ВЕРБАТИМ з оригінальної версії (НЕ міняти)
       const systemPrompt = `Ти — юридичний аналітик. Створи контекстний файл справи на основі наданих документів.
 
 Структура файлу:
@@ -562,31 +460,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
 МОВА: українська. Формат: Markdown. Без зайвих вступів.`;
 
-      // Зібрати текстовий блок з усіх розпарсених документів
-      const textBlock = textDocs.length > 0
-        ? textDocs.map((d, i) => `### ДОКУМЕНТ ${i + 1}: ${d.name}\n\n${d.text}`).join('\n\n---\n\n')
-        : '';
+      // 9. Тіло — тільки текст. OCR вже відпрацював, image-блоки не потрібні.
+      const textBlock = textDocs
+        .map((d, i) => `### ДОКУМЕНТ ${i + 1}: ${d.name}\n\n${d.text}`)
+        .join('\n\n---\n\n');
 
-      const userContent = [];
-      // Скани — PNG сторінки як image blocks (один image block на сторінку)
-      imageDocs.forEach(doc => {
-        userContent.push({ type: "text", text: `Наступний документ — скан "${doc.name}" (${doc.images.length} стор.). Витягни з нього текст і врахуй у аналізі.` });
-        doc.images.forEach(b64 => {
-          userContent.push({
-            type: "image",
-            source: { type: "base64", media_type: "image/png", data: b64 }
-          });
-        });
-      });
-      // Текстовий корпус
-      if (textBlock) {
-        userContent.push({ type: "text", text: `Текстові документи справи:\n\n${textBlock}` });
-      }
-      userContent.push({
-        type: "text",
-        text: `Проаналізуй усі ${totalProcessed} документів (${textDocs.length} текстових + ${imageDocs.length} сканів) і створи контекстний файл справи "${caseData.name}" за заданою структурою. Жоден документ не ігноруй.`
-      });
+      const userContent = [
+        { type: "text", text: `Текстові документи справи:\n\n${textBlock}` },
+        { type: "text", text: `Проаналізуй усі ${textDocs.length} документів і створи контекстний файл справи "${caseData.name}" за заданою структурою. Жоден документ не ігноруй.` }
+      ];
 
+      // 10. Виклик Anthropic
       const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -613,32 +497,29 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
       if (!contextMd) {
         setContextMsg("Claude не повернув результат");
-        setContextLoading(false);
         return;
       }
 
-      // 5. Зберегти case_context.md на Drive
+      // 11. Архівація попереднього + upload нового
       setContextMsg("Зберігаю case_context.md...");
 
-      // Архівувати існуючий
       const existingFiles = await listFolderFiles(folderId, token);
       const existingCtx = existingFiles.find(f => f.name === "case_context.md");
       if (existingCtx) {
         const archiveFolder = await findOrCreateFolder("archive", folderId, token);
-        const archiveName = `case_context_${new Date().toISOString().split('T')[0]}.md`;
-        // Скопіювати в архів
+        // Timestamp до секунд: 2026-04-26T14-30-15
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const archiveName = `case_context_${ts}.md`;
         await driveRequest(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}/copy`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: archiveName, parents: [archiveFolder.id] })
         });
-        // Видалити старий
         await driveRequest(`https://www.googleapis.com/drive/v3/files/${existingCtx.id}`, {
           method: "DELETE",
         });
       }
 
-      // Завантажити новий
       const uploadResult = await uploadFileToDrive(
         "case_context.md",
         new Blob([contextMd], { type: "text/markdown" }),
@@ -648,31 +529,26 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
       if (uploadResult?.error) {
         setContextMsg(`❌ Не вдалося зберегти на Drive: ${uploadResult.error.message || JSON.stringify(uploadResult.error)}`);
-        setContextLoading(false);
-        handleCreateContext.running = false;
         return;
       }
-
       if (!uploadResult?.id) {
         setContextMsg("❌ Drive не повернув id файлу — збереження не підтверджено");
-        setContextLoading(false);
-        handleCreateContext.running = false;
         return;
       }
 
-      setContextMsg(`✅ Контекст створено (${totalProcessed} документів: ${textDocs.length} текст + ${imageDocs.length} сканів${failed.length ? `, ${failed.length} помилок` : ''}, джерело: ${sourceName})`);
+      setContextMsg(`✅ Контекст створено (${textDocs.length} документів${cacheHits ? `, ${cacheHits} з кешу` : ''}${failed.length ? `, ${failed.length} помилок` : ''})`);
 
-      // Оновити caseContext в стані — щоб агент побачив новий/оновлений файл одразу
       try {
         const fresh = await loadCaseContext();
         if (fresh) setCaseContext(fresh);
       } catch (e) { console.log('[CaseContext] refresh after save failed:', e); }
+
     } catch (err) {
       console.error("Context creation error:", err);
       setContextMsg(`Помилка: ${err.message}`);
     } finally {
       setContextLoading(false);
-      handleCreateContext.running = false;
+      setIsCreatingContext(false);
     }
   }
 
