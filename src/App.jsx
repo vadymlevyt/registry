@@ -669,7 +669,45 @@ ACTION_JSON: {
 у тому ж форматі що і одинична ACTION_JSON.extracted.
 
 НЕ генеруй кілька окремих ACTION_JSON в одній відповіді.
-НЕ використовуй batch_update для однієї дії — тільки для 2+.`;
+НЕ використовуй batch_update для однієї дії — тільки для 2+.
+
+### КОЛИ КОРИСТУВАЧ ГОВОРИТЬ ПРО ДІАПАЗОН ДАТ
+
+Інтерпретація фраз:
+- "за березень", "у березні", "березневі" → префікс "YYYY-03-" (вибрати рік з today)
+- "минулий місяць" → префікс попереднього календарного місяця від today
+- "цей тиждень" → понеділок..неділя поточного тижня (порівнювати по даті)
+- "за останні N днів" → діапазон [today - N днів .. today]
+- "видали все" / "очисти" / "почисти" → і hearings І deadlines одночасно
+
+ПРАВИЛО: при діапазоні — пройди ВЕСЬ контекст активних справ,
+знайди КОЖНУ hearing і КОЖНИЙ deadline де date починається з префікса
+місяця (наприклад "2026-03-") або потрапляє в діапазон.
+Кожен такий запис — окрема операція в operations[].
+
+ПРИКЛАД ("очисти березень" коли в реєстрі знайдено 4 засідання
+і 5 дедлайнів з префіксом 2026-03-):
+
+ACTION_JSON: {
+  "recommended_actions": ["batch_update"],
+  "operations": [
+    {"action":"delete_hearing", "case_name":"Брановський", "hearing_date":"2026-03-12"},
+    {"action":"delete_hearing", "case_name":"Брановський", "hearing_date":"2026-03-31"},
+    {"action":"delete_hearing", "case_name":"Корева",      "hearing_date":"2026-03-18"},
+    {"action":"delete_hearing", "case_name":"Янченко",     "hearing_date":"2026-03-25"},
+    {"action":"delete_deadline","case_name":"Брановський", "deadline_date":"2026-03-31"},
+    {"action":"delete_deadline","case_name":"Корева",      "deadline_date":"2026-03-31"},
+    {"action":"delete_deadline","case_name":"Корева",      "deadline_date":"2026-03-15"},
+    {"action":"delete_deadline","case_name":"Янченко",     "deadline_date":"2026-03-22"},
+    {"action":"delete_deadline","case_name":"Манолюк",     "deadline_date":"2026-03-08"}
+  ]
+}
+
+ВАЖЛИВО: НЕ обмежуй пакет 3-5 операціями. Якщо в контексті 20
+співпадінь — у пакеті має бути 20 операцій.
+ОДНА команда = ОДНА відповідь = ОДИН ACTION_JSON з усіма ops.
+Перед формуванням пакета — пройди по всіх АКТИВНИХ справах і
+зібрі усі hearings[] і deadlines[] чиї дати потрапляють у діапазон.`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -911,7 +949,9 @@ function buildSystemContext(cases) {
   ctx += `\nАКТИВНІ СПРАВИ:\n`;
 
   const totalActive = active.length;
-  const detail = totalActive <= 15 ? 'full' : totalActive <= 30 ? 'medium' : 'compact';
+  // hearings/deadlines з id МАЮТЬ бути видимі агенту завжди — інакше batch_update
+  // не побачить частину записів. Compact-режим видалено.
+  const detail = totalActive <= 15 ? 'full' : 'medium';
 
   const todayStr = new Date().toISOString().split('T')[0];
   const fmtHearings = (c) => (c.hearings || [])
@@ -1569,7 +1609,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
           model: 'claude-sonnet-4-20250514',
           system: SONNET_CHAT_PROMPT,
           messages: newHistory,
-          max_tokens: 1024,
+          max_tokens: 2048,
         }),
       });
       if (!res.ok) {
@@ -1643,10 +1683,16 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
             }
 
             // Резолвити case_name -> caseId та дату -> id сутності для кожної op
+            const norm = (d) => (d || '').toString().substring(0, 10);
             const resolvedOps = operations.map(op => {
               const { action: opAction, case_name, ...rest } = op;
               const params = { ...rest };
+
+              // Резолв справи
               const matched = case_name ? findCaseForAction(case_name, cases) : null;
+              if (case_name && !matched) {
+                return { action: opAction, params, _resolveError: `Справу "${case_name}" не знайдено в реєстрі` };
+              }
               if (matched) params.caseId = matched.id;
 
               // Мапінг полів дат/часу/назв на params очікуваних ACTIONS
@@ -1655,17 +1701,22 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
               if (rest.hearing_time && !params.time) params.time = rest.hearing_time;
               if (rest.deadline_type && !params.name) params.name = rest.deadline_type;
 
-              // Резолв id за датою для делітів/апдейтів
+              // Резолв id за датою для делітів/апдейтів — нормалізована дата (substring 0..10)
               if (matched && opAction === 'delete_deadline' && !params.deadlineId) {
-                const d = (matched.deadlines || []).find(d => d.date === rest.deadline_date);
+                const target = norm(rest.deadline_date);
+                const d = (matched.deadlines || []).find(d => norm(d.date) === target);
                 if (d) params.deadlineId = d.id;
+                else return { action: opAction, params, _resolveError: `Дедлайн на ${target} не знайдено в справі "${matched.name}"` };
               }
               if (matched && opAction === 'delete_hearing' && !params.hearingId) {
-                const h = (matched.hearings || []).find(h => h.date === rest.hearing_date);
+                const target = norm(rest.hearing_date);
+                const h = (matched.hearings || []).find(h => norm(h.date) === target);
                 if (h) params.hearingId = h.id;
+                else return { action: opAction, params, _resolveError: `Засідання на ${target} не знайдено в справі "${matched.name}"` };
               }
               if (matched && opAction === 'update_deadline' && !params.deadlineId) {
-                const d = (matched.deadlines || []).find(d => d.date === rest.deadline_date);
+                const target = norm(rest.deadline_date);
+                const d = (matched.deadlines || []).find(d => norm(d.date) === target);
                 if (d) params.deadlineId = d.id;
               }
 
@@ -3515,6 +3566,12 @@ function App() {
     },
 
     delete_deadline: ({ caseId, deadlineId }) => {
+      if (!caseId)     return { error: 'caseId не вказано' };
+      if (!deadlineId) return { error: 'deadlineId не вказано' };
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) return { error: `Справу ${caseId} не знайдено` };
+      const exists = (targetCase.deadlines || []).some(d => d.id === deadlineId);
+      if (!exists) return { error: `Дедлайн ${deadlineId} не знайдено в справі "${targetCase.name}"` };
       setCases(prev => prev.map(c =>
         c.id === caseId
           ? { ...c, deadlines: (c.deadlines || []).filter(d => d.id !== deadlineId), updatedAt: new Date().toISOString() }
@@ -3565,6 +3622,12 @@ function App() {
     },
 
     delete_hearing: ({ caseId, hearingId }) => {
+      if (!caseId)    return { error: 'caseId не вказано' };
+      if (!hearingId) return { error: 'hearingId не вказано' };
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) return { error: `Справу ${caseId} не знайдено` };
+      const exists = (targetCase.hearings || []).some(h => h.id === hearingId);
+      if (!exists) return { error: `Засідання ${hearingId} не знайдено в справі "${targetCase.name}"` };
       setCases(prev => prev.map(c =>
         c.id === caseId
           ? { ...c, hearings: (c.hearings || []).filter(h => h.id !== hearingId), updatedAt: new Date().toISOString() }
@@ -3678,6 +3741,10 @@ function App() {
       const results = [];
       for (const op of operations) {
         try {
+          if (op._resolveError) {
+            results.push({ action: op.action, ok: false, error: op._resolveError });
+            continue;
+          }
           if (!op.action || !ACTIONS[op.action]) {
             results.push({ action: op.action, ok: false, error: 'Невідома дія' });
             continue;
@@ -3687,7 +3754,11 @@ function App() {
             continue;
           }
           const result = await ACTIONS[op.action](op.params);
-          results.push({ action: op.action, ok: true, result });
+          if (result && result.error) {
+            results.push({ action: op.action, ok: false, error: result.error });
+          } else {
+            results.push({ action: op.action, ok: true, result });
+          }
         } catch (err) {
           results.push({ action: op.action, ok: false, error: err.message });
         }

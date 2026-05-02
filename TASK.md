@@ -1,206 +1,159 @@
-# TASK.md — Реалізація batch_update
+# TASK.md — Діагностика batch_update (баги після реалізації)
 # Legal BMS | АБ Левицького
 # Дата: 02.05.2026
-# Варіант: 1 — Композитна дія в ACTIONS
+# Режим: ДІАГНОСТИКА — спочатку читати, потім запропонувати фікс
 
 ---
 
-## КРОК 0 — ПРОЧИТАТИ LESSONS.md
+## КРОК 0 — ОНОВИТИ LESSONS.md (зробити першим)
 
-```bash
-cat LESSONS.md
+Додати в кінець LESSONS.md новий принцип:
+
 ```
+### СИСТЕМНИЙ ПРИНЦИП — Оновлення UI без перезавантаження
+Будь-які зміни даних через агента (executeAction, sendChat, batch_update
+або будь-який інший обробник) МАЮТЬ відображатись в UI негайно — без F5,
+без перезавантаження сторінки.
 
----
+Після кожної дії що змінює дані обов'язково:
+- setCases(prev => [...оновлений масив...]) — для змін в справах
+- або відповідний setState для інших даних
 
-## КОНТЕКСТ
-
-Архітектура ACTIONS + PERMISSIONS + executeAction вже є і готова.
-Не вистачає рівно чотирьох речей — додаємо їх по порядку.
-Нічого існуючого не переписуємо.
-
-Політика при помилці: best-effort.
-Якщо одна операція в пакеті падає — інші виконуються.
-Summary показує: "3 з 4 виконано".
-
----
-
-## КРОК 1 — Додати batch_update в ACTIONS
-
-Знайти кінець об'єкта ACTIONS:
-
-```bash
-grep -n "ACTIONS = {" src/App.jsx
-```
-
-Додати нову дію в кінці ACTIONS перед закриваючою дужкою:
-
-```javascript
-batch_update: async ({ operations, agentId }) => {
-  const results = [];
-  for (const op of operations) {
-    try {
-      if (!op.action || !ACTIONS[op.action]) {
-        results.push({ action: op.action, ok: false, error: 'Невідома дія' });
-        continue;
-      }
-      if (agentId && PERMISSIONS[agentId] && !PERMISSIONS[agentId].includes(op.action)) {
-        results.push({ action: op.action, ok: false, error: 'Немає повноважень' });
-        continue;
-      }
-      const result = await ACTIONS[op.action](op.params);
-      results.push({ action: op.action, ok: true, result });
-    } catch (err) {
-      results.push({ action: op.action, ok: false, error: err.message });
-    }
-  }
-  const successCount = results.filter(r => r.ok).length;
-  return { success: successCount > 0, successCount, total: results.length, results };
-},
+Якщо після реалізації будь-якого фіксу зміни не відображаються без F5 —
+це баг, не норма. Перевіряти в тестовій матриці окремим пунктом:
+"Зміни відображаються без перезавантаження сторінки".
 ```
 
 ---
 
-## КРОК 2 — Додати batch_update в PERMISSIONS
+## СИМПТОМИ (зафіксовані при тестуванні)
 
-Знайти масиви qi_agent і dashboard_agent:
+**Баг 1 — Дані не видаляються взагалі**
+Агент відповідає "Виконано 3 з 3: delete_hearing, delete_deadline, delete_deadline"
+але після перевірки — засідання і дедлайни залишились на місці.
+F5 теж не допомагає — дані не змінились взагалі.
 
-```bash
-grep -n "qi_agent\|dashboard_agent" src/App.jsx | head -10
-```
+**Баг 2 — Агент знаходить менше записів ніж є**
+При команді "видали всі записи за березень" агент знаходить 3 записи,
+але насправді їх більше. Частина засідань і дедлайнів невидима для агента.
 
-Додати 'batch_update' в кінець масиву qi_agent і dashboard_agent.
-
----
-
-## КРОК 3 — Додати обробник в sendChat
-
-Знайти початок каскаду if-блоків в sendChat:
-
-```bash
-grep -n "recommended_actions\[0\]\|action ===" src/App.jsx | head -10
-```
-
-Додати ПЕРЕД існуючим каскадом if-блоків:
-
-```javascript
-// BATCH_UPDATE — обробляти до каскаду одиничних дій
-if (action === 'batch_update') {
-  const operations = actionResult.operations || [];
-  if (operations.length === 0) {
-    addMessage('assistant', 'Пакет порожній — немає операцій для виконання.');
-    return;
-  }
-
-  // Резолвити case_name -> caseId для кожної операції
-  const resolvedOps = operations.map(op => {
-    const resolved = { action: op.action, params: { ...op } };
-    if (op.case_name) {
-      const found = cases.find(c =>
-        extractShortName(c.name).toLowerCase() === op.case_name.toLowerCase() ||
-        c.name.toLowerCase().includes(op.case_name.toLowerCase())
-      );
-      if (found) resolved.params.caseId = found.id;
-    }
-    return resolved;
-  });
-
-  const batchResult = await onExecuteAction('qi_agent', 'batch_update', {
-    operations: resolvedOps,
-    agentId: 'qi_agent'
-  });
-
-  const { successCount, total, results } = batchResult;
-  const summary = results.map(r =>
-    r.ok ? 'OK: ' + r.action : 'ПОМИЛКА: ' + r.action + ' — ' + r.error
-  ).join('\n');
-
-  addMessage('assistant',
-    'Виконано ' + successCount + ' з ' + total + ' операцій:\n' + summary
-  );
-  return;
-}
-```
+**Баг 3 — Агент не розуміє команду по місяцю**
+"Очисти березень" або "видали все за березень" —
+агент має розуміти що треба видалити ВСЕ в межах цього місяця,
+незалежно від кількості записів.
 
 ---
 
-## КРОК 4 — Оновити SONNET_CHAT_PROMPT
+## ДІАГНОСТИКА БЛОК А — Чому дані не видаляються (Баг 1)
 
-Знайти SONNET_CHAT_PROMPT:
-
-```bash
-grep -n "SONNET_CHAT_PROMPT" src/App.jsx | head -5
-```
-
-Додати після існуючого опису одиничних дій:
-
-```
-ВАЖЛИВО: Якщо потрібно виконати 2 або більше дій в одній відповіді —
-згенеруй ОДИН ACTION_JSON з batch_update:
-
-ACTION_JSON: {
-  "recommended_actions": ["batch_update"],
-  "operations": [
-    {"action": "delete_deadline", "case_name": "Брановський", "deadline_date": "2026-03-31"},
-    {"action": "delete_hearing",  "case_name": "Брановський", "hearing_date":  "2026-03-31"},
-    {"action": "delete_deadline", "case_name": "Корева",      "deadline_date": "2026-03-31"}
-  ]
-}
-
-НЕ генеруй кілька окремих ACTION_JSON в одній відповіді.
-НЕ використовуй batch_update для однієї дії — тільки для 2+.
-```
-
----
-
-## КРОК 5 — Перевірка після змін
+### А1 — Переглянути batch_update в ACTIONS
 
 ```bash
 grep -n "batch_update" src/App.jsx
 ```
 
-Переконатись що є:
-- в ACTIONS
-- в qi_agent і dashboard_agent
-- в sendChat (новий if-блок)
-- в SONNET_CHAT_PROMPT
+Знайти реалізацію batch_update в ACTIONS і перевірити:
+- Чи викликає він ACTIONS[op.action](op.params)?
+- Що повертає кожна атомарна дія (delete_deadline, delete_hearing)?
+- Чи є там setCases або будь-який setState?
+- Чи змінюються реальні дані чи тільки локальна копія?
 
----
-
-## ТЕСТОВА МАТРИЦЯ після деплою
-
-Перевірити в браузері:
-
-1. "Видали всі дедлайни на 31 березня"
-   — одна кнопка — виконати — summary N з N
-
-2. "Видали засідання і дедлайн по Брановському на 31 березня"
-   — пакет з 2 операцій — summary
-
-3. "Видали всі застарілі записи за березень"
-   — агент формує пакет — виконати одним натисканням
-
-4. Одинична дія досі працює:
-   "Постав дедлайн Янченку 15 травня"
-   — НЕ йде через batch_update
-
----
-
-## ДЕПЛОЙ
+### А2 — Переглянути delete_deadline і delete_hearing в ACTIONS
 
 ```bash
-git add -A && git commit -m "feat: batch_update — пакетне виконання дій агентом" && git push origin main
+grep -n "delete_deadline\|delete_hearing" src/App.jsx | head -20
 ```
+
+Відкрити кожен обробник і перевірити:
+- Як саме він видаляє запис — filter, splice, інше?
+- Чи викликає setCases після видалення?
+- Чи передаються правильні params (caseId, deadlineId/hearingId)?
+
+### А3 — Переглянути резолвер params в sendChat
+
+Знайти блок batch_update в sendChat (~рядок 1634):
+
+```bash
+grep -n "BATCH_UPDATE\|resolvedOps\|case_name.*caseId" src/App.jsx | head -20
+```
+
+Перевірити:
+- Як резолвиться case_name → caseId?
+- Як резолвиться deadline_date → deadlineId?
+- Як резолвиться hearing_date → hearingId?
+- Чи може deadlineId або hearingId бути undefined після резолвінгу?
+
+### А4 — Перевірити що передається в executeAction
+
+Додати тимчасовий console.log перед викликом onExecuteAction в блоці batch_update:
+```javascript
+console.log('batch_update ops:', JSON.stringify(resolvedOps, null, 2));
+```
+Запустити команду в браузері, відкрити DevTools → Console, виписати що там.
 
 ---
 
-## ДОПИСАТИ В LESSONS.md ПІСЛЯ ВИКОНАННЯ
+## ДІАГНОСТИКА БЛОК Б — Чому агент не бачить всіх записів (Баг 2)
+
+### Б1 — Переглянути що передається агенту як контекст
+
+```bash
+grep -n "buildSystemContext\|systemContext\|hearings\|deadlines" src/App.jsx | head -30
+```
+
+Перевірити:
+- Чи передаються ВСІ hearings[] і deadlines[] кожної справи в контекст Sonnet?
+- Чи є обмеження на кількість або фільтрація по даті?
+- Чи є truncation (обрізання) контексту?
+
+### Б2 — Переглянути SONNET_CHAT_PROMPT секцію batch_update
+
+```bash
+grep -n "ПАКЕТНІ ДІЇ\|batch_update\|березень\|місяць" src/App.jsx | head -20
+```
+
+Перевірити:
+- Як промпт пояснює агенту що таке "всі записи за місяць"?
+- Чи є приклад з кількома справами одночасно?
+- Чи є інструкція шукати по всіх справах а не тільки першій знайденій?
+
+---
+
+## ДІАГНОСТИКА БЛОК В — Розуміння команд по місяцю (Баг 3)
+
+### В1 — Переглянути поточні приклади в SONNET_CHAT_PROMPT
+
+```bash
+grep -n -A5 -B5 "березень\|місяць\|all.*deadline\|видали все" src/App.jsx | head -40
+```
+
+Перевірити:
+- Чи є в промпті приклад команди "очисти місяць"?
+- Чи розуміє агент що треба пройтись по ВСІХ справах і знайти всі записи за діапазон дат?
+
+---
+
+## ФОРМАТ ЗВІТУ
 
 ```
-### [2026-05-02] batch_update
-- Реалізовано як композитна дія в ACTIONS
-- Політика: best-effort — падіння однієї op не зупиняє пакет
-- Вкладена перевірка PERMISSIONS для кожної op в пакеті
-- SONNET_CHAT_PROMPT: один пакет замість кількох ACTION_JSON
-- Тестова матриця: 4 сценарії
+=== ЗВІТ ДІАГНОСТИКИ batch_update (баги) ===
+
+БАГ 1 — Дані не видаляються:
+[причина — де саме ламається ланцюг]
+[чи доходить виклик до setCases]
+[що в console.log resolvedOps]
+
+БАГ 2 — Агент не бачить всіх записів:
+[що передається в контекст]
+[чи є обмеження або truncation]
+
+БАГ 3 — Розуміння команди по місяцю:
+[що є в промпті, чого не вистачає]
+
+РЕКОМЕНДАЦІЇ:
+[для кожного бага — конкретний фікс з рядками коду]
+
+=== КІНЕЦЬ ЗВІТУ ===
 ```
+
+Звіт вивести в термінал. Після звіту — запропонувати фікс.
