@@ -46,7 +46,8 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
     if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)" };
     if (type === "hearing") return { border: "#4f7cff", bg: "rgba(79,124,255,.2)" };
     if (type === "deadline") return { border: "#f39c12", bg: "rgba(243,156,18,.2)" };
-    if (type === "travel") return { border: "#5a6080", bg: "rgba(90,96,128,.25)" };
+    if (type === "note") return { border: "#f1c40f", bg: "rgba(241,196,15,.18)" };
+    if (type === "travel") return { border: "#5a6080", bg: "rgba(90,96,128,.18)" };
     return { border: "#4f7cff", bg: "rgba(79,124,255,.15)" };
   }
 
@@ -83,11 +84,13 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
 
   function handleMouseDown(e, slotIdx) {
     const startY = e.clientY;
-    let active = false;
-    slotDrag.startDrag(slotIdx, day);
-    active = true;
+    let dragStarted = false;
     function onMove(ev) {
-      if (!active) return;
+      if (!dragStarted && Math.abs(ev.clientY - startY) >= 5) {
+        dragStarted = true;
+        slotDrag.startDrag(slotIdx, day);
+      }
+      if (!dragStarted) return;
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const slotEl = el?.closest('[data-slot-idx]');
       if (slotEl) {
@@ -95,13 +98,11 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
         const ctx = slotEl.dataset.ctx || null;
         slotDrag.updateDrag(idx, ctx);
       }
-      void startY;
     }
     function onUp() {
-      active = false;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      if (slotDrag.isDraggingNow()) slotDrag.endDrag();
+      if (dragStarted && slotDrag.isDraggingNow()) slotDrag.endDrag();
     }
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -254,24 +255,52 @@ function _getNextHearing(c) {
   return c.hearings.filter(h => h.status === 'scheduled' && h.date >= todayStr).sort((a, b) => a.date.localeCompare(b.date))[0] || null;
 }
 
-function findConflicts(cases, calendarEvents) {
+function classifyDayHearings(hearings) {
+  const withTime = (hearings || []).filter(h => h && h.time);
+  const total = (hearings || []).length;
+
+  if (total === 0) return 'none';
+  if (total === 1) return 'none';
+  if (total >= 3) return 'red';
+
+  if (withTime.length < 2) return 'yellow';
+
+  const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const a = withTime[0], b = withTime[1];
+  const aStart = toMin(a.time), aEnd = aStart + (a.duration || 120);
+  const bStart = toMin(b.time), bEnd = bStart + (b.duration || 120);
+
+  const overlaps = aStart < bEnd && aEnd > bStart;
+  if (overlaps) return 'red';
+
+  const gap = aStart >= bEnd ? (aStart - bEnd) : (bStart - aEnd);
+  if (gap <= 120) return 'red';
+
+  return 'yellow';
+}
+
+function findConflicts(cases) {
   const byDate = {};
   cases.forEach(c => {
-    const nh = _getNextHearing(c);
-    if (nh && nh.time) {
-      if (!byDate[nh.date]) byDate[nh.date] = [];
-      byDate[nh.date].push({ name: c.name, time: nh.time, id: c.id });
-    }
+    (c.hearings || []).filter(h => h.status === 'scheduled').forEach(h => {
+      if (!byDate[h.date]) byDate[h.date] = [];
+      byDate[h.date].push({
+        hearingId: h.id,
+        caseId: c.id,
+        caseName: c.name,
+        time: h.time || null,
+        duration: h.duration || 120
+      });
+    });
   });
-  (calendarEvents || []).forEach(e => {
-    if (e.date && e.time && e.type === "hearing") {
-      if (!byDate[e.date]) byDate[e.date] = [];
-      byDate[e.date].push({ name: e.title, time: e.time });
-    }
-  });
+
   return Object.entries(byDate)
-    .filter(([, items]) => items.length > 1)
-    .map(([date, items]) => ({ date, items: items.map(i => `${i.name} ${i.time}`) }));
+    .map(([date, items]) => {
+      const level = classifyDayHearings(items);
+      if (level === 'none') return null;
+      return { date, items, level };
+    })
+    .filter(Boolean);
 }
 
 function buildDashboardContext(cases, calendarEvents) {
@@ -292,9 +321,9 @@ function buildDashboardContext(cases, calendarEvents) {
     ? calendarEvents.map(e => `${e.date} ${e.time || ""} ${e.title} (${e.type})`).join("\n")
     : "немає";
 
-  const conflicts = findConflicts(cases, calendarEvents);
+  const conflicts = findConflicts(cases);
   const conflictsText = conflicts.length
-    ? conflicts.map(c => `⚠️ ${c.date}: ${c.items.join(" і ")}`).join("\n")
+    ? conflicts.map(c => `${c.level === 'red' ? '⚠️' : '⚡'} ${c.date}: ${c.items.map(i => `${i.caseName}${i.time ? ' ' + i.time : ''}`).join(' і ')}`).join("\n")
     : "немає";
 
   return `Ти — календарний асистент АБ Левицького.
@@ -306,6 +335,11 @@ function buildDashboardContext(cases, calendarEvents) {
 Дедлайн існує ВИКЛЮЧНО всередині справи (deadlines[]). Окремих дедлайнів немає.
 Будь-яка дія над засіданням потребує case_name справи-власника.
 ЗАБОРОНЕНО: "засідання не прив'язане до справи".
+
+ДЕДЛАЙНИ — ТІЛЬКИ ЧИТАННЯ:
+Якщо користувач просить змінити або додати дедлайн — відповідай:
+"Дедлайни змінюються через Досьє або Quick Input. Я можу лише переглядати їх."
+Не генеруй ACTION_JSON для дедлайнів.
 
 Якщо користувач просить змінити дату засідання, час, дедлайн або інше поле справи — відповідай текстом І додавай в кінці ACTION_JSON блок.
 
@@ -458,7 +492,7 @@ const vBtnActive = {
   color: "#fff"
 };
 
-export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEvent, onUpdateEvent, onDeleteEvent, sonnetPrompt, buildSystemContext, onExecuteAction }) {
+export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
   const [curMonth, setCurMonth] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [calView, setCalView] = useState("month");
@@ -473,6 +507,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
   const [modalEnd, setModalEnd] = useState("11:00");
   const [modalTitle, setModalTitle] = useState("");
   const [modalType, setModalType] = useState("hearing");
+  const [modalCaseId, setModalCaseId] = useState('');
   const [modalCourt, setModalCourt] = useState("");
   const [modalShowTravel, setModalShowTravel] = useState(false);
   const [modalTravelMin, setModalTravelMin] = useState(60);
@@ -515,9 +550,10 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
   }
 
   function checkConflicts(dateStr) {
-    const hearings = getEventsForDay(dateStr).filter(e => e.type === "hearing" && e.time);
-    if (hearings.length < 2) return [];
-    return hearings;
+    const hearings = getAllEvents()
+      .filter(e => e.date === dateStr && e.type === 'hearing');
+    const level = classifyDayHearings(hearings);
+    return { level, hearings: level !== 'none' ? hearings : [] };
   }
 
   function shiftWeek(deltaDays) {
@@ -547,7 +583,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
     return `${first.getDate()} ${short[first.getMonth()]} — ${last.getDate()} ${short[last.getMonth()]}`;
   }
 
-  const allConflicts = findConflicts(cases, calendarEvents);
+  const allConflicts = findConflicts(cases);
 
   const stats = {
     active: cases.filter(c => c.status === "active" || !c.status).length,
@@ -643,15 +679,20 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
 
   // Day panel
   const dayEvents = getEventsForDay(selectedDay);
-  const conflicts = checkConflicts(selectedDay);
+  const dayConflict = checkConflicts(selectedDay);
   const hearingCount = dayEvents.filter(e => e.type === "hearing").length;
   const deadlineCount = dayEvents.filter(e => e.type === "deadline").length;
 
   const parts = [];
   if (hearingCount) parts.push(`${hearingCount} засідань`);
   if (deadlineCount) parts.push(`${deadlineCount} дедлайн${deadlineCount > 1 ? "и" : ""}`);
+  const conflictText = dayConflict.level === 'red'
+    ? ' · ⚠️ накладка!'
+    : dayConflict.level === 'yellow'
+    ? ' · ⚡ два засідання'
+    : '';
   const subtitle = parts.length
-    ? (conflicts.length ? parts.join(" · ") + " · накладка!" : parts.join(" · "))
+    ? parts.join(" · ") + conflictText
     : "Вільний день";
 
   function handleDashboardAction(action) {
@@ -714,15 +755,19 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
         }
         return null;
       }
-      case "update_deadline": {
-        const c = findCase(action.case_name);
-        if (!c) return null;
-        if (action.deadline) {
-          // dashboard_agent не має дозволу на deadline — fallback на onUpdateCase
-          const newDl = { id: `dl_${Date.now()}`, name: action.deadline_type || "Дедлайн", date: action.deadline };
-          onUpdateCase(c.id, "deadlines", [...(c.deadlines || []), newDl]);
-        }
-        return `✅ Дедлайн "${c.name}": ${action.deadline}`;
+      case 'add_note': {
+        const c = action.case_name ? findCase(action.case_name) : null;
+        if (!onExecuteAction) return null;
+        onExecuteAction('dashboard_agent', 'add_note', {
+          caseId: c ? c.id : (action.caseId || null),
+          text: action.text || action.note || '',
+          date: action.date || selectedDay,
+          time: action.time || null,
+          category: 'general'
+        });
+        return c
+          ? `✅ Нотатка у справі "${c.name}" збережена${action.date ? " на " + action.date : ""}`
+          : `✅ Нотатка збережена${action.date ? " на " + action.date : ""}`;
       }
       case "navigate_calendar": {
         setCalView("month");
@@ -794,6 +839,11 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
 
       const systemPrompt = buildDashboardContext(cases, calendarEvents);
 
+      // Anthropic API вимагає щоб перше повідомлення було від user.
+      const safeHistory = newHistory[0]?.role === 'user'
+        ? newHistory
+        : newHistory.slice(newHistory.findIndex(m => m.role === 'user'));
+
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -803,10 +853,10 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
           "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
+          model: "claude-sonnet-4-5-20251022",
           max_tokens: 500,
           system: systemPrompt,
-          messages: newHistory
+          messages: safeHistory
         })
       });
 
@@ -869,67 +919,78 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
     setModalTitle("");
     setModalCourt("");
     setModalType("hearing");
+    setModalCaseId('');
     setModalShowTravel(false);
     setModalTravelMin(60);
     setModalOpen(true);
   }
 
-  function parseHM(s) {
-    const [h, m] = s.split(":").map(Number);
-    return h * 60 + m;
-  }
-  function toHM(totalMin) {
-    const m = ((totalMin % (24 * 60)) + 24 * 60) % (24 * 60);
-    const h = Math.floor(m / 60);
-    const mm = m % 60;
-    return String(h).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
-  }
-
   async function saveEvent() {
-    if (!modalTitle.trim()) return;
+    const title = modalTitle.trim();
+    if (!title) return;
     const day = modalDate || selectedDay;
+    const time = modalStart;
+    const endTime = modalEnd;
+    const travelMinutes = modalShowTravel ? modalTravelMin : 0;
 
-    const startMin = parseHM(modalStart);
-    const endMin = parseHM(modalEnd);
-    if (endMin <= startMin) return;
-    const duration = endMin - startMin;
+    if (modalType === 'hearing') {
+      if (!modalCaseId) { alert('Оберіть справу'); return; }
 
-    const existingHearings = getEventsForDay(day).filter(e => e.type === "hearing" && e.time);
-    if (modalType === "hearing" && existingHearings.length > 0) {
-      const ok = await systemConfirm("В цей день вже є засідання. Зберегти попри накладку?", "Накладка засідань");
-      if (!ok) return;
-    }
+      const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
-    const baseId = Date.now();
-    const newEvents = [{
-      id: baseId,
-      title: modalTitle.trim(),
-      date: day,
-      time: modalStart,
-      endTime: modalEnd,
-      duration,
-      type: modalType,
-      court: modalCourt.trim() || null,
-      notes: ""
-    }];
+      if (time) {
+        const startMin = toMin(time);
+        const dur = (time && endTime) ? toMin(endTime) - startMin : 120;
+        const dayHearings = getAllEvents().filter(e =>
+          e.date === day && e.type === 'hearing' && e.time
+        );
+        const hasOverlap = dayHearings.some(e => {
+          const eStart = toMin(e.time);
+          const eEnd = eStart + (e.duration || 120);
+          return startMin < eEnd && (startMin + dur) > eStart;
+        });
+        if (hasOverlap) {
+          const ok = await systemConfirm('Є накладка за часом. Зберегти попри все?', 'Накладка засідань');
+          if (!ok) return;
+        }
+      }
 
-    if (modalShowTravel && modalTravelMin > 0) {
-      const travelStart = toHM(startMin - modalTravelMin);
-      newEvents.push({
-        id: baseId + 1,
-        title: "🚗 Дорога",
+      const duration = (time && endTime)
+        ? toMin(endTime) - toMin(time)
+        : 120;
+
+      onExecuteAction('dashboard_agent', 'add_hearing', {
+        caseId: modalCaseId,
         date: day,
-        time: travelStart,
-        endTime: modalStart,
-        duration: modalTravelMin,
-        type: "travel",
-        court: null,
-        notes: ""
+        time: time || null,
+        duration
+      });
+
+      if (travelMinutes && travelMinutes > 0 && time) {
+        const startMin = toMin(time) - travelMinutes;
+        const travelTime = `${String(Math.floor(startMin / 60)).padStart(2, '0')}:${String(startMin % 60).padStart(2, '0')}`;
+        onExecuteAction('dashboard_agent', 'add_note', {
+          text: `🚗 Дорога до суду (${travelMinutes} хв)`,
+          date: day,
+          time: travelTime,
+          duration: travelMinutes,
+          caseId: modalCaseId,
+          category: 'travel'
+        });
+      }
+
+    } else if (modalType === 'note') {
+      onExecuteAction('dashboard_agent', 'add_note', {
+        text: title,
+        date: day,
+        time: time || null,
+        caseId: modalCaseId || null,
+        category: 'general'
       });
     }
 
-    newEvents.forEach(e => onAddEvent(e));
     setModalOpen(false);
+    setModalCaseId('');
     setModalTitle("");
     setModalCourt("");
     setModalType("hearing");
@@ -1002,15 +1063,17 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
           {calView === "month" ? (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, height: "100%", gridAutoRows: "1fr" }}>
                 {cells.map(cell => {
-                  const events = getEventsForDay(cell.dateStr);
+                  const events = cell.other ? [] : getEventsForDay(cell.dateStr);
                   const hearings = events.filter(e => e.type === "hearing");
                   const deadlines = events.filter(e => e.type === "deadline");
-                  const conflict = hearings.length > 1;
+                  const notesOnDay = events.filter(e => e.type === "note");
+                  const conflictLevel = classifyDayHearings(hearings);
                   const isToday = cell.dateStr === today;
                   const isSelected = cell.dateStr === selectedDay;
 
                   let borderColor = "var(--border, #2e3148)";
-                  if (conflict) borderColor = "#e74c3c";
+                  if (conflictLevel === 'red') borderColor = "#e74c3c";
+                  else if (conflictLevel === 'yellow') borderColor = "#f39c12";
                   else if (isSelected) borderColor = "var(--accent, #4f7cff)";
                   else if (isToday) borderColor = "var(--accent, #4f7cff)";
 
@@ -1040,15 +1103,18 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                       <span style={{ fontSize: 12, fontWeight: isToday ? 700 : 500, color: isToday ? "var(--accent, #4f7cff)" : "inherit" }}>
                         {cell.day}
                       </span>
-                      <div style={{ display: "flex", gap: 1, flexWrap: "wrap", justifyContent: "center" }}>
+                      <div style={{ display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center" }}>
                         {hearings.slice(0,3).map((_, i) => (
-                          <div key={"h"+i} style={{ width: 4, height: 4, borderRadius: "50%", background: "#4f7cff" }} />
+                          <div key={"h"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#4f7cff" }} />
                         ))}
                         {deadlines.slice(0,2).map((_, i) => (
-                          <div key={"d"+i} style={{ width: 4, height: 4, borderRadius: "50%", background: "#f39c12" }} />
+                          <div key={"d"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#f39c12" }} />
+                        ))}
+                        {notesOnDay.slice(0,2).map((_, i) => (
+                          <div key={"n"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#2ecc71" }} />
                         ))}
                       </div>
-                      {conflict && <span style={{ fontSize: 8 }}>⚠️</span>}
+                      {conflictLevel === 'red' && <span style={{ fontSize: 8 }}>⚠️</span>}
                     </div>
                   );
                 })}
@@ -1138,18 +1204,38 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
             <span>·</span>
             <span>Закритих: <b style={{ color: "var(--text, #e6e8f0)" }}>{stats.closed}</b></span>
           </div>
-          {allConflicts.length > 0 && (
-            <div style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "4px 8px",
-              background: "rgba(231,76,60,0.1)",
-              border: "1px solid rgba(231,76,60,0.3)",
-              borderRadius: 6,
-              fontSize: 11, color: "#e74c3c"
-            }}>
-              ⚠️ Накладки: {allConflicts.length} — {allConflicts.map(c => c.date).join(", ")}
-            </div>
-          )}
+          {(() => {
+            const redConflicts = allConflicts.filter(c => c.level === 'red');
+            const yellowConflicts = allConflicts.filter(c => c.level === 'yellow');
+            return (
+              <>
+                {redConflicts.length > 0 && (
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "3px 8px",
+                    background: "rgba(231,76,60,0.1)",
+                    border: "1px solid rgba(231,76,60,0.3)",
+                    borderRadius: 6,
+                    fontSize: 10, color: "#e74c3c"
+                  }}>
+                    ⚠️ Накладки: {redConflicts.map(c => c.date).join(", ")}
+                  </div>
+                )}
+                {yellowConflicts.length > 0 && (
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "3px 8px",
+                    background: "rgba(243,156,18,0.1)",
+                    border: "1px solid rgba(243,156,18,0.3)",
+                    borderRadius: 6,
+                    fontSize: 10, color: "#f39c12"
+                  }}>
+                    ⚡ Подвійні засідання: {yellowConflicts.map(c => c.date).join(", ")}
+                  </div>
+                )}
+              </>
+            );
+          })()}
           {(() => {
             const catSegs = [
               { label: "Цивільні", val: stats.civil, color: "#4f7cff" },
@@ -1191,9 +1277,27 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
         <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border, #2e3148)", flexShrink: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>{formatDayTitle(selectedDay)}</div>
-          <div style={{ fontSize: 11, color: conflicts.length ? "#e74c3c" : "var(--text3, #5a6080)", marginTop: 2 }}>
+          <div style={{
+            fontSize: 11,
+            color: dayConflict.level === 'red' ? '#e74c3c'
+              : dayConflict.level === 'yellow' ? '#f39c12'
+              : 'var(--text3, #5a6080)',
+            marginTop: 2
+          }}>
             {subtitle}
           </div>
+          {dayConflict.level === 'red' && (
+            <div style={{ marginTop: 6, background: 'rgba(231,76,60,0.1)', border: '1px solid rgba(231,76,60,0.3)',
+              borderRadius: 6, padding: '4px 8px', fontSize: 11, color: '#e74c3c' }}>
+              ⚠️ Накладка або забагато засідань на один день
+            </div>
+          )}
+          {dayConflict.level === 'yellow' && (
+            <div style={{ marginTop: 6, background: 'rgba(243,156,18,0.1)', border: '1px solid rgba(243,156,18,0.3)',
+              borderRadius: 6, padding: '4px 8px', fontSize: 11, color: '#f39c12' }}>
+              ⚡ Два засідання — перевір чи встигнеш
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, overflow: "auto", padding: "8px 10px" }}>
@@ -1263,7 +1367,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                 ref={chatScrollRef}
                 style={{
                   marginTop: 6,
-                  height: 170,
+                  height: 220,
                   overflowY: "auto",
                   display: "flex",
                   flexDirection: "column",
@@ -1279,7 +1383,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                     key={i}
                     style={{
                       alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                      maxWidth: "85%",
+                      maxWidth: "90%",
                       background: m.role === "user" ? "rgba(79,124,255,0.15)" : "var(--surface2, #222536)",
                       borderRadius: 6,
                       padding: "5px 8px",
@@ -1288,6 +1392,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                       color: "var(--text, #e6e8f0)",
                       whiteSpace: "pre-wrap",
                       wordBreak: "break-word",
+                      overflowWrap: "break-word",
                     }}
                   >
                     {m.content}
@@ -1337,7 +1442,7 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
                 day={selectedDay}
                 events={dayEvents.filter(e => e.time)}
                 slotDrag={slotDrag}
-                conflicts={conflicts}
+                conflicts={dayConflict.level === 'red' ? dayConflict.hearings : []}
                 style={{ flex: 1 }}
               />
             </div>
@@ -1391,24 +1496,34 @@ export default function Dashboard({ cases, calendarEvents, onUpdateCase, onAddEv
               Нова подія — {formatDayTitle(modalDate || selectedDay)}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", gap: 6 }}>
-                {[
-                  { val: "hearing", label: "Засідання" },
-                  { val: "deadline", label: "Дедлайн" },
-                  { val: "event", label: "Подія" },
-                ].map(t => (
-                  <button
-                    key={t.val}
-                    onClick={() => setModalType(t.val)}
-                    style={{
-                      flex: 1, padding: "6px", borderRadius: 5, fontSize: 11, cursor: "pointer",
-                      background: modalType === t.val ? "var(--accent, #4f7cff)" : "var(--surface2, #222536)",
-                      color: modalType === t.val ? "#fff" : "var(--text, #e6e8f0)",
-                      border: "1px solid var(--border, #2e3148)"
-                    }}
-                  >{t.label}</button>
-                ))}
+              <div style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
+                <button onClick={() => setModalType('hearing')}
+                  style={{ flex: 1, padding: '6px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                    background: modalType === 'hearing' ? 'var(--accent, #4f7cff)' : 'var(--surface2, #222536)',
+                    color: 'var(--text, #e8eaf0)', fontSize: 12 }}>
+                  ⚖️ Засідання
+                </button>
+                <button onClick={() => setModalType('note')}
+                  style={{ flex: 1, padding: '6px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                    background: modalType === 'note' ? '#f1c40f' : 'var(--surface2, #222536)',
+                    color: modalType === 'note' ? '#000' : 'var(--text, #e8eaf0)', fontSize: 12 }}>
+                  📝 Нотатка
+                </button>
               </div>
+              {modalType === 'hearing' && (
+                <div>
+                  <div style={{ fontSize: 10, color: 'var(--text3, #5a6080)', marginBottom: 3 }}>СПРАВА *</div>
+                  <select value={modalCaseId} onChange={e => setModalCaseId(e.target.value)}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 5,
+                      background: 'var(--surface2, #222536)', color: 'var(--text, #e6e8f0)',
+                      border: '1px solid var(--border, #2e3148)', fontSize: 12 }}>
+                    <option value=''>— Оберіть справу —</option>
+                    {cases.filter(c => c.status === 'active' || !c.status).map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <input
                 type="text"
                 value={modalTitle}

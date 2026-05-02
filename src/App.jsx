@@ -2322,7 +2322,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
                 </div>
               ) : (
                 <div style={Object.assign(
-                  { maxWidth: '85%', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.5 },
+                  { maxWidth: '90%', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word' },
                   msg.role === 'user'
                     ? { background: 'rgba(79,124,255,0.1)', border: '1px solid rgba(79,124,255,0.2)' }
                     : { background: 'var(--surface2)', border: '1px solid var(--border)' }
@@ -3241,8 +3242,9 @@ function App() {
     setCalendarEvents(events);
   };
 
-  // Перебудова автоматично при кожній зміні cases або notes — гарантує свіжий стейт.
-  useEffect(() => { rebuildCalendarView(); }, [cases, notes]);
+  // Перебудова автоматично при кожній зміні notes — гарантує свіжий стейт.
+  // cases не залежить (Dashboard читає hearings/deadlines напряму з cases).
+  useEffect(() => { rebuildCalendarView(); }, [notes]);
 
   // ── Universal Panel resize ──────────────────────────────────────────────────
   useEffect(() => {
@@ -3886,12 +3888,6 @@ function App() {
             <Dashboard
               cases={cases}
               calendarEvents={calendarEvents}
-              onUpdateCase={updateCase}
-              onAddEvent={addCalendarEvent}
-              onUpdateEvent={updateCalendarEvent}
-              onDeleteEvent={deleteCalendarEvent}
-              sonnetPrompt={SONNET_CHAT_PROMPT}
-              buildSystemContext={buildSystemContext}
               onExecuteAction={executeAction}
             />
           )}

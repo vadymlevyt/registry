@@ -988,7 +988,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   padding: '8px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.6, maxWidth: '90%',
                   alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
                   background: msg.role === 'user' ? 'rgba(79,124,255,.2)' : '#222536',
-                  color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word'
+                  color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word'
                 }}>
                   {msg.content}
                 </div>
