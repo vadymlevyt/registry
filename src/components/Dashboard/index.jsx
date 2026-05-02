@@ -876,7 +876,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5-20251022",
+          model: "claude-sonnet-4-20250514",
           max_tokens: 500,
           system: systemPrompt,
           messages: safeHistory

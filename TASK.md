@@ -1,159 +1,302 @@
-# TASK.md — Діагностика batch_update (баги після реалізації)
-# Legal BMS | АБ Левицького
-# Дата: 02.05.2026
-# Режим: ДІАГНОСТИКА — спочатку читати, потім запропонувати фікс
+# TASK — Фікси Dashboard v2
+# Legal BMS | АБ Левицького | 2026-05-02
+
+Прочитай CLAUDE.md і LESSONS.md перед початком.
+Працюємо в гілці main.
 
 ---
 
-## КРОК 0 — ОНОВИТИ LESSONS.md (зробити першим)
+## КРОК 0
 
-Додати в кінець LESSONS.md новий принцип:
-
-```
-### СИСТЕМНИЙ ПРИНЦИП — Оновлення UI без перезавантаження
-Будь-які зміни даних через агента (executeAction, sendChat, batch_update
-або будь-який інший обробник) МАЮТЬ відображатись в UI негайно — без F5,
-без перезавантаження сторінки.
-
-Після кожної дії що змінює дані обов'язково:
-- setCases(prev => [...оновлений масив...]) — для змін в справах
-- або відповідний setState для інших даних
-
-Якщо після реалізації будь-якого фіксу зміни не відображаються без F5 —
-це баг, не норма. Перевіряти в тестовій матриці окремим пунктом:
-"Зміни відображаються без перезавантаження сторінки".
+```bash
+cat CLAUDE.md
+cat LESSONS.md
 ```
 
 ---
 
-## СИМПТОМИ (зафіксовані при тестуванні)
+## БЛОК 1 — Аудит і валідація засідань без часу
 
-**Баг 1 — Дані не видаляються взагалі**
-Агент відповідає "Виконано 3 з 3: delete_hearing, delete_deadline, delete_deadline"
-але після перевірки — засідання і дедлайни залишились на місці.
-F5 теж не допомагає — дані не змінились взагалі.
+### 1А — Знайти всі проблемні засідання
 
-**Баг 2 — Агент знаходить менше записів ніж є**
-При команді "видали всі записи за березень" агент знаходить 3 записи,
-але насправді їх більше. Частина засідань і дедлайнів невидима для агента.
+Прочитати всі справи з поточного стану (`cases` в App.jsx або registry_data.json).
+Знайти всі hearings де є `date` але немає `time` (або `time` порожній рядок або null).
 
-**Баг 3 — Агент не розуміє команду по місяцю**
-"Очисти березень" або "видали все за березень" —
-агент має розуміти що треба видалити ВСЕ в межах цього місяця,
-незалежно від кількості записів.
+Вивести в консоль при завантаженні (тільки в dev режимі):
+```js
+// В App.jsx після завантаження cases:
+cases.forEach(c => {
+  (c.hearings || []).forEach(h => {
+    if (h.date && !h.time) {
+      console.warn(`[HEARING AUDIT] Справа "${c.name}" (${c.id}): засідання ${h.id} має дату ${h.date} але НЕ МАЄ ЧАСУ`);
+    }
+  });
+});
+```
+
+### 1Б — Принцип валідного засідання
+
+Засідання є валідним і відображається ТІЛЬКИ якщо має обидва поля: `date` І `time`.
+Якщо хоча б одне відсутнє — ігнорувати скрізь.
+
+Додати хелпер в `Dashboard/index.jsx`:
+```js
+const isValidHearing = h =>
+  h.status === 'scheduled' &&
+  h.date &&
+  h.time &&
+  h.time.trim() !== '';
+```
+
+Замінити всі місця де фільтруються hearings:
+- `getAllEvents()` — замінити `h.status === 'scheduled'` на `isValidHearing(h)`
+- `findConflicts()` — те саме
+- `checkConflicts()` — те саме
+- Контекст агента (`buildDashboardContext`) — те саме
+- Слоти Day Panel і тижневого вигляду — те саме
 
 ---
 
-## ДІАГНОСТИКА БЛОК А — Чому дані не видаляються (Баг 1)
+## БЛОК 2 — Призупинені і закриті справи
 
-### А1 — Переглянути batch_update в ACTIONS
+### Логіка відображення:
 
-```bash
-grep -n "batch_update" src/App.jsx
+**Активні (`status === 'active'`):**
+- Повне відображення, стандартні кольори
+- Синій — засідання, помаранчевий — дедлайни
+
+**Призупинені (`status === 'suspended'`):**
+- Відображаються в календарі і стрічці але іншим кольором
+- Засідання і дедлайни — сіро-блакитний `#7f8fa6`
+- Агент їх бачить і повідомляє: "засідання у призупиненій справі Квант"
+- НЕ рахуються як накладка — виключити призупинені з `findConflicts()` і `checkConflicts()`
+
+**Закриті (`status === 'closed'`):**
+- НЕ відображаються в календарі, стрічці подій, слотах
+- Агент їх НЕ бачить (не включати в контекст)
+- Виключити з `getAllEvents()` і контексту агента
+
+### Реалізація:
+
+В `getAllEvents()`:
+```js
+cases.forEach(c => {
+  if (c.status === 'closed') return; // закриті — пропустити повністю
+
+  const color = c.status === 'suspended' ? '#7f8fa6' : null; // null = стандартний
+
+  (c.hearings || []).filter(isValidHearing).forEach(h => {
+    events.push({
+      ...
+      color, // передати колір
+      isSuspended: c.status === 'suspended'
+    });
+  });
+
+  (c.deadlines || []).forEach(dl => {
+    events.push({
+      ...
+      color,
+      isSuspended: c.status === 'suspended'
+    });
+  });
+});
 ```
 
-Знайти реалізацію batch_update в ACTIONS і перевірити:
-- Чи викликає він ACTIONS[op.action](op.params)?
-- Що повертає кожна атомарна дія (delete_deadline, delete_hearing)?
-- Чи є там setCases або будь-який setState?
-- Чи змінюються реальні дані чи тільки локальна копія?
-
-### А2 — Переглянути delete_deadline і delete_hearing в ACTIONS
-
-```bash
-grep -n "delete_deadline\|delete_hearing" src/App.jsx | head -20
+В `findConflicts()` — виключити призупинені:
+```js
+cases.forEach(c => {
+  if (c.status !== 'active') return; // тільки активні рахуємо як накладки
+  ...
+});
 ```
 
-Відкрити кожен обробник і перевірити:
-- Як саме він видаляє запис — filter, splice, інше?
-- Чи викликає setCases після видалення?
-- Чи передаються правильні params (caseId, deadlineId/hearingId)?
+В контексті агента — закриті не включати:
+```js
+const visibleCases = cases.filter(c => c.status !== 'closed');
+```
 
-### А3 — Переглянути резолвер params в sendChat
+В слотах — якщо `event.color` є → використати його замість стандартного.
+В крапках місячної сітки — якщо `isSuspended` → сіро-блакитна крапка замість синьої/помаранчевої.
 
-Знайти блок batch_update в sendChat (~рядок 1634):
+---
+
+## БЛОК 3 — Модалка: UX фікси
+
+### 3А — Перейменування і структура
+
+- Заголовок модалки: "Нова подія — {дата}" → залишити
+- Вкладка "Нотатка" — підзаголовок всередині: "Нова нотатка"
+- Поле "Назва події" для нотатки → замінити на `<textarea>` з написом "Текст нотатки":
+```jsx
+{modalType === 'note' && (
+  <textarea
+    placeholder="Текст нотатки..."
+    value={modalTitle}
+    onChange={e => setModalTitle(e.target.value)}
+    style={{
+      width: '100%', minHeight: 80, padding: '8px',
+      borderRadius: 5, border: '1px solid var(--border,#2e3148)',
+      background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
+      fontSize: 12, resize: 'vertical',
+      whiteSpace: 'pre-wrap', wordBreak: 'break-word'
+    }}
+  />
+)}
+```
+
+- Поле "Назва події" для засідання → залишити як однорядковий input (це назва/опис засідання, опційне)
+- Поле "Суд / місце" → **видалити повністю**. Суд береться з картки справи автоматично.
+
+### 3Б — Обов'язкові поля для засідання
+
+Для `modalType === 'hearing'` обов'язкові: справа + час початку.
+При спробі зберегти без них — підсвітити поля червоним і показати підказку.
+
+```js
+function saveEvent(...) {
+  if (modalType === 'hearing') {
+    let hasError = false;
+    if (!modalCaseId) {
+      setCaseIdError(true); // новий стан для підсвітки
+      hasError = true;
+    }
+    if (!modalStartTime) {
+      setTimeError(true);
+      hasError = true;
+    }
+    if (hasError) return;
+    ...
+  }
+}
+```
+
+Стиль поля з помилкою: `border: '1px solid #e74c3c'`
+Скидати помилку при зміні поля.
+
+---
+
+## БЛОК 4 — Long press 600мс і скрол
+
+### 4А — Змінити таймер з 400мс на 600мс
+
+Файл: `src/components/Dashboard/index.jsx`.
+Знайти всі місця де є `400` або `setTimeout` пов'язаний з drag/longpress.
+Замінити на `600`.
+
+Аналогічно half-press підсвітка — змінити з `200` на `300` (половина від 600).
+
+### 4Б — Заборонити браузерне контекстне меню
+
+На контейнері слотів додати:
+```jsx
+onContextMenu={e => e.preventDefault()}
+```
+
+### 4В — touchAction залежно від стану
+
+```jsx
+style={{
+  touchAction: isDragging ? 'none' : 'pan-y',
+  userSelect: 'none'
+}}
+```
+
+`pan-y` дозволяє вертикальний скрол коли drag не активний.
+`none` блокує скрол тільки під час виділення.
+
+### 4Г — Простий тап НЕ відкриває модалку
+
+Модалка відкривається ТІЛЬКИ після успішного drag (виділення хоча б одного слоту).
+Якщо користувач натиснув і відпустив без руху (простий тап) — нічого не відбувається.
+
+В `endDrag()`:
+```js
+function endDrag() {
+  if (dragStart !== null && dragEnd !== null && dragStart !== dragEnd) {
+    // є виділення більше одного слоту — відкрити модалку
+    openModalWithRange(...);
+  } else if (dragStart !== null && dragEnd !== null && dragStart === dragEnd) {
+    // один слот — теж відкрити модалку (навмисний одиночний вибір після long press)
+    openModalWithRange(...);
+  }
+  // якщо dragStart === null — це був простий тап, нічого не робити
+  setIsDragging(false);
+  setDragStart(null);
+  setDragEnd(null);
+}
+```
+
+---
+
+## БЛОК 5 — Чат агента: textarea і висота
+
+Файл: `src/components/Dashboard/index.jsx`.
+
+### 5А — Поле вводу → textarea
+
+Знайти `<input` для вводу команди агенту. Замінити на `<textarea>`:
+```jsx
+<textarea
+  value={agentInput}
+  onChange={e => setAgentInput(e.target.value)}
+  onKeyDown={e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleAgentSend(agentInput);
+    }
+  }}
+  placeholder="Команда для агента... (напр. «додай засідання»)"
+  rows={2}
+  style={{
+    flex: 1, padding: '6px 8px', borderRadius: 5,
+    border: '1px solid var(--border,#2e3148)',
+    background: 'var(--surface2,#222536)',
+    color: 'var(--text,#e8eaf0)',
+    fontSize: 11, resize: 'none',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    overflowWrap: 'break-word'
+  }}
+/>
+```
+
+Enter — надіслати, Shift+Enter — новий рядок.
+
+### 5Б — Вікно історії чату
+
+Збільшити висоту контейнера з повідомленнями до `240px`.
+
+Кожне повідомлення:
+```js
+whiteSpace: 'pre-wrap',
+wordBreak: 'break-word',
+overflowWrap: 'break-word',
+maxWidth: '90%'
+```
+
+### 5В — Аналогічно виправити в інших чатах системи
+
+Перевірити і застосувати ті самі стилі в:
+- `src/components/CaseDossier/index.jsx` — поле вводу агента
+- Quick Input чат в `src/App.jsx`
+
+---
+
+## ПІСЛЯ ВИКОНАННЯ
 
 ```bash
-grep -n "BATCH_UPDATE\|resolvedOps\|case_name.*caseId" src/App.jsx | head -20
+npm run build
+git add -A
+git commit -m "fix: hearing validation, suspended cases, modal UX, long press 600ms, agent textarea"
+git push origin main
 ```
 
 Перевірити:
-- Як резолвиться case_name → caseId?
-- Як резолвиться deadline_date → deadlineId?
-- Як резолвиться hearing_date → hearingId?
-- Чи може deadlineId або hearingId бути undefined після резолвінгу?
-
-### А4 — Перевірити що передається в executeAction
-
-Додати тимчасовий console.log перед викликом onExecuteAction в блоці batch_update:
-```javascript
-console.log('batch_update ops:', JSON.stringify(resolvedOps, null, 2));
-```
-Запустити команду в браузері, відкрити DevTools → Console, виписати що там.
-
----
-
-## ДІАГНОСТИКА БЛОК Б — Чому агент не бачить всіх записів (Баг 2)
-
-### Б1 — Переглянути що передається агенту як контекст
-
-```bash
-grep -n "buildSystemContext\|systemContext\|hearings\|deadlines" src/App.jsx | head -30
-```
-
-Перевірити:
-- Чи передаються ВСІ hearings[] і deadlines[] кожної справи в контекст Sonnet?
-- Чи є обмеження на кількість або фільтрація по даті?
-- Чи є truncation (обрізання) контексту?
-
-### Б2 — Переглянути SONNET_CHAT_PROMPT секцію batch_update
-
-```bash
-grep -n "ПАКЕТНІ ДІЇ\|batch_update\|березень\|місяць" src/App.jsx | head -20
-```
-
-Перевірити:
-- Як промпт пояснює агенту що таке "всі записи за місяць"?
-- Чи є приклад з кількома справами одночасно?
-- Чи є інструкція шукати по всіх справах а не тільки першій знайденій?
-
----
-
-## ДІАГНОСТИКА БЛОК В — Розуміння команд по місяцю (Баг 3)
-
-### В1 — Переглянути поточні приклади в SONNET_CHAT_PROMPT
-
-```bash
-grep -n -A5 -B5 "березень\|місяць\|all.*deadline\|видали все" src/App.jsx | head -40
-```
-
-Перевірити:
-- Чи є в промпті приклад команди "очисти місяць"?
-- Чи розуміє агент що треба пройтись по ВСІХ справах і знайти всі записи за діапазон дат?
-
----
-
-## ФОРМАТ ЗВІТУ
-
-```
-=== ЗВІТ ДІАГНОСТИКИ batch_update (баги) ===
-
-БАГ 1 — Дані не видаляються:
-[причина — де саме ламається ланцюг]
-[чи доходить виклик до setCases]
-[що в console.log resolvedOps]
-
-БАГ 2 — Агент не бачить всіх записів:
-[що передається в контекст]
-[чи є обмеження або truncation]
-
-БАГ 3 — Розуміння команди по місяцю:
-[що є в промпті, чого не вистачає]
-
-РЕКОМЕНДАЦІЇ:
-[для кожного бага — конкретний фікс з рядками коду]
-
-=== КІНЕЦЬ ЗВІТУ ===
-```
-
-Звіт вивести в термінал. Після звіту — запропонувати фікс.
+1. Квант — засідання без часу більше не показується як подія
+2. Призупинена справа — засідання відображається сіро-блакитним, не рахується як накладка
+3. Закрита справа — не відображається взагалі
+4. Модалка — без справи і без часу не зберігає, підсвічує червоним
+5. Скрол пальцем — не відкриває модалку
+6. Long press 600мс → виділення слотів
+7. Чат агента — textarea, текст переноситься
