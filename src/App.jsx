@@ -648,7 +648,28 @@ close_case / restore_case:
 "Зміни дедлайн" → update_deadline → оновити існуючий запис (name І date разом)
 
 ВАЖЛИВО: після виконання дії — перевірити що вона справді виконалась.
-Не повідомляти про успіх якщо дія не виконана.`;
+Не повідомляти про успіх якщо дія не виконана.
+
+## ПАКЕТНІ ДІЇ (batch_update)
+
+Якщо потрібно виконати 2 або більше дій в одній відповіді —
+згенеруй ОДИН ACTION_JSON з batch_update:
+
+ACTION_JSON: {
+  "recommended_actions": ["batch_update"],
+  "operations": [
+    {"action": "delete_deadline", "case_name": "Брановський", "deadline_date": "2026-03-31"},
+    {"action": "delete_hearing",  "case_name": "Брановський", "hearing_date":  "2026-03-31"},
+    {"action": "delete_deadline", "case_name": "Корева",      "deadline_date": "2026-03-31"}
+  ]
+}
+
+Кожен елемент operations[] — окрема дія з полями action, case_name і її параметрами
+(deadline_date, hearing_date, hearing_time, deadline_type, field, value тощо)
+у тому ж форматі що і одинична ACTION_JSON.extracted.
+
+НЕ генеруй кілька окремих ACTION_JSON в одній відповіді.
+НЕ використовуй batch_update для однієї дії — тільки для 2+.`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -1608,6 +1629,67 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         // Якщо є дії — виконати одразу з чату
         if (actionResult && (actionResult.recommended_actions || []).length > 0) {
           const action = actionResult.recommended_actions[0];
+
+          // BATCH_UPDATE — обробляти до каскаду одиничних дій
+          if (action === 'batch_update') {
+            const operations = actionResult.operations || [];
+            if (operations.length === 0) {
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: 'Пакет порожній — немає операцій для виконання.'
+              }]);
+              setChatLoading(false);
+              return;
+            }
+
+            // Резолвити case_name -> caseId та дату -> id сутності для кожної op
+            const resolvedOps = operations.map(op => {
+              const { action: opAction, case_name, ...rest } = op;
+              const params = { ...rest };
+              const matched = case_name ? findCaseForAction(case_name, cases) : null;
+              if (matched) params.caseId = matched.id;
+
+              // Мапінг полів дат/часу/назв на params очікуваних ACTIONS
+              if (rest.deadline_date && !params.date) params.date = rest.deadline_date;
+              if (rest.hearing_date && !params.date) params.date = rest.hearing_date;
+              if (rest.hearing_time && !params.time) params.time = rest.hearing_time;
+              if (rest.deadline_type && !params.name) params.name = rest.deadline_type;
+
+              // Резолв id за датою для делітів/апдейтів
+              if (matched && opAction === 'delete_deadline' && !params.deadlineId) {
+                const d = (matched.deadlines || []).find(d => d.date === rest.deadline_date);
+                if (d) params.deadlineId = d.id;
+              }
+              if (matched && opAction === 'delete_hearing' && !params.hearingId) {
+                const h = (matched.hearings || []).find(h => h.date === rest.hearing_date);
+                if (h) params.hearingId = h.id;
+              }
+              if (matched && opAction === 'update_deadline' && !params.deadlineId) {
+                const d = (matched.deadlines || []).find(d => d.date === rest.deadline_date);
+                if (d) params.deadlineId = d.id;
+              }
+
+              return { action: opAction, params };
+            });
+
+            const batchResult = await onExecuteAction('qi_agent', 'batch_update', {
+              operations: resolvedOps,
+              agentId: 'qi_agent'
+            });
+
+            const { successCount = 0, total = 0, results = [] } = batchResult || {};
+            const summary = results.map(r =>
+              r.ok ? `✅ ${r.action}` : `❌ ${r.action} — ${r.error}`
+            ).join('\n');
+
+            setConversationHistory(prev => [...prev, {
+              role: 'assistant',
+              content: `Виконано ${successCount} з ${total} операцій:\n${summary}`
+            }]);
+            setChatLoading(false);
+            return;
+          }
+
           if (action === 'create_case') {
             const ext = actionResult.extracted || {};
             const rawPerson = ext.person || actionResult.case_match?.case_name || '';
@@ -3590,6 +3672,29 @@ function App() {
       console.log(`Session ended: ${sessionId}`);
       return { success: true };
     },
+
+    // ГРУПА 5 — Композитна дія
+    batch_update: async ({ operations, agentId }) => {
+      const results = [];
+      for (const op of operations) {
+        try {
+          if (!op.action || !ACTIONS[op.action]) {
+            results.push({ action: op.action, ok: false, error: 'Невідома дія' });
+            continue;
+          }
+          if (agentId && PERMISSIONS[agentId] && !PERMISSIONS[agentId].includes(op.action)) {
+            results.push({ action: op.action, ok: false, error: 'Немає повноважень' });
+            continue;
+          }
+          const result = await ACTIONS[op.action](op.params);
+          results.push({ action: op.action, ok: true, result });
+        } catch (err) {
+          results.push({ action: op.action, ok: false, error: err.message });
+        }
+      }
+      const successCount = results.filter(r => r.ok).length;
+      return { success: successCount > 0, successCount, total: results.length, results };
+    },
   };
 
   // ── PERMISSIONS — матриця повноважень агентів ──────────────────────────────
@@ -3602,11 +3707,13 @@ function App() {
       'add_note', 'update_note', 'delete_note',
       'pin_note', 'unpin_note',
       'add_time_entry',
+      'batch_update',
     ],
 
     dashboard_agent: [
       'add_hearing', 'update_hearing', 'delete_hearing',
       'add_note', 'update_note', 'delete_note',
+      'batch_update',
     ],
 
     dossier_agent: [
