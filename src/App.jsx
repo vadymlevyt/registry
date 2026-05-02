@@ -3132,6 +3132,18 @@ function App() {
       }
     }
   }, [cases]);
+
+  // [HEARING AUDIT] dev-only: засідання з датою але без часу
+  useEffect(() => {
+    if (!import.meta.env || !import.meta.env.DEV) return;
+    cases.forEach(c => {
+      (c.hearings || []).forEach(h => {
+        if (h.date && (!h.time || String(h.time).trim() === '')) {
+          console.warn(`[HEARING AUDIT] Справа "${c.name}" (${c.id}): засідання ${h.id} має дату ${h.date} але НЕ МАЄ ЧАСУ`);
+        }
+      });
+    });
+  }, [cases]);
   const [universalTab, setUniversalTab] = useState('qi');
   const [qiBtnPos, setQiBtnPos] = useState({ x: null, y: null });
   const qiDragRef = useRef(false);

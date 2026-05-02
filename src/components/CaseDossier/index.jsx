@@ -1008,7 +1008,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             rows={2}
             style={{
               flex: 1, background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0',
-              padding: '6px 8px', borderRadius: 6, fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5
+              padding: '6px 8px', borderRadius: 6, fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', fontFamily: 'inherit'
             }}
           />
           {agentRecording ? (

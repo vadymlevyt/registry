@@ -19,6 +19,13 @@ function parseTimeMin(t) {
   const [h, m] = t.split(':').map(Number);
   return h * 60 + m;
 }
+
+const isValidHearing = h =>
+  h &&
+  h.status === 'scheduled' &&
+  h.date &&
+  h.time &&
+  String(h.time).trim() !== '';
 const SLOTS_START_MIN = parseTimeMin(SLOTS[0]);
 const SLOTS_END_MIN = parseTimeMin(SLOTS[SLOTS.length - 1]) + SLOT_MIN;
 
@@ -42,8 +49,10 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
   const pressTimerRef = useRef(null);
   const halfPressTimerRef = useRef(null);
 
-  function colorsFor(type, isConflict) {
+  function colorsFor(ev, isConflict) {
     if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)" };
+    if (ev.color) return { border: ev.color, bg: "rgba(127,143,166,.2)" };
+    const type = ev.type;
     if (type === "hearing") return { border: "#4f7cff", bg: "rgba(79,124,255,.2)" };
     if (type === "deadline") return { border: "#f39c12", bg: "rgba(243,156,18,.2)" };
     if (type === "note") return { border: "#f1c40f", bg: "rgba(241,196,15,.18)" };
@@ -60,12 +69,12 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
   }
 
   function handleTouchStart(slotIdx) {
-    halfPressTimerRef.current = setTimeout(() => setPressedSlot(slotIdx), 200);
+    halfPressTimerRef.current = setTimeout(() => setPressedSlot(slotIdx), 300);
     pressTimerRef.current = setTimeout(() => {
       slotDrag.startDrag(slotIdx, day);
       setPressedSlot(null);
       if (navigator.vibrate) { try { navigator.vibrate(50); } catch {} }
-    }, 400);
+    }, 600);
   }
 
   function handleTouchMove(e) {
@@ -109,7 +118,10 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
   }
 
   return (
-    <div style={{ position: "relative", display: "flex", flexDirection: "column", ...style }}>
+    <div
+      onContextMenu={e => e.preventDefault()}
+      style={{ position: "relative", display: "flex", flexDirection: "column", ...style }}
+    >
       {SLOTS.map((slotTime, idx) => {
         const inDrag = isDraggingHere && idx >= slotDrag.rangeMin && idx <= slotDrag.rangeMax;
         const isPressed = pressedSlot === idx && !inDrag;
@@ -144,7 +156,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
         const dur = ev.duration || 60;
         const top = ((t - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
         const height = Math.max(SLOT_H - 2, (dur / SLOT_MIN) * SLOT_H - 1);
-        const c = colorsFor(ev.type, conflictIds.has(ev.id));
+        const c = colorsFor(ev, conflictIds.has(ev.id));
         const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
         return (
           <div
@@ -252,7 +264,7 @@ const MONTHS_GEN = [
 function _getNextHearing(c) {
   if (!Array.isArray(c.hearings) || c.hearings.length === 0) return null;
   const todayStr = new Date().toISOString().split('T')[0];
-  return c.hearings.filter(h => h.status === 'scheduled' && h.date >= todayStr).sort((a, b) => a.date.localeCompare(b.date))[0] || null;
+  return c.hearings.filter(h => isValidHearing(h) && h.date >= todayStr).sort((a, b) => a.date.localeCompare(b.date))[0] || null;
 }
 
 function classifyDayHearings(hearings) {
@@ -282,7 +294,8 @@ function classifyDayHearings(hearings) {
 function findConflicts(cases) {
   const byDate = {};
   cases.forEach(c => {
-    (c.hearings || []).filter(h => h.status === 'scheduled').forEach(h => {
+    if (c.status !== 'active' && c.status) return; // призупинені/закриті — не накладки
+    (c.hearings || []).filter(isValidHearing).forEach(h => {
       if (!byDate[h.date]) byDate[h.date] = [];
       byDate[h.date].push({
         hearingId: h.id,
@@ -305,14 +318,16 @@ function findConflicts(cases) {
 
 function buildDashboardContext(cases, calendarEvents) {
   const today = new Date().toISOString().slice(0, 10);
-  const casesText = cases.map(c => {
+  const visibleCases = cases.filter(c => c.status !== 'closed');
+  const casesText = visibleCases.map(c => {
     const parts = [`[id:${c.id}] ${c.name}`];
     if (c.court) parts.push(c.court);
     const _nh = _getNextHearing(c);
     if (_nh) parts.push(`засідання ${_nh.date}${_nh.time ? " " + _nh.time : ""}`);
     const _nd = (c.deadlines || []).filter(d => d.date >= today).sort((a,b) => a.date.localeCompare(b.date))[0];
     if (_nd) parts.push(`дедлайн ${_nd.date}${_nd.name ? " (" + _nd.name + ")" : ""}`);
-    if (c.status) parts.push(c.status);
+    if (c.status === 'paused') parts.push('ПРИЗУПИНЕНА');
+    else if (c.status) parts.push(c.status);
     if (c.next_action) parts.push(`→ ${c.next_action}`);
     return parts.join(" | ");
   }).join("\n");
@@ -321,7 +336,7 @@ function buildDashboardContext(cases, calendarEvents) {
     ? calendarEvents.map(e => `${e.date} ${e.time || ""} ${e.title} (${e.type})`).join("\n")
     : "немає";
 
-  const conflicts = findConflicts(cases);
+  const conflicts = findConflicts(visibleCases);
   const conflictsText = conflicts.length
     ? conflicts.map(c => `${c.level === 'red' ? '⚠️' : '⚡'} ${c.date}: ${c.items.map(i => `${i.caseName}${i.time ? ' ' + i.time : ''}`).join(' і ')}`).join("\n")
     : "немає";
@@ -404,7 +419,7 @@ add_note / update_note / delete_note:
 Інакше — відповідай текстом українською, коротко і по суті.
 
 // ШАР 1 — Поточні дані системи:
-СПРАВИ (${cases.length}):
+СПРАВИ (${visibleCases.length}):
 ${casesText}
 
 ДОДАТКОВІ ПОДІЇ:
@@ -508,15 +523,19 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
   const [modalTitle, setModalTitle] = useState("");
   const [modalType, setModalType] = useState("hearing");
   const [modalCaseId, setModalCaseId] = useState('');
-  const [modalCourt, setModalCourt] = useState("");
   const [modalShowTravel, setModalShowTravel] = useState(false);
   const [modalTravelMin, setModalTravelMin] = useState(60);
+  const [caseIdError, setCaseIdError] = useState(false);
+  const [timeError, setTimeError] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState({});
 
   function getAllEvents() {
     const events = [];
     cases.forEach(c => {
-      (c.hearings || []).filter(h => h.status === 'scheduled').forEach(h => {
+      if (c.status === 'closed') return;
+      const isPaused = c.status === 'paused';
+      const color = isPaused ? '#7f8fa6' : null;
+      (c.hearings || []).filter(isValidHearing).forEach(h => {
         events.push({
           id: "h_" + c.id + "_" + h.id,
           type: "hearing",
@@ -526,7 +545,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           court: h.court || c.court || null,
           duration: 120,
           caseId: c.id,
-          hearingId: h.id
+          hearingId: h.id,
+          color,
+          isPaused
         });
       });
       (c.deadlines || []).forEach(dl => {
@@ -538,7 +559,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           time: null,
           label: dl.name || "дедлайн",
           caseId: c.id,
-          deadlineId: dl.id
+          deadlineId: dl.id,
+          color,
+          isPaused
         });
       });
     });
@@ -551,7 +574,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
 
   function checkConflicts(dateStr) {
     const hearings = getAllEvents()
-      .filter(e => e.date === dateStr && e.type === 'hearing');
+      .filter(e => e.date === dateStr && e.type === 'hearing' && !e.isPaused);
     const level = classifyDayHearings(hearings);
     return { level, hearings: level !== 'none' ? hearings : [] };
   }
@@ -917,24 +940,27 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     setModalStart(startTime);
     setModalEnd(endTime);
     setModalTitle("");
-    setModalCourt("");
     setModalType("hearing");
     setModalCaseId('');
     setModalShowTravel(false);
     setModalTravelMin(60);
+    setCaseIdError(false);
+    setTimeError(false);
     setModalOpen(true);
   }
 
   async function saveEvent() {
     const title = modalTitle.trim();
-    if (!title) return;
     const day = modalDate || selectedDay;
     const time = modalStart;
     const endTime = modalEnd;
     const travelMinutes = modalShowTravel ? modalTravelMin : 0;
 
     if (modalType === 'hearing') {
-      if (!modalCaseId) { alert('Оберіть справу'); return; }
+      let hasError = false;
+      if (!modalCaseId) { setCaseIdError(true); hasError = true; }
+      if (!time || !String(time).trim()) { setTimeError(true); hasError = true; }
+      if (hasError) return;
 
       const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
@@ -980,6 +1006,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       }
 
     } else if (modalType === 'note') {
+      if (!title) return;
       onExecuteAction('dashboard_agent', 'add_note', {
         text: title,
         date: day,
@@ -992,7 +1019,6 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     setModalOpen(false);
     setModalCaseId('');
     setModalTitle("");
-    setModalCourt("");
     setModalType("hearing");
     setModalShowTravel(false);
   }
@@ -1067,7 +1093,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   const hearings = events.filter(e => e.type === "hearing");
                   const deadlines = events.filter(e => e.type === "deadline");
                   const notesOnDay = events.filter(e => e.type === "note");
-                  const conflictLevel = classifyDayHearings(hearings);
+                  const conflictLevel = classifyDayHearings(hearings.filter(h => !h.isPaused));
                   const isToday = cell.dateStr === today;
                   const isSelected = cell.dateStr === selectedDay;
 
@@ -1104,11 +1130,11 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                         {cell.day}
                       </span>
                       <div style={{ display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center" }}>
-                        {hearings.slice(0,3).map((_, i) => (
-                          <div key={"h"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#4f7cff" }} />
+                        {hearings.slice(0,3).map((h, i) => (
+                          <div key={"h"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: h.isPaused ? "#7f8fa6" : "#4f7cff" }} />
                         ))}
-                        {deadlines.slice(0,2).map((_, i) => (
-                          <div key={"d"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#f39c12" }} />
+                        {deadlines.slice(0,2).map((d, i) => (
+                          <div key={"d"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: d.isPaused ? "#7f8fa6" : "#f39c12" }} />
                         ))}
                         {notesOnDay.slice(0,2).map((_, i) => (
                           <div key={"n"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#2ecc71" }} />
@@ -1306,13 +1332,13 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
               Агент
             </div>
-            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-              <input
-                type="text"
+            <div style={{ display: "flex", gap: 4, alignItems: "flex-end" }}>
+              <textarea
                 value={agentInput}
                 onChange={e => setAgentInput(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAgentSend(); } }}
-                placeholder="Запитай про розклад, справи..."
+                placeholder="Команда для агента... (напр. «додай засідання»)"
+                rows={2}
                 style={{
                   flex: 1, minWidth: 0,
                   background: "var(--surface, #1a1d27)",
@@ -1322,7 +1348,11 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   padding: "6px 8px",
                   fontSize: 11,
                   fontFamily: "inherit",
-                  boxSizing: "border-box"
+                  boxSizing: "border-box",
+                  resize: "none",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  overflowWrap: "break-word"
                 }}
               />
               <button
@@ -1367,7 +1397,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                 ref={chatScrollRef}
                 style={{
                   marginTop: 6,
-                  height: 220,
+                  height: 240,
                   overflowY: "auto",
                   display: "flex",
                   flexDirection: "column",
@@ -1513,41 +1543,68 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               {modalType === 'hearing' && (
                 <div>
                   <div style={{ fontSize: 10, color: 'var(--text3, #5a6080)', marginBottom: 3 }}>СПРАВА *</div>
-                  <select value={modalCaseId} onChange={e => setModalCaseId(e.target.value)}
+                  <select
+                    value={modalCaseId}
+                    onChange={e => { setModalCaseId(e.target.value); if (caseIdError) setCaseIdError(false); }}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: 5,
                       background: 'var(--surface2, #222536)', color: 'var(--text, #e6e8f0)',
-                      border: '1px solid var(--border, #2e3148)', fontSize: 12 }}>
+                      border: caseIdError ? '1px solid #e74c3c' : '1px solid var(--border, #2e3148)', fontSize: 12 }}>
                     <option value=''>— Оберіть справу —</option>
                     {cases.filter(c => c.status === 'active' || !c.status).map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
+                  {caseIdError && (
+                    <div style={{ fontSize: 10, color: '#e74c3c', marginTop: 3 }}>Оберіть справу</div>
+                  )}
                 </div>
               )}
-              <input
-                type="text"
-                value={modalTitle}
-                onChange={e => setModalTitle(e.target.value)}
-                placeholder="Назва події"
-                style={{
-                  background: "var(--surface, #1a1d27)",
-                  border: "1px solid var(--border, #2e3148)",
-                  borderRadius: 5, color: "var(--text, #e6e8f0)",
-                  padding: "6px 8px", fontSize: 12
-                }}
-              />
+              {modalType === 'note' && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2, #9aa0b8)" }}>Нова нотатка</div>
+                  <textarea
+                    placeholder="Текст нотатки..."
+                    value={modalTitle}
+                    onChange={e => setModalTitle(e.target.value)}
+                    style={{
+                      width: '100%', boxSizing: 'border-box',
+                      minHeight: 80, padding: '8px',
+                      borderRadius: 5, border: '1px solid var(--border, #2e3148)',
+                      background: 'var(--surface2, #222536)', color: 'var(--text, #e8eaf0)',
+                      fontSize: 12, resize: 'vertical', fontFamily: 'inherit',
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word'
+                    }}
+                  />
+                </>
+              )}
+              {modalType === 'hearing' && (
+                <input
+                  type="text"
+                  value={modalTitle}
+                  onChange={e => setModalTitle(e.target.value)}
+                  placeholder="Назва події (опціонально)"
+                  style={{
+                    background: "var(--surface, #1a1d27)",
+                    border: "1px solid var(--border, #2e3148)",
+                    borderRadius: 5, color: "var(--text, #e6e8f0)",
+                    padding: "6px 8px", fontSize: 12
+                  }}
+                />
+              )}
               <div style={{ display: "flex", gap: 6 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Початок</div>
+                  <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>
+                    Початок{modalType === 'hearing' ? ' *' : ''}
+                  </div>
                   <input
                     type="time"
                     step="1800"
                     value={modalStart}
-                    onChange={e => setModalStart(e.target.value)}
+                    onChange={e => { setModalStart(e.target.value); if (timeError) setTimeError(false); }}
                     style={{
                       width: "100%", boxSizing: "border-box",
                       background: "var(--surface, #1a1d27)",
-                      border: "1px solid var(--border, #2e3148)",
+                      border: timeError ? "1px solid #e74c3c" : "1px solid var(--border, #2e3148)",
                       borderRadius: 5, color: "var(--text, #e6e8f0)",
                       padding: "6px 8px", fontSize: 12
                     }}
@@ -1570,18 +1627,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   />
                 </div>
               </div>
-              <input
-                type="text"
-                value={modalCourt}
-                onChange={e => setModalCourt(e.target.value)}
-                placeholder="Суд / місце (опціонально)"
-                style={{
-                  background: "var(--surface, #1a1d27)",
-                  border: "1px solid var(--border, #2e3148)",
-                  borderRadius: 5, color: "var(--text, #e6e8f0)",
-                  padding: "6px 8px", fontSize: 12
-                }}
-              />
+              {timeError && (
+                <div style={{ fontSize: 10, color: '#e74c3c', marginTop: -4 }}>Вкажіть час початку</div>
+              )}
               <div>
                 <button
                   type="button"
