@@ -3235,28 +3235,37 @@ function App() {
   // Дублювати їх у calendarEvents не можна — отримаємо подвійні слоти.
   const rebuildCalendarView = () => {
     const events = [];
-    const allNotes = [];
+    const seen = new Set();
+    const pushNote = (n, caseId, caseName) => {
+      if (!n || !n.id || seen.has(n.id)) return;
+      seen.add(n.id);
+      if (!n.date) return;
+      events.push({
+        id: `note_${n.id}`,
+        type: 'note', noteId: n.id, caseId: caseId || null,
+        caseName: caseName || null,
+        date: n.date, time: n.time || null,
+        duration: n.duration || 60,
+        title: (n.text || '').slice(0, 60), color: 'yellow'
+      });
+    };
     for (const cat of Object.keys(notes)) {
-      (notes[cat] || []).forEach(n => allNotes.push(n));
+      (notes[cat] || []).forEach(n => {
+        const c = n.caseId ? cases.find(cs => String(cs.id) === String(n.caseId)) : null;
+        pushNote(n, n.caseId || null, c ? c.name : (n.caseName || null));
+      });
     }
-    allNotes.forEach(n => {
-      if (n.date) {
-        events.push({
-          type: 'note', noteId: n.id, caseId: n.caseId || null,
-          caseName: n.caseId ? cases.find(c => c.id === n.caseId)?.name : null,
-          date: n.date, time: n.time || null,
-          duration: n.duration || (n.time ? 120 : null),
-          title: (n.text || '').slice(0, 60), color: 'yellow'
-        });
-      }
+    cases.forEach(c => {
+      (Array.isArray(c.notes) ? c.notes : []).forEach(n => {
+        if (n && typeof n === 'object') pushNote(n, c.id, c.name);
+      });
     });
     events.sort((a, b) => new Date(a.date) - new Date(b.date));
     setCalendarEvents(events);
   };
 
-  // Перебудова автоматично при кожній зміні notes — гарантує свіжий стейт.
-  // cases не залежить (Dashboard читає hearings/deadlines напряму з cases).
-  useEffect(() => { rebuildCalendarView(); }, [notes]);
+  // Перебудова автоматично при кожній зміні notes або cases.
+  useEffect(() => { rebuildCalendarView(); }, [notes, cases]);
 
   // ── Universal Panel resize ──────────────────────────────────────────────────
   useEffect(() => {
@@ -3364,7 +3373,6 @@ function App() {
   };
 
   const addNote = (note) => {
-    const cat = note.category === 'case' ? 'cases' : (note.category || 'general');
     const newNote = {
       id: Date.now().toString(),
       text: note.text || '',
@@ -3376,15 +3384,31 @@ function App() {
       ts: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
-    setNotes(prev => {
-      const updated = { ...prev, [cat]: [...(prev[cat] || []), newNote] };
-      saveNotesToLS(updated);
-      return updated;
-    });
+    if (newNote.caseId) {
+      setCases(prev => prev.map(c =>
+        String(c.id) === String(newNote.caseId)
+          ? { ...c, notes: [...(Array.isArray(c.notes) ? c.notes : []), newNote], updatedAt: new Date().toISOString() }
+          : c
+      ));
+    } else {
+      const cat = newNote.category === 'case' ? 'general' : (newNote.category || 'general');
+      setNotes(prev => {
+        const updated = { ...prev, [cat]: [...(prev[cat] || []), newNote] };
+        saveNotesToLS(updated);
+        return updated;
+      });
+    }
     return newNote;
   };
 
   const deleteNote = (noteId) => {
+    setCases(prev => prev.map(c => {
+      const arr = Array.isArray(c.notes) ? c.notes : [];
+      const filtered = arr.filter(n => !n || n.id !== noteId);
+      const pinned = (c.pinnedNoteIds || []).filter(id => id !== String(noteId));
+      if (filtered.length === arr.length && pinned.length === (c.pinnedNoteIds || []).length) return c;
+      return { ...c, notes: filtered, pinnedNoteIds: pinned };
+    }));
     setNotes(prev => {
       const updated = {};
       for (const cat of Object.keys(prev)) {
@@ -3393,25 +3417,29 @@ function App() {
       saveNotesToLS(updated);
       return updated;
     });
-    // Прибрати з pinnedNoteIds всіх справ
-    setCases(prev => prev.map(c => {
-      if (!c.pinnedNoteIds?.length) return c;
-      const strId = String(noteId);
-      return c.pinnedNoteIds.includes(strId)
-        ? { ...c, pinnedNoteIds: c.pinnedNoteIds.filter(id => id !== strId) }
-        : c;
-    }));
   };
 
   const updateNote = (noteId, changes) => {
-    setNotes(prev => {
-      const updated = {};
-      for (const cat of Object.keys(prev)) {
-        updated[cat] = prev[cat].map(n => n.id === noteId ? { ...n, ...changes } : n);
-      }
-      saveNotesToLS(updated);
-      return updated;
-    });
+    let found = false;
+    setCases(prev => prev.map(c => {
+      const arr = Array.isArray(c.notes) ? c.notes : [];
+      const idx = arr.findIndex(n => n && n.id === noteId);
+      if (idx === -1) return c;
+      found = true;
+      const updated = [...arr];
+      updated[idx] = { ...updated[idx], ...changes, updatedAt: new Date().toISOString() };
+      return { ...c, notes: updated, updatedAt: new Date().toISOString() };
+    }));
+    if (!found) {
+      setNotes(prev => {
+        const updated = {};
+        for (const cat of Object.keys(prev)) {
+          updated[cat] = prev[cat].map(n => n.id === noteId ? { ...n, ...changes } : n);
+        }
+        saveNotesToLS(updated);
+        return updated;
+      });
+    }
   };
 
   // pinNote(noteId, caseId) — прикріпити/відкріпити нотатку до справи
@@ -3655,41 +3683,81 @@ function App() {
       const note = {
         id: `note_${Date.now()}`,
         userId: 'vadym',
-        category,
-        text,
-        date,
-        time,
-        duration,
-        caseId,
+        text: text || '',
+        date: date || null,
+        time: time || null,
+        duration: duration || null,
+        caseId: caseId || null,
+        category: category || 'general',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-      const catKey = (category === 'case' || caseId) ? 'cases' : (category || 'general');
-      setNotes(prev => {
-        const updated = { ...prev, [catKey]: [note, ...(prev[catKey] || [])] };
-        saveNotesToLS(updated);
-        return updated;
-      });
+      if (caseId) {
+        setCases(prev => prev.map(c =>
+          String(c.id) === String(caseId)
+            ? { ...c, notes: [...(Array.isArray(c.notes) ? c.notes : []), note], updatedAt: new Date().toISOString() }
+            : c
+        ));
+      } else {
+        setNotes(prev => {
+          const updated = { ...prev, general: [note, ...(prev.general || [])] };
+          saveNotesToLS(updated);
+          return updated;
+        });
+      }
       return { success: true, noteId: note.id };
     },
 
-    update_note: ({ noteId, text, date, time, duration }) => {
-      setNotes(prev => {
-        const updated = {};
-        for (const cat of Object.keys(prev)) {
-          updated[cat] = prev[cat].map(n =>
-            n.id === noteId
-              ? { ...n, text, date: date ?? n.date, time: time ?? n.time, duration: duration ?? n.duration, updatedAt: new Date().toISOString() }
-              : n
-          );
-        }
-        saveNotesToLS(updated);
-        return updated;
-      });
+    update_note: ({ noteId, text, date, time, duration, caseId }) => {
+      let found = false;
+      setCases(prev => prev.map(c => {
+        const arr = Array.isArray(c.notes) ? c.notes : [];
+        const idx = arr.findIndex(n => n && n.id === noteId);
+        if (idx === -1) return c;
+        found = true;
+        const updated = [...arr];
+        updated[idx] = {
+          ...updated[idx],
+          ...(text !== undefined ? { text } : {}),
+          ...(date !== undefined ? { date } : {}),
+          ...(time !== undefined ? { time } : {}),
+          ...(duration !== undefined ? { duration } : {}),
+          ...(caseId !== undefined ? { caseId } : {}),
+          updatedAt: new Date().toISOString()
+        };
+        return { ...c, notes: updated, updatedAt: new Date().toISOString() };
+      }));
+      if (!found) {
+        setNotes(prev => {
+          const updated = {};
+          for (const cat of Object.keys(prev)) {
+            updated[cat] = (prev[cat] || []).map(n =>
+              n.id === noteId
+                ? { ...n,
+                    ...(text !== undefined ? { text } : {}),
+                    ...(date !== undefined ? { date } : {}),
+                    ...(time !== undefined ? { time } : {}),
+                    ...(duration !== undefined ? { duration } : {}),
+                    ...(caseId !== undefined ? { caseId } : {}),
+                    updatedAt: new Date().toISOString() }
+                : n
+            );
+          }
+          saveNotesToLS(updated);
+          return updated;
+        });
+      }
       return { success: true };
     },
 
     delete_note: ({ noteId }) => {
+      setCases(prev => prev.map(c => {
+        const arr = Array.isArray(c.notes) ? c.notes : [];
+        const filtered = arr.filter(n => !n || n.id !== noteId);
+        const pinned = (c.pinnedNoteIds || []).filter(id => id !== String(noteId));
+        if (filtered.length === arr.length && pinned.length === (c.pinnedNoteIds || []).length) return c;
+        return { ...c, notes: filtered, pinnedNoteIds: pinned };
+      }));
       setNotes(prev => {
         const updated = {};
         for (const cat of Object.keys(prev)) {
@@ -3698,10 +3766,6 @@ function App() {
         saveNotesToLS(updated);
         return updated;
       });
-      setCases(prev => prev.map(c => ({
-        ...c,
-        pinnedNoteIds: (c.pinnedNoteIds || []).filter(id => id !== String(noteId))
-      })));
       return { success: true };
     },
 
@@ -3972,7 +4036,16 @@ function App() {
                 onSaveIdea={idea => setIdeas(prev => [...prev, idea])}
                 onCloseCase={closeCase}
                 onDeleteCase={handleDeleteCase}
-                notes={(notes.cases || []).filter(n => n.caseId === dossierCase.id || n.caseName === dossierCase.name)}
+                notes={(() => {
+                  const fromBucket = (notes.cases || []).filter(n => String(n.caseId) === String(dossierCase.id) || n.caseName === dossierCase.name);
+                  const fromCase = (Array.isArray(dossierCase.notes) ? dossierCase.notes : []).filter(n => n && typeof n === 'object');
+                  const seen = new Set();
+                  return [...fromBucket, ...fromCase].filter(n => {
+                    if (!n.id) return true;
+                    if (seen.has(n.id)) return false;
+                    seen.add(n.id); return true;
+                  });
+                })()}
                 onAddNote={addNote}
                 onUpdateNote={updateNote}
                 onDeleteNote={deleteNote}

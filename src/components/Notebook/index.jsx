@@ -35,16 +35,23 @@ function writeLS(key, arr) {
 
 function getAllNotes(cases, notesProp) {
   // notesProp — об'єкт {cases:[], general:[], content:[], system:[], records:[]}
+  const all = [];
   if (notesProp && typeof notesProp === 'object' && !Array.isArray(notesProp)) {
-    const all = [];
     for (const cat of Object.keys(notesProp)) {
       (notesProp[cat] || []).forEach(n => all.push({ ...n, category: cat === 'cases' ? 'case' : (n.category || cat) }));
     }
-    return all.sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+  } else if (Array.isArray(notesProp)) {
+    notesProp.forEach(n => all.push({ ...n, category: n.category || 'general' }));
   }
-  // Fallback для масиву (стара сумісність)
-  const sharedNotes = (Array.isArray(notesProp) ? notesProp : []).map(n => ({ ...n, category: n.category || 'general' }));
-  return sharedNotes.sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
+  // Notes стor у cases[].notes (TASK-3 від 2026-05-02)
+  (cases || []).forEach(c => {
+    (Array.isArray(c.notes) ? c.notes : []).forEach(n => {
+      if (!n || typeof n !== 'object') return;
+      if (all.some(x => x.id === n.id)) return;
+      all.push({ ...n, category: 'case', caseId: c.id, caseName: c.name });
+    });
+  });
+  return all.sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
 }
 
 export default function Notebook({ cases, onUpdateCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote }) {

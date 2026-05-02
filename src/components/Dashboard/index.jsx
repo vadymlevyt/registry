@@ -26,6 +26,61 @@ const isValidHearing = h =>
   h.date &&
   h.time &&
   String(h.time).trim() !== '';
+
+function CaseDropdown({ value, onChange, cases, placeholder, error }) {
+  const [open, setOpen] = useState(false);
+  const selected = cases.find(c => String(c.id) === String(value));
+  return (
+    <div style={{ position: 'relative' }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          padding: '6px 8px', borderRadius: 5, cursor: 'pointer',
+          background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
+          border: error ? '1px solid #e74c3c' : '1px solid var(--border,#2e3148)',
+          fontSize: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {selected ? selected.name : <span style={{ color: 'var(--text3,#5a6080)' }}>{placeholder}</span>}
+        </span>
+        <span style={{ opacity: 0.5, marginLeft: 6 }}>▾</span>
+      </div>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 1100 }} />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1101,
+            background: 'var(--surface,#1a1d27)',
+            border: '1px solid var(--border,#2e3148)',
+            borderRadius: 5, maxHeight: 200, overflowY: 'auto', marginTop: 2,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.4)'
+          }}>
+            <div
+              onClick={() => { onChange(''); setOpen(false); }}
+              style={{ padding: '6px 10px', fontSize: 12, cursor: 'pointer', color: 'var(--text3,#5a6080)' }}
+            >
+              {placeholder}
+            </div>
+            {cases.map(c => (
+              <div
+                key={c.id}
+                onClick={() => { onChange(c.id); setOpen(false); }}
+                style={{
+                  padding: '6px 10px', fontSize: 12, cursor: 'pointer',
+                  background: String(value) === String(c.id) ? 'rgba(79,124,255,0.15)' : 'transparent',
+                  color: 'var(--text,#e8eaf0)'
+                }}
+              >
+                {c.name}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 const SLOTS_START_MIN = parseTimeMin(SLOTS[0]);
 const SLOTS_END_MIN = parseTimeMin(SLOTS[SLOTS.length - 1]) + SLOT_MIN;
 
@@ -36,7 +91,7 @@ function addMinutesToTime(t, min) {
   return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
 }
 
-function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) {
+function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, onNoteClick, onHearingClick, expandedSlot, setExpandedSlot }) {
   const evsInRange = events.filter(e => {
     if (!e.time) return false;
     const t = parseTimeMin(e.time);
@@ -151,41 +206,123 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick }) 
           />
         );
       })}
-      {evsInRange.map(ev => {
-        const t = parseTimeMin(ev.time);
-        const dur = ev.duration || 60;
-        const top = ((t - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
-        const height = Math.max(SLOT_H - 2, (dur / SLOT_MIN) * SLOT_H - 1);
-        const c = colorsFor(ev, conflictIds.has(ev.id));
-        const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
-        return (
-          <div
-            key={ev.id}
-            style={{
-              position: "absolute",
-              left: 2, right: 2,
-              top, height,
-              borderRadius: 5,
-              border: `1px solid ${c.border}`,
-              background: c.bg,
-              padding: "2px 5px",
-              fontSize: 10,
-              overflow: "hidden",
-              pointerEvents: "none",
-              color: "var(--text, #e6e8f0)",
-              zIndex: 1
-            }}
-          >
-            <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {ev.title}
+      {(() => {
+        const noteEvs = evsInRange.filter(e => e.type === 'note');
+        const otherEvs = evsInRange.filter(e => e.type !== 'note');
+
+        const renderEvBlock = (ev, extra = {}) => {
+          const t = parseTimeMin(ev.time);
+          const dur = ev.duration || 60;
+          const c = colorsFor(ev, conflictIds.has(ev.id));
+          const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
+          const interactive = ev.type === 'hearing' || ev.type === 'note';
+          return (
+            <div
+              key={ev.id}
+              onClick={interactive ? (e) => {
+                e.stopPropagation();
+                const rect = e.currentTarget.getBoundingClientRect();
+                if (ev.type === 'note' && onNoteClick) onNoteClick(ev, rect);
+                else if (ev.type === 'hearing' && onHearingClick) onHearingClick(ev, rect);
+              } : undefined}
+              style={{
+                borderRadius: 5,
+                border: `1px solid ${c.border}`,
+                background: c.bg,
+                padding: "2px 5px",
+                fontSize: 10,
+                overflow: "hidden",
+                pointerEvents: interactive ? "auto" : "none",
+                cursor: interactive ? "pointer" : "default",
+                color: "var(--text, #e6e8f0)",
+                ...extra
+              }}
+            >
+              <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {ev.title}
+              </div>
+              <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {ev.time}—{endTime}
+                {ev.court ? " · " + ev.court : ""}
+              </div>
             </div>
-            <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {ev.time}—{endTime}
-              {ev.court ? " · " + ev.court : ""}
+          );
+        };
+
+        const otherBlocks = otherEvs.map(ev => {
+          const t = parseTimeMin(ev.time);
+          const dur = ev.duration || 60;
+          const top = ((t - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
+          const height = Math.max(SLOT_H - 2, (dur / SLOT_MIN) * SLOT_H - 1);
+          return renderEvBlock(ev, { position: 'absolute', left: 2, right: 2, top, height, zIndex: 1 });
+        });
+
+        // Групування нотаток за перетином інтервалів
+        const used = new Set();
+        const groups = [];
+        noteEvs.forEach(n => {
+          if (used.has(n.id)) return;
+          const start = parseTimeMin(n.time);
+          const end = start + (n.duration || 60);
+          const grp = [n];
+          used.add(n.id);
+          noteEvs.forEach(other => {
+            if (used.has(other.id)) return;
+            const oStart = parseTimeMin(other.time);
+            const oEnd = oStart + (other.duration || 60);
+            if (start < oEnd && end > oStart) { grp.push(other); used.add(other.id); }
+          });
+          groups.push(grp);
+        });
+
+        const noteBlocks = groups.map(grp => {
+          const minStart = Math.min(...grp.map(n => parseTimeMin(n.time)));
+          const maxEnd = Math.max(...grp.map(n => parseTimeMin(n.time) + (n.duration || 60)));
+          const top = ((minStart - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
+          const height = Math.max(SLOT_H - 2, ((maxEnd - minStart) / SLOT_MIN) * SLOT_H - 1);
+          const key = `${day}_${grp[0].time}_${grp[0].id}`;
+          if (grp.length === 1) {
+            return (
+              <div key={key} style={{ position: 'absolute', left: 2, right: 2, top, height, zIndex: 2 }}>
+                {renderEvBlock(grp[0], { height: '100%' })}
+              </div>
+            );
+          }
+          if (grp.length === 2) {
+            return (
+              <div key={key} style={{ position: 'absolute', left: 2, right: 2, top, height, display: 'flex', gap: 2, zIndex: 2 }}>
+                {grp.map(n => <div key={n.id} style={{ flex: 1, minWidth: 0 }}>{renderEvBlock(n, { height: '100%' })}</div>)}
+              </div>
+            );
+          }
+          const isExpanded = expandedSlot === key;
+          return (
+            <div key={key} style={{ position: 'absolute', left: 2, right: 2, top, zIndex: isExpanded ? 5 : 2 }}>
+              {renderEvBlock(grp[0], { height: Math.max(SLOT_H - 2, height - 16) })}
+              <div
+                onClick={(e) => { e.stopPropagation(); setExpandedSlot && setExpandedSlot(isExpanded ? null : key); }}
+                style={{ fontSize: 10, color: 'var(--accent, #4f7cff)', cursor: 'pointer', padding: '2px 4px', textAlign: 'center', background: 'rgba(79,124,255,0.08)', borderRadius: 4, marginTop: 1 }}
+              >
+                +{grp.length - 1} більше
+              </div>
+              {isExpanded && (
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
+                  background: 'var(--surface,#1a1d27)',
+                  border: '1px solid var(--border,#2e3148)',
+                  borderRadius: 5, padding: 4, zIndex: 100,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+                  display: 'flex', flexDirection: 'column', gap: 3
+                }}>
+                  {grp.map(n => <div key={n.id}>{renderEvBlock(n, {})}</div>)}
+                </div>
+              )}
             </div>
-          </div>
-        );
-      })}
+          );
+        });
+
+        return [...otherBlocks, ...noteBlocks];
+      })()}
     </div>
   );
 }
@@ -323,7 +460,7 @@ function buildDashboardContext(cases, calendarEvents) {
     const parts = [`[id:${c.id}] ${c.name}`];
     if (c.court) parts.push(c.court);
     const _nh = _getNextHearing(c);
-    if (_nh) parts.push(`засідання ${_nh.date}${_nh.time ? " " + _nh.time : ""}`);
+    if (_nh) parts.push(`засідання ${_nh.id}: ${_nh.date}${_nh.time ? " " + _nh.time : ""}`);
     const _nd = (c.deadlines || []).filter(d => d.date >= today).sort((a,b) => a.date.localeCompare(b.date))[0];
     if (_nd) parts.push(`дедлайн ${_nd.date}${_nd.name ? " (" + _nd.name + ")" : ""}`);
     if (c.status === 'paused') parts.push('ПРИЗУПИНЕНА');
@@ -370,6 +507,9 @@ ACTION_JSON: {"action": "add_hearing", "case_name": "назва справи", "
 
 ACTION_JSON: {"action": "add_note", "case_name": "назва справи", "text": "...", "date": "YYYY-MM-DD"}
 // Нотатка з датою — відображається в календарі.
+
+ACTION_JSON: {"action": "update_note", "noteId": "...", "text": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "case_name": "..."}
+// Редагувати існуючу нотатку. noteId з контексту.
 
 ACTION_JSON: {"action": "navigate_calendar", "direction": "prev" | "next"}
 ACTION_JSON: {"action": "navigate_week", "direction": "prev" | "next"}
@@ -527,6 +667,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
   const [modalTravelMin, setModalTravelMin] = useState(60);
   const [caseIdError, setCaseIdError] = useState(false);
   const [timeError, setTimeError] = useState(false);
+  const [editingEvent, setEditingEvent] = useState(null); // { type, hearingId?, noteId?, caseId? }
+  const [modalHasTime, setModalHasTime] = useState(true); // для нотатки — час опційний
+  const [notePopup, setNotePopup] = useState(null);
+  const [expandedSlot, setExpandedSlot] = useState(null);
   const [expandedGroups, setExpandedGroups] = useState({});
 
   function getAllEvents() {
@@ -792,6 +936,18 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           ? `✅ Нотатка у справі "${c.name}" збережена${action.date ? " на " + action.date : ""}`
           : `✅ Нотатка збережена${action.date ? " на " + action.date : ""}`;
       }
+      case 'update_note': {
+        if (!onExecuteAction || !action.noteId) return null;
+        const c = action.case_name ? findCase(action.case_name) : null;
+        onExecuteAction('dashboard_agent', 'update_note', {
+          noteId: action.noteId,
+          text: action.text,
+          date: action.date,
+          time: action.time,
+          caseId: c ? c.id : (action.caseId !== undefined ? action.caseId : undefined)
+        });
+        return `✅ Нотатку оновлено`;
+      }
       case "navigate_calendar": {
         setCalView("month");
         if (action.direction === "prev") {
@@ -946,7 +1102,64 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     setModalTravelMin(60);
     setCaseIdError(false);
     setTimeError(false);
+    setEditingEvent(null);
+    setModalHasTime(true);
     setModalOpen(true);
+  }
+
+  function openModalEditHearing(event) {
+    const c = cases.find(cs => cs.id === event.caseId);
+    const h = c && (c.hearings || []).find(hh => hh.id === event.hearingId);
+    if (!h) return;
+    const day = h.date;
+    setModalDate(day);
+    setSelectedDay(day);
+    setModalStart(h.time || '10:00');
+    setModalEnd(h.time ? addMinutesToTime(h.time, h.duration || 120) : '12:00');
+    setModalTitle('');
+    setModalType('hearing');
+    setModalCaseId(c.id);
+    setModalShowTravel(false);
+    setCaseIdError(false);
+    setTimeError(false);
+    setEditingEvent({ type: 'hearing', hearingId: h.id, caseId: c.id });
+    setModalHasTime(true);
+    setModalOpen(true);
+  }
+
+  function openModalEditNote(popup) {
+    const day = popup.date || selectedDay;
+    setModalDate(day);
+    setSelectedDay(day);
+    setModalType('note');
+    setModalTitle(popup.text || '');
+    setModalCaseId(popup.caseId || '');
+    setModalHasTime(!!popup.time);
+    if (popup.time) {
+      setModalStart(popup.time);
+      setModalEnd(addMinutesToTime(popup.time, popup.duration || 60));
+    } else {
+      setModalStart('10:00');
+      setModalEnd('11:00');
+    }
+    setCaseIdError(false);
+    setTimeError(false);
+    setEditingEvent({ type: 'note', noteId: popup.noteId, caseId: popup.caseId });
+    setModalOpen(true);
+  }
+
+  function handleNoteClick(ev, rect) {
+    const c = cases.find(cs => String(cs.id) === String(ev.caseId));
+    setNotePopup({
+      noteId: ev.noteId || ev.id,
+      text: ev.title || '',
+      caseId: ev.caseId || null,
+      caseName: c ? c.name : (ev.caseName || null),
+      time: ev.time || null,
+      duration: ev.duration || 60,
+      date: ev.date,
+      anchorRect: rect
+    });
   }
 
   async function saveEvent() {
@@ -955,6 +1168,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     const time = modalStart;
     const endTime = modalEnd;
     const travelMinutes = modalShowTravel ? modalTravelMin : 0;
+    const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 
     if (modalType === 'hearing') {
       let hasError = false;
@@ -962,9 +1176,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       if (!time || !String(time).trim()) { setTimeError(true); hasError = true; }
       if (hasError) return;
 
-      const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
-
-      if (time) {
+      if (time && !editingEvent) {
         const startMin = toMin(time);
         const dur = (time && endTime) ? toMin(endTime) - startMin : 120;
         const dayHearings = getAllEvents().filter(e =>
@@ -985,14 +1197,24 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         ? toMin(endTime) - toMin(time)
         : 120;
 
-      onExecuteAction('dashboard_agent', 'add_hearing', {
-        caseId: modalCaseId,
-        date: day,
-        time: time || null,
-        duration
-      });
+      if (editingEvent?.hearingId) {
+        onExecuteAction('dashboard_agent', 'update_hearing', {
+          caseId: modalCaseId,
+          hearingId: editingEvent.hearingId,
+          date: day,
+          time,
+          duration
+        });
+      } else {
+        onExecuteAction('dashboard_agent', 'add_hearing', {
+          caseId: modalCaseId,
+          date: day,
+          time: time || null,
+          duration
+        });
+      }
 
-      if (travelMinutes && travelMinutes > 0 && time) {
+      if (!editingEvent && travelMinutes && travelMinutes > 0 && time) {
         const startMin = toMin(time) - travelMinutes;
         const travelTime = `${String(Math.floor(startMin / 60)).padStart(2, '0')}:${String(startMin % 60).padStart(2, '0')}`;
         onExecuteAction('dashboard_agent', 'add_note', {
@@ -1007,19 +1229,52 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
 
     } else if (modalType === 'note') {
       if (!title) return;
-      onExecuteAction('dashboard_agent', 'add_note', {
-        text: title,
-        date: day,
-        time: time || null,
-        caseId: modalCaseId || null,
-        category: 'general'
-      });
+      const noteTime = modalHasTime ? (time || null) : null;
+      const noteDuration = (modalHasTime && time && endTime) ? Math.max(30, toMin(endTime) - toMin(time)) : null;
+
+      if (modalHasTime && noteTime && !editingEvent) {
+        const newStart = toMin(noteTime);
+        const newEnd = newStart + (noteDuration || 60);
+        const overlapping = getAllEvents().filter(e =>
+          e.date === day && e.type === 'note' && e.time && (() => {
+            const eStart = toMin(e.time);
+            const eEnd = eStart + (e.duration || 60);
+            return newStart < eEnd && newEnd > eStart;
+          })()
+        );
+        if (overlapping.length > 0) {
+          const ok = await systemConfirm('На цей час вже є нотатка. Додати ще одну?', 'Накладка нотаток');
+          if (!ok) return;
+        }
+      }
+
+      if (editingEvent?.noteId) {
+        onExecuteAction('dashboard_agent', 'update_note', {
+          noteId: editingEvent.noteId,
+          text: title,
+          date: day,
+          time: noteTime,
+          duration: noteDuration,
+          caseId: modalCaseId || null
+        });
+      } else {
+        onExecuteAction('dashboard_agent', 'add_note', {
+          text: title,
+          date: day,
+          time: noteTime,
+          duration: noteDuration,
+          caseId: modalCaseId || null,
+          category: 'general'
+        });
+      }
     }
 
     setModalOpen(false);
     setModalCaseId('');
     setModalTitle("");
     setModalType("hearing");
+    setEditingEvent(null);
+    setModalHasTime(true);
     setModalShowTravel(false);
   }
 
@@ -1206,6 +1461,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                     events={getEventsForDay(ds)}
                     slotDrag={slotDrag}
                     onEmptyClick={() => setSelectedDay(ds)}
+                    onNoteClick={handleNoteClick}
+                    onHearingClick={(ev, rect) => openModalEditHearing(ev)}
+                    expandedSlot={expandedSlot}
+                    setExpandedSlot={setExpandedSlot}
                     style={{ flex: 1 }}
                   />
                 ))}
@@ -1473,6 +1732,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                 events={dayEvents.filter(e => e.time)}
                 slotDrag={slotDrag}
                 conflicts={dayConflict.level === 'red' ? dayConflict.hearings : []}
+                onNoteClick={handleNoteClick}
+                onHearingClick={(ev, rect) => openModalEditHearing(ev)}
+                expandedSlot={expandedSlot}
+                setExpandedSlot={setExpandedSlot}
                 style={{ flex: 1 }}
               />
             </div>
@@ -1502,6 +1765,74 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         </div>
       </div>
 
+      {/* ── NOTE POPUP ── */}
+      {notePopup && (
+        <>
+          <div
+            onClick={() => setNotePopup(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: 299 }}
+          />
+          <div style={{
+            position: 'fixed',
+            top: Math.min(notePopup.anchorRect.top, window.innerHeight - 280),
+            left: (notePopup.anchorRect.right + 8 + 280 > window.innerWidth)
+              ? Math.max(8, notePopup.anchorRect.left - 288)
+              : notePopup.anchorRect.right + 8,
+            width: 280,
+            zIndex: 300,
+            background: 'var(--surface,#1a1d27)',
+            border: '1px solid var(--border,#2e3148)',
+            borderRadius: 8,
+            padding: 12,
+            boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <span style={{ fontSize: 13 }}>📝</span>
+              {notePopup.caseName && (
+                <span style={{ fontSize: 11, color: 'var(--accent,#4f7cff)', fontWeight: 600 }}>
+                  {notePopup.caseName}
+                </span>
+              )}
+              {notePopup.time && (
+                <span style={{ fontSize: 10, color: 'var(--text3,#5a6080)', marginLeft: 'auto' }}>
+                  {notePopup.time}
+                </span>
+              )}
+            </div>
+            <div style={{
+              fontSize: 12,
+              color: 'var(--text,#e8eaf0)',
+              lineHeight: 1.5,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: 180,
+              overflowY: 'auto',
+              marginBottom: 10,
+              padding: '6px 8px',
+              background: 'var(--surface2,#222536)',
+              borderRadius: 5
+            }}>
+              {notePopup.text}
+            </div>
+            <button
+              onClick={() => {
+                const popup = notePopup;
+                setNotePopup(null);
+                openModalEditNote(popup);
+              }}
+              style={{
+                width: '100%', padding: '6px', borderRadius: 5, border: 'none',
+                background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
+                fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                justifyContent: 'center', gap: 4
+              }}
+            >
+              ✏️ Редагувати
+            </button>
+          </div>
+        </>
+      )}
+
       {/* ── MODAL ── */}
       {modalOpen && (
         <div
@@ -1523,7 +1854,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             }}
           >
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>
-              Нова подія — {formatDayTitle(modalDate || selectedDay)}
+              {editingEvent ? 'Редагувати' : 'Нова подія'} — {formatDayTitle(modalDate || selectedDay)}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
@@ -1543,17 +1874,13 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               {modalType === 'hearing' && (
                 <div>
                   <div style={{ fontSize: 10, color: 'var(--text3, #5a6080)', marginBottom: 3 }}>СПРАВА *</div>
-                  <select
+                  <CaseDropdown
                     value={modalCaseId}
-                    onChange={e => { setModalCaseId(e.target.value); if (caseIdError) setCaseIdError(false); }}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 5,
-                      background: 'var(--surface2, #222536)', color: 'var(--text, #e6e8f0)',
-                      border: caseIdError ? '1px solid #e74c3c' : '1px solid var(--border, #2e3148)', fontSize: 12 }}>
-                    <option value=''>— Оберіть справу —</option>
-                    {cases.filter(c => c.status === 'active' || !c.status).map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
+                    onChange={(v) => { setModalCaseId(v); if (caseIdError) setCaseIdError(false); }}
+                    cases={cases.filter(c => c.status === 'active' || !c.status)}
+                    placeholder="— Оберіть справу —"
+                    error={caseIdError}
+                  />
                   {caseIdError && (
                     <div style={{ fontSize: 10, color: '#e74c3c', marginTop: 3 }}>Оберіть справу</div>
                   )}
@@ -1561,24 +1888,17 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               )}
               {modalType === 'note' && (
                 <>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2, #9aa0b8)" }}>Нова нотатка</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2, #9aa0b8)" }}>{editingEvent ? 'Редагувати нотатку' : 'Нова нотатка'}</div>
                   <div>
                     <div style={{ fontSize: 10, color: 'var(--text3, #5a6080)', marginBottom: 3 }}>
                       СПРАВА (необов'язково)
                     </div>
-                    <select
+                    <CaseDropdown
                       value={modalCaseId}
-                      onChange={e => setModalCaseId(e.target.value)}
-                      style={{
-                        width: '100%', padding: '6px 8px', borderRadius: 5,
-                        background: 'var(--surface2, #222536)', color: 'var(--text, #e8eaf0)',
-                        border: '1px solid var(--border, #2e3148)', fontSize: 12
-                      }}>
-                      <option value=''>— Без прив'язки до справи —</option>
-                      {cases.filter(c => c.status === 'active').map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
+                      onChange={setModalCaseId}
+                      cases={cases.filter(c => c.status === 'active')}
+                      placeholder="— Без прив'язки до справи —"
+                    />
                   </div>
                   <textarea
                     placeholder="Текст нотатки..."
@@ -1593,6 +1913,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word'
                     }}
                   />
+                  <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, cursor:'pointer', color: 'var(--text2, #9aa0b8)' }}>
+                    <input type="checkbox" checked={modalHasTime} onChange={e => setModalHasTime(e.target.checked)} />
+                    Прив'язати до часу
+                  </label>
                 </>
               )}
               {modalType === 'hearing' && (
@@ -1609,42 +1933,44 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   }}
                 />
               )}
-              <div style={{ display: "flex", gap: 6 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>
-                    Початок{modalType === 'hearing' ? ' *' : ''}
+              {(modalType === 'hearing' || modalHasTime) && (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>
+                      Початок{modalType === 'hearing' ? ' *' : ''}
+                    </div>
+                    <input
+                      type="time"
+                      step="1800"
+                      value={modalStart}
+                      onChange={e => { setModalStart(e.target.value); if (timeError) setTimeError(false); }}
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        background: "var(--surface, #1a1d27)",
+                        border: timeError ? "1px solid #e74c3c" : "1px solid var(--border, #2e3148)",
+                        borderRadius: 5, color: "var(--text, #e6e8f0)",
+                        padding: "6px 8px", fontSize: 12
+                      }}
+                    />
                   </div>
-                  <input
-                    type="time"
-                    step="1800"
-                    value={modalStart}
-                    onChange={e => { setModalStart(e.target.value); if (timeError) setTimeError(false); }}
-                    style={{
-                      width: "100%", boxSizing: "border-box",
-                      background: "var(--surface, #1a1d27)",
-                      border: timeError ? "1px solid #e74c3c" : "1px solid var(--border, #2e3148)",
-                      borderRadius: 5, color: "var(--text, #e6e8f0)",
-                      padding: "6px 8px", fontSize: 12
-                    }}
-                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Кінець</div>
+                    <input
+                      type="time"
+                      step="1800"
+                      value={modalEnd}
+                      onChange={e => setModalEnd(e.target.value)}
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        background: "var(--surface, #1a1d27)",
+                        border: "1px solid var(--border, #2e3148)",
+                        borderRadius: 5, color: "var(--text, #e6e8f0)",
+                        padding: "6px 8px", fontSize: 12
+                      }}
+                    />
+                  </div>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Кінець</div>
-                  <input
-                    type="time"
-                    step="1800"
-                    value={modalEnd}
-                    onChange={e => setModalEnd(e.target.value)}
-                    style={{
-                      width: "100%", boxSizing: "border-box",
-                      background: "var(--surface, #1a1d27)",
-                      border: "1px solid var(--border, #2e3148)",
-                      borderRadius: 5, color: "var(--text, #e6e8f0)",
-                      padding: "6px 8px", fontSize: 12
-                    }}
-                  />
-                </div>
-              </div>
+              )}
               {timeError && (
                 <div style={{ fontSize: 10, color: '#e74c3c', marginTop: -4 }}>Вкажіть час початку</div>
               )}
