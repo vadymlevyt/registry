@@ -1562,6 +1562,24 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               {modalType === 'note' && (
                 <>
                   <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2, #9aa0b8)" }}>Нова нотатка</div>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--text3, #5a6080)', marginBottom: 3 }}>
+                      СПРАВА (необов'язково)
+                    </div>
+                    <select
+                      value={modalCaseId}
+                      onChange={e => setModalCaseId(e.target.value)}
+                      style={{
+                        width: '100%', padding: '6px 8px', borderRadius: 5,
+                        background: 'var(--surface2, #222536)', color: 'var(--text, #e8eaf0)',
+                        border: '1px solid var(--border, #2e3148)', fontSize: 12
+                      }}>
+                      <option value=''>— Без прив'язки до справи —</option>
+                      {cases.filter(c => c.status === 'active').map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <textarea
                     placeholder="Текст нотатки..."
                     value={modalTitle}
@@ -1630,39 +1648,41 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               {timeError && (
                 <div style={{ fontSize: 10, color: '#e74c3c', marginTop: -4 }}>Вкажіть час початку</div>
               )}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setModalShowTravel(v => !v)}
-                  style={{
-                    width: "100%",
-                    padding: "6px 8px", borderRadius: 5, fontSize: 11, cursor: "pointer",
-                    background: modalShowTravel ? "var(--surface2, #222536)" : "transparent",
-                    color: "var(--text2, #9aa0b8)",
-                    border: "1px dashed var(--border, #2e3148)",
-                    textAlign: "left"
-                  }}
-                >🚗 {modalShowTravel ? "Прибрати час на дорогу" : "Додати час на дорогу"}</button>
-                {modalShowTravel && (
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Хвилин на дорогу</div>
-                    <input
-                      type="number"
-                      step="30"
-                      min="0"
-                      value={modalTravelMin}
-                      onChange={e => setModalTravelMin(parseInt(e.target.value, 10) || 0)}
-                      style={{
-                        width: "100%", boxSizing: "border-box",
-                        background: "var(--surface, #1a1d27)",
-                        border: "1px solid var(--border, #2e3148)",
-                        borderRadius: 5, color: "var(--text, #e6e8f0)",
-                        padding: "6px 8px", fontSize: 12
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+              {modalType === 'hearing' && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setModalShowTravel(v => !v)}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px", borderRadius: 5, fontSize: 11, cursor: "pointer",
+                      background: modalShowTravel ? "var(--surface2, #222536)" : "transparent",
+                      color: "var(--text2, #9aa0b8)",
+                      border: "1px dashed var(--border, #2e3148)",
+                      textAlign: "left"
+                    }}
+                  >🚗 {modalShowTravel ? "Прибрати час на дорогу" : "Додати час на дорогу"}</button>
+                  {modalShowTravel && (
+                    <div style={{ marginTop: 6 }}>
+                      <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Хвилин на дорогу</div>
+                      <input
+                        type="number"
+                        step="30"
+                        min="0"
+                        value={modalTravelMin}
+                        onChange={e => setModalTravelMin(parseInt(e.target.value, 10) || 0)}
+                        style={{
+                          width: "100%", boxSizing: "border-box",
+                          background: "var(--surface, #1a1d27)",
+                          border: "1px solid var(--border, #2e3148)",
+                          borderRadius: 5, color: "var(--text, #e6e8f0)",
+                          padding: "6px 8px", fontSize: 12
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
                 <button
                   onClick={() => setModalOpen(false)}
