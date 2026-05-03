@@ -1440,8 +1440,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                             background: 'none', border: 'none', cursor: 'pointer',
                             fontSize: 16, padding: '2px 4px', display: 'inline-block',
                             transform: isNotePinned ? 'rotate(-45deg)' : 'rotate(0deg)',
-                            opacity: isNotePinned ? 0.4 : 1,
-                            color: isNotePinned ? '#888' : '#e53935',
+                            opacity: isNotePinned ? 1 : 0.4,
+                            color: isNotePinned ? '#e53935' : '#888',
                             transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
                           }}
                         >📌</button>
