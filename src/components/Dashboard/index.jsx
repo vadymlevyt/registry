@@ -84,6 +84,36 @@ function CaseDropdown({ value, onChange, cases, placeholder, error }) {
 const SLOTS_START_MIN = parseTimeMin(SLOTS[0]);
 const SLOTS_END_MIN = parseTimeMin(SLOTS[SLOTS.length - 1]) + SLOT_MIN;
 
+function mergeNoteGroups(notes) {
+  const used = new Set();
+  const groups = [];
+  notes.forEach(n => {
+    if (used.has(n.id)) return;
+    let start = parseTimeMin(n.time);
+    let end = start + (n.duration || 60);
+    const grp = [n];
+    used.add(n.id);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      notes.forEach(other => {
+        if (used.has(other.id)) return;
+        const oStart = parseTimeMin(other.time);
+        const oEnd = oStart + (other.duration || 60);
+        if (start < oEnd && end > oStart) {
+          grp.push(other);
+          used.add(other.id);
+          start = Math.min(start, oStart);
+          end = Math.max(end, oEnd);
+          changed = true;
+        }
+      });
+    }
+    groups.push(grp);
+  });
+  return groups;
+}
+
 function addMinutesToTime(t, min) {
   const total = parseTimeMin(t) + min;
   const h = Math.floor(total / 60);
@@ -257,23 +287,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           return renderEvBlock(ev, { position: 'absolute', left: 2, right: 2, top, height, zIndex: 1 });
         });
 
-        // Групування нотаток за перетином інтервалів
-        const used = new Set();
-        const groups = [];
-        noteEvs.forEach(n => {
-          if (used.has(n.id)) return;
-          const start = parseTimeMin(n.time);
-          const end = start + (n.duration || 60);
-          const grp = [n];
-          used.add(n.id);
-          noteEvs.forEach(other => {
-            if (used.has(other.id)) return;
-            const oStart = parseTimeMin(other.time);
-            const oEnd = oStart + (other.duration || 60);
-            if (start < oEnd && end > oStart) { grp.push(other); used.add(other.id); }
-          });
-          groups.push(grp);
-        });
+        const groups = mergeNoteGroups(noteEvs);
 
         const noteBlocks = groups.map(grp => {
           const minStart = Math.min(...grp.map(n => parseTimeMin(n.time)));
@@ -288,35 +302,56 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
               </div>
             );
           }
-          if (grp.length === 2) {
-            return (
-              <div key={key} style={{ position: 'absolute', left: 2, right: 2, top, height, display: 'flex', gap: 2, zIndex: 2 }}>
-                {grp.map(n => <div key={n.id} style={{ flex: 1, minWidth: 0 }}>{renderEvBlock(n, { height: '100%' })}</div>)}
-              </div>
-            );
-          }
-          const isExpanded = expandedSlot === key;
+          // Merged block — single yellow container, all notes listed inside, click per-note
+          const sorted = [...grp].sort((a, b) => parseTimeMin(a.time) - parseTimeMin(b.time));
           return (
-            <div key={key} style={{ position: 'absolute', left: 2, right: 2, top, zIndex: isExpanded ? 5 : 2 }}>
-              {renderEvBlock(grp[0], { height: Math.max(SLOT_H - 2, height - 16) })}
-              <div
-                onClick={(e) => { e.stopPropagation(); setExpandedSlot && setExpandedSlot(isExpanded ? null : key); }}
-                style={{ fontSize: 10, color: 'var(--accent, #4f7cff)', cursor: 'pointer', padding: '2px 4px', textAlign: 'center', background: 'rgba(79,124,255,0.08)', borderRadius: 4, marginTop: 1 }}
-              >
-                +{grp.length - 1} більше
-              </div>
-              {isExpanded && (
-                <div style={{
-                  position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
-                  background: 'var(--surface,#1a1d27)',
-                  border: '1px solid var(--border,#2e3148)',
-                  borderRadius: 5, padding: 4, zIndex: 100,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-                  display: 'flex', flexDirection: 'column', gap: 3
-                }}>
-                  {grp.map(n => <div key={n.id}>{renderEvBlock(n, {})}</div>)}
-                </div>
-              )}
+            <div
+              key={key}
+              style={{
+                position: 'absolute', left: 2, right: 2, top, height,
+                zIndex: 2,
+                borderRadius: 5,
+                border: '1px solid #f1c40f',
+                background: 'rgba(241,196,15,0.18)',
+                padding: 2,
+                display: 'flex', flexDirection: 'column', gap: 1,
+                overflow: 'hidden',
+                boxSizing: 'border-box'
+              }}
+            >
+              {sorted.map(n => {
+                const nEnd = n.endTime || addMinutesToTime(n.time, n.duration || 60);
+                return (
+                  <div
+                    key={n.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      if (onNoteClick) onNoteClick(n, rect);
+                    }}
+                    style={{
+                      flex: '1 1 auto',
+                      minHeight: 14,
+                      padding: '1px 4px',
+                      borderRadius: 3,
+                      background: 'rgba(241,196,15,0.12)',
+                      cursor: 'pointer',
+                      fontSize: 10,
+                      lineHeight: 1.2,
+                      overflow: 'hidden',
+                      whiteSpace: 'nowrap',
+                      textOverflow: 'ellipsis',
+                      color: 'var(--text, #e6e8f0)'
+                    }}
+                    title={`${n.time}—${nEnd} ${n.title || ''}`}
+                  >
+                    <span style={{ fontSize: 9, color: 'var(--text3,#5a6080)', marginRight: 4 }}>
+                      {n.time}
+                    </span>
+                    <span style={{ fontWeight: 600 }}>{n.title}</span>
+                  </div>
+                );
+              })}
             </div>
           );
         });
@@ -470,7 +505,11 @@ function buildDashboardContext(cases, calendarEvents) {
   }).join("\n");
 
   const eventsText = (calendarEvents && calendarEvents.length)
-    ? calendarEvents.map(e => `${e.date} ${e.time || ""} ${e.title} (${e.type})`).join("\n")
+    ? calendarEvents.map(e => {
+        const idPart = e.type === 'note' && e.noteId ? ` [noteId:${e.noteId}]` : '';
+        const casePart = e.caseName ? ` {${e.caseName}}` : '';
+        return `${e.date} ${e.time || ""} ${e.title} (${e.type})${idPart}${casePart}`;
+      }).join("\n")
     : "немає";
 
   const conflicts = findConflicts(visibleCases);
@@ -510,6 +549,15 @@ ACTION_JSON: {"action": "add_note", "case_name": "назва справи", "tex
 
 ACTION_JSON: {"action": "update_note", "noteId": "...", "text": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "case_name": "..."}
 // Редагувати існуючу нотатку. noteId з контексту.
+
+ACTION_JSON: {"action": "delete_note", "noteId": "...", "case_name": "..."}
+// Видалити нотатку. noteId беремо з контексту (поле [noteId:...]).
+
+ГРУПОВІ ДІЇ (кілька в одному повідомленні):
+Якщо потрібно виконати кілька дій — окремий ACTION_JSON блок на кожну, в одній відповіді.
+Приклад видалення двох нотаток:
+ACTION_JSON: {"action":"delete_note","noteId":"id1","case_name":"..."}
+ACTION_JSON: {"action":"delete_note","noteId":"id2","case_name":"..."}
 
 ACTION_JSON: {"action": "navigate_calendar", "direction": "prev" | "next"}
 ACTION_JSON: {"action": "navigate_week", "direction": "prev" | "next"}
@@ -670,6 +718,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
   const [editingEvent, setEditingEvent] = useState(null); // { type, hearingId?, noteId?, caseId? }
   const [modalHasTime, setModalHasTime] = useState(true); // для нотатки — час опційний
   const [notePopup, setNotePopup] = useState(null);
+  const [deadlinePopup, setDeadlinePopup] = useState(null);
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [expandedGroups, setExpandedGroups] = useState({});
 
@@ -948,6 +997,15 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         });
         return `✅ Нотатку оновлено`;
       }
+      case 'delete_note': {
+        if (!onExecuteAction || !action.noteId) return null;
+        const c = action.case_name ? findCase(action.case_name) : null;
+        onExecuteAction('dashboard_agent', 'delete_note', {
+          noteId: action.noteId,
+          caseId: c ? c.id : (action.caseId || null)
+        });
+        return `✅ Нотатку видалено`;
+      }
       case "navigate_calendar": {
         setCalView("month");
         if (action.direction === "prev") {
@@ -971,29 +1029,50 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     }
   }
 
-  function handleAgentResponse(text) {
-    const idx = text.indexOf("ACTION_JSON:");
-    if (idx === -1) return text;
-    const start = text.indexOf("{", idx);
-    if (start === -1) return text;
-    let depth = 0, end = -1;
-    for (let i = start; i < text.length; i++) {
-      if (text[i] === "{") depth++;
-      else if (text[i] === "}") {
-        depth--;
-        if (depth === 0) { end = i; break; }
+  function parseAllActionJSON(text) {
+    const actions = [];
+    const ranges = [];
+    let searchFrom = 0;
+    while (true) {
+      const idx = text.indexOf("ACTION_JSON:", searchFrom);
+      if (idx === -1) break;
+      const start = text.indexOf("{", idx);
+      if (start === -1) break;
+      let depth = 0, end = -1;
+      for (let i = start; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}") {
+          depth--;
+          if (depth === 0) { end = i; break; }
+        }
       }
+      if (end === -1) break;
+      try {
+        actions.push(JSON.parse(text.slice(start, end + 1)));
+        ranges.push([idx, end + 1]);
+      } catch (e) {}
+      searchFrom = end + 1;
     }
-    if (end === -1) return text;
-    try {
-      const action = JSON.parse(text.slice(start, end + 1));
-      const actionMsg = handleDashboardAction(action);
-      const preface = text.slice(0, idx).trim();
-      if (actionMsg) return preface ? `${preface}\n\n${actionMsg}` : actionMsg;
-      return preface || text;
-    } catch (e) {
-      return text;
+    return { actions, ranges };
+  }
+
+  function handleAgentResponse(text) {
+    const { actions, ranges } = parseAllActionJSON(text);
+    if (!actions.length) return text;
+    const messages = [];
+    for (const action of actions) {
+      const msg = handleDashboardAction(action);
+      if (msg) messages.push(msg);
     }
+    let preface = text;
+    if (ranges.length) {
+      preface = text.slice(0, ranges[0][0]) + text.slice(ranges[ranges.length - 1][1]);
+    }
+    preface = preface.trim();
+    if (messages.length) {
+      return preface ? `${preface}\n\n${messages.join("\n")}` : messages.join("\n");
+    }
+    return preface || text;
   }
 
   async function handleAgentSend(inputOverride) {
@@ -1159,6 +1238,16 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       duration: ev.duration || 60,
       date: ev.date,
       anchorRect: rect
+    });
+  }
+
+  function handleDeadlineClick(ev, rect) {
+    const c = cases.find(cs => String(cs.id) === String(ev.caseId));
+    setDeadlinePopup({
+      title: ev.label || ev.title || 'Дедлайн',
+      caseName: c ? c.name : (ev.title || null),
+      date: ev.date,
+      anchorRect: rect || { top: 100, left: 100, right: 100 }
     });
   }
 
@@ -1702,6 +1791,39 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             )}
           </div>
 
+          {/* Без часу — нотатки і дедлайни (вгорі, до часових слотів) */}
+          {dayEvents.filter(e => !e.time).length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
+                Без часу
+              </div>
+              {dayEvents.filter(e => !e.time).map(e => (
+                <div
+                  key={e.id}
+                  onClick={(ev) => {
+                    const rect = ev.currentTarget.getBoundingClientRect();
+                    if (e.type === 'deadline') handleDeadlineClick(e, rect);
+                    else if (e.type === 'note') handleNoteClick(e, rect);
+                  }}
+                  style={{
+                    borderRadius: 5,
+                    border: `1px solid ${e.type === "deadline" ? "#f39c12" : (e.type === "note" ? "#f1c40f" : "#5a6080")}`,
+                    background: e.type === "deadline" ? "rgba(243,156,18,.1)"
+                      : e.type === "note" ? "rgba(241,196,15,.12)"
+                      : "var(--surface, #1a1d27)",
+                    padding: "4px 7px",
+                    fontSize: 11,
+                    marginBottom: 3,
+                    cursor: (e.type === 'deadline' || e.type === 'note') ? 'pointer' : 'default'
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>{e.title}</div>
+                  {e.label && <div style={{ fontSize: 10, color: "var(--text3, #5a6080)" }}>{e.label}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Слоти */}
           <div>
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
@@ -1741,27 +1863,6 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             </div>
           </div>
 
-          {/* Дедлайни без часу */}
-          {dayEvents.filter(e => !e.time).length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
-                Без часу
-              </div>
-              {dayEvents.filter(e => !e.time).map(e => (
-                <div key={e.id} style={{
-                  borderRadius: 5,
-                  border: `1px solid ${e.type === "deadline" ? "#f39c12" : "#5a6080"}`,
-                  background: e.type === "deadline" ? "rgba(243,156,18,.1)" : "var(--surface, #1a1d27)",
-                  padding: "4px 7px",
-                  fontSize: 11,
-                  marginBottom: 3
-                }}>
-                  <div style={{ fontWeight: 600 }}>{e.title}</div>
-                  {e.label && <div style={{ fontSize: 10, color: "var(--text3, #5a6080)" }}>{e.label}</div>}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
@@ -1814,21 +1915,102 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             }}>
               {notePopup.text}
             </div>
-            <button
-              onClick={() => {
-                const popup = notePopup;
-                setNotePopup(null);
-                openModalEditNote(popup);
-              }}
-              style={{
-                width: '100%', padding: '6px', borderRadius: 5, border: 'none',
-                background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
-                fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', gap: 4
-              }}
-            >
-              ✏️ Редагувати
-            </button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                onClick={() => {
+                  const popup = notePopup;
+                  setNotePopup(null);
+                  openModalEditNote(popup);
+                }}
+                style={{
+                  flex: 1, padding: '6px', borderRadius: 5, border: 'none',
+                  background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
+                  fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', gap: 4
+                }}
+              >
+                ✏️ Редагувати
+              </button>
+              <button
+                onClick={() => {
+                  if (!window.confirm('Видалити цю нотатку?')) return;
+                  onExecuteAction('dashboard_agent', 'delete_note', {
+                    noteId: notePopup.noteId,
+                    caseId: notePopup.caseId
+                  });
+                  setNotePopup(null);
+                }}
+                style={{
+                  flex: 1, padding: '6px', borderRadius: 5, border: 'none',
+                  background: 'rgba(231,76,60,0.1)', color: '#e74c3c',
+                  fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', gap: 4
+                }}
+              >
+                🗑️ Видалити
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── DEADLINE POPUP (read-only) ── */}
+      {deadlinePopup && (
+        <>
+          <div
+            onClick={() => setDeadlinePopup(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: 299 }}
+          />
+          <div style={{
+            position: 'fixed',
+            top: Math.min(deadlinePopup.anchorRect.top, window.innerHeight - 220),
+            left: (deadlinePopup.anchorRect.right + 8 + 280 > window.innerWidth)
+              ? Math.max(8, deadlinePopup.anchorRect.left - 288)
+              : deadlinePopup.anchorRect.right + 8,
+            width: 280,
+            zIndex: 300,
+            background: 'var(--surface,#1a1d27)',
+            border: '1px solid rgba(243,156,18,0.4)',
+            borderRadius: 8,
+            padding: 12,
+            boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <span style={{ fontSize: 13 }}>⏰</span>
+              <span style={{ fontSize: 11, color: '#f39c12', fontWeight: 600 }}>
+                Дедлайн
+              </span>
+              <span style={{ fontSize: 10, color: 'var(--text3,#5a6080)', marginLeft: 'auto' }}>
+                {deadlinePopup.date}
+              </span>
+            </div>
+            <div style={{
+              fontSize: 13,
+              color: 'var(--text,#e8eaf0)',
+              fontWeight: 600,
+              marginBottom: 6
+            }}>
+              {deadlinePopup.title}
+            </div>
+            {deadlinePopup.caseName && (
+              <div style={{
+                fontSize: 11,
+                color: 'var(--accent,#4f7cff)',
+                marginBottom: 10
+              }}>
+                {deadlinePopup.caseName}
+              </div>
+            )}
+            <div style={{
+              fontSize: 10,
+              color: 'var(--text3,#5a6080)',
+              fontStyle: 'italic',
+              padding: '6px 8px',
+              background: 'var(--surface2,#222536)',
+              borderRadius: 5
+            }}>
+              Дедлайни змінюються через Досьє або Quick Input
+            </div>
           </div>
         </>
       )}
@@ -2027,6 +2209,26 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   }}
                 >Зберегти</button>
               </div>
+              {editingEvent?.hearingId && (
+                <button
+                  onClick={() => {
+                    if (!window.confirm('Видалити це засідання?')) return;
+                    onExecuteAction('dashboard_agent', 'delete_hearing', {
+                      caseId: editingEvent.caseId,
+                      hearingId: editingEvent.hearingId
+                    });
+                    setModalOpen(false);
+                    setEditingEvent(null);
+                  }}
+                  style={{
+                    width: '100%', padding: '6px', borderRadius: 5, border: 'none',
+                    background: 'rgba(231,76,60,0.1)', color: '#e74c3c',
+                    fontSize: 12, cursor: 'pointer', marginTop: 6
+                  }}
+                >
+                  🗑️ Видалити засідання
+                </button>
+              )}
             </div>
           </div>
         </div>

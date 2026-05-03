@@ -3624,6 +3624,14 @@ function App() {
 
     // ГРУПА 2 — Засідання
     add_hearing: ({ caseId, date, time, duration = 120, type = null }) => {
+      if (!date) {
+        console.error("[VALIDATION] add_hearing відхилено: дата обов'язкова");
+        return { success: false, error: "Дата засідання обов'язкова" };
+      }
+      if (!time || !String(time).trim()) {
+        console.error("[VALIDATION] add_hearing відхилено: час обов'язковий");
+        return { success: false, error: "Час засідання обов'язковий" };
+      }
       const hearing = { id: `hrg_${Date.now()}`, date, time, duration, status: 'scheduled', type };
       setCases(prev => prev.map(c =>
         c.id === caseId
@@ -3634,6 +3642,10 @@ function App() {
     },
 
     update_hearing: ({ caseId, hearingId, date, time, duration, type }) => {
+      if (time !== undefined && (time === null || !String(time).trim())) {
+        console.error("[VALIDATION] update_hearing відхилено: час не може бути порожнім");
+        return { success: false, error: "Час засідання не може бути порожнім" };
+      }
       setCases(prev => prev.map(c => {
         if (c.id !== caseId) return c;
 
