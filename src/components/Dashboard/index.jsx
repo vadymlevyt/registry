@@ -27,12 +27,30 @@ const isValidHearing = h =>
   h.time &&
   String(h.time).trim() !== '';
 
-const EVENT_COLORS = {
-  hearing:  { border: '#4f7cff', bg: 'rgba(79,124,255,0.12)',  text: '#4f7cff', dot: '#4f7cff' },
-  deadline: { border: '#f39c12', bg: 'rgba(243,156,18,0.12)',  text: '#f39c12', dot: '#f39c12' },
-  note:     { border: '#2ecc71', bg: 'rgba(46,204,113,0.12)',  text: '#2ecc71', dot: '#2ecc71' },
-  travel:   { border: '#5a6080', bg: 'rgba(90,96,128,0.12)',   text: '#9aa0b8', dot: '#5a6080' },
-};
+function getEventStyle(type, isPaused) {
+  if (isPaused) {
+    const borderColors = {
+      hearing:  'rgba(79,124,255,0.5)',
+      deadline: 'rgba(243,156,18,0.5)',
+      note:     'rgba(46,204,113,0.5)',
+      travel:   'rgba(90,96,128,0.5)'
+    };
+    return {
+      bg:     'rgba(90,96,128,0.12)',
+      border: borderColors[type] || 'rgba(90,96,128,0.5)',
+      text:   '#9aa0b8',
+      label:  '#7f8fa6',
+      dot:    '#5a6080'
+    };
+  }
+  const colors = {
+    hearing:  { bg:'rgba(79,124,255,0.15)', border:'#4f7cff', text:'var(--text,#e8eaf0)', label:'#4f7cff', dot:'#4f7cff' },
+    deadline: { bg:'rgba(243,156,18,0.15)', border:'#f39c12', text:'var(--text,#e8eaf0)', label:'#f39c12', dot:'#f39c12' },
+    note:     { bg:'rgba(46,204,113,0.15)', border:'#2ecc71', text:'var(--text,#e8eaf0)', label:'#2ecc71', dot:'#2ecc71' },
+    travel:   { bg:'rgba(90,96,128,0.12)',  border:'#5a6080', text:'#9aa0b8',             label:'#5a6080', dot:'#5a6080' }
+  };
+  return colors[type] || colors.note;
+}
 
 const EVENT_TYPE_LABEL = {
   hearing:  'Засідання',
@@ -233,11 +251,8 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
   const halfPressTimerRef = useRef(null);
 
   function colorsFor(ev, isConflict) {
-    if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)", text: "#e74c3c" };
-    if (ev.color) return { border: ev.color, bg: "rgba(127,143,166,.2)", text: ev.color };
-    const palette = EVENT_COLORS[ev.type];
-    if (palette) return palette;
-    return EVENT_COLORS.hearing;
+    if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)", text: "#e74c3c", label: "#e74c3c" };
+    return getEventStyle(ev.type, ev.isPaused);
   }
 
   const isDraggingHere = slotDrag.isDragging && slotDrag.dragContext === day;
@@ -364,11 +379,11 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                 overflow: "hidden",
                 pointerEvents: interactive ? "auto" : "none",
                 cursor: interactive ? "pointer" : "default",
-                color: "var(--text, #e6e8f0)",
+                color: c.text || "var(--text, #e6e8f0)",
                 ...extra
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, color: c.text, marginBottom: 1, whiteSpace: 'nowrap', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, color: c.label || c.text, marginBottom: 1, whiteSpace: 'nowrap', overflow: 'hidden' }}>
                 <span>{icon}</span>
                 <span style={{ fontWeight: 600 }}>{typeLabel}</span>
                 {caseName && (
@@ -419,6 +434,9 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           }
           // Merged block — single green container, all notes listed inside, click per-note
           const sorted = [...grp].sort((a, b) => parseTimeMin(a.time) - parseTimeMin(b.time));
+          const allPaused = grp.every(n => n.isPaused);
+          const groupStyle = getEventStyle('note', allPaused);
+          const innerBg = allPaused ? 'rgba(90,96,128,0.18)' : 'rgba(46,204,113,0.08)';
           return (
             <div
               key={key}
@@ -426,8 +444,8 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                 position: 'absolute', left: 2, right: 2, top, height,
                 zIndex: 2,
                 borderRadius: 5,
-                border: `1px solid ${EVENT_COLORS.note.border}`,
-                background: EVENT_COLORS.note.bg,
+                border: `1px solid ${groupStyle.border}`,
+                background: groupStyle.bg,
                 padding: 2,
                 display: 'flex', flexDirection: 'column', gap: 1,
                 overflow: 'hidden',
@@ -436,6 +454,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
             >
               {sorted.map(n => {
                 const nEnd = n.endTime || addMinutesToTime(n.time, n.duration || 60);
+                const itemPaused = n.isPaused;
                 return (
                   <div
                     key={n.id}
@@ -449,14 +468,14 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                       minHeight: 14,
                       padding: '1px 4px',
                       borderRadius: 3,
-                      background: 'rgba(46,204,113,0.08)',
+                      background: itemPaused ? 'rgba(90,96,128,0.18)' : innerBg,
                       cursor: 'pointer',
                       fontSize: 10,
                       lineHeight: 1.2,
                       overflow: 'hidden',
                       whiteSpace: 'nowrap',
                       textOverflow: 'ellipsis',
-                      color: 'var(--text, #e6e8f0)'
+                      color: itemPaused ? '#9aa0b8' : 'var(--text, #e6e8f0)'
                     }}
                     title={`${n.time}—${nEnd} ${n.title || ''}`}
                   >
@@ -839,6 +858,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
 
   function getAllEvents() {
     const events = [];
+    const pausedCaseIds = new Set(
+      cases.filter(c => c.status === 'paused').map(c => String(c.id))
+    );
     cases.forEach(c => {
       if (c.status === 'closed') return;
       const isPaused = c.status === 'paused';
@@ -875,7 +897,11 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         });
       });
     });
-    return [...events, ...calendarEvents];
+    const enrichedCalendar = (calendarEvents || []).map(e => ({
+      ...e,
+      isPaused: e.caseId != null && pausedCaseIds.has(String(e.caseId))
+    }));
+    return [...events, ...enrichedCalendar];
   }
 
   function getEventsForDay(dateStr) {
@@ -938,14 +964,23 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
   function FeedItem({ event, urgency }) {
     const d = daysUntil(event.date);
     const icon = event.type === "hearing" ? "⚖️" : event.type === "deadline" ? "⏰" : "📅";
+    const isPaused = event.isPaused;
 
-    const borderColor = urgency === "urgent" ? "#e74c3c"
+    const baseBorderColor = urgency === "urgent" ? "#e74c3c"
       : urgency === "warn" ? "#f39c12"
       : "#5a6080";
+    const borderColor = isPaused ? "rgba(127,143,166,0.4)" : baseBorderColor;
 
     const badgeText = d === 0 ? "сьогодні" : d === 1 ? "завтра" : `${d} днів`;
-    const badgeBg = d <= 0 ? "rgba(231,76,60,.2)" : d <= 1 ? "rgba(243,156,18,.2)" : "rgba(79,124,255,.2)";
-    const badgeColor = d <= 0 ? "#e74c3c" : d <= 1 ? "#f39c12" : "#4f7cff";
+    const badgeBg = isPaused
+      ? "rgba(90,96,128,0.2)"
+      : d <= 0 ? "rgba(231,76,60,.2)" : d <= 1 ? "rgba(243,156,18,.2)" : "rgba(79,124,255,.2)";
+    const badgeColor = isPaused
+      ? "#9aa0b8"
+      : d <= 0 ? "#e74c3c" : d <= 1 ? "#f39c12" : "#4f7cff";
+
+    const titleColor = isPaused ? "#9aa0b8" : "var(--text, #e6e8f0)";
+    const subColor = isPaused ? "#7f8fa6" : "var(--text2, #9aa0b8)";
 
     return (
       <div
@@ -962,17 +997,17 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           gap: 8
         }}
       >
-        <span style={{ fontSize: 15 }}>{icon}</span>
+        <span style={{ fontSize: 15, opacity: isPaused ? 0.5 : 1 }}>{icon}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: titleColor, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {event.title}
             </span>
             <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, fontWeight: 600, background: badgeBg, color: badgeColor, whiteSpace: "nowrap" }}>
               {badgeText}
             </span>
           </div>
-          <div style={{ fontSize: 11, color: "var(--text2, #9aa0b8)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <div style={{ fontSize: 11, color: subColor, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {event.court || event.label || ""}
           </div>
         </div>
@@ -1592,13 +1627,13 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                       </span>
                       <div style={{ display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "center" }}>
                         {hearings.slice(0,3).map((h, i) => (
-                          <div key={"h"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: h.isPaused ? "#7f8fa6" : "#4f7cff" }} />
+                          <div key={"h"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: h.isPaused ? "#5a6080" : "#4f7cff" }} />
                         ))}
                         {deadlines.slice(0,2).map((d, i) => (
-                          <div key={"d"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: d.isPaused ? "#7f8fa6" : "#f39c12" }} />
+                          <div key={"d"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: d.isPaused ? "#5a6080" : "#f39c12" }} />
                         ))}
-                        {notesOnDay.slice(0,2).map((_, i) => (
-                          <div key={"n"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#2ecc71" }} />
+                        {notesOnDay.slice(0,2).map((n, i) => (
+                          <div key={"n"+i} style={{ width: 6, height: 6, borderRadius: "50%", background: n.isPaused ? "#5a6080" : "#2ecc71" }} />
                         ))}
                       </div>
                       {conflictLevel === 'red' && <span style={{ fontSize: 8 }}>⚠️</span>}
@@ -1924,7 +1959,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   {sectionTitle}
                 </div>
                 {eventsWithoutTime.map(e => {
-                  const palette = EVENT_COLORS[e.type] || EVENT_COLORS.note;
+                  const palette = getEventStyle(e.type, e.isPaused);
                   const icon = EVENT_TYPE_ICON[e.type] || '📝';
                   const typeLabel = EVENT_TYPE_LABEL[e.type] || '';
                   const caseName = e.caseName || (e.type === 'note' ? 'Загальна' : null);
@@ -1946,7 +1981,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                         cursor: (e.type === 'deadline' || e.type === 'note') ? 'pointer' : 'default'
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: palette.text, marginBottom: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: palette.label || palette.text, marginBottom: 1 }}>
                         <span>{icon}</span>
                         <span style={{ fontWeight: 600 }}>{typeLabel}</span>
                         {caseName && (
@@ -1959,7 +1994,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                         )}
                       </div>
                       {text && (
-                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text, #e8eaf0)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: palette.text || 'var(--text, #e8eaf0)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {text}
                         </div>
                       )}
