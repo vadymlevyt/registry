@@ -1813,7 +1813,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
 
             setConversationHistory(prev => [...prev, {
               role: 'assistant',
-              content: 'Нотатку збережено'
+              content: '✅ Нотатку збережено'
                 + (matched ? ` до справи "${matched.name}"` : '')
                 + (actionResult.date || ext.date ? ` на ${actionResult.date || ext.date}` : '')
                 + '.'
