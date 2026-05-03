@@ -350,6 +350,27 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
         const noteEvs = evsInRange.filter(e => e.type === 'note');
         const otherEvs = evsInRange.filter(e => e.type !== 'note');
 
+        const mainEvs = otherEvs.filter(e => e.type === 'hearing' || e.type === 'travel');
+        const otherNonMain = otherEvs.filter(e => e.type !== 'hearing' && e.type !== 'travel');
+        const overlap = (a, b) => {
+          const aS = parseTimeMin(a.time);
+          const aE = aS + (a.duration || 60);
+          const bS = parseTimeMin(b.time);
+          const bE = bS + (b.duration || 60);
+          return aS < bE && aE > bS;
+        };
+        const sideNotesByMain = {};
+        const standaloneNotes = [];
+        noteEvs.forEach(n => {
+          const m = mainEvs.find(mn => overlap(n, mn));
+          if (m) {
+            sideNotesByMain[m.id] = sideNotesByMain[m.id] || [];
+            sideNotesByMain[m.id].push(n);
+          } else {
+            standaloneNotes.push(n);
+          }
+        });
+
         const renderEvBlock = (ev, extra = {}, availableHeight = null) => {
           const dur = ev.duration || 60;
           const c = colorsFor(ev, conflictIds.has(ev.id));
@@ -412,15 +433,80 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           );
         };
 
-        const otherBlocks = otherEvs.map(ev => {
+        const otherBlocks = [];
+        otherNonMain.forEach(ev => {
           const t = parseTimeMin(ev.time);
           const dur = ev.duration || 60;
           const top = ((t - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
           const height = Math.max(SLOT_H - 2, (dur / SLOT_MIN) * SLOT_H - 1);
-          return renderEvBlock(ev, { position: 'absolute', left: 2, right: 2, top, height, zIndex: 1 });
+          otherBlocks.push(renderEvBlock(ev, { position: 'absolute', left: 2, right: 2, top, height, zIndex: 1 }));
+        });
+        mainEvs.forEach(ev => {
+          const t = parseTimeMin(ev.time);
+          const dur = ev.duration || 60;
+          const top = ((t - SLOTS_START_MIN) / SLOT_MIN) * SLOT_H;
+          const height = Math.max(SLOT_H - 2, (dur / SLOT_MIN) * SLOT_H - 1);
+          const sideNotes = sideNotesByMain[ev.id] || [];
+          const hasSide = sideNotes.length > 0;
+          otherBlocks.push(renderEvBlock(ev, {
+            position: 'absolute',
+            left: 2,
+            right: hasSide ? '22%' : 2,
+            top, height, zIndex: 1
+          }));
+          if (hasSide) {
+            const visible = sideNotes.slice(0, 3);
+            const overflow = sideNotes.length - visible.length;
+            otherBlocks.push(
+              <div
+                key={`side_${ev.id}`}
+                style={{
+                  position: 'absolute',
+                  right: 2,
+                  width: 'calc(20% - 2px)',
+                  top, height,
+                  zIndex: 2,
+                  display: 'flex', flexDirection: 'column', gap: 1
+                }}
+              >
+                {visible.map(n => {
+                  const ns = getEventStyle('note', n.isPaused);
+                  return (
+                    <div
+                      key={n.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        if (onNoteClick) onNoteClick(n, rect);
+                      }}
+                      title={n.title || ''}
+                      style={{
+                        flex: 1,
+                        background: ns.bg,
+                        border: `1px solid ${ns.border}`,
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 9,
+                        overflow: 'hidden',
+                        color: ns.text
+                      }}
+                    >📝</div>
+                  );
+                })}
+                {overflow > 0 && (
+                  <div style={{ fontSize: 8, color: '#2ecc71', textAlign: 'center', lineHeight: 1 }}>
+                    +{overflow}
+                  </div>
+                )}
+              </div>
+            );
+          }
         });
 
-        const groups = mergeNoteGroups(noteEvs);
+        const groups = mergeNoteGroups(standaloneNotes);
 
         const noteBlocks = groups.map(grp => {
           const minStart = Math.min(...grp.map(n => parseTimeMin(n.time)));
@@ -2219,7 +2305,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             width: 280,
             zIndex: 300,
             background: 'var(--surface,#1a1d27)',
-            border: '1px solid var(--border,#2e3148)',
+            border: notePopup.isTravel
+              ? '1px solid rgba(155,89,182,0.4)'
+              : '1px solid var(--border,#2e3148)',
             borderRadius: 8,
             padding: 12,
             boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
@@ -2494,28 +2582,33 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                   >🚗 {modalShowTravel ? "Прибрати час на дорогу" : "Додати час на дорогу (ділиться порівну до і після)"}</button>
                   {modalShowTravel && (
                     <div style={{ marginTop: 6 }}>
-                      <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Хвилин на дорогу (всього)</div>
-                      <input
-                        type="number"
-                        step="30"
-                        min="0"
-                        value={modalTravelMin}
-                        onChange={e => setModalTravelMin(parseInt(e.target.value, 10) || 0)}
-                        style={{
-                          width: "100%", boxSizing: "border-box",
-                          background: "var(--surface, #1a1d27)",
-                          border: "1px solid var(--border, #2e3148)",
-                          borderRadius: 5, color: "var(--text, #e6e8f0)",
-                          padding: "6px 8px", fontSize: 12
-                        }}
-                      />
+                      <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Час на дорогу (всього)</div>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {[60, 120, 180, 240, 300, 360].map(min => (
+                          <button
+                            key={min}
+                            type="button"
+                            onClick={() => setModalTravelMin(modalTravelMin === min ? 0 : min)}
+                            style={{
+                              padding: '4px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                              fontSize: 11,
+                              background: modalTravelMin === min
+                                ? 'rgba(155,89,182,0.3)'
+                                : 'var(--surface2, #222536)',
+                              color: modalTravelMin === min ? '#9b59b6' : 'var(--text2, #9aa0b8)',
+                              fontWeight: modalTravelMin === min ? 600 : 400
+                            }}>
+                            {min / 60} год
+                          </button>
+                        ))}
+                      </div>
                       {(() => {
                         const tv = calcTravelBlocks(modalStart, modalEnd, modalTravelMin);
                         if (!tv) return null;
                         const beforeEnd = modalStart;
                         const afterEnd = (() => {
                           const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
-                          const fromMin = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+                          const fromMin = m => `${String(Math.floor(Math.min(1439, m) / 60)).padStart(2, '0')}:${String(Math.min(1439, m) % 60).padStart(2, '0')}`;
                           const startMin = toMin(tv.after.time);
                           return fromMin(startMin + tv.after.duration);
                         })();
