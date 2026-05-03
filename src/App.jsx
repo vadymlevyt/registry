@@ -3240,9 +3240,12 @@ function App() {
       if (!n || !n.id || seen.has(n.id)) return;
       seen.add(n.id);
       if (!n.date) return;
+      const isTravel = n.category === 'travel';
       events.push({
         id: `note_${n.id}`,
-        type: 'note', noteId: n.id, caseId: caseId || null,
+        type: isTravel ? 'travel' : 'note',
+        category: n.category || 'general',
+        noteId: n.id, caseId: caseId || null,
         caseName: caseName || null,
         date: n.date, time: n.time || null,
         duration: n.duration || 60,

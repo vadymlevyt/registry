@@ -33,7 +33,7 @@ function getEventStyle(type, isPaused) {
       hearing:  'rgba(79,124,255,0.5)',
       deadline: 'rgba(243,156,18,0.5)',
       note:     'rgba(46,204,113,0.5)',
-      travel:   'rgba(90,96,128,0.5)'
+      travel:   'rgba(155,89,182,0.5)'
     };
     return {
       bg:     'rgba(90,96,128,0.12)',
@@ -47,7 +47,7 @@ function getEventStyle(type, isPaused) {
     hearing:  { bg:'rgba(79,124,255,0.15)', border:'#4f7cff', text:'var(--text,#e8eaf0)', label:'#4f7cff', dot:'#4f7cff' },
     deadline: { bg:'rgba(243,156,18,0.15)', border:'#f39c12', text:'var(--text,#e8eaf0)', label:'#f39c12', dot:'#f39c12' },
     note:     { bg:'rgba(46,204,113,0.15)', border:'#2ecc71', text:'var(--text,#e8eaf0)', label:'#2ecc71', dot:'#2ecc71' },
-    travel:   { bg:'rgba(90,96,128,0.12)',  border:'#5a6080', text:'#9aa0b8',             label:'#5a6080', dot:'#5a6080' }
+    travel:   { bg:'rgba(155,89,182,0.15)', border:'#9b59b6', text:'#9b59b6',             label:'#9b59b6', dot:'#9b59b6' }
   };
   return colors[type] || colors.note;
 }
@@ -354,7 +354,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           const dur = ev.duration || 60;
           const c = colorsFor(ev, conflictIds.has(ev.id));
           const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
-          const interactive = ev.type === 'hearing' || ev.type === 'note';
+          const interactive = ev.type === 'hearing' || ev.type === 'note' || ev.type === 'travel';
           const icon = EVENT_TYPE_ICON[ev.type] || '📝';
           const typeLabel = EVENT_TYPE_LABEL[ev.type] || '';
           const caseName = ev.caseName || (ev.type === 'note' ? 'Загальна' : null);
@@ -368,7 +368,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
               onClick={interactive ? (e) => {
                 e.stopPropagation();
                 const rect = e.currentTarget.getBoundingClientRect();
-                if (ev.type === 'note' && onNoteClick) onNoteClick(ev, rect);
+                if ((ev.type === 'note' || ev.type === 'travel') && onNoteClick) onNoteClick(ev, rect);
                 else if (ev.type === 'hearing' && onHearingClick) onHearingClick(ev, rect);
               } : undefined}
               style={{
@@ -870,6 +870,27 @@ function getWeekDays(selectedDay) {
   });
 }
 
+function calcTravelBlocks(startTime, endTime, travelMinutes) {
+  if (!travelMinutes || travelMinutes <= 0 || !startTime) return null;
+  const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const fromMin = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const half = Math.round(travelMinutes / 2);
+  const startMin = toMin(startTime);
+  const endMin = endTime ? toMin(endTime) : startMin + 120;
+  return {
+    before: {
+      time: fromMin(Math.max(0, startMin - half)),
+      duration: half,
+      label: '🚗 Дорога туди'
+    },
+    after: {
+      time: fromMin(endMin),
+      duration: half,
+      label: '🚗 Дорога назад'
+    }
+  };
+}
+
 const navBtnStyle = {
   background: "var(--surface2, #222536)",
   border: "1px solid var(--border, #2e3148)",
@@ -1298,16 +1319,16 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
   function handleAgentResponse(text) {
     const { actions, ranges } = parseAllActionJSON(text);
     if (!actions.length) return { text, failures: [] };
-    const messages = [];
+    const successMsgs = [];
+    const errorMsgs = [];
     const failures = [];
     for (const action of actions) {
       const r = handleDashboardAction(action);
       if (!r) continue;
       if (r.ok) {
-        if (r.message) messages.push(r.message);
+        if (r.message) successMsgs.push(r.message);
       } else {
-        const errMsg = `❌ Дія "${r.action}" не виконана: ${r.error}`;
-        messages.push(errMsg);
+        errorMsgs.push(`❌ ${r.error}`);
         failures.push(r);
       }
     }
@@ -1316,10 +1337,21 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       preface = text.slice(0, ranges[0][0]) + text.slice(ranges[ranges.length - 1][1]);
     }
     preface = preface.trim();
-    const combined = messages.length
-      ? (preface ? `${preface}\n\n${messages.join("\n")}` : messages.join("\n"))
-      : (preface || text);
-    return { text: combined, failures };
+
+    // Одне фінальне повідомлення замість дублів:
+    // - тільки помилки → показуємо тільки ❌ (без фейкового тексту агента)
+    // - частково → ✅ + ❌
+    // - все ОК → текст агента (preface) — він уже містить підтвердження.
+    //   Якщо preface порожній — fallback на наші ✅ повідомлення.
+    let finalText;
+    if (errorMsgs.length && !successMsgs.length) {
+      finalText = errorMsgs.join("\n");
+    } else if (errorMsgs.length && successMsgs.length) {
+      finalText = [...successMsgs, ...errorMsgs].join("\n");
+    } else {
+      finalText = preface || successMsgs.join("\n") || text;
+    }
+    return { text: finalText, failures };
   }
 
   async function handleAgentSend(inputOverride) {
@@ -1493,6 +1525,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
 
   function handleNoteClick(ev, rect) {
     const c = cases.find(cs => String(cs.id) === String(ev.caseId));
+    const isTravel = ev.type === 'travel' || ev.category === 'travel';
     setNotePopup({
       noteId: ev.noteId || ev.id,
       text: ev.title || '',
@@ -1501,7 +1534,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       time: ev.time || null,
       duration: ev.duration || 60,
       date: ev.date,
-      anchorRect: rect
+      anchorRect: rect,
+      readonly: isTravel,
+      isTravel
     });
   }
 
@@ -1568,16 +1603,25 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       }
 
       if (!editingEvent && travelMinutes && travelMinutes > 0 && time) {
-        const startMin = toMin(time) - travelMinutes;
-        const travelTime = `${String(Math.floor(startMin / 60)).padStart(2, '0')}:${String(startMin % 60).padStart(2, '0')}`;
-        onExecuteAction('dashboard_agent', 'add_note', {
-          text: `🚗 Дорога до суду (${travelMinutes} хв)`,
-          date: day,
-          time: travelTime,
-          duration: travelMinutes,
-          caseId: modalCaseId,
-          category: 'travel'
-        });
+        const travel = calcTravelBlocks(time, endTime, travelMinutes);
+        if (travel) {
+          onExecuteAction('dashboard_agent', 'add_note', {
+            text: travel.before.label,
+            date: day,
+            time: travel.before.time,
+            duration: travel.before.duration,
+            caseId: modalCaseId,
+            category: 'travel'
+          });
+          onExecuteAction('dashboard_agent', 'add_note', {
+            text: travel.after.label,
+            date: day,
+            time: travel.after.time,
+            duration: travel.after.duration,
+            caseId: modalCaseId,
+            category: 'travel'
+          });
+        }
       }
 
     } else if (modalType === 'note') {
@@ -2181,15 +2225,15 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             boxShadow: '0 4px 24px rgba(0,0,0,0.5)'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-              <span style={{ fontSize: 13 }}>📝</span>
+              <span style={{ fontSize: 13 }}>{notePopup.isTravel ? '🚗' : '📝'}</span>
               {notePopup.caseName && (
-                <span style={{ fontSize: 11, color: 'var(--accent,#4f7cff)', fontWeight: 600 }}>
+                <span style={{ fontSize: 11, color: notePopup.isTravel ? '#9b59b6' : 'var(--accent,#4f7cff)', fontWeight: 600 }}>
                   {notePopup.caseName}
                 </span>
               )}
               {notePopup.time && (
                 <span style={{ fontSize: 10, color: 'var(--text3,#5a6080)', marginLeft: 'auto' }}>
-                  {notePopup.time}
+                  {notePopup.time}{notePopup.duration ? ` · ${notePopup.duration} хв` : ''}
                 </span>
               )}
             </div>
@@ -2208,42 +2252,44 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
             }}>
               {notePopup.text}
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button
-                onClick={() => {
-                  const popup = notePopup;
-                  setNotePopup(null);
-                  openModalEditNote(popup);
-                }}
-                style={{
-                  flex: 1, padding: '6px', borderRadius: 5, border: 'none',
-                  background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
-                  fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', gap: 4
-                }}
-              >
-                ✏️ Редагувати
-              </button>
-              <button
-                onClick={async () => {
-                  const ok = await systemConfirm('Видалити цю нотатку?', 'Видалення нотатки', 'Видалити');
-                  if (!ok) return;
-                  onExecuteAction('dashboard_agent', 'delete_note', {
-                    noteId: notePopup.noteId,
-                    caseId: notePopup.caseId
-                  });
-                  setNotePopup(null);
-                }}
-                style={{
-                  flex: 1, padding: '6px', borderRadius: 5, border: 'none',
-                  background: 'rgba(231,76,60,0.1)', color: '#e74c3c',
-                  fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', gap: 4
-                }}
-              >
-                🗑️ Видалити
-              </button>
-            </div>
+            {!notePopup.readonly && (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => {
+                    const popup = notePopup;
+                    setNotePopup(null);
+                    openModalEditNote(popup);
+                  }}
+                  style={{
+                    flex: 1, padding: '6px', borderRadius: 5, border: 'none',
+                    background: 'var(--surface2,#222536)', color: 'var(--text,#e8eaf0)',
+                    fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', gap: 4
+                  }}
+                >
+                  ✏️ Редагувати
+                </button>
+                <button
+                  onClick={async () => {
+                    const ok = await systemConfirm('Видалити цю нотатку?', 'Видалення нотатки', 'Видалити');
+                    if (!ok) return;
+                    onExecuteAction('dashboard_agent', 'delete_note', {
+                      noteId: notePopup.noteId,
+                      caseId: notePopup.caseId
+                    });
+                    setNotePopup(null);
+                  }}
+                  style={{
+                    flex: 1, padding: '6px', borderRadius: 5, border: 'none',
+                    background: 'rgba(231,76,60,0.1)', color: '#e74c3c',
+                    fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', gap: 4
+                  }}
+                >
+                  🗑️ Видалити
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -2445,10 +2491,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                       border: "1px dashed var(--border, #2e3148)",
                       textAlign: "left"
                     }}
-                  >🚗 {modalShowTravel ? "Прибрати час на дорогу" : "Додати час на дорогу"}</button>
+                  >🚗 {modalShowTravel ? "Прибрати час на дорогу" : "Додати час на дорогу (ділиться порівну до і після)"}</button>
                   {modalShowTravel && (
                     <div style={{ marginTop: 6 }}>
-                      <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Хвилин на дорогу</div>
+                      <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Хвилин на дорогу (всього)</div>
                       <input
                         type="number"
                         step="30"
@@ -2463,6 +2509,24 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                           padding: "6px 8px", fontSize: 12
                         }}
                       />
+                      {(() => {
+                        const tv = calcTravelBlocks(modalStart, modalEnd, modalTravelMin);
+                        if (!tv) return null;
+                        const beforeEnd = modalStart;
+                        const afterEnd = (() => {
+                          const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+                          const fromMin = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+                          const startMin = toMin(tv.after.time);
+                          return fromMin(startMin + tv.after.duration);
+                        })();
+                        return (
+                          <div style={{ fontSize: 10, color: '#9b59b6', marginTop: 4, lineHeight: 1.5 }}>
+                            🚗 Туди: {tv.before.time}–{beforeEnd} ({tv.before.duration} хв)
+                            <br/>
+                            🚗 Назад: {tv.after.time}–{afterEnd} ({tv.after.duration} хв)
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
