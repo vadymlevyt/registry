@@ -25,6 +25,15 @@
 
 ## УРОКИ
 
+### [2026-05-03] blank page фікс
+- ErrorBoundary в main.jsx — захист від будь-якого краша React
+- handleFile обгорнуто в try/catch
+- reader.onload → analyzeImageWithVision захищено try/catch
+- Скріншоти PNG/JPG тепер обробляються через Vision без краша
+- PDF скани (< 50 символів тексту) автоматично йдуть через Vision
+
+---
+
 ### [АРХІТЕКТУРНИЙ ПРИНЦИП] Universal Panel — найвищий пріоритет інтерфейсу
 
 Це фундаментальний принцип для ВСІХ модулів системи.

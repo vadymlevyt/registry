@@ -1059,43 +1059,50 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
   // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = async (file) => {
     if (!file) return;
-    let workingFile = file;
     try {
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), 5000)
-      );
-      const blob = await Promise.race([file.arrayBuffer(), timeoutPromise]);
-      workingFile = new File([blob], file.name, { type: file.type || 'application/octet-stream' });
-    } catch(e) {
-      workingFile = file;
-    }
-    let ext = (workingFile.name || '').split('.').pop().toLowerCase();
-    if (!ext || ext === workingFile.name.toLowerCase()) {
-      const mime = workingFile.type || '';
-      if (mime.includes('pdf')) ext = 'pdf';
-      else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
-      else if (mime.includes('png')) ext = 'png';
-      else if (mime.includes('webp')) ext = 'webp';
-      else if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
-      else if (mime.includes('word') || mime.includes('docx')) ext = 'docx';
-      else if (mime.includes('text')) ext = 'txt';
-    }
-    if (ext === 'txt' || ext === 'md') {
-      const reader = new FileReader();
-      reader.onload = (e) => setText(e.target.result);
-      reader.onerror = () => { setErrorCategory('extraction_failed'); setErrorDetail('Не вдалось прочитати файл'); };
-      reader.readAsText(workingFile);
-    } else if (ext === 'pdf') {
-      extractPdfText(workingFile);
-    } else if (['jpg','jpeg','png','webp'].includes(ext)) {
-      readImageAsBase64(workingFile);
-    } else if (ext === 'heic' || ext === 'heif') {
-      convertHeicToJpeg(workingFile);
-    } else if (ext === 'docx') {
-      extractDocxText(workingFile);
-    } else {
-      setErrorCategory('unsupported_format');
-      setErrorDetail(`Файл: ${workingFile.name}`);
+      let workingFile = file;
+      try {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 5000)
+        );
+        const blob = await Promise.race([file.arrayBuffer(), timeoutPromise]);
+        workingFile = new File([blob], file.name, { type: file.type || 'application/octet-stream' });
+      } catch(e) {
+        workingFile = file;
+      }
+      let ext = (workingFile.name || '').split('.').pop().toLowerCase();
+      if (!ext || ext === workingFile.name.toLowerCase()) {
+        const mime = workingFile.type || '';
+        if (mime.includes('pdf')) ext = 'pdf';
+        else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
+        else if (mime.includes('png')) ext = 'png';
+        else if (mime.includes('webp')) ext = 'webp';
+        else if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
+        else if (mime.includes('word') || mime.includes('docx')) ext = 'docx';
+        else if (mime.includes('text')) ext = 'txt';
+      }
+      if (ext === 'txt' || ext === 'md') {
+        const reader = new FileReader();
+        reader.onload = (e) => setText(e.target.result);
+        reader.onerror = () => { setErrorCategory('extraction_failed'); setErrorDetail('Не вдалось прочитати файл'); };
+        reader.readAsText(workingFile);
+      } else if (ext === 'pdf') {
+        extractPdfText(workingFile);
+      } else if (['jpg','jpeg','png','webp'].includes(ext)) {
+        readImageAsBase64(workingFile);
+      } else if (ext === 'heic' || ext === 'heif') {
+        convertHeicToJpeg(workingFile);
+      } else if (ext === 'docx') {
+        extractDocxText(workingFile);
+      } else {
+        setErrorCategory('unsupported_format');
+        setErrorDetail(`Файл: ${workingFile.name}`);
+      }
+    } catch (err) {
+      console.error('handleFile error:', err);
+      setErrorCategory('extraction_failed');
+      setErrorDetail('Не вдалось обробити файл. Спробуйте ще раз.');
+      setLoading(false);
     }
   };
 
@@ -1157,15 +1164,17 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         const mediaType = file.type || 'image/jpeg';
         await analyzeImageWithVision(base64, mediaType, file.name);
       } catch (err) {
-        console.error('Vision API error:', err);
-        setErrorCategory('llm_failed');
-        setErrorDetail('Vision API: ' + (err?.message || 'невідома помилка'));
+        console.error('Vision error:', err);
+        setErrorCategory('extraction_failed');
+        setErrorDetail('Не вдалось розпізнати зображення. Спробуйте ще раз.');
+        setLoading(false);
       }
     };
     reader.onerror = (e) => {
       console.error('FileReader error:', e);
       setErrorCategory('llm_failed');
       setErrorDetail('FileReader помилка: ' + (e.target?.error?.message || 'невідома'));
+      setLoading(false);
     };
     reader.readAsDataURL(file);
   };
@@ -1213,7 +1222,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
   };
 
   const analyzeImageWithVision = async (base64Data, mediaType, fileName) => {
-    // DEBUG — видалити після діагностики
     if (!base64Data || base64Data.length < 10) {
       setErrorCategory('extraction_failed');
       setErrorDetail('Файл порожній або не читається (base64 empty)');
