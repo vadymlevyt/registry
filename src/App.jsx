@@ -2984,6 +2984,16 @@ function AnalysisPanel({ cases, setCases, driveConnected, setDriveConnected, dri
 }
 
 // Нормалізує cases[] — міграція старих форматів
+// Coerce будь-що до рядка для безпечного рендеру.
+// Якщо поле колись зберіглося як обʼєкт (агент повернув JSON замість тексту) —
+// React #31 валить весь додаток. Чистимо на завантаженні.
+function toSafeStr(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  try { return JSON.stringify(v); } catch { return ''; }
+}
+
 function normalizeCases(cases) {
   if (!Array.isArray(cases)) return [];
   return cases.map(c => {
@@ -2995,6 +3005,13 @@ function normalizeCases(cases) {
     // createdAt / updatedAt — додати якщо немає
     if (!updated.createdAt) updated.createdAt = new Date().toISOString();
     if (!updated.updatedAt) updated.updatedAt = new Date().toISOString();
+
+    // Поля верхнього рівня що рендеряться — захист від обʼєктів.
+    ['name','client','court','case_no','next_action','category','status'].forEach(k => {
+      if (updated[k] != null && typeof updated[k] !== 'string') {
+        updated[k] = toSafeStr(updated[k]);
+      }
+    });
 
     // notes: рядок → масив
     if (typeof updated.notes === 'string' && updated.notes.trim()) {
@@ -3008,6 +3025,14 @@ function normalizeCases(cases) {
     } else if (!Array.isArray(updated.notes)) {
       updated.notes = [];
     }
+    updated.notes = updated.notes
+      .filter(n => n && typeof n === 'object')
+      .map(n => ({
+        ...n,
+        text: toSafeStr(n.text),
+        title: n.title != null ? toSafeStr(n.title) : n.title,
+        caseName: n.caseName != null ? toSafeStr(n.caseName) : n.caseName,
+      }));
 
     // hearing_date/hearing_time → hearings[] (міграція v2 → v3)
     if (updated.hearing_date && !Array.isArray(updated.hearings)) {
@@ -3028,12 +3053,20 @@ function normalizeCases(cases) {
     // Очистити старі поля якщо hearings[] вже є
     if (updated.hearing_date !== undefined) delete updated.hearing_date;
     if (updated.hearing_time !== undefined) delete updated.hearing_time;
+    updated.hearings = updated.hearings
+      .filter(h => h && typeof h === 'object')
+      .map(h => ({
+        ...h,
+        court: toSafeStr(h.court),
+        notes: toSafeStr(h.notes),
+        type:  h.type != null ? toSafeStr(h.type) : h.type,
+      }));
 
     // deadline/deadline_type → deadlines[] (міграція v3 → v4)
     if (updated.deadline && !Array.isArray(updated.deadlines)) {
       updated.deadlines = [{
         id: `dl_migrated_${updated.id}`,
-        name: updated.deadline_type || "Дедлайн",
+        name: toSafeStr(updated.deadline_type) || "Дедлайн",
         date: updated.deadline,
       }];
       delete updated.deadline;
@@ -3045,6 +3078,12 @@ function normalizeCases(cases) {
     // Очистити старі поля якщо deadlines[] вже є
     if (updated.deadline !== undefined) delete updated.deadline;
     if (updated.deadline_type !== undefined) delete updated.deadline_type;
+    updated.deadlines = updated.deadlines
+      .filter(d => d && typeof d === 'object')
+      .map(d => ({
+        ...d,
+        name: toSafeStr(d.name),
+      }));
 
     // timeLog[] — додати якщо немає
     if (!Array.isArray(updated.timeLog)) {
@@ -3078,38 +3117,59 @@ function App() {
     } catch(e) {}
     return normalizeCases(INITIAL_CASES);
   });
+  const sanitizeNote = (n) => n && typeof n === 'object' ? ({
+    ...n,
+    text: toSafeStr(n.text),
+    title: n.title != null ? toSafeStr(n.title) : n.title,
+    caseName: n.caseName != null ? toSafeStr(n.caseName) : n.caseName,
+  }) : null;
+  const sanitizeCalendarEvent = (e) => e && typeof e === 'object' ? ({
+    ...e,
+    title: toSafeStr(e.title),
+    label: e.label != null ? toSafeStr(e.label) : e.label,
+    text:  e.text  != null ? toSafeStr(e.text)  : e.text,
+    court: e.court != null ? toSafeStr(e.court) : e.court,
+    caseName: e.caseName != null ? toSafeStr(e.caseName) : e.caseName,
+  }) : null;
   const [calendarEvents, setCalendarEvents] = useState(() => {
     try {
       const saved = localStorage.getItem('levytskyi_calendar_events');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return parsed.map(sanitizeCalendarEvent).filter(Boolean);
       }
     } catch(e) {}
     return [];
   });
   const EMPTY_NOTES = { cases: [], general: [], content: [], system: [], records: [] };
   const [notes, setNotes] = useState(() => {
+    const sanitizeBucket = (obj) => {
+      const out = { ...EMPTY_NOTES };
+      for (const k of Object.keys(out)) {
+        const arr = Array.isArray(obj?.[k]) ? obj[k] : [];
+        out[k] = arr.map(sanitizeNote).filter(Boolean);
+      }
+      return out;
+    };
     try {
-      // Міграція: старий плоский масив → об'єкт з категоріями
       const saved = localStorage.getItem('levytskyi_notes');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          // Міграція зі старого формату
           const migrated = { ...EMPTY_NOTES };
           parsed.forEach(n => {
-            const cat = n.category === 'case' ? 'cases' : (n.category || 'general');
-            if (migrated[cat]) migrated[cat].push(n);
-            else migrated.general.push(n);
+            const cat = n?.category === 'case' ? 'cases' : (n?.category || 'general');
+            const safe = sanitizeNote(n);
+            if (!safe) return;
+            if (migrated[cat]) migrated[cat].push(safe);
+            else migrated.general.push(safe);
           });
-          // Додати system/content з окремих LS ключів
-          try { const sys = JSON.parse(localStorage.getItem('levytskyi_system_notes') || '[]'); migrated.system.push(...sys); } catch {}
-          try { const cnt = JSON.parse(localStorage.getItem('levytskyi_content_ideas') || '[]'); migrated.content.push(...cnt); } catch {}
+          try { const sys = JSON.parse(localStorage.getItem('levytskyi_system_notes') || '[]'); migrated.system.push(...sys.map(sanitizeNote).filter(Boolean)); } catch {}
+          try { const cnt = JSON.parse(localStorage.getItem('levytskyi_content_ideas') || '[]'); migrated.content.push(...cnt.map(sanitizeNote).filter(Boolean)); } catch {}
           return migrated;
         }
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return { ...EMPTY_NOTES, ...parsed };
+        if (parsed && typeof parsed === 'object') {
+          return sanitizeBucket(parsed);
         }
       }
     } catch(e) {}
