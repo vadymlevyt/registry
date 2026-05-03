@@ -3696,7 +3696,7 @@ function App() {
     // ГРУПА 3 — Нотатки
     add_note: ({ text, category = 'general', date = null, time = null, duration = null, caseId = null }) => {
       const note = {
-        id: `note_${Date.now()}`,
+        id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         userId: 'vadym',
         text: text || '',
         date: date || null,
