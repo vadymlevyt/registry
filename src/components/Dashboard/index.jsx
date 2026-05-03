@@ -350,7 +350,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
         const noteEvs = evsInRange.filter(e => e.type === 'note');
         const otherEvs = evsInRange.filter(e => e.type !== 'note');
 
-        const renderEvBlock = (ev, extra = {}) => {
+        const renderEvBlock = (ev, extra = {}, availableHeight = null) => {
           const dur = ev.duration || 60;
           const c = colorsFor(ev, conflictIds.has(ev.id));
           const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
@@ -361,6 +361,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           const text = ev.type === 'note'
             ? (ev.title || ev.text || '')
             : (ev.label || ev.court || '');
+          const showLabel = ev.type !== 'note' || availableHeight == null || availableHeight >= 24;
           return (
             <div
               key={ev.id}
@@ -383,18 +384,20 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                 ...extra
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, color: c.label || c.text, marginBottom: 1, whiteSpace: 'nowrap', overflow: 'hidden' }}>
-                <span>{icon}</span>
-                <span style={{ fontWeight: 600 }}>{typeLabel}</span>
-                {caseName && (
-                  <>
-                    <span style={{ opacity: 0.5 }}>·</span>
-                    <span style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {caseName}
-                    </span>
-                  </>
-                )}
-              </div>
+              {showLabel && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, color: c.label || c.text, marginBottom: 1, whiteSpace: 'nowrap', overflow: 'hidden' }}>
+                  <span style={{ opacity: ev.isPaused ? 0.4 : 1 }}>{icon}</span>
+                  <span style={{ fontWeight: 600 }}>{typeLabel}</span>
+                  {caseName && (
+                    <>
+                      <span style={{ opacity: 0.5 }}>·</span>
+                      <span style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {caseName}
+                      </span>
+                    </>
+                  )}
+                </div>
+              )}
               {text && (
                 <div style={{ fontSize: 10, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {text}
@@ -428,7 +431,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           if (grp.length === 1) {
             return (
               <div key={key} style={{ position: 'absolute', left: 2, right: 2, top, height, zIndex: 2 }}>
-                {renderEvBlock(grp[0], { height: '100%' })}
+                {renderEvBlock(grp[0], { height: '100%' }, height)}
               </div>
             );
           }
@@ -437,6 +440,8 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
           const allPaused = grp.every(n => n.isPaused);
           const groupStyle = getEventStyle('note', allPaused);
           const innerBg = allPaused ? 'rgba(90,96,128,0.18)' : 'rgba(46,204,113,0.08)';
+          const heightPerNote = (height - 4 - (sorted.length - 1)) / sorted.length;
+          const showItemLabel = heightPerNote >= 24;
           return (
             <div
               key={key}
@@ -473,16 +478,35 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                       fontSize: 10,
                       lineHeight: 1.2,
                       overflow: 'hidden',
-                      whiteSpace: 'nowrap',
-                      textOverflow: 'ellipsis',
                       color: itemPaused ? '#9aa0b8' : 'var(--text, #e6e8f0)'
                     }}
                     title={`${n.time}—${nEnd} ${n.title || ''}`}
                   >
-                    <span style={{ fontSize: 9, color: 'var(--text3,#5a6080)', marginRight: 4 }}>
-                      {n.time}
-                    </span>
-                    <span style={{ fontWeight: 600 }}>{n.title}</span>
+                    {showItemLabel && (
+                      <div style={{
+                        fontSize: 9,
+                        color: itemPaused ? '#5a6080' : '#2ecc71',
+                        opacity: itemPaused ? 0.6 : 1,
+                        display: 'flex', alignItems: 'center', gap: 2,
+                        marginBottom: 1,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                      }}>
+                        <span style={{ opacity: itemPaused ? 0.4 : 1 }}>📝</span>
+                        <span style={{ fontWeight: 600 }}>Нотатка</span>
+                        {n.caseName && (
+                          <>
+                            <span style={{ opacity: 0.5 }}>·</span>
+                            <span style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.caseName}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <span style={{ fontSize: 9, color: 'var(--text3,#5a6080)', marginRight: 4 }}>
+                        {n.time}
+                      </span>
+                      <span style={{ fontWeight: 600 }}>{n.title}</span>
+                    </div>
                   </div>
                 );
               })}
@@ -997,7 +1021,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           gap: 8
         }}
       >
-        <span style={{ fontSize: 15, opacity: isPaused ? 0.5 : 1 }}>{icon}</span>
+        <span style={{ fontSize: 15, opacity: isPaused ? 0.4 : 1 }}>{icon}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: titleColor, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -1982,7 +2006,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: palette.label || palette.text, marginBottom: 1 }}>
-                        <span>{icon}</span>
+                        <span style={{ opacity: e.isPaused ? 0.4 : 1 }}>{icon}</span>
                         <span style={{ fontWeight: 600 }}>{typeLabel}</span>
                         {caseName && (
                           <>
