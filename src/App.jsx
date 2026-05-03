@@ -1164,26 +1164,45 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
   };
 
   const readImageAsBase64 = (file) => {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const base64 = e.target.result.split(',')[1];
-        const mediaType = file.type || 'image/jpeg';
-        await analyzeImageWithVision(base64, mediaType, file.name);
-      } catch (err) {
-        console.error('Vision error:', err);
+    try {
+      if (!file) {
         setErrorCategory('extraction_failed');
-        setErrorDetail('Не вдалось розпізнати зображення. Спробуйте ще раз.');
-        setLoading(false);
+        setErrorDetail('Зображення не вибрано');
+        return;
       }
-    };
-    reader.onerror = (e) => {
-      console.error('FileReader error:', e);
-      setErrorCategory('llm_failed');
-      setErrorDetail('FileReader помилка: ' + (e.target?.error?.message || 'невідома'));
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const dataUrl = e?.target?.result;
+          if (typeof dataUrl !== 'string' || !dataUrl.includes(',')) {
+            throw new Error('Не вдалось прочитати зображення (порожній base64)');
+          }
+          const base64 = dataUrl.split(',')[1];
+          if (!base64 || base64.length < 10) {
+            throw new Error('Зображення порожнє або пошкоджене');
+          }
+          const mediaType = file.type || 'image/jpeg';
+          await analyzeImageWithVision(base64, mediaType, file.name || 'image');
+        } catch (err) {
+          console.error('Vision pipeline error:', err);
+          setErrorCategory('extraction_failed');
+          setErrorDetail('Зображення: ' + (err?.message || 'невідома помилка'));
+          setLoading(false);
+        }
+      };
+      reader.onerror = (e) => {
+        console.error('FileReader error:', e);
+        setErrorCategory('llm_failed');
+        setErrorDetail('FileReader: ' + (e?.target?.error?.message || 'не вдалось прочитати файл'));
+        setLoading(false);
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('readImageAsBase64 outer error:', err);
+      setErrorCategory('extraction_failed');
+      setErrorDetail('Зображення (init): ' + (err?.message || 'невідома'));
       setLoading(false);
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   const extractDocxText = (file) => {
@@ -1289,17 +1308,22 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
       }
       if (parsed.processing_status === 'failed') setErrorCategory('invalid_json');
       else if (typeof parsed.confidence === 'number' && parsed.confidence < 0.5) setErrorCategory('low_confidence');
-      setAnalysisResult(parsed);
-      setConversationHistory([
-        { role: 'user', content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Data } },
-          { type: 'text', text: `Existing cases in registry: ${caseNames}\nFile: ${fileName}` },
-        ]},
-        { role: 'assistant', content: rawText },
-      ]);
+      try {
+        setAnalysisResult(parsed);
+        setConversationHistory([{
+          role: 'assistant',
+          content: parsed.human_message || `Аналіз зображення: ${fileName}`,
+          analysisCard: parsed,
+        }]);
+      } catch (err) {
+        console.error('Vision setState error:', err);
+        setErrorCategory('llm_failed');
+        setErrorDetail('Vision: помилка збереження результату — ' + (err?.message || 'невідома'));
+      }
     } catch(err) {
+      console.error('analyzeImageWithVision fetch error:', err);
       setErrorCategory('llm_failed');
-      setErrorDetail(err.message || 'Мережева помилка');
+      setErrorDetail(err?.message || 'Мережева помилка');
     }
     setLoading(false);
   };
@@ -2352,7 +2376,18 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
                     ? { background: 'rgba(79,124,255,0.1)', border: '1px solid rgba(79,124,255,0.2)' }
                     : { background: 'var(--surface2)', border: '1px solid var(--border)' }
                 )}>
-                  {msg.content}
+                  {/* content може бути рядком, масивом блоків (image+text для Vision) або обʼєктом — приводимо до рендеру */}
+                  {typeof msg.content === 'string'
+                    ? msg.content
+                    : Array.isArray(msg.content)
+                      ? msg.content.map((block, bi) => {
+                          if (!block) return null;
+                          if (block.type === 'image') return <span key={bi} style={{ opacity: 0.7 }}>🖼️ зображення</span>;
+                          if (block.type === 'text') return <span key={bi}>{String(block.text || '')}</span>;
+                          return <span key={bi}>{typeof block === 'string' ? block : JSON.stringify(block)}</span>;
+                        })
+                      : (msg.content == null ? '' : (() => { try { return JSON.stringify(msg.content); } catch { return ''; } })())
+                  }
                   {msg.actionResult && (msg.actionResult.recommended_actions || []).length > 0 && (
                     <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                       {msg.actionResult.recommended_actions.map(action => (
