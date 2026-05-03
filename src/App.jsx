@@ -707,7 +707,24 @@ ACTION_JSON: {
 співпадінь — у пакеті має бути 20 операцій.
 ОДНА команда = ОДНА відповідь = ОДИН ACTION_JSON з усіма ops.
 Перед формуванням пакета — пройди по всіх АКТИВНИХ справах і
-зібрі усі hearings[] і deadlines[] чиї дати потрапляють у діапазон.`;
+зібрі усі hearings[] і deadlines[] чиї дати потрапляють у діапазон.
+
+## ПРАВИЛА РОБОТИ З НОТАТКАМИ (save_note)
+
+Для збереження нотатки:
+ACTION_JSON: {
+  "recommended_actions": ["save_note"],
+  "action": "save_note",
+  "case_name": "Конах",
+  "text": "підготувати документи до засідання 12 травня",
+  "date": "2026-05-12",
+  "time": "11:00"
+}
+
+Поле text ОБОВ'ЯЗКОВЕ — повний текст нотатки (не "ок", не порожнє).
+Якщо нотатка без прив'язки до справи — НЕ вказуй case_name.
+Поля date і time — опційні; додавай якщо адвокат назвав конкретну дату/час.
+НЕ генеруй save_note без поля text. Якщо адвокат не вказав текст — спитай "що саме записати?".`;
 
 // JSON validator — 3-pass: direct parse → regex extract → fallback
 function validateAndParseJSON(rawText) {
@@ -861,31 +878,6 @@ function findCaseForAction(caseName, cases) {
     }
   }
   return null;
-}
-
-// Helper: save note to localStorage
-function saveNoteToStorage(text, resultPayload, caseId, caseName, source, category) {
-  try {
-    const EMPTY = { cases: [], general: [], content: [], system: [], records: [] };
-    let stored = JSON.parse(localStorage.getItem('levytskyi_notes') || 'null');
-    if (Array.isArray(stored)) stored = EMPTY; // міграція
-    if (!stored || typeof stored !== 'object') stored = EMPTY;
-    const catKey = (category === 'case' || caseId) ? 'cases' : (category || 'general');
-    const arr = stored[catKey] || [];
-    arr.unshift({
-      id: Date.now(),
-      text: text || '',
-      result: resultPayload || null,
-      category: category || 'general',
-      caseId: caseId || null,
-      caseName: caseName || null,
-      source: source || 'manual',
-      ts: new Date().toISOString(),
-    });
-    if (arr.length > 500) arr.splice(500);
-    stored[catKey] = arr;
-    localStorage.setItem('levytskyi_notes', JSON.stringify(stored));
-  } catch(e) {}
 }
 
 function buildSystemContext(cases) {
@@ -1332,12 +1324,18 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
   const onDragLeave = () => setDragOver(false);
   const onDrop      = (e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); };
 
-  // ── Direct note save (bypasses pipeline) ──────────────────────────────────
-  const saveAsNote = () => {
+  // Збереження нотатки — ЄДИНИЙ шлях через executeAction (синхронізація з реєстром).
+  const saveCurrentTextAsNote = async () => {
     if (!text.trim()) return;
-    saveNoteToStorage(text, null);
-    systemAlert('Нотатку збережено');
-    onClose();
+    await onExecuteAction('qi_agent', 'add_note', {
+      caseId: null,
+      text: text.trim(),
+      category: 'general',
+    });
+    setConversationHistory(prev => [...prev, { role: 'assistant', content: 'Нотатку збережено.' }]);
+    setText('');
+    setErrorCategory(null);
+    setErrorDetail('');
   };
 
   // ── Command detection (smart routing) ──────────────────────────────────────
@@ -1789,6 +1787,41 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
             return;
           }
 
+          // SAVE_NOTE — єдиний шлях збереження нотатки з чату
+          if (action === 'save_note') {
+            const ext = actionResult.extracted || {};
+            const rawCaseName = actionResult.case_name || ext.case_name || actionResult.case_match?.case_name || '';
+            const matched = rawCaseName ? findCaseForAction(rawCaseName, cases) : null;
+            const noteText = (actionResult.text || ext.text || actionResult.content || ext.content || '').toString();
+
+            if (!noteText.trim()) {
+              setConversationHistory(prev => [...prev, {
+                role: 'assistant',
+                content: 'Текст нотатки порожній. Уточніть що записати.'
+              }]);
+              setChatLoading(false);
+              return;
+            }
+
+            await onExecuteAction('qi_agent', 'add_note', {
+              caseId: matched?.id || null,
+              text: noteText,
+              date: actionResult.date || ext.date || null,
+              time: actionResult.time || ext.time || null,
+              category: matched ? 'case' : 'general',
+            });
+
+            setConversationHistory(prev => [...prev, {
+              role: 'assistant',
+              content: 'Нотатку збережено'
+                + (matched ? ` до справи "${matched.name}"` : '')
+                + (actionResult.date || ext.date ? ` на ${actionResult.date || ext.date}` : '')
+                + '.'
+            }]);
+            setChatLoading(false);
+            return;
+          }
+
           if (action === 'create_case') {
             const ext = actionResult.extracted || {};
             const rawPerson = ext.person || actionResult.case_match?.case_name || '';
@@ -2216,14 +2249,6 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
           <button className="btn-sm btn-ghost" onClick={() => fileInputRef.current.click()}>
             📎 Файл
           </button>
-          <button
-            className="btn-sm btn-ghost"
-            onClick={saveAsNote}
-            disabled={!text.trim()}
-            title="Зберегти без AI-аналізу"
-          >
-            📝 Нотатка
-          </button>
           <div style={{ flex: 1 }} />
           {apiKey
             ? <button
@@ -2263,7 +2288,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn-sm btn-ghost" onClick={() => { setErrorCategory(null); setErrorDetail(''); }}>Спробувати ще</button>
-                <button className="btn-sm btn-primary" onClick={saveAsNote} disabled={!text.trim()}>📝 Зберегти як нотатку</button>
+                <button className="btn-sm btn-primary" onClick={saveCurrentTextAsNote} disabled={!text.trim()}>📝 Зберегти як нотатку</button>
               </div>
             </div>
           )}
@@ -2337,6 +2362,45 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
                           : <button key={action} className="btn-sm btn-primary" onClick={() => executeQiAction(action)}>
                               {QI_ACTION_LABELS[action] || action}
                             </button>
+                    )}
+                    {/* Завжди доступно: зберегти результат аналізу як нотатку */}
+                    {!executedActions.includes('save_note') && (
+                      <button
+                        className="btn-sm btn-ghost"
+                        onClick={async () => {
+                          const card = msg.analysisCard || {};
+                          const ext = card.extracted || {};
+                          const noteText = [
+                            card.human_message || '',
+                            ext.doc_type ? `Тип документа: ${ext.doc_type}` : '',
+                            ext.hearing_date ? `Дата засідання: ${ext.hearing_date}` : '',
+                            ext.hearing_time ? `Час: ${ext.hearing_time}` : '',
+                            ext.court ? `Суд: ${ext.court}` : '',
+                            ext.judge ? `Суддя: ${ext.judge}` : '',
+                            ext.case_number ? `Номер справи: ${ext.case_number}` : '',
+                            ext.deadline_date ? `Дедлайн: ${ext.deadline_date}` : '',
+                            ext.deadline_type ? `Тип дедлайну: ${ext.deadline_type}` : '',
+                          ].filter(Boolean).join('\n');
+                          const matchedName = card.case_match?.case_name;
+                          const matched = matchedName ? findCaseForAction(matchedName, cases) : null;
+                          await onExecuteAction('qi_agent', 'add_note', {
+                            caseId: matched?.id || null,
+                            text: noteText || (card.human_message || 'Аналіз документа'),
+                            date: ext.hearing_date || ext.deadline_date || null,
+                            time: ext.hearing_time || null,
+                            category: matched ? 'case' : 'general',
+                          });
+                          setExecutedActions(prev => [...prev, 'save_note']);
+                          setConversationHistory(prev => [...prev, {
+                            role: 'assistant',
+                            content: 'Нотатку з результатами аналізу збережено'
+                              + (matched ? ` до справи "${matched.name}"` : '')
+                              + '.'
+                          }]);
+                        }}
+                      >
+                        📝 Додати нотатку
+                      </button>
                     )}
                     <button
                       className="btn-sm btn-ghost"
@@ -3844,6 +3908,7 @@ function App() {
 
     // ГРУПА 3 — Нотатки
     add_note: ({ text, category = 'general', date = null, time = null, duration = null, caseId = null }) => {
+      const nowIso = new Date().toISOString();
       const note = {
         id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         userId: 'vadym',
@@ -3853,8 +3918,9 @@ function App() {
         duration: duration || null,
         caseId: caseId || null,
         category: category || 'general',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        ts: nowIso,
+        createdAt: nowIso,
+        updatedAt: nowIso
       };
       if (caseId) {
         setCases(prev => prev.map(c =>

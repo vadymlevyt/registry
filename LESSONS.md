@@ -25,6 +25,16 @@
 
 ## УРОКИ
 
+### [2026-05-03] save_note фікси + UI
+- save_note: chat-handler в sendChat — текст з actionResult агента
+- ACTIONS.add_note: додано поле ts — виправлено Invalid Date в Notebook
+- SONNET_CHAT_PROMPT: приклад save_note з обов'язковим полем text
+- Прибрано кнопку Нотатка зліва від Аналізувати
+- Додано кнопку Додати нотатку в картку результату Haiku
+- Єдиний шлях збереження нотатки — через executeAction (видалено saveAsNote і saveNoteToStorage)
+
+---
+
 ### [2026-05-03] blank page фікс
 - ErrorBoundary в main.jsx — захист від будь-якого краша React
 - handleFile обгорнуто в try/catch
