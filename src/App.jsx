@@ -3013,10 +3013,12 @@ function toSafeStr(v) {
 function normalizeCases(cases) {
   if (!Array.isArray(cases)) return [];
   return cases.map(c => {
-    let updated = { ...c };
+    try {
+    let updated = (c && typeof c === 'object' && !Array.isArray(c)) ? { ...c } : {};
 
     // userId — додати якщо немає
     if (!updated.userId) updated.userId = 'vadym';
+    if (updated.id == null) updated.id = `case_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
 
     // createdAt / updatedAt — додати якщо немає
     if (!updated.createdAt) updated.createdAt = new Date().toISOString();
@@ -3117,7 +3119,11 @@ function normalizeCases(cases) {
     }
 
     return updated;
-  });
+    } catch (e) {
+      console.warn('normalizeCases: пропускаю битий запис', c, e);
+      return null;
+    }
+  }).filter(Boolean);
 }
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
@@ -3128,10 +3134,16 @@ function App() {
       const saved = localStorage.getItem('levytskyi_cases');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return normalizeCases(parsed);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const out = normalizeCases(parsed);
+          if (out.length > 0) return out;
+        }
       }
-    } catch(e) {}
-    return normalizeCases(INITIAL_CASES);
+    } catch(e) {
+      console.warn('cases init: фолбек на INITIAL_CASES', e);
+    }
+    try { return normalizeCases(INITIAL_CASES); }
+    catch(e) { console.error('normalizeCases(INITIAL) fail', e); return []; }
   });
   const sanitizeNote = (n) => n && typeof n === 'object' ? ({
     ...n,
@@ -3152,18 +3164,32 @@ function App() {
       const saved = localStorage.getItem('levytskyi_calendar_events');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed.map(sanitizeCalendarEvent).filter(Boolean);
+        if (Array.isArray(parsed)) {
+          const out = [];
+          for (const e of parsed) {
+            try { const s = sanitizeCalendarEvent(e); if (s) out.push(s); } catch {}
+          }
+          return out;
+        }
       }
-    } catch(e) {}
+    } catch(e) {
+      console.warn('calendarEvents init фолбек на []', e);
+    }
     return [];
   });
   const EMPTY_NOTES = { cases: [], general: [], content: [], system: [], records: [] };
   const [notes, setNotes] = useState(() => {
+    const safeMap = (arr) => {
+      const out = [];
+      for (const n of (arr || [])) {
+        try { const s = sanitizeNote(n); if (s) out.push(s); } catch {}
+      }
+      return out;
+    };
     const sanitizeBucket = (obj) => {
       const out = { ...EMPTY_NOTES };
       for (const k of Object.keys(out)) {
-        const arr = Array.isArray(obj?.[k]) ? obj[k] : [];
-        out[k] = arr.map(sanitizeNote).filter(Boolean);
+        out[k] = safeMap(Array.isArray(obj?.[k]) ? obj[k] : []);
       }
       return out;
     };
@@ -3173,22 +3199,26 @@ function App() {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
           const migrated = { ...EMPTY_NOTES };
-          parsed.forEach(n => {
-            const cat = n?.category === 'case' ? 'cases' : (n?.category || 'general');
-            const safe = sanitizeNote(n);
-            if (!safe) return;
-            if (migrated[cat]) migrated[cat].push(safe);
-            else migrated.general.push(safe);
-          });
-          try { const sys = JSON.parse(localStorage.getItem('levytskyi_system_notes') || '[]'); migrated.system.push(...sys.map(sanitizeNote).filter(Boolean)); } catch {}
-          try { const cnt = JSON.parse(localStorage.getItem('levytskyi_content_ideas') || '[]'); migrated.content.push(...cnt.map(sanitizeNote).filter(Boolean)); } catch {}
+          for (const n of parsed) {
+            try {
+              const cat = n?.category === 'case' ? 'cases' : (n?.category || 'general');
+              const safe = sanitizeNote(n);
+              if (!safe) continue;
+              if (migrated[cat]) migrated[cat].push(safe);
+              else migrated.general.push(safe);
+            } catch {}
+          }
+          try { const sys = JSON.parse(localStorage.getItem('levytskyi_system_notes') || '[]'); migrated.system.push(...safeMap(sys)); } catch {}
+          try { const cnt = JSON.parse(localStorage.getItem('levytskyi_content_ideas') || '[]'); migrated.content.push(...safeMap(cnt)); } catch {}
           return migrated;
         }
         if (parsed && typeof parsed === 'object') {
           return sanitizeBucket(parsed);
         }
       }
-    } catch(e) {}
+    } catch(e) {
+      console.warn('notes init фолбек на EMPTY_NOTES', e);
+    }
     return { ...EMPTY_NOTES };
   });
   // ── timeLog — облік часу ────────────────────────────────────────────────
