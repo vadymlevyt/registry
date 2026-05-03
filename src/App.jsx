@@ -3676,12 +3676,12 @@ function App() {
     },
 
     delete_hearing: ({ caseId, hearingId }) => {
-      if (!caseId)    return { error: 'caseId не вказано' };
-      if (!hearingId) return { error: 'hearingId не вказано' };
+      if (!caseId)    return { success: false, error: 'caseId не вказано' };
+      if (!hearingId) return { success: false, error: 'hearingId не вказано' };
       const targetCase = cases.find(c => c.id === caseId);
-      if (!targetCase) return { error: `Справу ${caseId} не знайдено` };
+      if (!targetCase) return { success: false, error: `Справу ${caseId} не знайдено` };
       const exists = (targetCase.hearings || []).some(h => h.id === hearingId);
-      if (!exists) return { error: `Засідання ${hearingId} не знайдено в справі "${targetCase.name}"` };
+      if (!exists) return { success: false, error: `Засідання ${hearingId} не знайдено в справі "${targetCase.name}"` };
       setCases(prev => prev.map(c =>
         c.id === caseId
           ? { ...c, hearings: (c.hearings || []).filter(h => h.id !== hearingId), updatedAt: new Date().toISOString() }
@@ -3914,12 +3914,12 @@ function App() {
     const allowed = PERMISSIONS[agentId] || [];
     if (!allowed.includes(action)) {
       console.warn(`executeAction BLOCKED: ${agentId} → ${action}`);
-      return { error: `Немає повноважень: ${action}` };
+      return { success: false, error: `Немає повноважень: ${action}` };
     }
 
     if (!ACTIONS[action]) {
       console.warn(`executeAction UNKNOWN: ${action}`);
-      return { error: `Невідома дія: ${action}` };
+      return { success: false, error: `Невідома дія: ${action}` };
     }
 
     logAction({ agentId, action, params, userId });
@@ -3930,7 +3930,7 @@ function App() {
       return result;
     } catch (e) {
       console.error(`executeAction ERROR [${action}]:`, e);
-      return { error: e.message };
+      return { success: false, error: e.message };
     }
   };
 
