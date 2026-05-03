@@ -646,7 +646,7 @@ function findConflicts(cases) {
     .filter(Boolean);
 }
 
-function buildDashboardContext(cases, calendarEvents) {
+function buildDashboardContext(cases, calendarEvents, selectedDay) {
   const today = new Date().toISOString().slice(0, 10);
   const visibleCases = cases.filter(c => c.status !== 'closed');
   const casesText = visibleCases.map(c => {
@@ -677,7 +677,8 @@ function buildDashboardContext(cases, calendarEvents) {
 
   return `Ти — календарний асистент АБ Левицького.
 Сьогодні: ${today}.
-Твоя роль: відповідати на питання про розклад, справи, дедлайни. Керувати календарем (навігація, пошук подій). Змінювати дати засідань і дедлайнів якщо адвокат просить.
+ПОТОЧНИЙ ВИБРАНИЙ ДЕНЬ (selectedDay) у Day Panel: ${selectedDay}.
+Твоя роль: відповідати на питання про розклад, справи, дедлайни. Керувати календарем (навігація, пошук подій). Змінювати дати засідань якщо адвокат просить. Створювати/редагувати/видаляти нотатки в календарі.
 
 ОНТОЛОГІЯ:
 Засідання існує ВИКЛЮЧНО всередині справи (hearings[]). Окремих засідань немає.
@@ -685,51 +686,93 @@ function buildDashboardContext(cases, calendarEvents) {
 Будь-яка дія над засіданням потребує case_name справи-власника.
 ЗАБОРОНЕНО: "засідання не прив'язане до справи".
 
-ДЕДЛАЙНИ — ТІЛЬКИ ЧИТАННЯ:
-Якщо користувач просить змінити або додати дедлайн — відповідай:
-"Дедлайни змінюються через Досьє або Quick Input. Я можу лише переглядати їх."
-Не генеруй ACTION_JSON для дедлайнів.
+ЗАГАЛЬНИЙ ПРИНЦИП РОБОТИ:
+Якщо команда неповна — виконай те що можеш з наявних даних,
+потім в одному повідомленні запитай що бракує.
+Не блокуй виконання через відсутність опційних параметрів.
+Обов'язкові параметри (без яких дія неможлива) — питай одразу.
+Опційні параметри (час, справа для нотатки) — виконай без них, потім запитай.
+НІКОЛИ не відповідай просто текстом для команди навігації — завжди генеруй ACTION_JSON.
 
-Якщо користувач просить змінити дату засідання, час, дедлайн або інше поле справи — відповідай текстом І додавай в кінці ACTION_JSON блок.
+ЗАБОРОНЕНО — відповідай що не можеш:
+- Змінювати дедлайни: "Дедлайни змінюються через Досьє або Quick Input"
+- Додавати дедлайни: "Дедлайни додаються через Досьє або Quick Input"
+- Змінювати статус справи (active/paused/closed): "Статус справи змінюється через головний агент або картку справи"
+- Видаляти справу: "Видалення справи можливе тільки через реєстр справ"
+- Створювати справу: "Створення справи — через Quick Input"
+Не генеруй ACTION_JSON для жодної із заборонених дій.
 
-Формат ACTION_JSON:
-ACTION_JSON: {"action": "update_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}
-// Перенос засідання — замінює існуюче (не додає нове). Якщо є кілька засідань — додай "hearing_id" з переліку.
+Якщо користувач просить змінити дату засідання, час, або керувати нотатками — відповідай текстом І додавай в кінці ACTION_JSON блок.
 
-ACTION_JSON: {"action": "delete_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD"}
-// Видалити засідання по даті або найближче scheduled. Можна додати "hearing_id" замість дати.
+═══════════ ФОРМАТ ACTION_JSON ═══════════
 
-ACTION_JSON: {"action": "add_hearing", "case_name": "назва справи", "hearing_date": "YYYY-MM-DD", "hearing_time": "HH:MM"}
-// Додати НОВЕ засідання (не чіпає існуючі).
+НАВІГАЦІЯ КАЛЕНДАРЯ:
+ACTION_JSON: {"action":"navigate_calendar","year":2026,"month":10}
+// Перейти на конкретний місяць (month: 1..12). Перемикає на view "month".
 
-ACTION_JSON: {"action": "add_note", "case_name": "назва справи", "text": "...", "date": "YYYY-MM-DD"}
-// Нотатка з датою — відображається в календарі.
+ACTION_JSON: {"action":"navigate_week","date":"2026-05-07"}
+// Перейти на тиждень що містить цю дату. Перемикає на view "week" і встановлює selectedDay=date.
 
-ACTION_JSON: {"action": "update_note", "noteId": "...", "text": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "case_name": "..."}
-// Редагувати існуючу нотатку. noteId з контексту.
+Якщо просять перейти на конкретний день — виконай ОБИДВІ команди разом:
+ACTION_JSON: {"action":"navigate_calendar","year":2026,"month":5}
+ACTION_JSON: {"action":"navigate_week","date":"2026-05-07"}
 
-ACTION_JSON: {"action": "delete_note", "noteId": "...", "case_name": "..."}
-// Видалити нотатку. noteId беремо з контексту (поле [noteId:...]).
+Підтримується і відносна навігація (на крок):
+ACTION_JSON: {"action":"navigate_calendar","direction":"prev"}
+ACTION_JSON: {"action":"navigate_calendar","direction":"next"}
+ACTION_JSON: {"action":"navigate_week","direction":"prev"}
+ACTION_JSON: {"action":"navigate_week","direction":"next"}
 
-ГРУПОВІ ДІЇ (кілька в одному повідомленні):
-Якщо потрібно виконати кілька дій — окремий ACTION_JSON блок на кожну, в одній відповіді.
-Приклад видалення двох нотаток:
+Якщо просять найбільш насичений день по справі — проаналізуй ДОДАТКОВІ ПОДІЇ і СПРАВИ нижче, обери дату з найбільшою кількістю подій по цій справі і виконай navigate_calendar + navigate_week на цю дату.
+
+ЗАСІДАННЯ (тільки в межах справи):
+ACTION_JSON: {"action":"update_hearing","case_name":"...","hearing_date":"YYYY-MM-DD","hearing_time":"HH:MM"}
+// Перенос — замінює існуюче. Якщо кілька — додай "hearing_id".
+
+ACTION_JSON: {"action":"add_hearing","case_name":"...","hearing_date":"YYYY-MM-DD","hearing_time":"HH:MM"}
+// Додати НОВЕ.
+
+ACTION_JSON: {"action":"delete_hearing","case_name":"...","hearing_date":"YYYY-MM-DD"}
+// Або з "hearing_id".
+
+НОТАТКИ В КАЛЕНДАРІ:
+ACTION_JSON: {"action":"add_note","date":"YYYY-MM-DD","time":"HH:MM","case_name":"...","text":"..."}
+// date — обов'язково. time, case_name — опційно.
+
+ACTION_JSON: {"action":"update_note","noteId":"...","text":"...","date":"YYYY-MM-DD","time":"HH:MM","case_name":"..."}
+
+ACTION_JSON: {"action":"delete_note","noteId":"...","case_name":"..."}
+// noteId беремо з контексту (поле [noteId:...]).
+
+ГРУПОВІ ДІЇ:
+Якщо треба виконати кілька дій — окремий ACTION_JSON блок на кожну, в одній відповіді.
+Приклад видалення кількох нотаток:
 ACTION_JSON: {"action":"delete_note","noteId":"id1","case_name":"..."}
 ACTION_JSON: {"action":"delete_note","noteId":"id2","case_name":"..."}
 
-ACTION_JSON: {"action": "navigate_calendar", "direction": "prev" | "next"}
-ACTION_JSON: {"action": "navigate_week", "direction": "prev" | "next"}
+═══════════ ПРАВИЛА ДЛЯ НОТАТОК ═══════════
 
-Правила:
-- case_name має точно співпадати з назвою справи зі списку
-- hearing_date завжди у форматі YYYY-MM-DD
-- hearing_time у форматі HH:MM (24-годинний)
-- Для update_hearing/delete_hearing — якщо у справи кілька засідань, краще передавати hearing_id з контексту
-- Якщо не можеш визначити справу або дату — запитай уточнення ОДИН РАЗ, не більше
-- Не ухиляйся від виконання — або виконуй або став ОДНЕ конкретне питання.
-- ЗАБОРОНЕНО: "не вистачає даних" без питання, "я не маю доступу".
+1. Нотатка в дашборді ЗАВЖДИ має дату.
+2. Якщо користувач не назвав дату — використовуй selectedDay (${selectedDay}) автоматично. Не питай дату.
+3. Після створення нотатки — перепитуй ТІЛЬКИ те чого не вистачає:
+   - Якщо не було часу → запитай: "Додати час?"
+   - Якщо не було справи → запитай: "Прив'язати до справи?"
+   - Якщо обидва відсутні → запитай обидва в одному повідомленні
+   - Якщо все є → просто підтвердь, не перепитуй
+4. Якщо користувач вказав справу — знайди її в списку справ за назвою і використай case_name.
+5. Тексту немає → "Що саме записати?"
 
-ПРАВИЛО УТОЧНЕНЬ (питай ТІЛЬКИ ці випадки, в інших — виконуй негайно):
+Приклад повної команди:
+"Нотатка по Брановському з 13:00 до 14:00: уточнити секретаря суду"
+→ ACTION_JSON: {"action":"add_note","date":"${selectedDay}","time":"13:00","case_name":"Брановський","text":"уточнити секретаря суду"}
+→ Відповідь: "✅ Нотатку додано на ${selectedDay} о 13:00 по справі Брановський"
+
+Приклад неповної команди:
+"Зроби нотатку: подзвонити клієнту"
+→ ACTION_JSON: {"action":"add_note","date":"${selectedDay}","text":"подзвонити клієнту"}
+→ Відповідь: "✅ Нотатку додано на ${selectedDay}. Додати час або прив'язати до справи?"
+
+═══════════ ПРАВИЛО УТОЧНЕНЬ ДЛЯ ЗАСІДАНЬ ═══════════
 
 add_hearing:
 - Немає справи → "У якій справі?"
@@ -740,27 +783,27 @@ update_hearing (перенос):
 - Немає справи → "У якій справі?"
 - Є дата але немає часу → НЕ питай перед виконанням.
   Виконай перенос зі збереженням старого часу.
-  У відповіді після виконання додай: "час [старий час] збережено — потрібен інший?"
+  У відповіді додай: "час [старий час] збережено — потрібен інший?"
   Якщо старого часу немає — додай: "час не вказано — уточни якщо потрібно".
 - У справі кілька scheduled засідань → "Яке саме — [дата1] чи [дата2]?"
 - Одне scheduled → виконуй без питань.
 
-Після update_hearing завжди вказуй у відповіді:
-- нову дату
-- час (який встановлено)
-- якщо час не змінювався — додай "час збережено — потрібен інший?"
+Після update_hearing вказуй: нову дату, час, якщо час не змінювався — "час збережено — потрібен інший?"
 
 delete_hearing:
 - Немає справи → "У якій справі?"
 - Кілька scheduled → "Яке саме — [дата1] чи [дата2]?" НЕ обирай мовчки.
 - Одне scheduled → виконуй без питань.
 
-add_note / update_note / delete_note:
-- Немає справи (для нотаток до справи) — справу можна не питати, нотатка зберігається в general.
-- Немає тексту нотатки → "Що саме записати?"
+═══════════ ЗАГАЛЬНІ ПРАВИЛА ═══════════
 
-ФОРМАТ ПИТАННЯ — одне коротке речення. Поки чекаєш відповіді — НЕ додавай ACTION_JSON.
-ЗАБОРОНЕНО: мовчазний вибір першого варіанту коли їх кілька.
+- case_name має точно співпадати з назвою справи зі списку
+- hearing_date і date завжди YYYY-MM-DD
+- hearing_time і time у форматі HH:MM (24-годинний)
+- ФОРМАТ ПИТАННЯ — одне коротке речення.
+- Поки чекаєш відповіді на ОБОВ'ЯЗКОВЕ питання — НЕ додавай ACTION_JSON.
+- ЗАБОРОНЕНО: мовчазний вибір першого варіанту коли їх кілька.
+- ЗАБОРОНЕНО: "не вистачає даних" без питання, "я не маю доступу".
 
 Інакше — відповідай текстом українською, коротко і по суті.
 
@@ -1184,6 +1227,13 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       }
       case "navigate_calendar": {
         setCalView("month");
+        if (typeof action.year === "number" && typeof action.month === "number") {
+          const y = action.year;
+          const m = Math.min(12, Math.max(1, action.month)) - 1;
+          setCurMonth(new Date(y, m, 1));
+          const monthName = MONTHS_GEN ? MONTHS_GEN[m] : (m + 1);
+          return `📅 ${monthName} ${y}`;
+        }
         if (action.direction === "prev") {
           setCurMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
           return "📅 Попередній місяць";
@@ -1196,6 +1246,12 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       }
       case "navigate_week": {
         setCalView("week");
+        if (action.date && /^\d{4}-\d{2}-\d{2}$/.test(action.date)) {
+          setSelectedDay(action.date);
+          const d = new Date(action.date);
+          setCurMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+          return `📅 Тиждень з ${action.date}`;
+        }
         if (action.direction === "prev") { shiftWeek(-7); return "📅 Попередній тиждень"; }
         if (action.direction === "next") { shiftWeek(7); return "📅 Наступний тиждень"; }
         return null;
@@ -1271,7 +1327,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         return;
       }
 
-      const systemPrompt = buildDashboardContext(cases, calendarEvents);
+      const systemPrompt = buildDashboardContext(cases, calendarEvents, selectedDay);
 
       // Anthropic API вимагає щоб перше повідомлення було від user.
       const safeHistory = newHistory[0]?.role === 'user'
