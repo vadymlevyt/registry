@@ -1070,9 +1070,9 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
       } catch(e) {
         workingFile = file;
       }
+      const mime = (workingFile.type || '').toLowerCase();
       let ext = (workingFile.name || '').split('.').pop().toLowerCase();
       if (!ext || ext === workingFile.name.toLowerCase()) {
-        const mime = workingFile.type || '';
         if (mime.includes('pdf')) ext = 'pdf';
         else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
         else if (mime.includes('png')) ext = 'png';
@@ -1080,6 +1080,13 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         else if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
         else if (mime.includes('word') || mime.includes('docx')) ext = 'docx';
         else if (mime.includes('text')) ext = 'txt';
+      }
+      // Camera-share / clipboard: ім'я може бути "image.jpg" з MIME image/png,
+      // або взагалі без розширення. Якщо MIME каже image/* — обробити як зображення.
+      const knownImageExt = ['jpg','jpeg','png','webp','heic','heif'];
+      if (mime.startsWith('image/') && !knownImageExt.includes(ext)) {
+        if (mime.includes('heic') || mime.includes('heif')) ext = 'heic';
+        else ext = 'jpg';
       }
       if (ext === 'txt' || ext === 'md') {
         const reader = new FileReader();
@@ -1227,7 +1234,16 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
       setErrorDetail('Файл порожній або не читається (base64 empty)');
       return;
     }
-    if (!apiKey) { setErrorCategory('llm_failed'); setErrorDetail('API-ключ не налаштований'); return; }
+    if (!apiKey) {
+      setErrorCategory('llm_failed');
+      setErrorDetail('API-ключ Anthropic не налаштований');
+      setLoading(false);
+      systemAlert(
+        'Щоб обробляти зображення і документи через Claude, потрібен API-ключ Anthropic. Відкрийте Quick Input (⚡), натисніть на іконку ключа і вставте ключ.',
+        'API-ключ не налаштований'
+      );
+      return;
+    }
     setLoading(true);
     setErrorCategory(null);
     setAnalysisResult(null);
