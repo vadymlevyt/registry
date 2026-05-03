@@ -1614,7 +1614,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     const isTravel = ev.type === 'travel' || ev.category === 'travel';
     setNotePopup({
       noteId: ev.noteId || ev.id,
-      text: ev.title || '',
+      text: ev.text || ev.title || '',
       caseId: ev.caseId || null,
       caseName: c ? c.name : (ev.caseName || null),
       time: ev.time || null,

@@ -3474,7 +3474,9 @@ function App() {
         caseName: caseName || null,
         date: n.date, time: n.time || null,
         duration: n.duration || 60,
-        title: (n.text || '').slice(0, 60), color: 'yellow'
+        title: (n.text || '').slice(0, 60),
+        text: n.text || '',
+        color: 'yellow'
       });
     };
     for (const cat of Object.keys(notes)) {
