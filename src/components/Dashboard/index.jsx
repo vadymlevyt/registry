@@ -1049,7 +1049,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           date: h.date,
           time: h.time || null,
           court: h.court || c.court || null,
-          duration: 120,
+          duration: h.duration || 120,
           caseId: c.id,
           hearingId: h.id,
           color,
