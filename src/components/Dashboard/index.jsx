@@ -27,6 +27,27 @@ const isValidHearing = h =>
   h.time &&
   String(h.time).trim() !== '';
 
+const EVENT_COLORS = {
+  hearing:  { border: '#4f7cff', bg: 'rgba(79,124,255,0.12)',  text: '#4f7cff', dot: '#4f7cff' },
+  deadline: { border: '#f39c12', bg: 'rgba(243,156,18,0.12)',  text: '#f39c12', dot: '#f39c12' },
+  note:     { border: '#2ecc71', bg: 'rgba(46,204,113,0.12)',  text: '#2ecc71', dot: '#2ecc71' },
+  travel:   { border: '#5a6080', bg: 'rgba(90,96,128,0.12)',   text: '#9aa0b8', dot: '#5a6080' },
+};
+
+const EVENT_TYPE_LABEL = {
+  hearing:  'Засідання',
+  deadline: 'Дедлайн',
+  note:     'Нотатка',
+  travel:   'Дорога'
+};
+
+const EVENT_TYPE_ICON = {
+  hearing:  '⚖️',
+  deadline: '⏰',
+  note:     '📝',
+  travel:   '🚗'
+};
+
 function CaseDropdown({ value, onChange, cases, placeholder, error }) {
   const [open, setOpen] = useState(false);
   const selected = cases.find(c => String(c.id) === String(value));
@@ -84,6 +105,83 @@ function CaseDropdown({ value, onChange, cases, placeholder, error }) {
 const SLOTS_START_MIN = parseTimeMin(SLOTS[0]);
 const SLOTS_END_MIN = parseTimeMin(SLOTS[SLOTS.length - 1]) + SLOT_MIN;
 
+function TimePicker({ value, onChange, label, required, error, onClear }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      {label && (
+        <div style={{ fontSize: 10, color: 'var(--text3, #5a6080)', marginBottom: 2 }}>
+          {label}{required ? ' *' : ''}
+        </div>
+      )}
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', boxSizing: 'border-box',
+          padding: '6px 10px', borderRadius: 5, cursor: 'pointer',
+          background: 'var(--surface, #1a1d27)',
+          color: 'var(--text, #e8eaf0)',
+          border: error ? '1px solid #e74c3c' : '1px solid var(--border, #2e3148)',
+          fontSize: 12,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+        }}
+      >
+        <span>{value || '—'}</span>
+        <span style={{ opacity: 0.4, fontSize: 10 }}>▾</span>
+      </div>
+      {open && (
+        <>
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 1098 }}
+          />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, zIndex: 1099,
+            background: 'var(--surface, #1a1d27)',
+            border: '1px solid var(--border, #2e3148)',
+            borderRadius: 8, padding: 8, marginTop: 4,
+            display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+            gap: 4, width: 220,
+            boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
+          }}>
+            {SLOTS.map(slot => (
+              <button
+                key={slot}
+                type="button"
+                onClick={() => { onChange(slot); setOpen(false); }}
+                style={{
+                  padding: '6px 2px', borderRadius: 5, border: 'none',
+                  background: value === slot ? 'var(--accent, #4f7cff)' : 'var(--surface2, #222536)',
+                  color: value === slot ? '#fff' : 'var(--text, #e8eaf0)',
+                  fontSize: 11, cursor: 'pointer', textAlign: 'center'
+                }}
+              >
+                {slot}
+              </button>
+            ))}
+            {onClear && (
+              <button
+                type="button"
+                onClick={() => { onClear(); setOpen(false); }}
+                style={{
+                  gridColumn: '1 / -1',
+                  padding: '6px', borderRadius: 5, border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text3,#5a6080)',
+                  fontSize: 11, cursor: 'pointer', textAlign: 'center',
+                  marginTop: 2
+                }}
+              >
+                Прибрати час
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function mergeNoteGroups(notes) {
   const used = new Set();
   const groups = [];
@@ -135,14 +233,11 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
   const halfPressTimerRef = useRef(null);
 
   function colorsFor(ev, isConflict) {
-    if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)" };
-    if (ev.color) return { border: ev.color, bg: "rgba(127,143,166,.2)" };
-    const type = ev.type;
-    if (type === "hearing") return { border: "#4f7cff", bg: "rgba(79,124,255,.2)" };
-    if (type === "deadline") return { border: "#f39c12", bg: "rgba(243,156,18,.2)" };
-    if (type === "note") return { border: "#f1c40f", bg: "rgba(241,196,15,.18)" };
-    if (type === "travel") return { border: "#5a6080", bg: "rgba(90,96,128,.18)" };
-    return { border: "#4f7cff", bg: "rgba(79,124,255,.15)" };
+    if (isConflict) return { border: "#e74c3c", bg: "rgba(231,76,60,.2)", text: "#e74c3c" };
+    if (ev.color) return { border: ev.color, bg: "rgba(127,143,166,.2)", text: ev.color };
+    const palette = EVENT_COLORS[ev.type];
+    if (palette) return palette;
+    return EVENT_COLORS.hearing;
   }
 
   const isDraggingHere = slotDrag.isDragging && slotDrag.dragContext === day;
@@ -241,11 +336,16 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
         const otherEvs = evsInRange.filter(e => e.type !== 'note');
 
         const renderEvBlock = (ev, extra = {}) => {
-          const t = parseTimeMin(ev.time);
           const dur = ev.duration || 60;
           const c = colorsFor(ev, conflictIds.has(ev.id));
           const endTime = ev.endTime || addMinutesToTime(ev.time, dur);
           const interactive = ev.type === 'hearing' || ev.type === 'note';
+          const icon = EVENT_TYPE_ICON[ev.type] || '📝';
+          const typeLabel = EVENT_TYPE_LABEL[ev.type] || '';
+          const caseName = ev.caseName || (ev.type === 'note' ? 'Загальна' : null);
+          const text = ev.type === 'note'
+            ? (ev.title || ev.text || '')
+            : (ev.label || ev.court || '');
           return (
             <div
               key={ev.id}
@@ -268,13 +368,28 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                 ...extra
               }}
             >
-              <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {ev.title}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9, color: c.text, marginBottom: 1, whiteSpace: 'nowrap', overflow: 'hidden' }}>
+                <span>{icon}</span>
+                <span style={{ fontWeight: 600 }}>{typeLabel}</span>
+                {caseName && (
+                  <>
+                    <span style={{ opacity: 0.5 }}>·</span>
+                    <span style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {caseName}
+                    </span>
+                  </>
+                )}
               </div>
-              <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {ev.time}—{endTime}
-                {ev.court ? " · " + ev.court : ""}
-              </div>
+              {text && (
+                <div style={{ fontSize: 10, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {text}
+                </div>
+              )}
+              {ev.time && (
+                <div style={{ fontSize: 9, color: "var(--text3, #5a6080)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {ev.time}—{endTime}
+                </div>
+              )}
             </div>
           );
         };
@@ -302,7 +417,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
               </div>
             );
           }
-          // Merged block — single yellow container, all notes listed inside, click per-note
+          // Merged block — single green container, all notes listed inside, click per-note
           const sorted = [...grp].sort((a, b) => parseTimeMin(a.time) - parseTimeMin(b.time));
           return (
             <div
@@ -311,8 +426,8 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                 position: 'absolute', left: 2, right: 2, top, height,
                 zIndex: 2,
                 borderRadius: 5,
-                border: '1px solid #f1c40f',
-                background: 'rgba(241,196,15,0.18)',
+                border: `1px solid ${EVENT_COLORS.note.border}`,
+                background: EVENT_COLORS.note.bg,
                 padding: 2,
                 display: 'flex', flexDirection: 'column', gap: 1,
                 overflow: 'hidden',
@@ -334,7 +449,7 @@ function SlotsColumn({ day, events, slotDrag, conflicts, style, onEmptyClick, on
                       minHeight: 14,
                       padding: '1px 4px',
                       borderRadius: 3,
-                      background: 'rgba(241,196,15,0.12)',
+                      background: 'rgba(46,204,113,0.08)',
                       cursor: 'pointer',
                       fontSize: 10,
                       lineHeight: 1.2,
@@ -733,6 +848,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           id: "h_" + c.id + "_" + h.id,
           type: "hearing",
           title: c.name,
+          caseName: c.name,
           date: h.date,
           time: h.time || null,
           court: h.court || c.court || null,
@@ -748,6 +864,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           id: "d_" + c.id + "_" + dl.id,
           type: "deadline",
           title: c.name,
+          caseName: c.name,
           date: dl.date,
           time: null,
           label: dl.name || "дедлайн",
@@ -1792,37 +1909,66 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           </div>
 
           {/* Без часу — нотатки і дедлайни (вгорі, до часових слотів) */}
-          {dayEvents.filter(e => !e.time).length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
-                Без часу
-              </div>
-              {dayEvents.filter(e => !e.time).map(e => (
-                <div
-                  key={e.id}
-                  onClick={(ev) => {
-                    const rect = ev.currentTarget.getBoundingClientRect();
-                    if (e.type === 'deadline') handleDeadlineClick(e, rect);
-                    else if (e.type === 'note') handleNoteClick(e, rect);
-                  }}
-                  style={{
-                    borderRadius: 5,
-                    border: `1px solid ${e.type === "deadline" ? "#f39c12" : (e.type === "note" ? "#f1c40f" : "#5a6080")}`,
-                    background: e.type === "deadline" ? "rgba(243,156,18,.1)"
-                      : e.type === "note" ? "rgba(241,196,15,.12)"
-                      : "var(--surface, #1a1d27)",
-                    padding: "4px 7px",
-                    fontSize: 11,
-                    marginBottom: 3,
-                    cursor: (e.type === 'deadline' || e.type === 'note') ? 'pointer' : 'default'
-                  }}
-                >
-                  <div style={{ fontWeight: 600 }}>{e.title}</div>
-                  {e.label && <div style={{ fontSize: 10, color: "var(--text3, #5a6080)" }}>{e.label}</div>}
+          {(() => {
+            const eventsWithoutTime = dayEvents.filter(e => !e.time);
+            if (!eventsWithoutTime.length) return null;
+            const hasNotes = eventsWithoutTime.some(e => e.type === 'note');
+            const hasDeadlines = eventsWithoutTime.some(e => e.type === 'deadline');
+            const sectionTitle = [
+              hasNotes && 'Нотатки',
+              hasDeadlines && 'Дедлайни'
+            ].filter(Boolean).join(' · ') || 'Без часу';
+            return (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text3, #5a6080)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>
+                  {sectionTitle}
                 </div>
-              ))}
-            </div>
-          )}
+                {eventsWithoutTime.map(e => {
+                  const palette = EVENT_COLORS[e.type] || EVENT_COLORS.note;
+                  const icon = EVENT_TYPE_ICON[e.type] || '📝';
+                  const typeLabel = EVENT_TYPE_LABEL[e.type] || '';
+                  const caseName = e.caseName || (e.type === 'note' ? 'Загальна' : null);
+                  const text = e.type === 'note' ? (e.title || e.text || '') : (e.label || '');
+                  return (
+                    <div
+                      key={e.id}
+                      onClick={(ev) => {
+                        const rect = ev.currentTarget.getBoundingClientRect();
+                        if (e.type === 'deadline') handleDeadlineClick(e, rect);
+                        else if (e.type === 'note') handleNoteClick(e, rect);
+                      }}
+                      style={{
+                        borderRadius: 5,
+                        border: `1px solid ${palette.border}`,
+                        background: palette.bg,
+                        padding: "4px 7px",
+                        marginBottom: 3,
+                        cursor: (e.type === 'deadline' || e.type === 'note') ? 'pointer' : 'default'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, color: palette.text, marginBottom: 1 }}>
+                        <span>{icon}</span>
+                        <span style={{ fontWeight: 600 }}>{typeLabel}</span>
+                        {caseName && (
+                          <>
+                            <span style={{ opacity: 0.5 }}>·</span>
+                            <span style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {caseName}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      {text && (
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text, #e8eaf0)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {text}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {/* Слоти */}
           <div>
@@ -1932,8 +2078,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
                 ✏️ Редагувати
               </button>
               <button
-                onClick={() => {
-                  if (!window.confirm('Видалити цю нотатку?')) return;
+                onClick={async () => {
+                  const ok = await systemConfirm('Видалити цю нотатку?', 'Видалення нотатки', 'Видалити');
+                  if (!ok) return;
                   onExecuteAction('dashboard_agent', 'delete_note', {
                     noteId: notePopup.noteId,
                     caseId: notePopup.caseId
@@ -2118,37 +2265,19 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               {(modalType === 'hearing' || modalHasTime) && (
                 <div style={{ display: "flex", gap: 6 }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>
-                      Початок{modalType === 'hearing' ? ' *' : ''}
-                    </div>
-                    <input
-                      type="time"
-                      step="1800"
+                    <TimePicker
                       value={modalStart}
-                      onChange={e => { setModalStart(e.target.value); if (timeError) setTimeError(false); }}
-                      style={{
-                        width: "100%", boxSizing: "border-box",
-                        background: "var(--surface, #1a1d27)",
-                        border: timeError ? "1px solid #e74c3c" : "1px solid var(--border, #2e3148)",
-                        borderRadius: 5, color: "var(--text, #e6e8f0)",
-                        padding: "6px 8px", fontSize: 12
-                      }}
+                      onChange={v => { setModalStart(v); if (timeError) setTimeError(false); }}
+                      label="Початок"
+                      required={modalType === 'hearing'}
+                      error={timeError}
                     />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 10, color: "var(--text3, #5a6080)", marginBottom: 2 }}>Кінець</div>
-                    <input
-                      type="time"
-                      step="1800"
+                    <TimePicker
                       value={modalEnd}
-                      onChange={e => setModalEnd(e.target.value)}
-                      style={{
-                        width: "100%", boxSizing: "border-box",
-                        background: "var(--surface, #1a1d27)",
-                        border: "1px solid var(--border, #2e3148)",
-                        borderRadius: 5, color: "var(--text, #e6e8f0)",
-                        padding: "6px 8px", fontSize: 12
-                      }}
+                      onChange={setModalEnd}
+                      label="Кінець"
                     />
                   </div>
                 </div>
@@ -2211,8 +2340,9 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
               </div>
               {editingEvent?.hearingId && (
                 <button
-                  onClick={() => {
-                    if (!window.confirm('Видалити це засідання?')) return;
+                  onClick={async () => {
+                    const ok = await systemConfirm('Видалити це засідання?', 'Видалення засідання', 'Видалити');
+                    if (!ok) return;
                     onExecuteAction('dashboard_agent', 'delete_hearing', {
                       caseId: editingEvent.caseId,
                       hearingId: editingEvent.hearingId
