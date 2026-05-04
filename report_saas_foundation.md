@@ -4,7 +4,7 @@
 **Виконав:** Claude Code Opus 4.7 (1M context)
 **Тривалість:** ~3 години (діагностика + впровадження)
 **Гілка:** main
-**Commit:** буде додано після `git commit`
+**Commit:** `4f719fc` (запушено в main)
 **Статус:** **success** — усі критерії TASK виконано
 
 ---
@@ -393,4 +393,4 @@ SaaS Foundation v1 закладено в повному обсязі: Drive мі
 - `recommended_task_claude_md_audit.md` — окрема задача оновлення CLAUDE.md
 - `bugs_found_during_saas_foundation.md` — архітектурний борг
 - `registry_data_backup_pre_saas_<ts>.json` — створюється на Drive при першому запуску після оновлення
-- Commit hash: буде додано після `git commit`
+- Commit hash: `4f719fc` — https://github.com/vadymlevyt/registry/commit/4f719fc
