@@ -4,7 +4,11 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas } from './services/driveService';
+import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
+import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
+import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
+import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from './services/migrationService';
 import { driveRequest, refreshDriveToken, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import './App.css';
@@ -1875,7 +1879,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
               || actionResult.extracted?.status;
 
             if (matched && field && value) {
-              const result = onExecuteAction('qi_agent', 'update_case_field', {
+              const result = await onExecuteAction('qi_agent', 'update_case_field', {
                 caseId: matched.id,
                 field,
                 value,
@@ -2838,7 +2842,11 @@ const driveService = {
     return this._fileId || null;
   },
 
-  async readCases(token) {
+  // Читає весь файл як є. Може повернути:
+  //   • null — файлу нема
+  //   • Array — старий формат (schemaVersion: 1)
+  //   • Object — новий формат (schemaVersion: 2+)
+  async readRegistry(token) {
     const id = await this._findFileId(token);
     if (!id) return null;
     const res = await driveRequest(
@@ -2848,9 +2856,47 @@ const driveService = {
     return await res.json();
   },
 
-  async writeCases(token, cases) {
-    const body = JSON.stringify(cases);
+  // Пише весь registry-об'єкт як JSON.
+  async writeRegistry(token, registry) {
+    const body = JSON.stringify(registry);
     const id = await this._findFileId(token);
+    if (id) {
+      await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body
+      });
+    } else {
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'application/json' })], { type: 'application/json' }));
+      form.append('file', new Blob([body], { type: 'application/json' }));
+      const res = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        body: form
+      });
+      const created = await res.json();
+      this._fileId = created.id;
+    }
+  },
+
+  // ── DEPRECATED ALIASES ────────────────────────────────────────────────────
+  // Старі імена для зворотної сумісності з AnalysisPanel.connectDrive.
+  // Семантика: readCases повертає cases[] (з нового формату), writeCases приймає
+  // cases[] і запаковує в мінімальний registry. Не використовувати в новому коді.
+  async readCases(token) {
+    const raw = await this.readRegistry(token);
+    if (!raw) return null;
+    if (Array.isArray(raw)) return raw;
+    if (raw && Array.isArray(raw.cases)) return raw.cases;
+    return null;
+  },
+
+  async writeCases(token, cases) {
+    // У новому форматі cases — лише частина registry. Тут пишемо тільки масив,
+    // що ефективно «відкатить» schemaVersion. Тому викликати ЛИШЕ зі старого
+    // legacy-коду (AnalysisPanel імпорт), новий шлях іде через writeRegistry.
+    const id = await this._findFileId(token);
+    const body = JSON.stringify(cases);
     if (id) {
       await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
         method: 'PATCH',
@@ -3229,6 +3275,11 @@ function normalizeCases(cases) {
       updated.agentHistory = [];
     }
 
+    // ── SaaS Foundation v2 — гарантовані поля ────────────────────────────
+    // Додаємо тут щоб legacy дані з localStorage (без проходження через
+    // migrateRegistry) теж отримали SaaS-поля.
+    updated = ensureCaseSaasFields(updated);
+
     return updated;
     } catch (e) {
       console.warn('normalizeCases: пропускаю битий запис', c, e);
@@ -3339,6 +3390,56 @@ function App() {
     } catch { return []; }
   });
 
+  // ── SaaS Foundation v2 — tenants/users/auditLog/structuralUnits ───────────
+  // Ембріон з повним ДНК. Зараз — один tenant, один користувач.
+  // Усе персистится в registry_data.json як єдиний об'єкт schemaVersion 2.
+  const [tenants, setTenants] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_tenants');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [DEFAULT_TENANT];
+  });
+  const [users, setUsers] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_users');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [DEFAULT_USER];
+  });
+  const [auditLog, setAuditLog] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_audit_log');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [structuralUnits, setStructuralUnits] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_structural_units');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  // Хелпер: запис в audit log зі state-сеттером, прив'язка до tenant'у/користувача.
+  // Не пишемо в auditLog якщо action не входить в AUDIT_ACTIONS — фільтр виконується
+  // на стороні викликача, але писати все одно безпечно.
+  const writeAudit = (params) => writeAuditLogService(setAuditLog, params);
+  const updateAudit = (entryId, status, extra) => updateAuditLogStatus(setAuditLog, entryId, status, extra);
+
   const [lastSaved, setLastSaved] = useState(null);
   const [driveConnected, setDriveConnected] = useState(() => driveService.isConnected());
   const [driveSyncStatus, setDriveSyncStatus] = useState('idle');
@@ -3413,42 +3514,103 @@ function App() {
     };
   }, []); // eslint-disable-line
 
-  // Load from Drive on mount if connected
+  // Load from Drive on mount if connected — з міграцією v1 → v2
   useEffect(() => {
     if (!driveConnected) return;
     const token = driveService.getToken();
     if (!token) return;
-    driveService.readCases(token).then(driveCases => {
-      if (driveCases && Array.isArray(driveCases) && driveCases.length > 0) {
-        setCases(normalizeCases(driveCases));
+
+    (async () => {
+      try {
+        const raw = await driveService.readRegistry(token);
+        const { registry, didMigrate, fromVersion, toVersion } = migrateRegistry(raw);
+
+        // Якщо реально мігруємо — спочатку фіксований бекап pre_saas, поза ротацією.
+        if (didMigrate && raw != null) {
+          const flag = localStorage.getItem('levytskyi_pre_saas_backup_done');
+          if (!flag) {
+            const res = await backupRegistryDataPreSaas(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_saas_backup_done', '1');
+              console.log(`[SaaS Foundation] Pre-migration backup: ${res.fileName}`);
+            } else {
+              console.warn('[SaaS Foundation] Pre-migration backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // Розпакувати у локальні стани
+        if (Array.isArray(registry.cases) && registry.cases.length > 0) {
+          setCases(normalizeCases(registry.cases));
+        }
+        if (Array.isArray(registry.tenants) && registry.tenants.length > 0) {
+          setTenants(registry.tenants);
+        }
+        if (Array.isArray(registry.users) && registry.users.length > 0) {
+          setUsers(registry.users);
+        }
+        if (Array.isArray(registry.auditLog)) {
+          setAuditLog(registry.auditLog);
+        }
+        if (Array.isArray(registry.structuralUnits)) {
+          setStructuralUnits(registry.structuralUnits);
+        }
+
+        if (didMigrate) {
+          console.log(`[SaaS Foundation] Migration v${fromVersion} → v${toVersion} done. cases=${registry.cases.length}`);
+          // Запис в auditLog: первинна міграція. Поза AUDIT_ACTIONS — пишемо напряму.
+          writeAudit({
+            action: 'migrate_registry',
+            targetType: 'registry',
+            targetId: 'registry_data.json',
+            details: { fromVersion, toVersion, casesCount: registry.cases.length },
+            context: { module: 'startup', agent: null },
+          });
+        }
+      } catch (e) {
+        console.error('[SaaS Foundation] Drive load/migration error:', e);
       }
-    }).catch(() => {});
+    })();
   }, []); // eslint-disable-line
 
   // Auto-save to localStorage (always) and Drive (if connected)
+  // Тригер: будь-яка зміна cases/tenants/users/auditLog/structuralUnits.
   useEffect(() => {
     try {
       localStorage.setItem('levytskyi_cases', JSON.stringify(cases));
+      localStorage.setItem('levytskyi_tenants', JSON.stringify(tenants));
+      localStorage.setItem('levytskyi_users', JSON.stringify(users));
+      localStorage.setItem('levytskyi_audit_log', JSON.stringify(auditLog));
+      localStorage.setItem('levytskyi_structural_units', JSON.stringify(structuralUnits));
       setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
     } catch(e) {}
     if (driveConnected) {
       const token = driveService.getToken();
       if (token) {
         setDriveSyncStatus('syncing');
-        // Бекап раз на добу перед sync
+        const registry = {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          settingsVersion: MIGRATION_VERSION,
+          tenants,
+          users,
+          auditLog,
+          structuralUnits,
+          cases,
+        };
+        // Бекап раз на добу перед sync (зберігаємо повний registry-об'єкт)
         const lastBackup = localStorage.getItem('levytskyi_last_backup') || '';
         const todayStr = new Date().toISOString().split('T')[0];
         if (lastBackup !== todayStr) {
-          backupRegistryData(token, cases).then(res => {
+          backupRegistryData(token, registry).then(res => {
             if (res.success) localStorage.setItem('levytskyi_last_backup', todayStr);
           }).catch(() => {});
         }
-        driveService.writeCases(token, cases)
+        driveService.writeRegistry(token, registry)
           .then(() => setDriveSyncStatus('synced'))
           .catch(() => setDriveSyncStatus('error'));
       }
     }
-  }, [cases]);
+  }, [cases, tenants, users, auditLog, structuralUnits]);
 
   // ── timeLog persistence ────────────────────────────────────────────────────
   useEffect(() => {
@@ -3551,14 +3713,23 @@ function App() {
 
   const addCase = (form) => {
     usageLog.log('case_added', {name: form.name});
-    const newCase = { ...form, id: Date.now() };
+    // Гарантуємо SaaS-поля для нової справи (tenantId, ownerId, team, shareType, externalAccess).
+    const newCase = ensureCaseSaasFields({ ...form, id: Date.now() });
     setCases(prev => [...prev, newCase]);
     setShowAdd(false);
     setTab('cases');
+    // Audit (variant B — UI обходить executeAction, пишемо напряму).
+    writeAudit({
+      action: 'create_case',
+      targetType: 'case',
+      targetId: newCase.id,
+      details: { caseName: newCase.name, source: 'ui_form' },
+      context: { module: 'add_form', agent: null },
+    });
   };
 
   const saveCaseEdit = (form) => {
-    setCases(prev => prev.map(c => c.id === form.id ? { ...form } : c));
+    setCases(prev => prev.map(c => c.id === form.id ? ensureCaseSaasFields({ ...form }) : c));
     setEditingCase(null);
     setSelected({ ...form });
     setTab('cases');
@@ -3603,6 +3774,7 @@ function App() {
   };
 
   const addNote = (note) => {
+    const u = getCurrentUser();
     const newNote = {
       id: Date.now().toString(),
       text: note.text || '',
@@ -3611,6 +3783,9 @@ function App() {
       caseName: note.caseName || null,
       source: note.source || 'manual',
       result: note.result || null,
+      createdBy: u.userId,
+      // tenantId — лише для standalone (без caseId); для in-case успадкується
+      ...(note.caseId ? {} : { tenantId: u.tenantId }),
       ts: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
@@ -3700,17 +3875,37 @@ function App() {
   };
 
   const closeCase = (id) => {
+    const target = cases.find(c => c.id === id);
     setCases(prev => prev.map(c =>
       c.id === id ? { ...c, status: 'closed' } : c
     ));
     setSelected(null);
+    if (target) {
+      writeAudit({
+        action: 'close_case',
+        targetType: 'case',
+        targetId: id,
+        details: { caseName: target.name, previousStatus: target.status },
+        context: { module: 'ui', agent: null },
+      });
+    }
   };
 
   const restoreCase = (id) => {
+    const target = cases.find(c => c.id === id);
     setCases(prev => prev.map(c =>
       c.id === id ? { ...c, status: 'active' } : c
     ));
     setSelected(null);
+    if (target) {
+      writeAudit({
+        action: 'restore_case',
+        targetType: 'case',
+        targetId: id,
+        details: { caseName: target.name, previousStatus: target.status },
+        context: { module: 'ui', agent: null },
+      });
+    }
   };
 
   const deleteDriveFolder = async (folderId) => {
@@ -3726,6 +3921,20 @@ function App() {
   };
 
   const deleteCasePermanently = async (caseItem) => {
+    // Audit ДО видалення (status: pending). Після успіху → done.
+    // Якщо мережа впала і запис лишився pending — буде видно в auditLog.
+    const auditEntry = writeAudit({
+      action: 'destroy_case',
+      targetType: 'case',
+      targetId: caseItem.id,
+      status: 'pending',
+      details: {
+        caseName: caseItem.name,
+        driveFolderId: caseItem.driveFolderId || null,
+        reason: 'user_initiated',
+      },
+      context: { module: 'ui', agent: null },
+    });
     try {
       if (caseItem.driveFolderId && driveConnected) {
         await deleteDriveFolder(caseItem.driveFolderId);
@@ -3737,9 +3946,11 @@ function App() {
         setDossierCase(null);
       }
       setSelected(null);
+      if (auditEntry) updateAudit(auditEntry.id, 'done');
       systemAlert(`Справу "${caseItem.name}" видалено.`);
     } catch (err) {
       console.error("Помилка видалення:", err);
+      if (auditEntry) updateAudit(auditEntry.id, 'failed', { errorMessage: err.message });
       systemAlert("Помилка при видаленні. Спробуйте ще раз.");
     }
   };
@@ -3762,7 +3973,7 @@ function App() {
   const ACTIONS = {
     // ГРУПА 1 — Справи
     create_case: ({ fields }) => {
-      const newCase = {
+      const newCase = ensureCaseSaasFields({
         id: `case_${Date.now()}`,
         userId: 'vadym',
         createdAt: new Date().toISOString(),
@@ -3773,7 +3984,7 @@ function App() {
         pinnedNoteIds: [],
         agentHistory: [],
         ...fields
-      };
+      });
       setCases(prev => [...prev, newCase]);
       return { success: true, caseId: newCase.id };
     },
@@ -3923,9 +4134,13 @@ function App() {
     // ГРУПА 3 — Нотатки
     add_note: ({ text, category = 'general', date = null, time = null, duration = null, caseId = null }) => {
       const nowIso = new Date().toISOString();
+      const u = getCurrentUser();
       const note = {
         id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        userId: 'vadym',
+        userId: u.userId,
+        createdBy: u.userId,
+        // tenantId — лише для standalone (без caseId); для in-case успадкується
+        ...(caseId ? {} : { tenantId: u.tenantId }),
         text: text || '',
         date: date || null,
         time: time || null,
@@ -4142,7 +4357,16 @@ function App() {
   };
 
   // ── executeAction — єдина точка входу для всіх дій агентів ─────────────────
-  const executeAction = (agentId, action, params, userId = 'vadym') => {
+  // ── executeAction — async з перевірками і audit log ───────────────────────
+  // Інтерфейс зберігається: agentId, action, params, [userId].
+  // Заглушки checkTenantAccess/RolePermission/CaseAccess зараз true для Вадима;
+  // у SaaS — заміняться на повноцінні перевірки без зміни сигнатури.
+  const executeAction = async (agentId, action, params, userId) => {
+    const currentUser = getCurrentUser();
+    const effectiveUserId = userId || currentUser.userId;
+    const tenantId = currentUser.tenantId;
+
+    // 1. Перевірка ролей агента (allowlist дій)
     const allowed = PERMISSIONS[agentId] || [];
     if (!allowed.includes(action)) {
       console.warn(`executeAction BLOCKED: ${agentId} → ${action}`);
@@ -4154,11 +4378,52 @@ function App() {
       return { success: false, error: `Невідома дія: ${action}` };
     }
 
-    logAction({ agentId, action, params, userId });
+    // 2. Перевірка tenant (заглушка → true)
+    if (!checkTenantAccess(effectiveUserId, tenantId)) {
+      console.warn(`executeAction TENANT DENIED: ${effectiveUserId} → ${tenantId}`);
+      return { success: false, error: 'Tenant access denied' };
+    }
+
+    // 3. Перевірка ролі для дії (заглушка → true для bureau_owner)
+    if (!checkRolePermission(currentUser.globalRole, action)) {
+      console.warn(`executeAction ROLE DENIED: ${currentUser.globalRole} → ${action}`);
+      return { success: false, error: `Action ${action} not allowed for role ${currentUser.globalRole}` };
+    }
+
+    // 4. Перевірка доступу до конкретної справи (якщо action прив'язаний)
+    if (params && params.caseId) {
+      const caseObj = cases.find(c => String(c.id) === String(params.caseId));
+      if (caseObj && !checkCaseAccess(effectiveUserId, caseObj)) {
+        console.warn(`executeAction CASE DENIED: ${effectiveUserId} → ${params.caseId}`);
+        return { success: false, error: `No access to case ${params.caseId}` };
+      }
+    }
+
+    logAction({ agentId, action, params, userId: effectiveUserId });
 
     try {
-      const result = ACTIONS[action](params);
+      const result = await ACTIONS[action](params);
       console.log(`executeAction OK: ${action}`, params, result);
+
+      // 5. Запис в auditLog для критичних дій (Q4: лише з AUDIT_ACTIONS)
+      if (shouldAudit(action) && result && (result.success || result.successCount)) {
+        const targetId = params?.caseId || result?.caseId || params?.targetId || null;
+        const targetType = params?.caseId || result?.caseId
+          ? 'case'
+          : (action.includes('hearing') ? 'hearing' : action.includes('deadline') ? 'deadline' : null);
+        writeAudit({
+          tenantId,
+          userId: effectiveUserId,
+          userRoleAtTime: currentUser.globalRole,
+          action,
+          targetType,
+          targetId,
+          status: 'done',
+          details: { params },
+          context: { module: 'executeAction', agent: agentId },
+        });
+      }
+
       return result;
     } catch (e) {
       console.error(`executeAction ERROR [${action}]:`, e);

@@ -1238,7 +1238,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     ? parts.join(" · ") + conflictText
     : "Вільний день";
 
-  function handleDashboardAction(action) {
+  async function handleDashboardAction(action) {
     const findCase = (name) => {
       if (!name) return null;
       const n = name.toLowerCase();
@@ -1249,8 +1249,8 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       );
     };
     const exec = (act, params) => onExecuteAction
-      ? onExecuteAction('dashboard_agent', act, params)
-      : { success: false, error: 'onExecuteAction відсутня' };
+      ? Promise.resolve(onExecuteAction('dashboard_agent', act, params))
+      : Promise.resolve({ success: false, error: 'onExecuteAction відсутня' });
     const fail = (error) => ({ ok: false, action: action.action, error });
     const okMsg = (message) => ({ ok: true, action: action.action, message });
 
@@ -1259,7 +1259,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         const c = findCase(action.case_name);
         if (!c) return fail(`справу "${action.case_name || ''}" не знайдено`);
         if (!action.hearing_date) return fail("дата для переносу не вказана");
-        const r = exec('update_hearing', {
+        const r = await exec('update_hearing', {
           caseId: c.id,
           hearingId: action.hearing_id || null,
           date: action.hearing_date,
@@ -1272,7 +1272,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         const c = findCase(action.case_name);
         if (!c) return fail(`справу "${action.case_name || ''}" не знайдено`);
         if (!action.hearing_date) return fail("дата засідання не вказана");
-        const r = exec('add_hearing', {
+        const r = await exec('add_hearing', {
           caseId: c.id,
           date: action.hearing_date,
           time: action.hearing_time || '',
@@ -1297,14 +1297,14 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           if (next) hearingId = next.id;
         }
         if (!hearingId) return fail(`у справі "${c.name}" немає засідання для видалення`);
-        const r = exec('delete_hearing', { caseId: c.id, hearingId });
+        const r = await exec('delete_hearing', { caseId: c.id, hearingId });
         if (r && r.success === false) return fail(r.error || 'не вдалося');
         return okMsg(`✅ Засідання у справі "${c.name}" видалено`);
       }
       case 'add_note': {
         const c = action.case_name ? findCase(action.case_name) : null;
         const dateStr = action.date || selectedDay;
-        const r = exec('add_note', {
+        const r = await exec('add_note', {
           caseId: c ? c.id : (action.caseId || null),
           text: action.text || action.note || '',
           date: dateStr,
@@ -1319,7 +1319,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       case 'update_note': {
         if (!action.noteId) return fail("noteId не вказано");
         const c = action.case_name ? findCase(action.case_name) : null;
-        const r = exec('update_note', {
+        const r = await exec('update_note', {
           noteId: action.noteId,
           text: action.text,
           date: action.date,
@@ -1332,7 +1332,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       case 'delete_note': {
         if (!action.noteId) return fail("noteId не вказано");
         const c = action.case_name ? findCase(action.case_name) : null;
-        const r = exec('delete_note', {
+        const r = await exec('delete_note', {
           noteId: action.noteId,
           caseId: c ? c.id : (action.caseId || null)
         });
@@ -1402,14 +1402,14 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
     return { actions, ranges };
   }
 
-  function handleAgentResponse(text) {
+  async function handleAgentResponse(text) {
     const { actions, ranges } = parseAllActionJSON(text);
     if (!actions.length) return { text, failures: [] };
     const successMsgs = [];
     const errorMsgs = [];
     const failures = [];
     for (const action of actions) {
-      const r = handleDashboardAction(action);
+      const r = await handleDashboardAction(action);
       if (!r) continue;
       if (r.ok) {
         if (r.message) successMsgs.push(r.message);
@@ -1499,7 +1499,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
 
       const data = await response.json();
       const rawText = data.content?.[0]?.text || "Не вдалося отримати відповідь";
-      const { text: cleanText, failures } = handleAgentResponse(rawText);
+      const { text: cleanText, failures } = await handleAgentResponse(rawText);
       setChatHistory(h => [...h, { role: "assistant", content: cleanText }]);
       if (failures.length) {
         // Зберігаємо нотатку для системи — буде префіксом до наступного user-message,

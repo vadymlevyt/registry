@@ -134,6 +134,27 @@ export async function selectLocalFolder() {
 }
 
 // ── BACKUP ──────────────────────────────────────────────────────────────────
+// Бекап перед SaaS Foundation міграцією — фіксованим іменем, поза ротацією.
+// Ім'я: registry_data_backup_pre_saas_<timestamp>.json
+// Викликається ОДИН РАЗ перед першою міграцією масиву → об'єкту.
+export async function backupRegistryDataPreSaas(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_saas_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-SaaS backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Зберегти резервну копію registry_data.json в _backups/ на Drive
 export async function backupRegistryData(token, casesData) {
   try {

@@ -165,6 +165,139 @@ ideas[] живе в App.jsx state і зберігається в registry_data.j
 Фаза 1 завершена. Фаза 2 в процесі.
 Наступний крок: перехід на Vite (потрібен десктоп).
 
+## 🧬 ФІЛОСОФІЯ СИСТЕМИ — ЕМБРІОН З ПОВНИМ ДНК
+
+Legal BMS — живий організм. Зараз він на стадії ембріону:
+- **Зовні:** соло-практика з одним адвокатом
+- **Всередині:** повна архітектура для SaaS з чотирма типами організацій (solo / bureau / association / firm), багаторівневими ієрархіями, командами справ, permissions, аудитом, білінгом, всім майбутнім функціоналом
+
+Ембріон людини маленький, але має повне ДНК дорослого тіла. Печінка не з'являється «ззовні» при розвитку — вона завжди була в ДНК і просто розгортається в потрібний момент.
+
+**Так само Legal BMS:**
+- Зараз багато речей — заглушки що повертають true (бо один користувач)
+- Структури даних — повні, з усіма потрібними полями для майбутнього
+- Перевірки прав — викликаються (готові прийняти реальну логіку)
+- Audit log — реально пише (для одного користувача поки що)
+
+Коли система розгорнеться в SaaS — це не «додавання нового», а **розгортання того що вже є**. Заглушки замінюються на реальну логіку. Користувачі додаються в `users[]`. Tenants — в `tenants[]`. Ніяких архітектурних переробок.
+
+### Принципи для кожного TASK
+
+При роботі над **будь-яким** новим функціоналом запитай себе:
+
+1. **Tenant-aware?** Нова сутність прив'язана до `tenantId`?
+2. **User-aware?** Зрозуміло хто створив, оновив, видалив (`createdBy`/`updatedBy`)?
+3. **Audit-aware?** Критичні дії пишуться в `auditLog[]`?
+4. **Permission-aware?** Дія проходить через `executeAction` з перевірками?
+5. **Future-aware?** Чи передбачені хуки для майбутніх ролей, команд, прав?
+6. **Data-rich?** Збираються чи всі дані які можуть знадобитись потім (не зараз)?
+
+Якщо хоч одне питання має відповідь «ні» — **зараз є можливість** додати потрібні поля/перевірки/хуки. Робимо одразу. Не «потім переробимо».
+
+## SAAS FOUNDATION v2.0
+
+### Типи tenants (фіксований enum)
+
+- **solo** — адвокат-фізособа з помічником
+- **bureau** — адвокатське бюро (наш поточний випадок: `ab_levytskyi`)
+- **association** — адвокатське об'єднання (партнери з кластерами)
+- **firm** — юридична фірма (багаторівнева ієрархія, практики)
+
+### Глобальні ролі (фіксований enum за типом)
+
+**Solo:** solo_advocate, solo_assistant
+**Bureau:** bureau_owner, bureau_lawyer, bureau_assistant
+**Association:** association_partner, association_lawyer, association_assistant
+**Firm:** firm_managing_partner, firm_partner, firm_counsel, firm_senior_associate, firm_associate, firm_junior_associate, firm_paralegal, firm_intern
+**Cross-tenant:** external_collaborator
+
+### Ролі в команді справи (caseRole)
+
+Окремо від глобальних ролей у кожній справі є caseRole:
+- `lead` — повний контроль
+- `oversight` — read-only + може втручатися
+- `team_member` — робота за вказівками lead
+- `consulted` — read-only + може коментувати
+- `external` — зовнішній адвокат з тимчасовим доступом
+
+### Архітектура `executeAction`
+
+```
+агент → executeAction(agentId, action, params)
+              ↓
+   1. allowlist PERMISSIONS[agentId]
+              ↓
+   2. checkTenantAccess() ← заглушка → true
+              ↓
+   3. checkRolePermission() ← заглушка → true для bureau_owner
+              ↓
+   4. checkCaseAccess() ← перевіряє ownerId/team/externalAccess
+              ↓
+   5. ACTIONS[action](params) ← реальна логіка
+              ↓
+   6. shouldAudit(action) ? writeAuditLog : nothing
+              ↓
+   7. save до Drive (через useEffect)
+```
+
+`executeAction` **async**. Усі callers мають await'ити результат якщо читають `.success`/`.error`.
+
+### Які дії пишуться в auditLog
+
+ТІЛЬКИ критичні (з `AUDIT_ACTIONS` в `src/services/auditLogService.js`):
+- `create_case`, `close_case`, `restore_case`, `destroy_case`
+- `delete_hearing`, `delete_deadline`
+
+`update_*`, `add_note`, `pin_note`, `add_hearing`, `add_deadline`, `add_time_entry` — **НЕ пишемо**. Шум переважає користь.
+
+### Структура `registry_data.json` v2
+
+```json
+{
+  "schemaVersion": 2,
+  "settingsVersion": "2.0_saas_foundation",
+  "tenants": [...],
+  "users": [...],
+  "auditLog": [...],
+  "structuralUnits": [],
+  "cases": [...]
+}
+```
+
+Старий формат (масив cases[]) автоматично мігрується при першому завантаженні. Перед міграцією створюється бекап `registry_data_backup_pre_saas_<ts>.json` у `_backups/`.
+
+### Сервіси SaaS Foundation
+
+- `src/services/tenantService.js` — `getCurrentTenant()`, `getCurrentUser()`, DEFAULT_TENANT, DEFAULT_USER
+- `src/services/permissionService.js` — `checkTenantAccess`, `checkRolePermission`, `checkCaseAccess` (зараз заглушки)
+- `src/services/auditLogService.js` — `AUDIT_ACTIONS`, `shouldAudit`, `writeAuditLog`, `updateAuditLogStatus`
+- `src/services/migrationService.js` — `migrateRegistry`, `ensureCaseSaasFields`, `CURRENT_SCHEMA_VERSION`
+
+### Поля справи — обов'язкові SaaS
+
+Кожна справа в `cases[]` після міграції має:
+- `tenantId` — приналежність до організації
+- `ownerId` — провідний адвокат (= автор)
+- `team[]` — `[{ userId, caseRole, addedAt, addedBy }]`
+- `shareType` — `private` | `internal` | `external`
+- `externalAccess[]` — для майбутніх крос-tenant доступів
+
+Вкладені сутності (`hearings[]`, `deadlines[]`, `notes[]` всередині cases) — **не дублюють** `tenantId`, успадковують з parent. Але отримують `createdBy`.
+
+Standalone notes (поза справою, в `levytskyi_notes`) — мають `tenantId` і `createdBy`.
+
+### destroy_case — спеціальна процедура
+
+Запис в auditLog **до** видалення зі статусом `pending`, після успіху → `done`, на помилку → `failed`. Гарантує що навіть втрачена мережа лишає слід.
+
+### Що НЕ робити
+
+- НЕ додавати UI керування користувачами/ролями (окремий TASK)
+- НЕ замінювати заглушки на реальну логіку без узгодження з архітектором
+- НЕ створювати нові сутності без `tenantId`
+- НЕ обходити `executeAction` для модифікацій даних (виняток: UI-функції addCase/closeCase/restoreCase/destroy_case з прямим writeAuditLog)
+- НЕ дублювати `tenantId` у вкладених сутностях справи
+
 ## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
 
 Єдине джерело правди для всіх модулів — App.jsx.
