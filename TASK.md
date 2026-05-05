@@ -1,1604 +1,983 @@
-# TASK: SaaS Foundation v1
-## Закладання фундаментальної архітектури для майбутньої мультикористувацької версії
+# TASK: SaaS Foundation v1.1 — Patch and Extension
 
-**Версія:** 1.4
-**Дата створення:** 04.05.2026
-**Останні зміни:** Додано UI-макети, матриці прав і порівняння ДО/ПІСЛЯ як форми візуалізації. Принцип "форма за змістом" — Claude Code обирає з 8 форм залежно від того що ілюструється.
-**Очікувана тривалість:** 1 день роботи Claude Code (діагностика 1-2 год + впровадження 6-8 год)
-**Пріоритет:** ВИСОКИЙ — виконується перед усіма наступними TASK
-**Залежності:** Жодних — це фундаментальний TASK
+**Версія:** 1.1
+**Дата створення:** 05.05.2026
+**Тип:** доповнення до SaaS Foundation v1 (commit 4f719fc)
+**Очікувана тривалість:** 7-10 годин роботи Claude Code (≈1 робочий день)
+**Пріоритет:** ВИСОКИЙ — виконується перед Billing Foundation
+**Залежності:** SaaS Foundation v1 (виконано 2026-05-04)
 **Гілка:** main
 
 ---
 
-## КОНТЕКСТ
+## 🎯 КОНТЕКСТ І ПРИЧИНА TASK
 
-Legal BMS зараз працює як соло-практика для одного адвоката (Вадим Левицький). У майбутньому система розгортається як SaaS для **чотирьох типів організацій**:
+SaaS Foundation v1 виконано якісно за 3 години замість прогнозованих 7-8. Структура tenants/users/auditLog/permissions заклала каркас multi-tenancy. Але після впровадження виявлено **дві групи речей які треба закрити**:
 
-1. **Соло-практика** — один адвокат + помічник
-2. **Адвокатське бюро** — керівник + наймані адвокати + помічники
-3. **Адвокатське об'єднання** — партнери (рівні в правах) + наймані + помічники, з кластерами по партнерах
-4. **Юридична фірма** — багаторівнева ієрархія: managing partner → partners → counsel → senior associates → associates → junior associates → paralegals → interns; з практиками і департаментами
+**Група 1 — Архітектурний борг знайдений Claude Code під час впровадження** (зафіксовано в `bugs_found_during_saas_foundation.md`):
+- agentHistory у трьох джерелах
+- levytskyi_action_log дублює auditLog
+- id mixed types (number у старих справах, string у нових)
+- driveService.writeCases deprecated alias
+- proceedings/documents лише у Брановський
 
-Цей TASK закладає **архітектурний фундамент** який підтримує всі чотири типи організацій без подальшого переписування коду. Зараз система продовжує працювати як соло — всі нові структури мають єдиний tenant і єдиного користувача (Вадим). Коли почнеться SaaS-розгортання — додаються нові tenants, користувачі, ролі без зміни архітектури.
+**Група 2 — Прогалини виявлені в архітектурному обговоренні** (з адмін-чату «CRM і Білінг»):
+- Структура `ai_usage[]` для SaaS-телеметрії — оператор має бачити витрати кожного юриста на API
+- Поле `tenant.storage` для майбутніх тарифних режимів
+- `case.team[i].permissions` для гранулярного контролю доступу
+- `caseAccess[]` денормалізована таблиця-індекс
+- `tenant.modelPreferences` для тарифних пакетів з вибором моделі агента
+- `tenant.subscription.limits + current` для обліку лімітів пакетів
+- Активація заглушок `checkTenantAccess` і `checkCaseAccess`
 
-**Принцип:** структура закладається повна, логіка пишеться мінімально (заглушки що повертають true для поточного користувача). Коли треба буде підтримувати багатьох користувачів — заглушки замінюємо на реальну логіку перевірок без перебудови.
+Жодна з цих прогалин не блокує роботу системи — заглушки повертають true, дані пишуться. Але кожна створює **майбутній міграційний борг**: при першому ж дотику до тарифів/білінгу/multi-user довелось би знову робити структурну міграцію, оновлювати migrationService, переписувати ensureCaseSaasFields.
 
----
+**Філософія «ембріон з повним ДНК»** вимагає закласти ці структури зараз, навіть якщо вони не використовуються.
 
-## 🧬 ФІЛОСОФІЯ: ЕМБРІОН З ПОВНИМ ДНК
-
-**Це найважливіший розділ TASK. Без розуміння цього всі технічні деталі втрачають сенс.**
-
-### Метафора живого організму
-
-Legal BMS — це **живий організм**. Зараз він на стадії **ембріону** — маленький, простий, з єдиним користувачем-засновником. Але всередині цього ембріону вже **повне ДНК зрілого організму**.
-
-Як це працює в природі:
-- Ембріон людини **малесенький**, але має повне ДНК — інформацію про доросле тіло, всі органи, всі системи
-- Він **росте** не «нарощуючи нові ДНК», а **розгортаючи ту що вже є**
-- Печінка не з'являється «ззовні» — вона **завжди була в ДНК**, просто розгорнулася в потрібний момент
-- Це не «додавання» — це **зрілість того що вже закладено**
-
-**Так само Legal BMS:**
-- Зараз — solo з одним користувачем
-- В ДНК (архітектурі даних і коду) — **уже закладено** все необхідне для:
-  - Multi-tenant SaaS
-  - Чотирьох типів організацій
-  - Багаторівневих ієрархій
-  - Команд по справах
-  - Permissions per role / per case / per action
-  - Audit log
-  - Білінгу з пасивним відстеженням
-  - Telegram-інтеграції
-  - ЄСІТС RPA
-  - Усього майбутнього функціоналу
-- Коли треба буде — це не «додаватиметься», а **активуватиметься і розгортатиметься**
-
-### Принципи для Claude Code при кожній роботі
-
-**1. Чи закладено достатньо в ДНК?**
-
-Перед написанням будь-якого нового коду Claude Code запитує себе:
-- Чи врахована можливість того що пізніше тут буде кілька користувачів?
-- Чи врахована можливість багатотенантності?
-- Чи є поля для аудиту (хто, коли, що)?
-- Чи є хук для майбутньої перевірки прав?
-- Чи прив'язується нова сутність до tenant'у?
-
-Якщо відповідь «ні» хоч на одне питання — треба **додати** ці поля/перевірки **зараз**, навіть якщо вони поки не використовуються.
-
-**2. Не плутати «ембріон» з «бідним продуктом»**
-
-Ембріон — це не «спрощена версія». Це **повноцінний організм на ранній стадії розвитку**. Він має все необхідне для життя. Просто його органи ще не виросли до повного розміру.
-
-Так само Legal BMS зараз — це не «обрізана версія SaaS». Це **повноцінна архітектура, яка фізично обслуговує одного користувача** доки інші не приєднаються.
-
-Тому не треба думати «зараз спростимо, потім переробимо». Треба думати «зараз закладемо повне ДНК, потім просто додамо користувачів».
-
-**3. Кожна нова сутність — повна структура з самого початку**
-
-Коли в майбутніх TASK з'являється нова сутність (наприклад, `time_entries`, `invoices`, `templates`, `documents`, `clients`) — вона **завжди** має:
-
-- `id` — унікальний
-- `tenantId` — приналежність до організації
-- `userId` (якщо застосовно) — хто створив
-- `createdAt`, `updatedAt`, `createdBy`, `updatedBy`
-- Поля для team-context (якщо стосується справи)
-- Поля для аудиту (якщо суттєва)
-
-Навіть якщо зараз тільки один tenant і один користувач — **поля ці є**.
-
-**4. Кожна нова дія — через executeAction з перевірками**
-
-Будь-яка модифікація даних завжди проходить через `executeAction` з:
-- Перевіркою прав
-- Аудиторським записом (для критичних дій)
-- Прив'язкою до контексту користувача
-
-Не «спочатку напишемо логіку, потім обгорнемо перевірками» — а **одразу через перевірки**.
-
-**5. Кожен новий модуль — багато точок зйому даних**
-
-Чим більше точок де система **знає що відбувається** — тим точніший автообік часу, тим краща аналітика, тим розумніша поведінка агентів.
-
-Тому при розробці нового модуля Claude Code запитує:
-- Які події тут варто фіксувати в `auditLog`?
-- Які дії варто інструментувати для білінгу (час роботи)?
-- Які стани користувача варто відстежувати для аналітики?
-- Чи можна логувати щось таке що **зараз не використовується**, але буде корисно потім?
-
-**Принцип:** збирати дані з запасом. Потім обробляти/відображати по мірі готовності UI.
-
-### Як це впливає на цей конкретний TASK
-
-В цьому TASK ми:
-
-1. Створюємо **повну архітектуру SaaS-готовності** — структури `tenants[]`, `users[]`, `roles`, `team[]`, `auditLog[]`, `externalAccess[]`. Усе закладено навіть якщо зараз використовується один запис.
-
-2. Розширюємо існуючі дані до **повного формату**:
-   - `cases` отримують `tenantId`, `ownerId`, `team[]`, `shareType`, `externalAccess[]`
-   - `hearings`, `notes`, `time_entries` отримують `tenantId`
-   - Все стає готовим до SaaS
-
-3. Інтегруємо в `executeAction` **повний цикл перевірок**:
-   - `checkTenantAccess` (зараз — заглушка true)
-   - `checkRolePermission` (зараз — true для bureau_owner)
-   - `checkCaseAccess` (зараз — true для owner)
-   - Логування в `auditLog` (зараз — реально пише)
-
-4. Документуємо в `CLAUDE.md` філософію ембріона **щоб у наступних TASK** Claude Code пам'ятав цей принцип.
-
-### Що це означає для майбутніх TASK
-
-Кожен наступний TASK (Tool Use Preparation, Canvas, CRM/Білінг, Telegram, ЄСІТС) автоматично враховує:
-- Multi-tenant природу системи
-- Permissions перевірки
-- Audit log
-- Прив'язку до користувача і tenant'у
-- Можливість пасивного відстеження часу
-- Хуки для майбутніх функцій
-
-**Без переписування. Без рефакторингу. Просто розгортання того що вже закладено.**
+Цей TASK — об'єднує обидві групи. Низькоризиковий, не зачіпає UI, тільки додає структури і виправляє знайдені борги.
 
 ---
 
+## 🧬 ФІЛОСОФСЬКІ ПРИНЦИПИ ЦЬОГО TASK
 
+(Філософію «ембріон з ДНК» вже закладено в CLAUDE.md після SaaS Foundation v1. Повторюємо ключове.)
 
-## МЕТА TASK
-
-Розширити структуру даних і додати шар перевірок прав доступу так, щоб:
-
-1. Усі існуючі дані прив'язалися до tenant'у і користувача (міграція з default-значеннями)
-2. З'явилися структури для майбутніх користувачів, ролей, команд по справах, аудиту
-3. Кожна дія через `executeAction` пройшла через перевірку прав (зараз — заглушка, в майбутньому — реальна логіка)
-4. Поточна функціональність системи **не зламалася** — все працює як раніше
-5. Кожен наступний TASK мав готову основу для SaaS і не вимагав архітектурних змін
-
----
-
-## ОБМЕЖЕННЯ І ПРИНЦИПИ
-
-### Що робимо
-
-- Розширюємо структуру `registry_data.json` новими розділами
-- Мігруємо існуючі дані з default-значеннями (`tenantId: 'ab_levytskyi'`, `ownerId: 'vadym'`)
-- Додаємо нові утилітні функції перевірок (`checkTenantAccess`, `checkRolePermission`, `checkCaseAccess`)
-- Інтегруємо ці функції в `executeAction`
-- Додаємо запис в `auditLog` для критичних дій
-- Документуємо нову архітектуру в `CLAUDE.md`
-
-### Що НЕ робимо
-
-- НЕ змінюємо UI поточних модулів
-- НЕ додаємо інтерфейс керування користувачами/ролями (це окремий TASK у майбутньому)
-- НЕ реалізуємо логіку перевірок (заглушки що повертають true для поточного користувача)
-- НЕ міняємо роботу агентів (вони продовжують працювати як раніше)
-- НЕ робимо міграцію Document Processor чи інших старих модулів — це окремі TASK
-
-### Принцип «закладено але не активно»
-
-Структури є, поля заповнені, перевірки викликаються — але **поведінка системи для поточного користувача (Вадим) ідентична попередній**. Коли додасться другий користувач — заглушки оновлюються, без зміни виклику.
+1. **Не міняємо UI.** Поля додаємо в дані, заглушки в сервіси. Жодних нових кнопок чи налаштувань.
+2. **Не активуємо логіку повністю.** Структури готові, поведінка ідентична поточній. Окремі заглушки (checkTenantAccess, checkCaseAccess) активуються мінімально.
+3. **Кожне нове поле — у міграцію.** `migrationService.js` навчається додавати нові поля старим записам. Ідемпотентно.
+4. **Кожна нова структура — в backup.** При наступному `backupRegistryData` ці поля автоматично потрапляють у бекап.
+5. **Один архіваріус, одне джерело правди.** Якщо знаходиться дублювання даних — виправляємо. Якщо знаходиться застарілий код — викидаємо.
 
 ---
 
 ## ⚠️ ФАЗА 0 — ОБОВ'ЯЗКОВА ДІАГНОСТИКА ПЕРЕД ВПРОВАДЖЕННЯМ
 
-**Це найважливіша частина TASK. Без неї не починати модифікації коду.**
+Перед будь-якими змінами Claude Code зобов'язаний створити файл `diagnostic_saas_foundation_v1_1.md` і отримати згоду адвоката.
 
-Цей TASK торкається **фундаментальних структур даних** і **критичної функції `executeAction`**. Помилки на цьому рівні можуть зламати усю систему (Дашборд, Досьє, QI). Тому перед будь-якими змінами Claude Code повинен **повністю розібратися** в поточному стані і **зафіксувати знахідки**.
+### Що перевірити в діагностиці
 
-### Принцип
+#### 1. Поточний стан після SaaS Foundation v1
 
-> «Неможливо правильно змінити те, чого не зрозумів повністю.»
-
-План TASK написано на основі архітектурного бачення. Але **реальний стан коду може відрізнятися**. Тому Claude Code:
-1. Спочатку проводить розвідку — створює `diagnostic_saas_foundation.md`
-2. Зупиняється і чекає згоди адвоката
-3. Тільки потім впроваджує зміни
-
-### Завдання діагностики
-
-Створити файл `diagnostic_saas_foundation.md` в корені репо з детальними результатами розвідки за пунктами нижче.
-
-#### 1. Структура даних `registry_data.json`
-
-**Завантажити поточний `registry_data.json` з Drive і проаналізувати:**
-
-- Перерахувати всі поля верхнього рівня (`cases`, `hearings`, `notes`, `pinnedNoteIds`, etc.)
-- Для кожної основної структури (`cases[]`, `hearings[]`, `notes[]`, `time_entries[]` якщо є) — навести **повний приклад одного запису** з реальними даними (можна знеособити імена)
-- Виявити які поля типу `userId`, `tenantId`, `ownerId`, `createdAt`, `updatedAt` **вже є** і яких **ще немає**
-- Перевірити чи є поле `dataVersion` і його поточне значення
-- Подивитися чи вже існують `users[]`, `tenants[]`, `auditLog[]` (можливо хтось уже почав)
-- Знайти всі поля з датами — який формат (ISO string, timestamp number, інше)
-- Перевірити консистентність — чи скрізь однакові назви полів, чи десь різні
-
-**Записати у файл:**
-- Повну схему даних якщо вона не задокументована
-- Список **відмінностей** між тим що очікує цей TASK і що є реально
-- Виявлені **неконсистентності** (різні назви полів, різні формати дат)
-
-#### 2. Функція `executeAction`
-
-**Знайти поточну реалізацію `executeAction`:**
-
-- В якому файлі вона знаходиться (App.jsx чи окремий?)
-- Яка її поточна сигнатура (параметри)
-- Як вона викликається з агентів (QI, Dashboard, Досьє)
-- Чи є вже якісь перевірки прав/власності
-- Як вона взаємодіє з Drive (коли і як зберігає дані)
-
-**Записати у файл:**
-- Поточну сигнатуру функції з прикладом коду
-- Список усіх дій (actions) які вона обробляє
-- Список усіх місць звідки вона викликається
-- План — як саме інтегрувати перевірки без ламання логіки
-
-#### 3. Існуючі ACTIONS і PERMISSIONS
-
-**Знайти реєстр ACTIONS і матрицю PERMISSIONS:**
-
-- В якому файлі описані
-- Скільки actions зараз
-- Структура одного action (які поля)
-- Як працює PERMISSIONS (per agent, per role?)
-- Чи є метадані про action (logs, audit-relevance?)
-
-**Записати у файл:**
-- Поточну структуру ACTIONS і PERMISSIONS
-- План розширення (додавання `requiresAudit`, `affectsCase`, `requiredRole`)
-- Чи треба переробляти ці структури зараз чи можна додати поверх
-
-#### 4. Спосіб завантаження і збереження даних
-
-**Знайти функції роботи з Drive:**
-
-- Де ініціалізується завантаження `registry_data.json`
-- Як працює збереження після змін
-- Чи є debouncing/throttling
-- Де відбувається синхронізація між пристроями
-- Чи є обробка конфліктів
-
-**Записати у файл:**
-- Карту функцій (load, save, sync) з точними іменами
-- В якому місці інтегрувати міграцію
-- Де ставити бекап перед міграцією
-
-#### 5. Структура папок справ на Google Drive
-
-**Перевірити що є зараз:**
-
-- Папки справ (00_INBOX, 01_ОРИГІНАЛИ, 02_ОБРОБЛЕНІ, 03_ФРАГМЕНТИ, 04_ПОЗИЦІЯ, 05_ЗОВНІШНІ)
-- Чи є агентські файли (`case_context.md`, `agent_history.json`)
-- Як відбувається доступ до файлів справи
-
-**Записати у файл:**
-- Поточну структуру
-- Чи треба змінювати з огляду на multi-user
-- Що залишити як є
-
-#### 6. Існуючі агенти і їх взаємодія з даними
-
-**Знайти всіх агентів:**
-
-- QI agent
-- Dashboard agent
-- Досьє agent (розмовний)
-- Document AI agent (для контексту)
-- Інші якщо є
-
-**Для кожного:**
-- В якому файлі промпт
-- Які actions може виконувати
-- Як отримує userId/tenantId (зараз скоріше всього хардкод "vadym" або взагалі немає)
-- Як буде передавати ці контексти після TASK
-
-**Записати у файл:**
-- Список агентів
-- Що в кожному треба буде поправити (мінімальні зміни)
-
-#### 7. Кількість реальних даних
-
-**Виміряти:**
-
-- Скільки справ зараз (активних і архівних)
-- Скільки hearings
-- Скільки notes
-- Скільки time_entries (якщо існує)
-- Скільки записів усього в `registry_data.json`
-- Розмір файлу
-
-**Записати у файл:**
-- Числа щоб оцінити обсяг міграції
-- Чи може міграція тривати довго
-
-#### 8. Виявлені ризики і відкриті питання
-
-**Окремий розділ файлу:**
-
-- Що зробить міграція якщо щось вже мігроване частково?
-- Які поля можуть конфліктувати з новими?
-- Чи є місця де код напряму звертається до полів які зміняться?
-- Що буде якщо адвокат запустить TASK на пристрої де відкрита система і йде запис?
-- Чи можна тестувати на копії даних, не на бойових?
-
-**Записати у файл:**
-- Усі питання які виникли під час діагностики
-- Усі ризики які треба врахувати
-- Пропозиції — як обійти кожен ризик
-
-### Структура файлу `diagnostic_saas_foundation.md`
-
-```markdown
-# Діагностика перед TASK SaaS Foundation
-**Дата:** [дата]
-**Виконав:** Claude Code Opus
-**Статус:** Розвідка завершена. Чекаю згоди на впровадження.
-
-## 1. Поточний стан registry_data.json
-
-### Поля верхнього рівня
-[перелік з описом]
-
-### Структура cases[]
-[повний приклад одного запису]
-
-### Структура hearings[]
-[повний приклад]
-
-### Структура notes[]
-[повний приклад]
-
-### Структура time_entries[] (якщо є)
-[повний приклад або "не існує"]
-
-### Версія даних
-- Поточне значення dataVersion: [число або "відсутнє"]
-
-### Виявлені неконсистентності
-[список]
-
-## 2. executeAction — поточна реалізація
-
-### Розташування
-- Файл: [шлях]
-- Сигнатура: [код]
-
-### Точки виклику
-[список місць у коді з номерами рядків]
-
-### Поточна логіка перевірок
-[опис або "відсутні"]
-
-## 3. ACTIONS і PERMISSIONS — поточна структура
-
-### Розташування
-[файл]
-
-### Кількість і список actions
-[перелік]
-
-### Структура PERMISSIONS
-[опис]
-
-## 4. Завантаження і збереження даних
-
-### Функції load
-[опис з іменами]
-
-### Функції save
-[опис з іменами]
-
-### Місце для інтеграції міграції
-[конкретна пропозиція з посиланнями на код]
-
-## 5. Структура папок на Drive
-[опис існуючої структури]
-
-## 6. Агенти
-
-### QI Agent
-- Файл промпту: [шлях]
-- Actions: [перелік]
-- Як отримує контекст користувача: [опис]
-
-### Dashboard Agent
-[аналогічно]
-
-### Dossier Agent (розмовний)
-[аналогічно]
-
-### Document AI / контекстний агент
-[аналогічно]
-
-## 7. Об'єм даних
-
-- Cases: [число]
-- Hearings: [число]
-- Notes: [число]
-- Time entries: [число або "не існує"]
-- Розмір registry_data.json: [розмір]
-
-## 8. Ризики і питання
-
-### Ризики
-1. [перелік з описом]
-
-### Відкриті питання
-1. [перелік]
-
-### Пропозиції з обходу
-1. [перелік]
-
-## 9. Адаптований план впровадження
-
-[оригінальний план з TASK з конкретними правками під реальний стан коду]
-
-## 10. Готовність до впровадження
-
-- [ ] Усі поля верхнього рівня перевірено
-- [ ] executeAction знайдено і вивчено
-- [ ] ACTIONS/PERMISSIONS вивчено
-- [ ] Точка інтеграції міграції визначена
-- [ ] Бекап-стратегія описана
-- [ ] Усі ризики мають план обходу
-- [ ] Усі агенти проінспектовано
+```bash
+cat src/services/migrationService.js
+cat src/services/tenantService.js
+cat src/services/auditLogService.js
+cat src/services/permissionService.js
+grep -n "schemaVersion" src/App.jsx
 ```
 
-### Зупинка перед впровадженням
+Зафіксувати:
+- Поточний `schemaVersion` (має бути 2)
+- Структуру `DEFAULT_TENANT` в tenantService
+- Стан заглушок в permissionService
 
-**Після створення `diagnostic_saas_foundation.md`** Claude Code:
+#### 2. Точки виклику Anthropic API
 
-1. Записує в `progress_saas_foundation.md`:
-   ```
-   ## Статус: ДІАГНОСТИКА ЗАВЕРШЕНА — ЧЕКАЮ ЗГОДИ
+Знайти всі місця де викликається Anthropic API — для логування `ai_usage`:
 
-   Проаналізовано поточний стан системи. Усі знахідки в diagnostic_saas_foundation.md.
+```bash
+grep -rn "api.anthropic.com\|anthropic.com/v1" src/
+grep -rn "x-api-key" src/
+grep -rn "claude-sonnet\|claude-haiku\|claude-opus" src/
+```
 
-   Перед початком впровадження потрібна згода адвоката:
-   1. Прочитати diagnostic_saas_foundation.md
-   2. Підтвердити що план впровадження враховує реальний стан
-   3. Дати команду "стартуй впровадження"
-   ```
+Очікувано — щонайменше 5-7 місць (App.jsx sendChat, Dashboard agent, Dossier agent, Document Processor, CaseDossier handleCreateContext, Quick Input аналіз). Зафіксувати **повний список** з номерами рядків і моделями.
 
-2. **ЗУПИНЯЄТЬСЯ і чекає** команди від адвоката.
+#### 3. Стан `levytskyi_action_log`
 
-3. Адвокат:
-   - Читає `diagnostic_saas_foundation.md` (з планшета через GitHub або в редакторі)
-   - При необхідності обговорює зі мною (Claude в адмін-чаті) знахідки і план
-   - Дає в Claude Code команду «продовжуй впровадження» або «змінити те-то»
+Перевірити:
+- Чи існує в localStorage
+- Які поля містить
+- Чи дублюється з `auditLog` (з SaaS Foundation v1)
+- Які записи можна перенести, які — викинути
 
-**Цей механізм запобігає сюрпризам.** Краще витратити 1-2 години на діагностику ніж зламати систему через неврахований нюанс.
+#### 4. id mixed types — масштаб проблеми
 
-### Якщо діагностика виявила критичні розбіжності
+```bash
+grep -rn "case.id\|caseId" src/ | head -50
+```
 
-Якщо реальний стан коду **значно відрізняється** від того що написано в розділах нижче (наприклад, executeAction вже має іншу структуру, або вже є власна реалізація tenantId), Claude Code:
+Перевірити:
+- Скільки справ мають `id: <number>` vs `id: "<string>"`
+- Де порівнюються (`===`, `==`)
+- Чи є місця де порівняння може ламатись через mixed types
 
-1. **Не намагається** «припасувати» оригінальний план силою
-2. Описує розбіжності в `diagnostic_saas_foundation.md` детально
-3. Пропонує **адаптований план** який враховує реальність
-4. Чекає згоди — оригінальний план чи адаптований
+#### 5. driveService.writeCases — використання
 
-**Адвокат має останнє слово.** При сумніві — обговорюємо в адмін-чаті.
+```bash
+grep -rn "writeCases" src/
+```
+
+Перевірити:
+- Скільки місць ще викликає `writeCases`
+- Чи всі вони можна замінити на `writeRegistry`
+- Чи alias реально не потрібен
+
+#### 6. Розмір поточного `registry_data.json`
+
+Не критично, але корисно знати наскільки розростеться файл після додавання `ai_usage[]`. Якщо файл уже > 1 МБ — обговорити стратегію (можливо винести `ai_usage[]` в окремий файл `ai_usage_log.json` на Drive).
+
+#### 7. Вирівнювання agentHistory (з diagnostic_agentHistory.md)
+
+Підтвердити що:
+- localStorage `agent_history_<id>` slice = 20 (треба = 50)
+- Drive `agent_history.json` slice = 50 (правильно)
+- React state slice = 50 (правильно)
+- Застарілий коментар в App.jsx:3273 ще на місці
+
+### Артефакт фази 0
+
+`diagnostic_saas_foundation_v1_1.md` з:
+1. Підтвердженням поточного `schemaVersion` (має бути 2)
+2. Списком всіх точок виклику Anthropic API з рядками
+3. Поточним станом `tenants[]`, `users[]`, заглушок
+4. Аналізом `levytskyi_action_log` (що мерджити, що викидати)
+5. Масштабом id mixed types (скільки справ потребують міграції)
+6. Розміром `registry_data.json`
+7. Стан agentHistory slice розмірів
+8. Питаннями до адвоката (Q1, Q2, ...) — якщо щось неоднозначне
+
+**Зупинка для згоди адвоката.** Не починати впровадження без явної команди «продовжуй».
 
 ---
 
+## 📋 МЕТА TASK — ЩО САМЕ РОБИМО
 
+### ЧАСТИНА А — Виправлення архітектурного боргу
 
-### Нова структура `tenants[]`
+**А1. Малий фікс agentHistory** (~7 хвилин)
+- Вирівняти slice в localStorage з `-20` на `-50` (CaseDossier:533)
+- Видалити застарілий коментар «тимчасово, поки немає agent_history.json» в App.jsx:3273
+- Конфлікт з CLAUDE.md секцією «AGENT HISTORY» — НЕ виправляємо в коді, виправимо CLAUDE.md в окремому Audit TASK
+- 3-tier pattern (Drive → localStorage → state) залишаємо як є — це нормальна архітектура
 
-Додати в корінь `registry_data.json`:
+**А2. levytskyi_action_log → auditLog merge** (~30 хв)
+- Прочитати дані з `levytskyi_action_log` в localStorage
+- Перенести цінні записи в `auditLog[]` (з полями action, userId, timestamp)
+- Видалити старий ключ з localStorage
+- Видалити код який пише в `levytskyi_action_log`
+- Зберегти бекап старих даних в `_backups/levytskyi_action_log_<ts>.json` перед видаленням
 
+**А3. id mixed types → string скрізь** (~1-2 год)
+- Міграція всіх існуючих `case.id` з number → string (формат `case_<originalNumber>` або UUID)
+- Оновити всі hearings/deadlines/notes/timeLog де ID посилається на caseId
+- Перевірити всі місця порівняння (`===`)
+- Backward compat: при читанні старих даних — конвертувати в string при міграції
+
+**А4. driveService.writeCases cleanup** (~30-60 хв)
+- Знайти всі виклики `writeCases` в коді
+- Замінити на `writeRegistry`
+- Видалити alias `writeCases` з driveService.js
+- Перевірити що нічого не зламалось
+
+**А5. proceedings/documents — НЕ зараз** — переноситься в TASK Document Processor v2
+
+### ЧАСТИНА Б — SaaS-телеметрія і структури
+
+**Б1. ai_usage[] на верхньому рівні registry_data.json** (~1 год)
+
+Структура:
 ```json
 {
-  "tenants": [
-    {
-      "tenantId": "ab_levytskyi",
-      "type": "bureau",
-      "name": "Адвокатське бюро «Вадима Левицького»",
-      "edrpou": "40434074",
-      "registrationDate": "2016-06-15",
-      "ownerUserId": "vadym",
-      "addresses": {
-        "kyiv": "вул. Володимирська, 4, 01025, Київ",
-        "kostopil": "вул. Дорошенка, 33, 35001, Костопіль"
-      },
-      "contacts": {
-        "email": "info@levytskyi.com",
-        "phone": "+380674621428",
-        "website": null
-      },
-      "bankDetails": {
-        "iban": "UA643052990000026001046211855",
-        "bank": "ПриватБанк"
-      },
-      "subscription": {
-        "plan": "self_hosted",
-        "validUntil": null,
-        "features": ["all"]
-      },
-      "settings": {
-        "language": "uk",
-        "documentStandard": {
-          "font": "Times New Roman",
-          "fontSize": "12-14pt",
-          "margins": { "left": 30, "top": 20, "right": 20, "bottom": 20 },
-          "lineHeight": 1.5,
-          "pageSize": "A4"
-        }
-      },
-      "createdAt": "2016-06-15T00:00:00Z",
-      "updatedAt": "...автоматично при першому збереженні"
-    }
-  ]
+  "schemaVersion": 3,
+  "settingsVersion": "3.0_telemetry_storage",
+  ...
+  "ai_usage": []
 }
 ```
 
-**Поле `type`** — фіксований enum:
-- `solo` — соло-практика
-- `bureau` — адвокатське бюро (наш випадок)
-- `association` — адвокатське об'єднання
-- `firm` — юридична фірма
-
-**Зараз створюється єдиний tenant** з `type: 'bureau'` і всіма реквізитами АБ Левицького.
-
-### Нова структура `users[]`
-
-Додати в корінь `registry_data.json`:
-
+Запис ai_usage:
 ```json
 {
-  "users": [
-    {
-      "userId": "vadym",
-      "tenantId": "ab_levytskyi",
-      "globalRole": "bureau_owner",
-      "name": "Левицький Вадим Андрійович",
-      "rnokpp": "2958638797",
-      "advokatLicense": {
-        "number": "502",
-        "issuedDate": "2006-04-27",
-        "issuedBy": "Київська обласна КДКА"
-      },
-      "email": "vadim.levytskyi@gmail.com",
-      "secondaryEmail": "info@levytskyi.com",
-      "phone": "+380674621428",
-      "active": true,
-      "structuralUnit": null,
-      "supervisorId": null,
-      "billingRate": null,
-      "createdAt": "2016-06-15T00:00:00Z",
-      "lastLoginAt": null
-    }
-  ]
-}
-```
-
-**Поле `globalRole`** — фіксований enum за типом організації:
-
-Для `solo`:
-- `solo_advocate`
-- `solo_assistant`
-
-Для `bureau`:
-- `bureau_owner` (керівник, унікальна роль)
-- `bureau_lawyer`
-- `bureau_assistant`
-
-Для `association`:
-- `association_partner`
-- `association_lawyer`
-- `association_assistant`
-
-Для `firm`:
-- `firm_managing_partner` (унікальна роль)
-- `firm_partner`
-- `firm_counsel`
-- `firm_senior_associate`
-- `firm_associate`
-- `firm_junior_associate`
-- `firm_paralegal`
-- `firm_intern`
-
-Спільні (для всіх типів):
-- `external_collaborator` — зовнішній адвокат з тимчасовим доступом
-
-**Поле `structuralUnit`** — для об'єднань (id кластера партнера) і фірм (id практики/департаменту). Зараз `null`.
-
-**Поле `supervisorId`** — для ієрархій (хто керівник цього користувача). Зараз `null`.
-
-**Поле `billingRate`** — для фірм з різними ставками за грейдом. Зараз `null`.
-
-### Розширення `cases[*]`
-
-Додати поля до кожного запису у `cases[]`:
-
-```json
-{
-  "caseId": "...",
-  "name": "...",
-  "...існуючі поля": "...",
-
-  "tenantId": "ab_levytskyi",
-  "ownerId": "vadym",
-  "team": [
-    {
-      "userId": "vadym",
-      "caseRole": "lead",
-      "addedAt": "...",
-      "addedBy": "vadym"
-    }
-  ],
-  "shareType": "internal",
-  "externalAccess": []
-}
-```
-
-**Поле `caseRole`** — роль користувача саме в цій справі:
-- `lead` — провідний адвокат справи
-- `team_member` — член команди
-- `consulted` — консультант з обмеженим доступом
-- `oversight` — наглядач (для партнерів фірми)
-
-**Поле `shareType`**:
-- `private` — тільки `ownerId`
-- `internal` — `ownerId` + `team[]` з того самого tenant'у
-- `external` — є тимчасовий доступ ззовні
-
-**Поле `externalAccess`** — структура для майбутнього (зовнішні адвокати з об'єднання):
-```json
-{
-  "userId": "external_petro",
-  "externalLawyerInfo": { "name": "...", "license": "...", "tenant": "..." },
-  "caseRole": "consulted",
-  "validUntil": "2026-08-01",
-  "allowedActions": ["read", "comment", "add_document"]
-}
-```
-
-### Розширення `hearings[*]`, `deadlines[*]`, `notes[*]`
-
-Додати до кожного:
-```json
-{
-  "tenantId": "ab_levytskyi",
-  "createdBy": "vadym"
-}
-```
-
-Поле `createdBy` дублює існуюче `userId` де воно вже є — щоб уніфікувати.
-
-### Розширення `time_entries[*]` (коли з'являться)
-
-Готуємо структуру наперед:
-```json
-{
+  "id": "usage_<timestamp>_<random>",
   "tenantId": "ab_levytskyi",
   "userId": "vadym",
-  "userRoleAtTime": "bureau_owner",
-  "billingRate": null
+  "timestamp": "2026-05-05T14:32:18.234Z",
+  "agentType": "qi_agent" | "dashboard_agent" | "dossier_agent" | "document_parser" | "case_context_generator" | "deep_analysis" | "other",
+  "model": "claude-sonnet-4-20250514" | "claude-haiku-4-5-20251001" | "claude-opus-4-7" | ...,
+  "inputTokens": 1247,
+  "outputTokens": 384,
+  "totalTokens": 1631,
+  "estimatedCostUSD": 0.0034,
+  "context": {
+    "caseId": "case_47" | null,
+    "module": "QI" | "Dashboard" | "Dossier" | "DocumentProcessor" | "Notebook" | null,
+    "operation": "chat" | "parse_document" | "generate_context" | "analyze_position" | "other"
+  }
 }
 ```
 
-### Нова структура `auditLog[]`
+LIFO ротація 50 000 записів через `slice(-50000)`. ~рік активної роботи при 100-200 викликах/день.
 
-Додати в корінь:
+**Б2. aiUsageService.js + інтеграція в усі точки виклику** (~1-2 год)
 
-```json
-{
-  "auditLog": [
-    {
-      "id": "log_1730900000000_abc",
-      "tenantId": "ab_levytskyi",
-      "userId": "vadym",
-      "userRoleAtTime": "bureau_owner",
-      "action": "destroy_case",
-      "targetType": "case",
-      "targetId": "case_brn",
-      "timestamp": "2026-05-04T14:23:00Z",
-      "details": {
-        "caseName": "Брановський Ю.В.",
-        "reason": "user_initiated"
-      },
-      "context": {
-        "module": "dashboard",
-        "agent": null,
-        "userAgent": "...",
-        "ipAddress": null
-      }
-    }
-  ]
-}
-```
-
-**Які дії пишуться в audit log (на цей TASK):**
-- `destroy_case`, `close_case`, `restore_case`, `create_case`
-- `delete_hearing`
-- `delete_deadline`
-- Зміна `team[]` або `ownerId` справи (коли з'явиться)
-- Зміна налаштувань tenant'у
-
-Інші дії (update_field, add_note тощо) **в audit log не пишемо** в цьому TASK — занадто багатослівно. Розширюватимемо аудит в наступних TASK у міру потреби.
-
-### Структура `structuralUnits[]` (заготовка на майбутнє)
-
-Додати в корінь з порожнім масивом:
-
-```json
-{
-  "structuralUnits": []
-}
-```
-
-В майбутньому сюди додаватимуться кластери об'єднань і практики фірм. Зараз — заготовка щоб не міняти структуру коли додамо.
-
----
-
-## МІГРАЦІЯ ІСНУЮЧИХ ДАНИХ
-
-### Логіка міграції
-
-При першому завантаженні розширеної версії системи:
-
-1. Перевірити чи є в `registry_data.json` поле `tenants[]`
-2. Якщо немає — виконати міграцію:
-   - Створити tenant `ab_levytskyi` з типом `bureau` і реквізитами АБ Левицького
-   - Створити user `vadym` з роллю `bureau_owner`
-   - Для кожного запису в `cases[]`:
-     - Додати `tenantId: 'ab_levytskyi'`
-     - Додати `ownerId: 'vadym'`
-     - Додати `team: [{ userId: 'vadym', caseRole: 'lead' }]`
-     - Додати `shareType: 'internal'`
-     - Додати `externalAccess: []`
-   - Для кожного `hearings[*]`, `deadlines[*]`, `notes[*]` — додати `tenantId` і `createdBy: 'vadym'`
-   - Створити порожній `auditLog: []`
-   - Створити порожній `structuralUnits: []`
-3. Зберегти оновлений JSON у Drive
-4. Поставити `migrationVersion: '2.0_saas_foundation'` в корені даних
-
-### Безпека міграції
-
-- Перед міграцією — створити **резервну копію** `registry_data_backup_pre_saas.json` у тій самій папці Drive
-- Якщо щось пішло не так — система має автоматично відкотитися на резервну копію і показати повідомлення «Помилка міграції, дані відновлено»
-- Логувати кожен крок міграції в консоль для діагностики
-
----
-
-## НОВІ УТИЛІТНІ ФУНКЦІЇ
-
-Створити файл `src/services/permissions.js`:
+Новий файл `src/services/aiUsageService.js`:
 
 ```javascript
-/**
- * Permissions service — перевірки прав доступу
- *
- * Поточна логіка: всі перевірки повертають true для активного користувача
- * (зараз це Вадим як bureau_owner). Це заглушки які будуть замінені на
- * повноцінну логіку при переході в SaaS.
- *
- * Принцип: інтерфейс функцій фінальний, реалізація мінімальна.
- */
+import { getCurrentTenant, getCurrentUser } from './tenantService.js';
 
-/**
- * Перевірити чи має користувач доступ до tenant'у
- * @param {string} userId
- * @param {string} tenantId
- * @returns {boolean}
- */
-export function checkTenantAccess(userId, tenantId) {
-  // ЗАГЛУШКА: завжди true для поточного користувача
-  // В майбутньому: перевіряти що user.tenantId === tenantId
-  return true;
+const MODEL_PRICING = {
+  'claude-haiku-4-5-20251001':  { input: 0.80,  output: 4.00 },
+  'claude-sonnet-4-20250514':   { input: 3.00,  output: 15.00 },
+  'claude-opus-4-7':            { input: 15.00, output: 75.00 },
+  default: { input: 0, output: 0 }
+};
+
+function calculateCost(model, inputTokens, outputTokens) {
+  const pricing = MODEL_PRICING[model] || MODEL_PRICING.default;
+  const cost = (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
+  return Number(cost.toFixed(6));
 }
 
-/**
- * Перевірити чи дозволена дія для глобальної ролі
- * @param {string} globalRole — наприклад 'bureau_owner'
- * @param {string} action — наприклад 'destroy_case'
- * @returns {boolean}
- */
-export function checkRolePermission(globalRole, action) {
-  // ЗАГЛУШКА: завжди true для bureau_owner
-  // В майбутньому: матриця ролей × дії з конкретними правилами
-  return true;
-}
-
-/**
- * Перевірити чи має користувач доступ до конкретної справи
- * @param {string} userId
- * @param {object} caseObj — об'єкт справи з полями ownerId, team, shareType, externalAccess
- * @returns {boolean}
- */
-export function checkCaseAccess(userId, caseObj) {
-  // ЗАГЛУШКА: завжди true якщо userId === caseObj.ownerId
-  // В майбутньому: перевіряти team[] і externalAccess[]
-  if (!caseObj) return false;
-  if (caseObj.ownerId === userId) return true;
-  if (caseObj.team?.some(member => member.userId === userId)) return true;
-  if (caseObj.externalAccess?.some(ext => ext.userId === userId && new Date(ext.validUntil) > new Date())) return true;
-  return false;
-}
-
-/**
- * Записати дію в auditLog
- * @param {object} params { tenantId, userId, action, targetType, targetId, details, context }
- */
-export function writeAuditLog(params) {
+export function logAiUsage({
+  agentType,
+  model,
+  inputTokens,
+  outputTokens,
+  context = {}
+}, setAiUsage) {
+  const tenant = getCurrentTenant();
+  const user = getCurrentUser();
+  
   const entry = {
-    id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-    tenantId: params.tenantId,
-    userId: params.userId,
-    userRoleAtTime: getCurrentUserRole(params.userId),
-    action: params.action,
-    targetType: params.targetType,
-    targetId: params.targetId,
+    id: `usage_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    tenantId: tenant.id,
+    userId: user.id,
     timestamp: new Date().toISOString(),
-    details: params.details || {},
-    context: params.context || {}
+    agentType: agentType || 'other',
+    model: model || 'unknown',
+    inputTokens: inputTokens || 0,
+    outputTokens: outputTokens || 0,
+    totalTokens: (inputTokens || 0) + (outputTokens || 0),
+    estimatedCostUSD: calculateCost(model, inputTokens || 0, outputTokens || 0),
+    context: {
+      caseId: context.caseId || null,
+      module: context.module || null,
+      operation: context.operation || 'other'
+    }
   };
-
-  // Додати до auditLog в state
-  // Конкретна реалізація залежить від того як state працює в App.jsx
-  // Має бути викликано через executeAction або окремий хук
-
+  
+  setAiUsage(prev => [...prev, entry].slice(-50000));
   return entry;
 }
 
-/**
- * Отримати поточну роль користувача
- * @param {string} userId
- * @returns {string} globalRole
- */
-function getCurrentUserRole(userId) {
-  // Тимчасово хардкод для Вадима
-  if (userId === 'vadym') return 'bureau_owner';
-  return 'unknown';
-}
+// Аналітичні хелпери для майбутнього (без UI поки)
+export function getUsageByPeriod(aiUsage, fromDate, toDate) { /* ... */ }
+export function getUsageByModel(aiUsage, fromDate, toDate) { /* ... */ }
+export function getUsageByCase(aiUsage, caseId, fromDate, toDate) { /* ... */ }
+export function getUsageByUser(aiUsage, userId, fromDate, toDate) { /* ... */ }
+export function getTotalCost(aiUsage, fromDate, toDate) { /* ... */ }
+```
 
-/**
- * Список дій які пишуться в audit log
- */
-export const AUDIT_ACTIONS = [
-  'create_case',
-  'close_case',
-  'restore_case',
-  'destroy_case',
-  'delete_hearing',
-  'delete_deadline',
-  'change_case_team',
-  'change_case_owner',
-  'update_tenant_settings'
-];
+Інтегрувати `logAiUsage()` в усі точки виклику Anthropic API (з фази 0 діагностики). Anthropic API завжди повертає `usage.input_tokens` і `usage.output_tokens` — витягуємо звідти, не вираховуємо самостійно.
 
-export function shouldAudit(action) {
-  return AUDIT_ACTIONS.includes(action);
+Правило: жоден API-виклик не залишається без логування. Try/catch навколо logAiUsage — якщо логування впало, основний flow не зупиняється.
+
+**Б3. tenant.storage заглушка** (~15 хв)
+
+Розширення tenant:
+```json
+{
+  "storage": {
+    "provider": "drive_legacy",
+    "quotaGB": null,
+    "usedBytes": null
+  }
 }
 ```
 
----
+Можливі значення `provider`:
+- `"drive_legacy"` — поточний режим (default)
+- `"r2_managed"` — майбутній Standard tariff (Cloudflare R2)
+- `"drive_byos"` — майбутній Premium tariff (Drive юриста)
 
-## ІНТЕГРАЦІЯ В executeAction
+`quotaGB` і `usedBytes` — null зараз. Заповняться коли активуємо тарифи.
 
-Розширити поточну функцію `executeAction` (в `App.jsx` або де вона зараз):
+**Б4. case.team[i].permissions з дефолтами по ролі** (~30 хв)
+
+Розширення team-запису:
+```json
+{
+  "userId": "vadym",
+  "caseRole": "owner",
+  "addedAt": "...",
+  "addedBy": "vadym",
+  "permissions": {
+    "canEdit": true,
+    "canDelete": true,
+    "canShare": true,
+    "canAddTeam": true,
+    "canViewBilling": true,
+    "canEditBilling": true
+  }
+}
+```
+
+Дефолти за роллю при міграції:
+
+| caseRole | canEdit | canDelete | canShare | canAddTeam | canViewBilling | canEditBilling |
+|----------|---------|-----------|----------|------------|----------------|----------------|
+| owner    | true    | true      | true     | true       | true           | true           |
+| lead     | true    | true      | true     | true       | false          | false          |
+| co-lead  | true    | false     | true     | false      | false          | false          |
+| support  | true    | false     | false    | false      | false          | false          |
+| external | false   | false     | false    | false      | true           | false          |
+
+Логіка `checkCaseAccess()` поки не звертається до permissions (мінімальна активація — тільки перевірка team[]). Поля готові на майбутнє.
+
+**Б5. caseAccess[] індекс-таблиця** (~5 хв)
+
+Додати на верхній рівень registry_data.json:
+```json
+{
+  "caseAccess": []
+}
+```
+
+**Тільки структура, без логіки синхронізації.** Активувати буде потрібно при появі багатьох tenants у SaaS — тоді додамо автосинхронізацію після кожної зміни team[]. Зараз — пуста заглушка.
+
+### ЧАСТИНА В — Тарифні пакети і ліміти
+
+**В1. tenant.modelPreferences (заглушка з null)** (~15 хв)
+
+Розширення tenant:
+```json
+{
+  "modelPreferences": {
+    "dossierAgent": null,
+    "qiAgent": null,
+    "dashboardAgent": null,
+    "documentProcessor": null,
+    "deepAnalysis": null,
+    "caseContextGenerator": null
+  }
+}
+```
+
+null = використовується system default.
+
+**В2. modelResolver.js helper** (~30 хв)
+
+Новий файл `src/services/modelResolver.js`:
 
 ```javascript
-import { checkTenantAccess, checkRolePermission, checkCaseAccess, writeAuditLog, shouldAudit } from './services/permissions';
+import { getCurrentTenant, getCurrentUser } from './tenantService.js';
 
-async function executeAction(actionType, params, context = {}) {
-  // 1. Отримати поточного користувача (зараз — Вадим завжди)
-  const currentUser = getCurrentUser(); // повертає { userId: 'vadym', tenantId: 'ab_levytskyi', globalRole: 'bureau_owner' }
+const SYSTEM_DEFAULTS = {
+  dossierAgent: 'claude-sonnet-4-20250514',
+  qiAgent: 'claude-sonnet-4-20250514',
+  dashboardAgent: 'claude-sonnet-4-20250514',
+  documentProcessor: 'claude-haiku-4-5-20251001',
+  deepAnalysis: 'claude-opus-4-7',
+  caseContextGenerator: 'claude-sonnet-4-20250514'
+};
 
-  // 2. Перевірка tenant
-  if (!checkTenantAccess(currentUser.userId, currentUser.tenantId)) {
-    throw new Error('Tenant access denied');
-  }
+export function resolveModel(agentType) {
+  // Ієрархія: user.preferences → tenant.modelPreferences → SYSTEM_DEFAULTS
+  
+  const user = getCurrentUser();
+  const userPref = user.preferences?.modelPreferences?.[agentType];
+  if (userPref) return userPref;
+  
+  const tenant = getCurrentTenant();
+  const tenantPref = tenant.modelPreferences?.[agentType];
+  if (tenantPref) return tenantPref;
+  
+  return SYSTEM_DEFAULTS[agentType] || 'claude-sonnet-4-20250514';
+}
 
-  // 3. Перевірка глобальної ролі для цієї дії
-  if (!checkRolePermission(currentUser.globalRole, actionType)) {
-    throw new Error(`Action ${actionType} not allowed for role ${currentUser.globalRole}`);
-  }
-
-  // 4. Перевірка доступу до конкретної справи (якщо action стосується справи)
-  if (params.caseId) {
-    const caseObj = findCaseById(params.caseId);
-    if (!checkCaseAccess(currentUser.userId, caseObj)) {
-      throw new Error(`No access to case ${params.caseId}`);
-    }
-  }
-
-  // 5. Виконати дію (стара логіка)
-  const result = await performAction(actionType, params, context);
-
-  // 6. Записати в audit log якщо треба
-  if (shouldAudit(actionType)) {
-    writeAuditLog({
-      tenantId: currentUser.tenantId,
-      userId: currentUser.userId,
-      action: actionType,
-      targetType: getTargetType(actionType),
-      targetId: params.caseId || params.targetId,
-      details: { params },
-      context: {
-        module: context.module || 'unknown',
-        agent: context.agent || null
-      }
-    });
-  }
-
-  return result;
+export function getSystemDefaults() {
+  return { ...SYSTEM_DEFAULTS };
 }
 ```
 
-**Важливо:** функція `getCurrentUser()` зараз повертає хардкод про Вадима. У майбутньому — отримує з контексту авторизації. Інтерфейс не змінюється.
+В усіх точках виклику AI замінити hardcoded модель на `resolveModel(agentType)`. Це готовність до майбутніх тарифних пакетів де адвокат-Premium може обрати Opus замість Sonnet для агента досьє.
 
----
+**В3. tenant.subscription.limits + current** (~30 хв)
 
-## ДОКУМЕНТАЦІЯ В CLAUDE.md
+Розширення tenant.subscription:
 
-Додати в `CLAUDE.md` чіткий розділ. Він критично важливий — Claude Code читає `CLAUDE.md` на початку **кожного** TASK, і ця філософія має бути перед очима щоразу.
+```json
+{
+  "subscription": {
+    "plan": "owner",
+    "status": "active",
+    
+    "limits": {
+      "aiTokensPerMonth": null,
+      "aiCostPerMonth": null,
+      "storageGB": null,
+      "teamMembers": null,
+      "casesActive": null
+    },
+    
+    "current": {
+      "periodStart": "2026-05-01T00:00:00Z",
+      "periodEnd": "2026-05-31T23:59:59Z",
+      "tokensUsed": 0,
+      "costUsedUSD": 0,
+      "storageUsedGB": 0,
+      "teamMembersCount": 1,
+      "casesActiveCount": 0
+    },
+    
+    "alerts": {
+      "warnAt": 80,
+      "blockAt": 100
+    }
+  }
+}
+```
+
+**Розрахунок поточного використання** — окрема невелика функція в `subscriptionService.js`:
+
+```javascript
+export function recalculateCurrent(tenant, aiUsage, cases) {
+  const periodStart = new Date(tenant.subscription.current.periodStart);
+  const periodEnd = new Date(tenant.subscription.current.periodEnd);
+  
+  const periodEntries = aiUsage.filter(e => {
+    const t = new Date(e.timestamp);
+    return e.tenantId === tenant.id && t >= periodStart && t <= periodEnd;
+  });
+  
+  return {
+    ...tenant.subscription.current,
+    tokensUsed: periodEntries.reduce((s, e) => s + e.totalTokens, 0),
+    costUsedUSD: periodEntries.reduce((s, e) => s + e.estimatedCostUSD, 0),
+    casesActiveCount: cases.filter(c => c.status === 'active' && c.tenantId === tenant.id).length
+  };
+}
+```
+
+Викликається при логіні і періодично (раз на годину) у фоні. **Заглушка зараз** — поки limits = null, перевірок немає. Активуємо коли підемо в платні плани.
+
+**В4. Активна checkTenantAccess** (~10 хв)
+
+Заміна заглушки в permissionService.js:
+
+```javascript
+// БУЛО:
+export function checkTenantAccess(userId, tenantId) {
+  return true;
+}
+
+// СТАЄ:
+export function checkTenantAccess(userId, tenantId) {
+  if (!userId || !tenantId) return false;
+  const user = getUserById(userId);
+  if (!user) return false;
+  return user.tenantId === tenantId;
+}
+```
+
+Активує реальну ізоляцію tenant'ів. Зараз нічого не змінює (один user, один tenant), але механізм живий.
+
+**В5. Активна checkCaseAccess (мінімальна логіка)** (~30 хв)
+
+Заміна заглушки в permissionService.js:
+
+```javascript
+// БУЛО:
+export function checkCaseAccess(userId, caseId) {
+  return true;
+}
+
+// СТАЄ:
+export function checkCaseAccess(userId, caseId) {
+  if (!userId || !caseId) return false;
+  
+  const case_ = getCaseById(caseId);
+  if (!case_) return false;
+  
+  const user = getUserById(userId);
+  if (!user) return false;
+  
+  // 1. Tenant isolation
+  if (case_.tenantId !== user.tenantId) return false;
+  
+  // 2. Bureau owner — повний доступ до всіх справ свого tenant
+  if (user.globalRole === 'bureau_owner') return true;
+  
+  // 3. Перевірка team[]
+  const inTeam = case_.team?.some(m => m.userId === userId);
+  if (inTeam) return true;
+  
+  // 4. External access (з обмеженням за часом)
+  const inExternal = case_.externalAccess?.some(a => 
+    a.userId === userId && 
+    (!a.validUntil || new Date(a.validUntil) > new Date())
+  );
+  if (inExternal) return true;
+  
+  return false;
+}
+```
+
+Поки що не використовує `team[i].permissions` — це для майбутньої гранулярності. Активує мінімальну ізоляцію за userId / tenantId / team membership.
+
+### ЧАСТИНА Г — Малі знахідки адвоката
+
+(Сюди адвокат додає те що він знайшов при перечитуванні результатів SaaS Foundation v1. Залишити секцію відкритою для його додавання перед запуском.)
+
+```
+Адвокатські знахідки які треба включити:
+1. (зробити)
+2. ...
+3. ...
+```
+
+### ЧАСТИНА Д — Технічна обвʼязка
+
+**Д1. Інкремент schemaVersion 2 → 3** — у migrationService
+
+**Д2. Розширення migrationService для v2 → v3** (~1 год)
+
+Додати функцію `migrateV2toV3`:
+
+```javascript
+function migrateV2toV3(data) {
+  // 1. ai_usage[]
+  if (!data.ai_usage) data.ai_usage = [];
+  
+  // 2. caseAccess[]
+  if (!data.caseAccess) data.caseAccess = [];
+  
+  // 3. tenants[*].storage
+  data.tenants = data.tenants.map(tenant => ({
+    ...tenant,
+    storage: tenant.storage || {
+      provider: "drive_legacy",
+      quotaGB: null,
+      usedBytes: null
+    },
+    modelPreferences: tenant.modelPreferences || {
+      dossierAgent: null,
+      qiAgent: null,
+      dashboardAgent: null,
+      documentProcessor: null,
+      deepAnalysis: null,
+      caseContextGenerator: null
+    },
+    subscription: {
+      ...(tenant.subscription || {}),
+      limits: tenant.subscription?.limits || {
+        aiTokensPerMonth: null,
+        aiCostPerMonth: null,
+        storageGB: null,
+        teamMembers: null,
+        casesActive: null
+      },
+      current: tenant.subscription?.current || {
+        periodStart: getCurrentMonthStart(),
+        periodEnd: getCurrentMonthEnd(),
+        tokensUsed: 0,
+        costUsedUSD: 0,
+        storageUsedGB: 0,
+        teamMembersCount: 1,
+        casesActiveCount: 0
+      },
+      alerts: tenant.subscription?.alerts || {
+        warnAt: 80,
+        blockAt: 100
+      }
+    }
+  }));
+  
+  // 4. case.team[i].permissions
+  data.cases = data.cases.map(c => ({
+    ...c,
+    team: (c.team || []).map(member => ensureTeamPermissions(member))
+  }));
+  
+  // 5. id mixed types → string
+  data.cases = data.cases.map(c => ({
+    ...c,
+    id: typeof c.id === 'number' ? `case_${c.id}` : c.id
+  }));
+  
+  // 6. Інкремент version
+  data.schemaVersion = 3;
+  data.settingsVersion = "3.0_patch_and_extension";
+  
+  return data;
+}
+
+function ensureTeamPermissions(member) {
+  if (member.permissions) return member;
+  
+  const defaultsByRole = {
+    owner:    { canEdit: true,  canDelete: true,  canShare: true,  canAddTeam: true,  canViewBilling: true,  canEditBilling: true },
+    lead:     { canEdit: true,  canDelete: true,  canShare: true,  canAddTeam: true,  canViewBilling: false, canEditBilling: false },
+    'co-lead':{ canEdit: true,  canDelete: false, canShare: true,  canAddTeam: false, canViewBilling: false, canEditBilling: false },
+    support:  { canEdit: true,  canDelete: false, canShare: false, canAddTeam: false, canViewBilling: false, canEditBilling: false },
+    external: { canEdit: false, canDelete: false, canShare: false, canAddTeam: false, canViewBilling: true,  canEditBilling: false }
+  };
+  
+  const role = member.caseRole || 'support';
+  return { ...member, permissions: defaultsByRole[role] || defaultsByRole.support };
+}
+```
+
+**Ідемпотентність** обов'язкова. Повторні запуски не дублюють поля.
+
+**Розширити `ensureCaseSaasFields`** — щоб нові справи отримували `team` з `permissions`, `id` як string.
+
+**Д3. Backup pre_v3** (~15 хв)
+
+За зразком SaaS Foundation v1 — створити одноразовий бекап перед першою міграцією:
+
+```javascript
+// driveService.js — нова функція
+export async function backupRegistryDataPreV3(data) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const fileName = `registry_data_backup_pre_v3_${ts}.json`;
+  // Завантажити в _backups/
+  // НЕ підпадає під ротацію (lifeForever)
+}
+```
+
+Викликається в App.jsx один раз перед `migrateRegistry` коли `schemaVersion < 3`.
+
+**Д4. Оновлення CLAUDE.md (мінімально)** (~30 хв)
+
+Додати новий розділ під існуючими SaaS Foundation v2.0:
 
 ```markdown
-## 🧬 ФІЛОСОФІЯ СИСТЕМИ — ЕМБРІОН З ПОВНИМ ДНК
+## SaaS Foundation v3.0 — Patch and Extension
 
-Legal BMS — живий організм. Зараз він на стадії ембріону:
-- **Зовні:** соло-практика з одним адвокатом
-- **Всередині:** повна архітектура для SaaS з чотирма типами організацій (solo / bureau / association / firm), багаторівневими ієрархіями, командами справ, permissions, аудитом, білінгом, всім майбутнім функціоналом
+Дата: 2026-05-05
+schemaVersion: 3
 
-Ембріон людини маленький, але має повне ДНК дорослого тіла. Печінка не з'являється «ззовні» при розвитку — вона завжди була в ДНК і просто розгортається в потрібний момент.
+### Виправлений архітектурний борг
 
-**Так само Legal BMS:**
-- Зараз багато речей — заглушки що повертають true (бо один користувач)
-- Структури даних — повні, з усіма потрібними полями для майбутнього
-- Перевірки прав — викликаються (готові прийняти реальну логіку)
-- Audit log — реально пише (для одного користувача поки що)
+- agentHistory: вирівняно slice (50), застарілий коментар видалено
+- levytskyi_action_log: змерджено в auditLog, видалено
+- id mixed types: всі case.id тепер string ("case_<number>" або UUID)
+- driveService.writeCases: видалено alias, скрізь writeRegistry
 
-Коли система розгорнеться в SaaS — це не «додавання нового», а **розгортання того що вже є**. Заглушки замінюються на реальну логіку. Користувачі додаються в `users[]`. Tenants — в `tenants[]`. Ніяких архітектурних переробок.
+### Нові структури в registry_data.json
 
-### Принципи для кожного TASK
+**ai_usage[]** — пасивний облік токенів AI на верхньому рівні. LIFO ротація 50 000 записів. Поля: tenantId, userId, timestamp, agentType, model, inputTokens, outputTokens, estimatedCostUSD, context (caseId, module, operation).
 
-При роботі над **будь-яким** новим функціоналом запитай себе:
+**caseAccess[]** — заглушка денормалізованого індексу для майбутнього SaaS-масштабу. Поки порожня, без логіки синхронізації.
 
-1. **Tenant-aware?** Нова сутність прив'язана до `tenantId`?
-2. **User-aware?** Зрозуміло хто створив, оновив, видалив?
-3. **Audit-aware?** Критичні дії пишуться в `auditLog[]`?
-4. **Permission-aware?** Дія проходить через `executeAction` з перевірками?
-5. **Future-aware?** Чи передбачені хуки для майбутніх ролей, команд, прав?
-6. **Data-rich?** Збираються чи всі дані які можуть знадобитись потім (не зараз)?
+### Розширення tenant
 
-Якщо хоч одне питання має відповідь «ні» — **зараз є можливість** додати потрібні поля/перевірки/хуки. Робимо одразу. Не «потім переробимо».
+**tenant.storage** — provider (drive_legacy default), quotaGB, usedBytes. Готовність до тарифів R2/BYOS-Drive.
 
-### Типи організацій (tenants)
+**tenant.modelPreferences** — null для всіх агентів. Готовність до тарифних пакетів з вибором моделі.
 
-- **solo** — адвокат-фізособа з помічником
-- **bureau** — адвокатське бюро (наш поточний випадок)
-- **association** — адвокатське об'єднання (партнери з кластерами)
-- **firm** — юридична фірма (багаторівнева ієрархія, практики)
+**tenant.subscription.limits + current + alerts** — структури обліку лімітів. Зараз limits = null (безлімітно для owner).
 
-### Ролі користувачів
+### Розширення case.team
 
-**Solo:** solo_advocate, solo_assistant
-**Bureau:** bureau_owner, bureau_lawyer, bureau_assistant
-**Association:** association_partner, association_lawyer, association_assistant
-**Firm:** firm_managing_partner, firm_partner, firm_counsel, firm_senior_associate, firm_associate, firm_junior_associate, firm_paralegal, firm_intern
-**Cross-tenant:** external_collaborator
+**case.team[i].permissions** — 6 полів (canEdit, canDelete, canShare, canAddTeam, canViewBilling, canEditBilling). Дефолти призначаються по caseRole.
 
-Hierarchy levels: 0 — найвища (керівник), 7 — найнижча (стажер).
+### Сервіси
 
-### Команди справ (caseRoles)
+- `aiUsageService.js` — logAiUsage, аналітичні хелпери
+- `modelResolver.js` — resolveModel з ієрархією user → tenant → system
+- `subscriptionService.js` (опційно) — recalculateCurrent
 
-Окремо від глобальних ролей у кожній справі є caseRole:
-- `lead` — повний контроль
-- `oversight` — read-only + може втручатися
-- `team_member` — робота за вказівками lead
-- `consulted` — read-only + може коментувати
-- `external` — зовнішній адвокат з тимчасовим доступом
+### Активовані заглушки
 
-### Архітектура перевірок дій
+- `checkTenantAccess` — реальна перевірка user.tenantId === tenantId
+- `checkCaseAccess` — мінімальна перевірка через tenant + team + externalAccess
 
-Кожна дія в системі:
-```
-executeAction(actionType, params)
-  ↓
-checkTenantAccess(userId, tenantId)
-  ↓
-checkRolePermission(role, action)
-  ↓
-checkCaseAccess(userId, caseId)  // якщо дія по справі
-  ↓
-performAction(...)
-  ↓
-auditLog.write(...)  // якщо критична дія
+### Принцип
+
+Усі структури закладені, активної логіки мінімум. Дані збираються з запасом, ліміти не блокують. Готовність до моменту коли потрібно буде активувати реальний контроль.
 ```
 
-Зараз перевірки — заглушки. Логіка наповниться при SaaS-розгортанні.
+**Не торкаємось інших застарілих розділів CLAUDE.md** — це робота окремого TASK CLAUDE.md Audit.
 
-### Що НЕ робити
+**Д5. Smoke tests** (~30 хв)
 
-- НЕ додавати UI для керування користувачами/ролями (окремий TASK)
-- НЕ змінювати заглушки на реальну логіку без узгодження з архітектором
-- НЕ дублювати поля `tenantId`/`userId` — використовувати утиліти з `tenantService`
-- НЕ створювати нові сутності без `tenantId`
-- НЕ обходити `executeAction` для модифікацій даних
+Після впровадження:
 
-### Чому це закладено зараз а не потім
+1. **Build:** `npm run build` має пройти без помилок
+2. **Завантаження старого формату (масив):** взяти `registry_data_backup_pre_saas_<ts>.json`, підкласти на Drive як `registry_data.json` — має пройти ланцюжок v1 → v2 → v3 з обома бекапами (pre_saas і pre_v3)
+3. **Завантаження v2 формату:** існуючий v2 → v3 з усіма новими полями
+4. **Ідемпотентність:** перезавантажити v3 → лишається v3, без дублювань
+5. **Реальний AI-виклик:** написати агенту в QI → перевірити що `aiUsage` отримав запис з правильними полями (агент, модель, токени, контекст)
+6. **Drive sync:** hard reload, перевірити що ai_usage збережено
+7. **Усі модулі працюють як раніше:** Дашборд, Реєстр, Досьє, QI, Записна книжка
+8. **Tenant isolation:** штучно змінити user.tenantId на чужий → справи мають перестати завантажуватись
 
-**Зараз:** 1 день роботи на повну архітектуру з заглушками
-**Потім (через рік на готовій системі):** місяці переписування під SaaS
+**Д6. Звіт + commit** (~30 хв)
 
-Закладаємо зараз поки бідно. Так як живий організм формує всі органи в утробі, не «додає печінку через 5 років».
+Створити `report_saas_foundation_v1_1.md` за зразком `report_saas_foundation.md`:
+- Візуалізація ДО/ПІСЛЯ
+- Метрики (рядки коду, файли, час)
+- Знайдені проблеми (якщо є)
+- Критерії успіху
+
+Один commit у main:
+```
+feat: SaaS Foundation v1.1 — patch and extension
+
+- Виправлено архітектурний борг (agentHistory, levytskyi_action_log, id types, writeCases alias)
+- ai_usage[] для пасивного обліку токенів (LIFO 50000)
+- aiUsageService.js + інтеграція у всі точки виклику Anthropic API
+- modelResolver.js з ієрархією user → tenant → system
+- tenant.storage, tenant.modelPreferences, tenant.subscription заглушки
+- case.team[i].permissions з дефолтами по ролі
+- caseAccess[] заглушка для майбутнього SaaS-масштабу
+- Активовано checkTenantAccess і checkCaseAccess (мінімальна логіка)
+- migrationService: v2 → v3 ідемпотентна
+- Backup pre_v3 (як pre_saas — поза ротацією)
+- CLAUDE.md: розділ SaaS Foundation v3.0
 ```
 
 ---
 
+## 🚨 ЩО НЕ РОБИМО В ЦЬОМУ TASK
 
-## РОЗДІЛ "SAAS IMPLICATIONS"
-
-Цей TASK і є SaaS-foundation. Тому розділ короткий:
-
-### Поля які додаємо
-- `tenantId` всюди — для tenant isolation
-- `userId`/`ownerId`/`createdBy` — для авторства
-- `team[]` в cases — для команди справи
-- `auditLog[]` в корені — для відстеження критичних дій
-
-### Permissions
-- Усі існуючі дії продовжують працювати для bureau_owner (заглушки повертають true)
-- Перевірки викликаються — готові до реальної логіки в майбутньому
-
-### Аудит
-- Логуються: create/close/restore/destroy_case, delete_hearing, delete_deadline, зміни team/owner, зміни settings
-- Інші дії — не логуються в цьому TASK
-
-### Tenant isolation
-- Усі дані прив'язані до `tenantId`
-- Зараз єдиний tenant — `ab_levytskyi`
-- Майбутній SaaS — кожен новий tenant ізольований природно
-
-### Що НЕ робимо зараз але треба пам'ятати
-- UI керування користувачами і ролями
-- Реальна логіка `checkRolePermission` (матриця)
-- Білінгові ставки за грейдом
-- Конфлікти інтересів (для фірм)
-- Структурні підрозділи (кластери, практики)
+- НЕ вирішуємо `proceedings/documents лише у Брановський` — переноситься в Document Processor v2
+- НЕ активуємо реальну логіку лімітів `subscription.limits` — заглушки, ліміти null
+- НЕ підключаємо реальний проксі-сервер для AI — окремий великий TASK
+- НЕ міняємо UI — жодних нових кнопок, налаштувань, перемикачів
+- НЕ змінюємо контентні промпти агентів (CASE_CONTEXT_CREATION_PROMPT, DOSSIER_AGENT_BASE_PROMPT, QI_DOCUMENT_ANALYSIS_PROMPT)
+- НЕ робимо повний CLAUDE.md Audit — тільки додаємо розділ v3.0, інші розділи залишаються як є
+- НЕ синхронізуємо `caseAccess[]` автоматично — це для майбутнього SaaS-масштабу
+- НЕ закладаємо авторизацію другого користувача (Olena) — це окремий TASK Multi-user Activation в окремому чаті
 
 ---
 
-## ПЛАН ВИКОНАННЯ ПО КРОКАХ
+## 🎯 SAAS IMPLICATIONS
 
-Claude Code виконує TASK у такому порядку:
+Цей TASK закладає основу для трьох майбутніх архітектурних компонентів:
 
-### Крок 1 — Резервна копія (5 хв)
-- Створити копію `registry_data.json` як `registry_data_backup_pre_saas.json` у тій самій папці Drive
-- Логувати «Резервна копія створена»
+### 1. Білінг (Billing Foundation v2)
 
-### Крок 2 — Структури в registry_data.json (1-2 год)
-- Додати `tenants[]` з єдиним записом
-- Додати `users[]` з єдиним записом
-- Додати `auditLog[]` (порожній)
-- Додати `structuralUnits[]` (порожній)
-- Додати `migrationVersion: '2.0_saas_foundation'`
+`ai_usage[]` — джерело SaaS-телеметрії. Окрема структура від `time_entries[]` з Billing Foundation. Дві структури — дві задачі:
 
-### Крок 3 — Міграція існуючих даних (2-3 год)
-- Для кожного `cases[*]` — додати tenantId, ownerId, team, shareType, externalAccess
-- Для кожного `hearings[*]` — додати tenantId, createdBy
-- Для кожного `deadlines[*]` — додати tenantId, createdBy
-- Для кожного `notes[*]` — додати tenantId, createdBy
-- Зберегти оновлений JSON у Drive
+- `ai_usage[]` — для тебе як SaaS-оператора (хто скільки токенів спалив, скільки коштує)
+- `time_entries[]` — для адвоката як практика (час по справах для актів)
 
-### Крок 4 — Створення permissions.js (1 год)
-- Створити `src/services/permissions.js` з функціями і константами
-- Реалізувати заглушки які повертають правильні значення для Вадима
+При кожному виклику API писатимемо в обидві структури — кожен запис малий.
 
-### Крок 5 — Інтеграція в executeAction (1-2 год)
-- Знайти поточну реалізацію executeAction
-- Додати виклики checkTenantAccess, checkRolePermission, checkCaseAccess
-- Додати запис в auditLog для критичних дій
-- Перевірити що нічого не зламалося
+### 2. Тарифні плани
 
-### Крок 6 — getCurrentUser helper (30 хв)
-- Створити `src/services/currentUser.js` з функцією `getCurrentUser()` яка повертає Вадима
-- Інтегрувати в executeAction
-- Інтегрувати в інші місця де треба знати userId
+`tenant.storage` + `tenant.modelPreferences` + `tenant.subscription.limits` — підготовка до моменту коли:
+- Standard користувач (10 ГБ R2) і Premium з BYOS-Drive обираються через provider
+- Premium може обрати Opus замість Sonnet для агента досьє
+- Quota перевіряється централізовано через limits
+- Перехід між тарифами — зміна полів без міграції
 
-### Крок 7 — Документація (30 хв)
-- Оновити `CLAUDE.md` з новою архітектурою
-- Додати коментарі в код де треба
+### 3. Multi-user permissions
 
-### Крок 8 — Тестування (1-2 год)
-- Перевірити що всі існуючі модулі працюють як раніше
-- Створити нову справу — переконатися що всі поля заповнюються правильно
-- Видалити справу — переконатися що audit log пише запис
-- Перезавантажити сторінку — переконатися що дані з Drive завантажуються коректно
-- Перевірити що нічого не виглядає інакше для Вадима
+`case.team[i].permissions` + активна `checkCaseAccess` + `caseAccess[]` — підготовка до Multi-user Activation TASK:
 
-### Крок 9 — Commit (15 хв)
-- Один commit з описом «SaaS Foundation v2.0 — tenant, users, team, audit log, permissions service»
-- Push у main
+Коли в бюро з'явиться найманий адвокат (Olena):
+- Її роль автоматично отримає правильні дефолти permissions
+- Гранулярний контроль: можна дозволити редагувати справу, не міняти білінгові поля
+- При SaaS-масштабі денормалізований caseAccess[] прискорить перевірки доступу
 
 ---
 
-## КРИТЕРІЇ УСПІХУ
+## 💰 BILLING IMPLICATIONS
 
-TASK вважається виконаним якщо:
+Цей TASK — частина підготовки до повноцінного білінгу:
 
-1. ✅ `registry_data.json` має структури `tenants[]`, `users[]`, `auditLog[]`, `structuralUnits[]`
-2. ✅ Усі існуючі дані мігровані з default-значеннями (всі мають `tenantId: 'ab_levytskyi'`)
-3. ✅ Cases мають `team[]`, `ownerId`, `shareType`, `externalAccess`
-4. ✅ Файл `src/services/permissions.js` існує з усіма функціями
-5. ✅ `executeAction` викликає перевірки і пише в audit log для критичних дій
-6. ✅ Резервна копія `registry_data_backup_pre_saas.json` створена в Drive
-7. ✅ Поточна функціональність системи **не зламалася** — всі модулі працюють як раніше
-8. ✅ При створенні нової справи нові поля заповнюються автоматично з default-значеннями
-9. ✅ При видаленні справи з'являється запис в `auditLog`
-10. ✅ `CLAUDE.md` оновлений з описом SaaS Foundation
-11. ✅ Один чистий commit у main з зрозумілим повідомленням
+- **Кожен AI-виклик має вартість** в `ai_usage[i].estimatedCostUSD`
+- **Можна агрегувати по справі** через `getUsageByCase()` → майбутня аналітика «AI-витрати на Брановського: $4.30 за квартал»
+- **Можна агрегувати по користувачу** → майбутні ліміти за тарифом «Standard: $5/міс на AI, Premium: $20/міс»
+- **Можна агрегувати по моделі** → оптимізація: «80% витрат — Sonnet, 15% — Haiku, 5% — Opus»
+- **Тарифні пакети з вибором моделей** через modelPreferences
+
+Pricing у `MODEL_PRICING` орієнтовний (станом на 04.05.2026). При зміні цін Anthropic — оновлюється в одному місці.
 
 ---
 
-## РИЗИКИ І ПОПЕРЕДЖЕННЯ
+## 📦 ОЧІКУВАНІ АРТЕФАКТИ
 
-### Ризик 1 — поломка існуючих даних
+### Створені файли
 
-**Якщо щось піде не так** під час міграції — резервна копія дозволить відкотитися. Але **обов'язково** перед commit перевірити що:
-- Всі справи відкриваються
-- Всі засідання видно у дашборді
-- Всі нотатки доступні
-- QI працює
-- Агенти відповідають
+- `diagnostic_saas_foundation_v1_1.md` — діагностика перед впровадженням
+- `progress_saas_foundation_v1_1.md` — прогрес роботи (опційно)
+- `src/services/aiUsageService.js` — новий сервіс
+- `src/services/modelResolver.js` — новий сервіс
+- `src/services/subscriptionService.js` — опційно, тільки якщо recalculateCurrent окремим файлом
+- `report_saas_foundation_v1_1.md` — фінальний звіт
 
-Якщо хоч щось зламалося — **не комітити**, відкотитися на резервну копію, повідомити архітектора.
+### Змінені файли
 
-### Ризик 2 — бажання «оптимізувати» зайве
+- `src/services/migrationService.js` — додано migrateV2toV3, розширено ensureCaseSaasFields
+- `src/services/tenantService.js` — DEFAULT_TENANT з усіма новими полями
+- `src/services/permissionService.js` — активовано checkTenantAccess і checkCaseAccess
+- `src/services/driveService.js` — видалено writeCases alias, додано backupRegistryDataPreV3
+- `src/services/auditLogService.js` — можливо нові AUDIT_ACTIONS (наприклад action_log_merged)
+- `src/App.jsx` — useState для aiUsage, інтеграція logAiUsage в усі AI-виклики, save/load aiUsage, виправлено id types при міграції, видалено застарілий коментар agentHistory
+- `src/components/CaseDossier/index.jsx` — slice 50 у localStorage agentHistory, інтеграція logAiUsage у chat, resolveModel замість hardcoded
+- Інші файли з точками виклику AI — інтеграція logAiUsage + resolveModel
+- `CLAUDE.md` — розділ «SaaS Foundation v3.0 — Patch and Extension»
 
-Не **виправляти баги які знайшов по ходу** в інших модулях. Записати в окремий файл `BUGS_FOUND_DURING_SAAS_FOUNDATION.md` і сказати архітектору. Скоуп цього TASK — тільки SaaS Foundation.
+### Backup створений
 
-### Ризик 3 — переборщити з логікою
+- `_backups/registry_data_backup_pre_v3_<ts>.json` (поза ротацією)
+- `_backups/levytskyi_action_log_<ts>.json` (одноразовий перед видаленням)
 
-Заглушки `checkTenantAccess`, `checkRolePermission`, `checkCaseAccess` повертають true для Вадима. **НЕ писати справжню логіку** з матрицями ролей. Це **окремий майбутній TASK**. Якщо є спокуса «доробити заодно» — стримати.
+### НЕ створюємо
 
-### Ризик 4 — Drive API нестабільність
-
-OAuth токен Drive живе ~1 годину. Якщо міграція зайде у фазу збереження великого JSON — токен може закінчитися. Передбачити:
-- Якщо отримуємо 401 при збереженні — зберегти стан міграції локально
-- Показати користувачу «Перепідключіть Drive і натисніть Продовжити»
-- Дати кнопку «Продовжити міграцію» яка не починає заново, а продовжує з місця останньої успішної операції
-
----
-
-## ЗВІТ ДЛЯ АРХІТЕКТОРА — ОБОВ'ЯЗКОВИЙ ФОРМАТ
-
-Після завершення впровадження Claude Code створює файл `report_saas_foundation.md` в корені репо. Цей звіт **критично важливий** — за ним архітектор оцінює якість роботи.
-
-### Структура звіту
-
-Звіт містить **три обов'язкових частини:**
-
-1. **Візуалізації "ДО / ПІСЛЯ"** — у формі найзручнішій для змісту
-2. **Детальний опис що змінилося** — текстова частина
-3. **Хронологія виконання** — як саме йшла робота
-
-### Принцип візуалізації — форма за призначенням
-
-Не намагайся «малювати красиві діаграми» — обирай форму **за змістом**:
-
-**Структура даних, ієрархія, файли, папки** → ASCII-дерева:
-
-\`\`\`
-registry_data.json
-├── cases[]
-│   ├── caseId
-│   └── tenantId      🆕 додано
-└── users[]            🆕 нове
-\`\`\`
-
-**Потік процесу, ланцюжок викликів** → стрілки і блоки:
-
-\`\`\`
-агент → executeAction
-              ↓
-        перевірки
-              ↓
-        performAction
-              ↓
-        save
-\`\`\`
-
-**Порівняння двох станів** → таблиця:
-
-\`\`\`
-Поле        | ДО        | ПІСЛЯ
-─────────── | ───────── | ─────────
-caseId      | є         | є
-tenantId    | немає     | 🆕 додано
-team[]      | немає     | 🆕 додано
-\`\`\`
-
-**Числа і метрики** → проста таблиця або текст:
-
-\`\`\`
-Cases:     18 → 18 (мігровано)
-Hearings:  47 → 47 (мігровано)
-Розмір:    234 KB → 248 KB
-\`\`\`
-
-**Архітектурні шари** → концентричні блоки:
-
-\`\`\`
-┌────────────────────────────┐
-│      UI компоненти          │
-│  ┌──────────────────────┐  │
-│  │    executeAction      │  │
-│  │  ┌────────────────┐  │  │
-│  │  │ permissionCheck │  │  │
-│  │  └────────────────┘  │  │
-│  └──────────────────────┘  │
-└────────────────────────────┘
-\`\`\`
-
-**Розподіли і відсотки** → ASCII-бари:
-
-\`\`\`
-Cases по статусах:
-active   ████████████████ 18
-closed   ████████ 9
-archived ███ 3
-\`\`\`
-
-**UI-макети — як виглядає інтерфейс** → схематичні рамки:
-
-\`\`\`
-┌────────────────────────────────────────┐
-│ Досьє Брановський — Конструктор         │
-├──────────────────────────┬─────────────┤
-│  📄 ДОКУМЕНТ              │  АГЕНТ      │
-│                            │             │
-│  До: Печерського          │  ── Працюю  │
-│      районного суду       │  з тобою...│
-│                            │             │
-│  [💾 .docx] [📋 Копія]     │  💬 [🎤]   │
-└──────────────────────────┴─────────────┘
-\`\`\`
-
-**Матриці прав, відповідностей** → таблиці з відмітками:
-
-\`\`\`
-              QI     Dashboard  Досьє   Main
-─────────── | ───── | ──────── | ───── | ─────
-create_case |  ✓    |    ✗     |   ✗   |   ✓
-close_case  |  ✓    |    ✗     |   ✓   |   ✓
-delete_case |  ✗    |    ✗     |   ✗   |   ✓
-add_hearing |  ✓    |    ✓     |   ✓   |   ✓
-\`\`\`
-
-**Стани з графічними індикаторами** → emoji + опис:
-
-\`\`\`
-🟢 active     — 18 справ
-🟡 closed     — 9 справ
-🔴 archived   — 3 справи
-⚪ draft       — 2 справи
-\`\`\`
-
-**Порівняння UI ДО/ПІСЛЯ** → два макети поряд:
-
-\`\`\`
-БУЛО:                         СТАЛО:
-┌──────────────┐              ┌──────────────────┐
-│  [Зберегти]  │              │  [Зберегти]       │
-└──────────────┘              │  [⏱ Облік часу]   │ 🆕
-                               └──────────────────┘
-\`\`\`
-
-**Принцип:** головне зрозумілість і **миттєвість сприйняття**. Адвокат повинен **одним поглядом** зрозуміти що змінилося. Якщо для цього треба ASCII-дерево — малюй дерево. Якщо таблиця — таблиця. Якщо просто текст — текст. Не нав'язуй форму всупереч змісту.
-
-### Шаблон файлу `report_saas_foundation.md`
-
-```markdown
-# Звіт виконання TASK SaaS Foundation v1.1
-
-**Дата виконання:** [дата]
-**Виконав:** Claude Code Opus
-**Тривалість:** [години]
-**Commit:** [hash]
-**Статус:** [success / partial / failed]
+- Окремий файл `ai_usage_log.json` (зараз в registry_data.json, виносити окремо — для майбутнього TASK якщо файл стане великим)
+- UI для перегляду витрат, моделей, лімітів (окремий TASK на основі цих даних)
+- Real-time моніторинг (фонова задача — не для зараз)
 
 ---
 
-## 🧬 ВІЗУАЛІЗАЦІЯ ЗМІН — ДО І ПІСЛЯ
+## ✅ КРИТЕРІЇ УСПІХУ
 
-> Форма обирається за змістом — дерева для структур, стрілки для потоків, таблиці для порівнянь.
-
-### Структура даних — ДО
-
-\`\`\`
-registry_data.json (ДО)
-│
-├── cases[]                    ← без tenantId, без team
-│   ├── caseId
-│   ├── name
-│   ├── status
-│   ├── userId                 ← єдиний індикатор власника
-│   ├── createdAt
-│   └── ... (інші поля)
-│
-├── hearings[]                 ← без tenantId
-│   ├── hearingId
-│   ├── caseId
-│   └── ...
-│
-├── notes[]                    ← без tenantId
-│   ├── noteId
-│   └── ...
-│
-└── pinnedNoteIds[]
-\`\`\`
-
-### Структура даних — ПІСЛЯ
-
-\`\`\`
-registry_data.json (ПІСЛЯ)
-│
-├── tenants[]                  🆕 НОВЕ — організації
-│   └── ab_levytskyi (bureau)
-│       ├── ownerUserId: vadym
-│       ├── settings
-│       └── subscription
-│
-├── users[]                    🆕 НОВЕ — користувачі
-│   └── vadym (bureau_owner)
-│       ├── role
-│       ├── tenantId
-│       └── settings
-│
-├── auditLog[]                 🆕 НОВЕ — журнал критичних дій
-│   └── [записи додаються автоматично]
-│
-├── cases[]                    🔄 РОЗШИРЕНО
-│   ├── caseId
-│   ├── tenantId               🆕 додано
-│   ├── ownerId                🆕 додано
-│   ├── name
-│   ├── status
-│   ├── userId                 (залишено для backward compat)
-│   ├── team[]                 🆕 додано (зараз 1 учасник)
-│   │   └── { userId, caseRole, permissions }
-│   ├── shareType              🆕 додано (internal/private/external)
-│   ├── externalAccess[]       🆕 додано (порожній)
-│   ├── createdAt
-│   └── ... (інші поля без змін)
-│
-├── hearings[]                 🔄 РОЗШИРЕНО
-│   ├── hearingId
-│   ├── tenantId               🆕 додано
-│   └── ... (без змін)
-│
-├── notes[]                    🔄 РОЗШИРЕНО
-│   ├── noteId
-│   ├── tenantId               🆕 додано
-│   └── ... (без змін)
-│
-├── time_entries[]             🔄 РОЗШИРЕНО (якщо було)
-│   ├── tenantId               🆕 додано
-│   └── ...
-│
-├── pinnedNoteIds[]            ✅ БЕЗ ЗМІН
-│
-└── dataVersion: N+1           🔄 збільшено
-\`\`\`
-
-### Архітектура executeAction — ДО
-
-\`\`\`
-агент → executeAction(action, params)
-                ↓
-        performAction()
-                ↓
-        зміна data
-                ↓
-        save до Drive
-\`\`\`
-
-### Архітектура executeAction — ПІСЛЯ
-
-\`\`\`
-агент → executeAction(action, params)
-                ↓
-   ┌────────────────────────────────┐
-   │ Перевірки (зараз — заглушки)   │
-   │                                  │
-   │ 1. checkTenantAccess()          │ ← завжди true для Вадима
-   │ 2. checkRolePermission()        │ ← завжди true для bureau_owner
-   │ 3. checkCaseAccess()            │ ← перевірка власника справи
-   └────────────────────────────────┘
-                ↓
-        performAction()
-                ↓
-        зміна data
-                ↓
-   ┌────────────────────────────────┐
-   │ auditLog.write()                │ 🆕 для критичних дій
-   │ (create_case, close_case,       │
-   │  destroy_case, etc.)             │
-   └────────────────────────────────┘
-                ↓
-        save до Drive
-\`\`\`
-
-### Сервіси — ПІСЛЯ
-
-\`\`\`
-src/services/                  🆕 НОВА ДИРЕКТОРІЯ
-├── tenantService.js           🆕 робота з tenants і users
-├── permissionService.js       🆕 перевірки прав (заглушки)
-├── auditLogService.js         🆕 запис в auditLog
-└── migrationService.js        🆕 міграція даних
-\`\`\`
+1. ✅ `registry_data.json` має `ai_usage[]`, `caseAccess[]`
+2. ✅ Кожен tenant має `storage`, `modelPreferences`, `subscription.limits + current + alerts`
+3. ✅ Кожен case.team[i] має `permissions` з дефолтами по ролі
+4. ✅ Усі case.id — string (не number)
+5. ✅ `levytskyi_action_log` видалено з localStorage, цінні дані в auditLog
+6. ✅ `driveService.writeCases` alias видалено, скрізь `writeRegistry`
+7. ✅ agentHistory slice = 50 у localStorage (вирівняно з Drive і state)
+8. ✅ Застарілий коментар у App.jsx:3273 видалено
+9. ✅ `schemaVersion: 3`, `settingsVersion: "3.0_patch_and_extension"`
+10. ✅ Міграція v1 → v2 → v3 ідемпотентна, з обома бекапами (pre_saas і pre_v3)
+11. ✅ Файли `aiUsageService.js`, `modelResolver.js` створені
+12. ✅ Усі точки виклику Anthropic API логують у `ai_usage[]` і використовують `resolveModel()`
+13. ✅ `checkTenantAccess` і `checkCaseAccess` активовані з мінімальною логікою
+14. ✅ Старі дані зберегли весь функціонал — система не зламалась
+15. ✅ Vite build чистий
+16. ✅ Усі smoke tests пройдено
+17. ✅ CLAUDE.md оновлений (тільки розділ v3.0)
+18. ✅ Звіт `report_saas_foundation_v1_1.md` створений
+19. ✅ Один commit у main
 
 ---
 
-## 📋 ДЕТАЛЬНИЙ ОПИС ЗМІН
+## 🚧 МОЖЛИВІ РИЗИКИ І ОБХІДНІ ПУТИ
 
-### 1. Створено нові структури в registry_data.json
+### Ризик 1: registry_data.json роздувається
 
-**tenants[]** (1 запис):
-- ab_levytskyi: bureau, owner=vadym
-- Налаштування стандартів документів закладено
+`ai_usage[]` додає ~250 байт на кожен виклик AI. При 100 викликах/день — 25 КБ/день, 9 МБ/рік.
 
-**users[]** (1 запис):
-- vadym: bureau_owner, повна інформація з реквізитами
+**Обхід:** LIFO ротація 50 000 записів (приблизно 1 рік активної роботи). Якщо стане великим — окремий TASK на винесення в `ai_usage_log.json` на Drive (як архіви time_entries в Billing Foundation).
 
-**auditLog[]** (порожній або з мігрованими записами):
-- Структура готова, обмеження 10000 записів
+### Ризик 2: Anthropic API не повертає usage в усіх кейсах
 
-### 2. Розширено існуючі структури
+Деякі streaming-режими або помилкові запити можуть не мати `usage`.
 
-**cases[]** — мігровано N записів:
-- Додано: tenantId, ownerId, team, shareType, externalAccess
-- Збережено: всі існуючі поля (включно з userId для backward compat)
+**Обхід:** logAiUsage коректно обробляє відсутність — логується з 0 токенів і model 'unknown'. Краще ніж пропустити запис.
 
-**hearings[]** — мігровано N записів:
-- Додано: tenantId
+### Ризик 3: Міграція ламає ідемпотентність
 
-**notes[]** — мігровано N записів:
-- Додано: tenantId
+Повторний запуск додає поля повторно — це баг.
 
-**time_entries[]** — [мігровано N записів / структура не існувала]:
-- [Додано: tenantId / Створено порожньою]
+**Обхід:** усі додавання через `if (!field) ...` перевірки. Smoke test 4 (повторне завантаження v3) це підтверджує.
 
-### 3. Створено нові файли
+### Ризик 4: Пропущена точка виклику AI
 
-- `src/services/tenantService.js` — N рядків
-- `src/services/permissionService.js` — N рядків
-- `src/services/auditLogService.js` — N рядків
-- `src/services/migrationService.js` — N рядків
+Claude Code знайшов 5 точок, реально 7 — дві не логуються.
 
-### 4. Змінено існуючі файли
+**Обхід:** після впровадження зробити **тиждень спостереження** — переглянути `aiUsage` через тиждень, порівняти з очікуваним. Якщо є прогалина — допатчити.
 
-- `src/App.jsx` — інтеграція сервісів, виклик міграції при завантаженні
-- [Файл з executeAction] — обгортка перевірками і логуванням
-- `CLAUDE.md` — додано розділ "Філософія системи — ембріон з повним ДНК"
+### Ризик 5: id mixed types міграція ламає посилання
 
-### 5. Бекапи
+Деякі hearings/deadlines/notes посилаються на caseId як number, після міграції caseId стає string — посилання губляться.
 
-- `registry_data_backup_pre_saas_[timestamp].json` створено на Drive
-- Розмір бекапу: N KB
-- Розмір нового файлу: N KB
+**Обхід:** при міграції одночасно оновити всі **посилання** в hearings/deadlines/notes/timeLog. Перевірити в smoke test 7 (всі модулі працюють).
 
-### 6. Тестування
+### Ризик 6: levytskyi_action_log merge втрачає дані
 
-- [x] Реєстр справ відображається без змін
-- [x] Дашборд працює
-- [x] Quick Input працює
-- [x] Записна книжка відкривається
-- [x] Досьє відкривається
-- [x] Усі агенти відповідають
-- [x] Створення нової справи працює і пише в auditLog
-- [x] Закриття справи працює і пише в auditLog
-- [x] Видалення справи працює і пише в auditLog
-- [x] Завантаження зі старим форматом даних виконує міграцію автоматично
+Старі записи можуть мати інший формат ніж очікуваний.
+
+**Обхід:** перед видаленням створюємо повний бекап `_backups/levytskyi_action_log_<ts>.json`. Якщо щось пішло не так — можна відновити.
 
 ---
 
-## 🕐 ХРОНОЛОГІЯ ВИКОНАННЯ
+## 🤔 ПИТАННЯ ДЛЯ АДВОКАТА (на стадії діагностики)
 
-### Фаза 0 — Діагностика (тривалість: X годин)
-- [час] Завантажено registry_data.json з Drive
-- [час] Проаналізовано структуру даних
-- [час] Знайдено executeAction в файлі [шлях]
-- [час] Виявлено N actions в реєстрі ACTIONS
-- [час] Створено diagnostic_saas_foundation.md
-- [час] Зупинка для отримання згоди
-- [час] Отримано згоду адвоката, продовжуємо
+Можуть виникнути в Claude Code під час діагностики:
 
-### Фаза 1 — Бекап (тривалість: X хвилин)
-- [час] Створено registry_data_backup_pre_saas_[timestamp].json
+**Q1.** Pricing моделей у `MODEL_PRICING` — використати саме ті цифри які в TASK, чи Claude Code підтягує актуальні з Anthropic документації?
 
-### Фаза 2 — Створення сервісів (тривалість: X годин)
-- [час] tenantService.js створено
-- [час] permissionService.js створено
-- [час] auditLogService.js створено
-- [час] migrationService.js створено
+**Q2.** Якщо знайдена точка виклику AI **не з фронтенду** (наприклад, в окремому скрипті) — логувати чи пропустити?
 
-### Фаза 3 — Інтеграція (тривалість: X годин)
-- [час] Сервіси підключено в App.jsx
-- [час] executeAction обгорнуто перевірками
-- [час] Міграція інтегрована в loadData
+**Q3.** Чи додавати в `case.team[i].permissions` ще якісь поля (canCreateDocument, canDeleteDocument)?
 
-### Фаза 4 — Міграція даних (тривалість: X хвилин)
-- [час] Міграція виконана успішно
-- [час] N cases оновлено
-- [час] N hearings оновлено
-- [час] N notes оновлено
+**Q4.** id mixed types — формат строки. `case_<number>` чи `case_<UUID>`? Якщо case_<number> — гарантуємо що нові ID не конфліктують зі старими номерами?
 
-### Фаза 5 — Тестування (тривалість: X годин)
-- [час] Перевірено усі модулі
-- [час] Перевірено усі агенти
-- [час] Перевірено створення/закриття/видалення справ
+**Q5.** `levytskyi_action_log` merge — які поля переносимо? Усі чи фільтруємо за певним критерієм?
 
-### Фаза 6 — Документація (тривалість: X хвилин)
-- [час] CLAUDE.md оновлено
-- [час] Звіт цей створено
+**Q6.** `caseAccess[]` — структура запису якою має бути? Поки порожня, але може треба продумати схему наперед?
 
 ---
 
-## ⚠️ ЗНАЙДЕНІ ПРОБЛЕМИ
+## 📅 ПОРЯДОК ВИКОНАННЯ
 
-### Під час впровадження
-- [список проблем що виникли і як вирішено]
+```
+1. Прочитати CLAUDE.md, LESSONS.md, bugs_found_during_saas_foundation.md, 
+   diagnostic_agentHistory.md (10 хв)
 
-### Знайдені баги в існуючому коді (НЕ виправлені)
-- [записано в bugs_found_during_saas_foundation.md]
-- Наприклад: «У файлі X функція Y має проблему Z. Не виправлено в цьому TASK бо це рефакторинг.»
+2. Фаза 0 — діагностика (45-60 хв)
 
----
+3. Зупинка — згода адвоката
 
-## 📊 МЕТРИКИ
+4. ЧАСТИНА А — Архітектурний борг (2-3 год):
+   А1. agentHistory малий фікс (~7 хв)
+   А2. levytskyi_action_log merge (~30 хв)
+   А3. id mixed types (~1-2 год)
+   А4. driveService.writeCases cleanup (~30-60 хв)
 
-- Кількість нових файлів: 4
-- Кількість змінених файлів: 3
-- Рядків коду додано: N
-- Рядків коду видалено: N
-- Рядків коду змінено: N
-- Cases мігровано: N
-- Hearings мігровано: N
-- Notes мігровано: N
-- Розмір registry_data.json до: N KB
-- Розмір registry_data.json після: N KB
-- Час виконання реальний vs прогнозований: X / 8-10 годин
+5. ЧАСТИНА Б — SaaS-телеметрія і структури (2-3 год):
+   Б1. ai_usage[] (~1 год)
+   Б2. aiUsageService.js + інтеграція (~1-2 год)
+   Б3. tenant.storage (~15 хв)
+   Б4. case.team[i].permissions (~30 хв)
+   Б5. caseAccess[] (~5 хв)
 
----
+6. ЧАСТИНА В — Тарифні пакети (1.5 год):
+   В1. tenant.modelPreferences (~15 хв)
+   В2. modelResolver.js (~30 хв)
+   В3. tenant.subscription (~30 хв)
+   В4. checkTenantAccess (~10 хв)
+   В5. checkCaseAccess (~30 хв)
 
-## 🎯 ВИСНОВОК
+7. ЧАСТИНА Г — Знахідки адвоката (час залежить від кількості)
 
-[2-3 речення про загальний результат — що зроблено, чи відповідає очікуванням, що далі]
+8. ЧАСТИНА Д — Технічна обвʼязка (2-3 год):
+   Д1-Д3. migrationService + backup (~1.5 год)
+   Д4. CLAUDE.md (~30 хв)
+   Д5. Smoke tests (~30 хв)
+   Д6. Звіт + commit (~30 хв)
 
----
-
-## 📎 ПОСИЛАННЯ НА АРТЕФАКТИ
-
-- `diagnostic_saas_foundation.md` — діагностика
-- `progress_saas_foundation.md` — прогрес роботи
-- `bugs_found_during_saas_foundation.md` — знайдені баги
-- `registry_data_backup_pre_saas_[timestamp].json` — бекап даних
-- Commit: [hash з посиланням на GitHub]
-\`\`\`
-
-### Чому такий формат
-
-**Візуалізації ДО/ПІСЛЯ** дозволяють адвокату **миттєво побачити** що змінилося. Не читати простирадла тексту — а одним поглядом зрозуміти масштаб і характер змін. Форма обирається за змістом — дерева, стрілки, таблиці, бари, текст.
-
-**Детальний опис** дозволяє **перевірити в деталях** конкретні зміни — чи правильно мігрувалися дані, чи правильно інтегровано перевірки.
-
-**Хронологія** дозволяє **зрозуміти хід роботи** і виявити проблемні моменти. Якщо щось пішло не так — видно де саме.
-
-### Як цей звіт використовується
-
-1. Адвокат читає звіт після завершення TASK (з планшета через GitHub або в редакторі)
-2. Якщо все ОК — переходимо до наступного TASK
-3. Якщо є питання — обговорюємо в адмін-чаті, при необхідності виправляємо
-4. Звіт залишається в репо як **історичний документ** про те що відбувалося
+ОРІЄНТОВНО: 7-10 робочих годин Claude Code (1 робочий день)
+```
 
 ---
 
-**Кінець TASK**
+## 🎯 ПІСЛЯ ЗАВЕРШЕННЯ ЦЬОГО TASK
 
+Послідовність далі:
+
+```
+1. ✅ TASK SaaS Foundation v1
+2. 🔄 TASK SaaS Foundation v1.1 (цей)         ← ми тут
+3.    TASK Billing Foundation v2              
+       (структури time_entries, activityTracker, master timer,
+        стандарти часу, місячна ротація, getTimeEntries API)
+4.    TASK Tool Use Preparation
+       (з урахуванням готового activityTracker і ai_usage)
+5.    TASK CLAUDE.md Audit
+       (одним проходом для всього нового каркасу:
+        v2.0 SaaS, v3.0 Patch, v4.0 Billing, v5.0 Tool Use)
+6.    TASK Travel Time Fix
+       (перший модульний на повністю готовій архітектурі)
+7.    TASK Multi-user Activation
+       (окремий чат, окрема велика тема — підключення Olena)
+8.    Інші модульні TASK...
+```
+
+---
+
+**Кінець TASK SaaS Foundation v1.1 Patch and Extension**
+
+Версія 1.1 — повна, готова до запуску. Очікую:
+- Адвокат додає свої малі знахідки в Частину Г
+- Запуск в Codespaces з Claude Code

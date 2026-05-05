@@ -5,6 +5,16 @@
 // В майбутньому SaaS — отримує дані з сесії авторизації.
 // Інтерфейс зафіксований; у заглушках вшито ДНК повної архітектури.
 
+function getCurrentMonthStart() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0)).toISOString();
+}
+
+function getCurrentMonthEnd() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59)).toISOString();
+}
+
 export const DEFAULT_TENANT = {
   tenantId: 'ab_levytskyi',
   type: 'bureau',
@@ -25,10 +35,47 @@ export const DEFAULT_TENANT = {
     iban: 'UA643052990000026001046211855',
     bank: 'ПриватБанк',
   },
+  storage: {
+    provider: 'drive_legacy',
+    quotaGB: null,
+    usedBytes: null,
+  },
+  modelPreferences: {
+    dossierAgent: null,
+    qiAgent: null,
+    qiParserDocument: null,
+    qiParserImage: null,
+    dashboardAgent: null,
+    documentProcessor: null,
+    documentParserVision: null,
+    caseContextGenerator: null,
+    deepAnalysis: null,
+  },
   subscription: {
     plan: 'self_hosted',
+    status: 'active',
     validUntil: null,
     features: ['all'],
+    limits: {
+      aiTokensPerMonth: null,
+      aiCostPerMonth: null,
+      storageGB: null,
+      teamMembers: null,
+      casesActive: null,
+    },
+    current: {
+      periodStart: getCurrentMonthStart(),
+      periodEnd: getCurrentMonthEnd(),
+      tokensUsed: 0,
+      costUsedUSD: 0,
+      storageUsedGB: 0,
+      teamMembersCount: 1,
+      casesActiveCount: 0,
+    },
+    alerts: {
+      warnAt: 80,
+      blockAt: 100,
+    },
   },
   settings: {
     language: 'uk',
@@ -41,7 +88,7 @@ export const DEFAULT_TENANT = {
     },
   },
   createdAt: '2016-06-15T00:00:00Z',
-  updatedAt: '2026-05-04T00:00:00Z',
+  updatedAt: '2026-05-05T00:00:00Z',
 };
 
 export const DEFAULT_USER = {

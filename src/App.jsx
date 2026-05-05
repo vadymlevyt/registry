@@ -4,12 +4,14 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
 import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from './services/migrationService';
 import { driveRequest, refreshDriveToken, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
+import { logAiUsage } from './services/aiUsageService';
+import { resolveModel } from './services/modelResolver';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import './App.css';
 
@@ -81,45 +83,45 @@ const mkHearing = (daysFromNow, court, status = 'scheduled') => daysFromNow != n
 }] : [];
 
 const INITIAL_CASES = [
-  { id:1,  name:'Салун',            client:'Салун Ж./Салун І.',  category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/2241/24', hearings:mkHearing(2,'Рівненський райсуд'),  deadline:d(1),  deadline_type:'Заява про витрати (ст.141)',  next_action:'Подати заяву про судові витрати', notes:'', pinnedNoteIds:[] },
-  { id:2,  name:'Корева',           client:'Корева М.В.',        category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearings:mkHearing(5,'Костопільський райсуд'),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'', pinnedNoteIds:[] },
-  { id:3,  name:'Рубан',            client:'Рубан О.П.',         category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/3312/23', hearings:mkHearing(8,'Печерський райсуд м.Київ'),  deadline:d(6),  deadline_type:'Відповідь на позов',          next_action:'Підготувати заперечення',         notes:'', pinnedNoteIds:[] },
-  { id:4,  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearings:mkHearing(12,'Господарський суд Київ'), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'', pinnedNoteIds:[],
+  { id:'case_1',  name:'Салун',            client:'Салун Ж./Салун І.',  category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/2241/24', hearings:mkHearing(2,'Рівненський райсуд'),  deadline:d(1),  deadline_type:'Заява про витрати (ст.141)',  next_action:'Подати заяву про судові витрати', notes:'', pinnedNoteIds:[] },
+  { id:'case_2',  name:'Корева',           client:'Корева М.В.',        category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearings:mkHearing(5,'Костопільський райсуд'),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'', pinnedNoteIds:[] },
+  { id:'case_3',  name:'Рубан',            client:'Рубан О.П.',         category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/3312/23', hearings:mkHearing(8,'Печерський райсуд м.Київ'),  deadline:d(6),  deadline_type:'Відповідь на позов',          next_action:'Підготувати заперечення',         notes:'', pinnedNoteIds:[] },
+  { id:'case_4',  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearings:mkHearing(12,'Господарський суд Київ'), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'', pinnedNoteIds:[],
     proceedings: [
       { id: "proc_main", type: "first", title: "Основне провадження", court: "Пустомитівський районний суд Львівської обл.", status: "paused", parentProcId: null, parentEventId: null },
       { id: "proc_appeal_1", type: "appeal", title: "Апеляція: ухвала 03.2024", court: "Київський апеляційний суд", status: "active", parentProcId: "proc_main", parentEventId: "event_4" }
     ],
     documents: [
-      { id: 1, procId: "proc_main", name: "Позовна заява", icon: "📄", date: "березень 2023", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-      { id: 2, procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", date: "березень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-      { id: 3, procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", date: "грудень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-      { id: 4, procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", date: "лютий 2024", category: "pleading", author: "opponent", tags: [], notes: "" },
-      { id: 5, procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", date: "лютий 2024", category: "motion", author: "opponent", tags: [], notes: "" },
-      { id: 6, procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", date: "березень 2024", category: "court_act", author: "court", tags: ["key"], notes: "" },
-      { id: 7, procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", date: "квітень 2024", category: "court_act", author: "court", tags: [], notes: "" },
-      { id: 8, procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", date: "квітень 2024", category: "pleading", author: "opponent", tags: ["key"], notes: "" },
-      { id: 9, procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", date: "квітень 2024", category: "other", author: "opponent", tags: [], notes: "" },
-      { id: 10, procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", date: "травень 2024", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-      { id: 11, procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", date: "червень 2024", category: "pleading", author: "opponent", tags: [], notes: "⚠️ Лікарняний лист — перевірити автентичність" },
-      { id: 12, procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
+      { id: "1",  procId: "proc_main", name: "Позовна заява", icon: "📄", date: "березень 2023", category: "pleading", author: "ours", tags: ["key"], notes: "" },
+      { id: "2",  procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", date: "березень 2023", category: "court_act", author: "court", tags: [], notes: "" },
+      { id: "3",  procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", date: "грудень 2023", category: "court_act", author: "court", tags: [], notes: "" },
+      { id: "4",  procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", date: "лютий 2024", category: "pleading", author: "opponent", tags: [], notes: "" },
+      { id: "5",  procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", date: "лютий 2024", category: "motion", author: "opponent", tags: [], notes: "" },
+      { id: "6",  procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", date: "березень 2024", category: "court_act", author: "court", tags: ["key"], notes: "" },
+      { id: "7",  procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", date: "квітень 2024", category: "court_act", author: "court", tags: [], notes: "" },
+      { id: "8",  procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", date: "квітень 2024", category: "pleading", author: "opponent", tags: ["key"], notes: "" },
+      { id: "9",  procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", date: "квітень 2024", category: "other", author: "opponent", tags: [], notes: "" },
+      { id: "10", procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", date: "травень 2024", category: "pleading", author: "ours", tags: ["key"], notes: "" },
+      { id: "11", procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", date: "червень 2024", category: "pleading", author: "opponent", tags: [], notes: "⚠️ Лікарняний лист — перевірити автентичність" },
+      { id: "12", procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
     ]
   },
-  { id:5,  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearings:mkHearing(15,'Рівненський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'', pinnedNoteIds:[] },
-  { id:6,  name:'Голобля',          client:'Голобля Т.В.',       category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/2109/25', hearings:mkHearing(18,'Костопільський райсуд'), deadline:d(16), deadline_type:'Процесуальна заява',          next_action:'Надіслати заяву',                 notes:'', pinnedNoteIds:[] },
-  { id:7,  name:'Манолюк',          client:'Манолюк В.О.',       category:'admin',    status:'active',  court:'Рівненський окружний адмінсуд',case_no:'460/5543/24',hearings:mkHearing(20,'Рівненський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Чекаємо на ухвалу суду',          notes:'', pinnedNoteIds:[] },
-  { id:8,  name:'Голдбері',         client:'Голдбері О.Ю.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/4412/23', hearings:mkHearing(22,'Рівненський райсуд'), deadline:d(20), deadline_type:'Відповідь на апеляцію',       next_action:'Підготувати відзив',              notes:'', pinnedNoteIds:[] },
-  { id:9,  name:'Кісельова',        client:'Кісельова Н.І.',     category:'civil',    status:'active',  court:'Київський апеляційний суд',  case_no:'22-ц/824/22', hearings:mkHearing(25,'Київський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо засідання',             notes:'', pinnedNoteIds:[] },
-  { id:10, name:'Смолій Андрій',    client:'Смолій А.В.',        category:'criminal', status:'active',  court:'Рівненський суд присяжних',  case_no:'190/2345/24', hearings:mkHearing(28,'Рівненський суд присяжних'), deadline:null,  deadline_type:null,                          next_action:'Підготувати позицію захисту',    notes:'', pinnedNoteIds:[] },
-  { id:11, name:'Варфоломєєв',      client:'Варфоломєєв С.М.',   category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/3341/25', hearings:mkHearing(30,'Костопільський райсуд'), deadline:d(28), deadline_type:'Клопотання про докази',       next_action:'Подати клопотання',              notes:'', pinnedNoteIds:[] },
-  { id:12, name:'Липовцев',         client:'Липовцев І.О.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/1122/24', hearings:[],  deadline:d(7),  deadline_type:'Позовна заява',               next_action:'Подати позов',                   notes:'', pinnedNoteIds:[] },
-  { id:13, name:'Цзян',             client:'Цзян Хуей',          category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/8821/25', hearings:mkHearing(35,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо відповідь',             notes:'', pinnedNoteIds:[] },
-  { id:14, name:'Бабенко',          client:'Бабенко О.В.',       category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/9012/24', hearings:mkHearing(40,'Печерський райсуд м.Київ'), deadline:null,  deadline_type:null,                          next_action:'Підготовка документів',          notes:'', pinnedNoteIds:[] },
-  { id:15, name:'Конах',            client:'Конах В.П.',         category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/4453/25', hearings:mkHearing(14,'Костопільський райсуд'), deadline:d(12), deadline_type:'Запит до ТЦК',               next_action:'Надіслати запит',                notes:'', pinnedNoteIds:[] },
-  { id:16, name:'Сипко',            client:'Сипко Р.Д.',         category:'criminal', status:'paused',  court:'Рівненський суд',            case_no:'190/5544/23', hearings:[],  deadline:null,  deadline_type:null,                          next_action:'Очікуємо процесуального рішення',notes:'', pinnedNoteIds:[] },
-  { id:17, name:'Квант',            client:'ТОВ «Квант»',        category:'admin',    status:'active',  court:'Господарський суд Рівне',    case_no:'918/2211/25', hearings:mkHearing(45,'Господарський суд Рівне'), deadline:null,  deadline_type:null,                          next_action:'Підготовка позиції',             notes:'', pinnedNoteIds:[] },
-  { id:18, name:'Янченко',          client:'Янченко Л.С.',       category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/7734/24', hearings:mkHearing(50,'Рівненський райсуд'), deadline:null,  deadline_type:null,                          next_action:'Збираємо докази',                notes:'', pinnedNoteIds:[] },
-  { id:19, name:'Махді',            client:'Махді Карім',        category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/3312/25', hearings:mkHearing(55,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо ухвали',                notes:'', pinnedNoteIds:[] },
-  { id:20, name:'Колесник',         client:'Колесник Н.О.',      category:'civil',    status:'active',  court:'Рівненський апеляційний суд',case_no:'22-ц/824/8821/24', hearings:mkHearing(60,'Рівненський апеляційний суд'), deadline:null, deadline_type:null,                   next_action:'Підготовка апеляції',            notes:'', pinnedNoteIds:[] },
+  { id:'case_5',  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearings:mkHearing(15,'Рівненський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'', pinnedNoteIds:[] },
+  { id:'case_6',  name:'Голобля',          client:'Голобля Т.В.',       category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/2109/25', hearings:mkHearing(18,'Костопільський райсуд'), deadline:d(16), deadline_type:'Процесуальна заява',          next_action:'Надіслати заяву',                 notes:'', pinnedNoteIds:[] },
+  { id:'case_7',  name:'Манолюк',          client:'Манолюк В.О.',       category:'admin',    status:'active',  court:'Рівненський окружний адмінсуд',case_no:'460/5543/24',hearings:mkHearing(20,'Рівненський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Чекаємо на ухвалу суду',          notes:'', pinnedNoteIds:[] },
+  { id:'case_8',  name:'Голдбері',         client:'Голдбері О.Ю.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/4412/23', hearings:mkHearing(22,'Рівненський райсуд'), deadline:d(20), deadline_type:'Відповідь на апеляцію',       next_action:'Підготувати відзив',              notes:'', pinnedNoteIds:[] },
+  { id:'case_9',  name:'Кісельова',        client:'Кісельова Н.І.',     category:'civil',    status:'active',  court:'Київський апеляційний суд',  case_no:'22-ц/824/22', hearings:mkHearing(25,'Київський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо засідання',             notes:'', pinnedNoteIds:[] },
+  { id:'case_10', name:'Смолій Андрій',    client:'Смолій А.В.',        category:'criminal', status:'active',  court:'Рівненський суд присяжних',  case_no:'190/2345/24', hearings:mkHearing(28,'Рівненський суд присяжних'), deadline:null,  deadline_type:null,                          next_action:'Підготувати позицію захисту',    notes:'', pinnedNoteIds:[] },
+  { id:'case_11', name:'Варфоломєєв',      client:'Варфоломєєв С.М.',   category:'civil',    status:'active',  court:'Костопільський райсуд',      case_no:'560/3341/25', hearings:mkHearing(30,'Костопільський райсуд'), deadline:d(28), deadline_type:'Клопотання про докази',       next_action:'Подати клопотання',              notes:'', pinnedNoteIds:[] },
+  { id:'case_12', name:'Липовцев',         client:'Липовцев І.О.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/1122/24', hearings:[],  deadline:d(7),  deadline_type:'Позовна заява',               next_action:'Подати позов',                   notes:'', pinnedNoteIds:[] },
+  { id:'case_13', name:'Цзян',             client:'Цзян Хуей',          category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/8821/25', hearings:mkHearing(35,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо відповідь',             notes:'', pinnedNoteIds:[] },
+  { id:'case_14', name:'Бабенко',          client:'Бабенко О.В.',       category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/9012/24', hearings:mkHearing(40,'Печерський райсуд м.Київ'), deadline:null,  deadline_type:null,                          next_action:'Підготовка документів',          notes:'', pinnedNoteIds:[] },
+  { id:'case_15', name:'Конах',            client:'Конах В.П.',         category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/4453/25', hearings:mkHearing(14,'Костопільський райсуд'), deadline:d(12), deadline_type:'Запит до ТЦК',               next_action:'Надіслати запит',                notes:'', pinnedNoteIds:[] },
+  { id:'case_16', name:'Сипко',            client:'Сипко Р.Д.',         category:'criminal', status:'paused',  court:'Рівненський суд',            case_no:'190/5544/23', hearings:[],  deadline:null,  deadline_type:null,                          next_action:'Очікуємо процесуального рішення',notes:'', pinnedNoteIds:[] },
+  { id:'case_17', name:'Квант',            client:'ТОВ «Квант»',        category:'admin',    status:'active',  court:'Господарський суд Рівне',    case_no:'918/2211/25', hearings:mkHearing(45,'Господарський суд Рівне'), deadline:null,  deadline_type:null,                          next_action:'Підготовка позиції',             notes:'', pinnedNoteIds:[] },
+  { id:'case_18', name:'Янченко',          client:'Янченко Л.С.',       category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/7734/24', hearings:mkHearing(50,'Рівненський райсуд'), deadline:null,  deadline_type:null,                          next_action:'Збираємо докази',                notes:'', pinnedNoteIds:[] },
+  { id:'case_19', name:'Махді',            client:'Махді Карім',        category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/3312/25', hearings:mkHearing(55,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо ухвали',                notes:'', pinnedNoteIds:[] },
+  { id:'case_20', name:'Колесник',         client:'Колесник Н.О.',      category:'civil',    status:'active',  court:'Рівненський апеляційний суд',case_no:'22-ц/824/8821/24', hearings:mkHearing(60,'Рівненський апеляційний суд'), deadline:null, deadline_type:null,                   next_action:'Підготовка апеляції',            notes:'', pinnedNoteIds:[] },
 ];
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -1029,7 +1031,7 @@ function buildSystemContext(cases) {
   return ctx;
 }
 
-function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction }) {
+function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction, setAiUsage }) {
   const [text, setText]                   = useState('');
   const [loading, setLoading]             = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -1278,6 +1280,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
     setConversationHistory([]);
     const caseNames = cases.map(c => c.case_no ? `${c.name} (${c.case_no})` : c.name).join(', ');
     try {
+      const qiImageModel = resolveModel('qiParserImage');
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -1287,7 +1290,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
+          model: qiImageModel,
           max_tokens: 1024,
           system: HAIKU_SYSTEM_PROMPT,
           messages: [{
@@ -1307,6 +1310,15 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         return;
       }
       const data = await res.json();
+      try {
+        logAiUsage({
+          agentType: 'qi_agent',
+          model: qiImageModel,
+          inputTokens: data?.usage?.input_tokens,
+          outputTokens: data?.usage?.output_tokens,
+          context: { module: 'QI', operation: 'parse_document' },
+        }, setAiUsage);
+      } catch {}
       const rawText = data?.content?.[0]?.text || '';
       const parsed = validateAndParseJSON(rawText);
       if (!parsed) {
@@ -1386,7 +1398,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         const existing = prev.find(c => c.name.toLowerCase() === caseName.toLowerCase());
         if (existing) return prev.map(c => c.id === existing.id ? { ...c, ...data, id: c.id } : c);
         const newHearings = data.hearing_date ? [{ id: `hrg_${Date.now()}`, date: data.hearing_date, time: data.hearing_time || '', court: data.court || '', notes: '', status: 'scheduled' }] : [];
-        return [...prev, { id: Date.now(), name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearings: newHearings, deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes ? [{id:Date.now(), text:data.notes, category:'case', source:'form', ts:new Date().toISOString()}] : [], pinnedNoteIds:[] }];
+        return [...prev, { id: `case_${Date.now()}`, name: caseName, client: data.client||'', category: data.category||'civil', status:'active', court: data.court||'', case_no: data.case_no||'', hearings: newHearings, deadline: data.deadline||'', deadline_type: data.deadline_type||'', next_action: data.next_action||'', notes: data.notes ? [{id:Date.now(), text:data.notes, category:'case', source:'form', ts:new Date().toISOString()}] : [], pinnedNoteIds:[] }];
       });
       systemAlert(`Дані внесено: ${caseName}`);
       onClose();
@@ -1398,6 +1410,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
     const userContent = `Existing cases in registry: ${caseNames}\n\n---\n\n${text}`;
 
     try {
+      const qiTextModel = resolveModel('qiParserDocument');
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -1407,7 +1420,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
+          model: qiTextModel,
           max_tokens: 1024,
           system: HAIKU_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userContent }],
@@ -1423,6 +1436,15 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
       }
 
       const data = await res.json();
+      try {
+        logAiUsage({
+          agentType: 'qi_agent',
+          model: qiTextModel,
+          inputTokens: data?.usage?.input_tokens,
+          outputTokens: data?.usage?.output_tokens,
+          context: { module: 'QI', operation: 'parse_document' },
+        }, setAiUsage);
+      } catch {}
       const rawText = data?.content?.[0]?.text || '';
       const parsed = validateAndParseJSON(rawText);
 
@@ -1659,6 +1681,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
     setConversationHistory(prev => [...prev.slice(-9), { role: 'user', content: userMsg }]);
 
     try {
+      const qiChatModel = resolveModel('qiAgent');
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -1668,7 +1691,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: qiChatModel,
           system: SONNET_CHAT_PROMPT,
           messages: newHistory,
           max_tokens: 2048,
@@ -1679,6 +1702,15 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction 
         setConversationHistory(prev => [...prev, { role: 'assistant', content: `Помилка: ${err?.error?.message || res.status}` }]);
       } else {
         const data = await res.json();
+        try {
+          logAiUsage({
+            agentType: 'qi_agent',
+            model: qiChatModel,
+            inputTokens: data?.usage?.input_tokens,
+            outputTokens: data?.usage?.output_tokens,
+            context: { module: 'QI', operation: 'chat' },
+          }, setAiUsage);
+        } catch {}
         const responseText = data?.content?.[0]?.text || '';
         const actionMatch = (() => {
           const idx = responseText.indexOf('ACTION_JSON:');
@@ -2879,41 +2911,15 @@ const driveService = {
     }
   },
 
-  // ── DEPRECATED ALIASES ────────────────────────────────────────────────────
-  // Старі імена для зворотної сумісності з AnalysisPanel.connectDrive.
-  // Семантика: readCases повертає cases[] (з нового формату), writeCases приймає
-  // cases[] і запаковує в мінімальний registry. Не використовувати в новому коді.
+  // ── LEGACY READER ──────────────────────────────────────────────────────────
+  // readCases повертає лише масив cases[] зі старого або нового формату.
+  // Використовується в AnalysisPanel.connectDrive для імпорту старих файлів.
   async readCases(token) {
     const raw = await this.readRegistry(token);
     if (!raw) return null;
     if (Array.isArray(raw)) return raw;
     if (raw && Array.isArray(raw.cases)) return raw.cases;
     return null;
-  },
-
-  async writeCases(token, cases) {
-    // У новому форматі cases — лише частина registry. Тут пишемо тільки масив,
-    // що ефективно «відкатить» schemaVersion. Тому викликати ЛИШЕ зі старого
-    // legacy-коду (AnalysisPanel імпорт), новий шлях іде через writeRegistry.
-    const id = await this._findFileId(token);
-    const body = JSON.stringify(cases);
-    if (id) {
-      await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body
-      });
-    } else {
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'application/json' })], { type: 'application/json' }));
-      form.append('file', new Blob([body], { type: 'application/json' }));
-      const res = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        body: form
-      });
-      const created = await res.json();
-      this._fileId = created.id;
-    }
   }
 };
 
@@ -3270,7 +3276,6 @@ function normalizeCases(cases) {
       updated.pinnedNoteIds = [];
     }
 
-    // agentHistory — зберігати в об'єкті справи (тимчасово, поки немає agent_history.json)
     if (!Array.isArray(updated.agentHistory)) {
       updated.agentHistory = [];
     }
@@ -3433,6 +3438,26 @@ function App() {
     } catch {}
     return [];
   });
+  const [aiUsage, setAiUsage] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_ai_usage');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [caseAccess, setCaseAccess] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_case_access');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
 
   // Хелпер: запис в audit log зі state-сеттером, прив'язка до tenant'у/користувача.
   // Не пишемо в auditLog якщо action не входить в AUDIT_ACTIONS — фільтр виконується
@@ -3539,6 +3564,48 @@ function App() {
           }
         }
 
+        // SaaS Foundation v1.1 — pre-v3 бекап, поза ротацією.
+        if (raw != null && (raw.schemaVersion || 1) < 3) {
+          const flagV3 = localStorage.getItem('levytskyi_pre_v3_backup_done');
+          if (!flagV3) {
+            const res = await backupRegistryDataPreV3(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v3_backup_done', '1');
+              console.log(`[SaaS Foundation v1.1] Pre-v3 backup: ${res.fileName}`);
+            } else {
+              console.warn('[SaaS Foundation v1.1] Pre-v3 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
+        if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
+          try {
+            const oldLog = localStorage.getItem('levytskyi_action_log');
+            if (oldLog && oldLog !== '[]' && oldLog !== 'null') {
+              const parsed = JSON.parse(oldLog);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                const res = await backupActionLogPreCleanup(token, parsed);
+                if (res.success) {
+                  localStorage.removeItem('levytskyi_action_log');
+                  localStorage.setItem('levytskyi_action_log_cleaned_v1_1', '1');
+                  console.log(`[SaaS Foundation v1.1] Action log backed up and removed: ${res.fileName}`);
+                } else {
+                  console.warn('[SaaS Foundation v1.1] Action log backup failed, ключ збережено:', res.error);
+                }
+              } else {
+                localStorage.removeItem('levytskyi_action_log');
+                localStorage.setItem('levytskyi_action_log_cleaned_v1_1', '1');
+              }
+            } else {
+              localStorage.removeItem('levytskyi_action_log');
+              localStorage.setItem('levytskyi_action_log_cleaned_v1_1', '1');
+            }
+          } catch (e) {
+            console.warn('[SaaS Foundation v1.1] Action log cleanup error:', e);
+          }
+        }
+
         // Розпакувати у локальні стани
         if (Array.isArray(registry.cases) && registry.cases.length > 0) {
           setCases(normalizeCases(registry.cases));
@@ -3554,6 +3621,12 @@ function App() {
         }
         if (Array.isArray(registry.structuralUnits)) {
           setStructuralUnits(registry.structuralUnits);
+        }
+        if (Array.isArray(registry.ai_usage)) {
+          setAiUsage(registry.ai_usage);
+        }
+        if (Array.isArray(registry.caseAccess)) {
+          setCaseAccess(registry.caseAccess);
         }
 
         if (didMigrate) {
@@ -3574,7 +3647,7 @@ function App() {
   }, []); // eslint-disable-line
 
   // Auto-save to localStorage (always) and Drive (if connected)
-  // Тригер: будь-яка зміна cases/tenants/users/auditLog/structuralUnits.
+  // Тригер: будь-яка зміна cases/tenants/users/auditLog/structuralUnits/ai_usage/caseAccess.
   useEffect(() => {
     try {
       localStorage.setItem('levytskyi_cases', JSON.stringify(cases));
@@ -3582,6 +3655,8 @@ function App() {
       localStorage.setItem('levytskyi_users', JSON.stringify(users));
       localStorage.setItem('levytskyi_audit_log', JSON.stringify(auditLog));
       localStorage.setItem('levytskyi_structural_units', JSON.stringify(structuralUnits));
+      localStorage.setItem('levytskyi_ai_usage', JSON.stringify(aiUsage));
+      localStorage.setItem('levytskyi_case_access', JSON.stringify(caseAccess));
       setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
     } catch(e) {}
     if (driveConnected) {
@@ -3595,6 +3670,8 @@ function App() {
           users,
           auditLog,
           structuralUnits,
+          ai_usage: aiUsage,
+          caseAccess,
           cases,
         };
         // Бекап раз на добу перед sync (зберігаємо повний registry-об'єкт)
@@ -3610,7 +3687,7 @@ function App() {
           .catch(() => setDriveSyncStatus('error'));
       }
     }
-  }, [cases, tenants, users, auditLog, structuralUnits]);
+  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess]);
 
   // ── timeLog persistence ────────────────────────────────────────────────────
   useEffect(() => {
@@ -3714,7 +3791,7 @@ function App() {
   const addCase = (form) => {
     usageLog.log('case_added', {name: form.name});
     // Гарантуємо SaaS-поля для нової справи (tenantId, ownerId, team, shareType, externalAccess).
-    const newCase = ensureCaseSaasFields({ ...form, id: Date.now() });
+    const newCase = ensureCaseSaasFields({ ...form, id: `case_${Date.now()}` });
     setCases(prev => [...prev, newCase]);
     setShowAdd(false);
     setTab('cases');
@@ -4338,24 +4415,6 @@ function App() {
     // destroy_case — жоден агент. Тільки UI.
   };
 
-  // ── logAction — журнал дій для аналітики ───────────────────────────────────
-  const logAction = ({ agentId, action, params, userId }) => {
-    const entry = {
-      ts: new Date().toISOString(),
-      userId,
-      agentId,
-      action,
-      caseId: params?.caseId || null,
-    };
-    try {
-      const log = JSON.parse(localStorage.getItem('levytskyi_action_log') || '[]');
-      log.unshift(entry);
-      localStorage.setItem('levytskyi_action_log', JSON.stringify(log.slice(0, 500)));
-    } catch (e) {
-      console.warn('logAction error:', e);
-    }
-  };
-
   // ── executeAction — єдина точка входу для всіх дій агентів ─────────────────
   // ── executeAction — async з перевірками і audit log ───────────────────────
   // Інтерфейс зберігається: agentId, action, params, [userId].
@@ -4398,8 +4457,6 @@ function App() {
         return { success: false, error: `No access to case ${params.caseId}` };
       }
     }
-
-    logAction({ agentId, action, params, userId: effectiveUserId });
 
     try {
       const result = await ACTIONS[action](params);
@@ -4474,6 +4531,7 @@ function App() {
               cases={cases}
               calendarEvents={calendarEvents}
               onExecuteAction={executeAction}
+              setAiUsage={setAiUsage}
             />
           )}
           {!dossierCase && tab === 'cases' && (
@@ -4561,6 +4619,7 @@ function App() {
                 onPinNote={pinNote}
                 driveConnected={driveConnected}
                 onExecuteAction={executeAction}
+                setAiUsage={setAiUsage}
               />
             </ErrorBoundary>
           )}
@@ -4606,7 +4665,7 @@ function App() {
             {/* Вміст вкладки */}
             <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               {universalTab === 'qi' && (
-                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} onExecuteAction={executeAction} />
+                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} onExecuteAction={executeAction} setAiUsage={setAiUsage} />
               )}
               {universalTab === 'agent' && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5a6080', gap: 12, padding: 20 }}>

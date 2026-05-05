@@ -298,6 +298,104 @@ Standalone notes (поза справою, в `levytskyi_notes`) — мають 
 - НЕ обходити `executeAction` для модифікацій даних (виняток: UI-функції addCase/closeCase/restoreCase/destroy_case з прямим writeAuditLog)
 - НЕ дублювати `tenantId` у вкладених сутностях справи
 
+## SaaS Foundation v3.0 — Patch and Extension
+
+Дата: 2026-05-05
+schemaVersion: 3
+settingsVersion: "3.0_patch_and_extension"
+
+### Виправлений архітектурний борг
+
+- **agentHistory:** localStorage slice вирівняно з -20 на -50, застарілий коментар у `App.jsx:3273` видалено. 3-tier cache (Drive → localStorage → state) залишається — це валідна архітектура.
+- **levytskyi_action_log:** код `logAction` видалено, виклик з `executeAction` прибрано. Дані одноразово бекапляться в `_backups/levytskyi_action_log_<ts>.json` і ключ видаляється з localStorage. Прапор `levytskyi_action_log_cleaned_v1_1` запобігає повторному виконанню.
+- **id mixed types:** усі `case.id` тепер string у форматі `case_<original_id>`. INITIAL_CASES → `case_1`..`case_20`. Документи всередині Брановського: number → string без префікса. Точки створення (QuickInput form, addCase) генерують `case_${Date.now()}`. Старі дані з legacy localStorage конвертуються через `migrateCase` (number → `case_<n>`).
+- **driveService.writeCases:** видалено мертвий блок з `App.jsx:2894-2913`. `readCases` залишено (використовується в AnalysisPanel.connectDrive).
+
+### Нові структури в registry_data.json
+
+**`ai_usage[]`** — пасивний облік токенів AI на верхньому рівні. LIFO ротація 50 000 записів.
+Поля: `id`, `tenantId`, `userId`, `timestamp`, `agentType`, `model`, `inputTokens`, `outputTokens`, `totalTokens`, `estimatedCostUSD`, `context: { caseId, module, operation }`.
+
+**`caseAccess[]`** — заглушка денормалізованого індексу для майбутнього SaaS-масштабу. Поки порожня. Очікувана схема (коментар у `migrationService.js`):
+```
+{ caseId, userId, tenantId, caseRole, addedAt, expiresAt, permissionsHash }
+```
+Активується в TASK Multi-user Activation.
+
+### Розширення tenant
+
+**`tenant.storage`** — `provider` (`drive_legacy` default, в майбутньому `r2_managed` / `drive_byos`), `quotaGB`, `usedBytes`. Готовність до тарифів.
+
+**`tenant.modelPreferences`** — null для всіх типів агентів. Готовність до тарифних пакетів (Premium може обрати Opus замість Sonnet для досьє-агента).
+
+**`tenant.subscription.limits + current + alerts`** — структура обліку лімітів.
+- `limits`: `aiTokensPerMonth`, `aiCostPerMonth`, `storageGB`, `teamMembers`, `casesActive` — null зараз.
+- `current`: `periodStart`, `periodEnd`, `tokensUsed`, `costUsedUSD`, `storageUsedGB`, `teamMembersCount`, `casesActiveCount`.
+- `alerts`: `warnAt: 80`, `blockAt: 100` (відсотки).
+
+### Розширення case.team
+
+**`case.team[i].permissions`** — 7 полів: `canEdit`, `canDelete`, `canShare`, `canAddTeam`, `canViewBilling`, `canEditBilling`, `canRunAI`.
+
+Дефолти за `caseRole`:
+
+| caseRole | canEdit | canDelete | canShare | canAddTeam | canViewBilling | canEditBilling | canRunAI |
+|----------|---------|-----------|----------|------------|----------------|----------------|----------|
+| owner    | ✅      | ✅        | ✅       | ✅         | ✅             | ✅             | ✅       |
+| lead     | ✅      | ✅        | ✅       | ✅         | ❌             | ❌             | ✅       |
+| co-lead  | ✅      | ❌        | ✅       | ❌         | ❌             | ❌             | ✅       |
+| support  | ✅      | ❌        | ❌       | ❌         | ❌             | ❌             | ✅       |
+| external | ❌      | ❌        | ❌       | ❌         | ✅             | ❌             | ❌       |
+
+`canRunAI` важливий для тарифних обмежень — бюро зможе обмежити використання AI окремими членами команди.
+
+### Нові сервіси
+
+- **`src/services/aiUsageService.js`** — `MODEL_PRICING` (haiku/sonnet/opus, pricing as of 2026-05-04, verify quarterly), `calculateCost`, `logAiUsage` (для React-точок), `logAiUsageViaSink` (для не-React точок типу claudeVision і analyzePDFWithDocumentBlock), аналітичні хелпери (`getUsageByPeriod/Model/Case/User`, `getTotalCost`).
+- **`src/services/modelResolver.js`** — `SYSTEM_DEFAULTS` (9 типів агентів), `resolveModel(agentType)` з ієрархією user → tenant → system.
+- **`src/services/subscriptionService.js`** — `recalculateCurrent(tenant, aiUsage, cases)`, `checkLimits(tenant)`. Поки limits = null, перевірок немає.
+
+### Активовані заглушки permissionService
+
+- **`checkTenantAccess(userId, tenantId)`** — реальна перевірка `u.userId === userId && u.tenantId === tenantId`. Fallback `return true` прибрано.
+- **`checkCaseAccess(userId, caseObj)`** — сигнатура збережена. Логіка:
+  1. Tenant isolation: `caseObj.tenantId !== u.tenantId` → false
+  2. `bureau_owner` → завжди true в межах свого tenant
+  3. `caseObj.ownerId === userId` → true
+  4. Team membership → true
+  5. ExternalAccess з валідним `validUntil` → true
+  6. Інакше — false
+
+### Точки виклику Anthropic API — 10 шт.
+
+Усі логуються в `ai_usage[]` і використовують `resolveModel()`:
+
+| # | Файл | agentType | module | operation |
+|---|------|-----------|--------|-----------|
+| 1 | App.jsx (QI image) | qi_agent | QI | parse_document |
+| 2 | App.jsx (QI text) | qi_agent | QI | parse_document |
+| 3 | App.jsx (QI sendChat) | qi_agent | QI | chat |
+| 4 | Dashboard | dashboard_agent | Dashboard | chat |
+| 5 | CaseDossier (case_context) | case_context_generator | Dossier | generate_context |
+| 6 | CaseDossier (chat) | dossier_agent | Dossier | chat |
+| 7 | DocumentProcessor (PDF) | document_parser | DocumentProcessor | parse_document |
+| 8 | DocumentProcessor (chat 1) | document_parser | DocumentProcessor | chat |
+| 9 | DocumentProcessor (chat 2) | document_parser | DocumentProcessor | chat |
+| 10 | claudeVision (OCR) | document_parser | DocumentProcessor | parse_document |
+
+Точки 7 і 10 — не з React-компонента — отримують `aiUsageSink` через `options`.
+
+### Бекапи
+
+- `_backups/registry_data_backup_pre_v3_<ts>.json` — одноразово перед першою v3 міграцією, поза ротацією.
+- `_backups/levytskyi_action_log_<ts>.json` — одноразово перед видаленням з localStorage, поза ротацією.
+
+### Принцип
+
+Усі структури закладені, активної логіки мінімум. Дані збираються з запасом, ліміти не блокують. Готовність до моменту коли потрібно буде активувати реальний контроль.
+
+---
+
 ## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
 
 Єдине джерело правди для всіх модулів — App.jsx.

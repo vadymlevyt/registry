@@ -155,6 +155,44 @@ export async function backupRegistryDataPreSaas(token, payload) {
   }
 }
 
+// Бекап перед SaaS Foundation v1.1 міграцією v2 → v3, поза ротацією.
+export async function backupRegistryDataPreV3(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_v3_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-v3 backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+// Одноразовий бекап levytskyi_action_log перед видаленням у SaaS Foundation v1.1.
+export async function backupActionLogPreCleanup(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `levytskyi_action_log_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Action log backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Зберегти резервну копію registry_data.json в _backups/ на Drive
 export async function backupRegistryData(token, casesData) {
   try {

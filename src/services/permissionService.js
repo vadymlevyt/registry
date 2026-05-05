@@ -1,42 +1,56 @@
 // ── PERMISSION SERVICE ───────────────────────────────────────────────────────
-// Перевірки прав доступу. Зараз — заглушки що повертають true для bureau_owner.
-// Інтерфейс фінальний; у SaaS заглушки замінюються на реальну логіку
-// (матриця ролей × дій, перевірка членства в команді справи, валідність зовн. доступу).
+// Перевірки прав доступу.
+// Активація v1.1: реальна tenant ізоляція + bureau_owner override + team membership.
+// caseRole permissions поки не використовуються — для майбутньої гранулярності.
 
 import { getCurrentUser } from './tenantService.js';
 
 export function checkTenantAccess(userId, tenantId) {
-  // ЗАГЛУШКА: один tenant, один user — завжди true.
-  // SaaS: user.tenantId === tenantId, або external collaborator з валідним accessGrant.
   if (!userId || !tenantId) return false;
   const u = getCurrentUser();
-  if (u && u.userId === userId && u.tenantId === tenantId) return true;
-  return true;
+  if (!u || u.userId !== userId) return false;
+  return u.tenantId === tenantId;
 }
 
 export function checkRolePermission(globalRole, action) {
-  // ЗАГЛУШКА: bureau_owner може все. У SaaS — таблиця ROLE_ACTIONS.
   if (!globalRole || !action) return false;
+  // bureau_owner може все. У SaaS — повноцінна таблиця ROLE_ACTIONS.
   if (globalRole === 'bureau_owner') return true;
+  // Поки немає матриці — не блокуємо інших, але ця заглушка прибереться
+  // окремо коли підключаємо ROLE_ACTIONS у Multi-user Activation TASK.
   return true;
 }
 
+// Сигнатура (userId, caseObj) — узгоджено в SaaS Foundation v1.1 діагностиці.
 export function checkCaseAccess(userId, caseObj) {
-  // Перевірка доступу користувача до конкретної справи.
-  // Зараз: owner або член team[]. SaaS: + externalAccess[] з validUntil.
-  if (!caseObj) return false;
-  if (!userId) return false;
+  if (!caseObj || !userId) return false;
+  const u = getCurrentUser();
+  if (!u || u.userId !== userId) return false;
+
+  // 1. Tenant isolation
+  if (caseObj.tenantId && caseObj.tenantId !== u.tenantId) return false;
+
+  // 2. Bureau owner — повний доступ до всіх справ свого tenant
+  if (u.globalRole === 'bureau_owner') return true;
+
+  // 3. Owner справи
   if (caseObj.ownerId === userId) return true;
-  if (Array.isArray(caseObj.team) && caseObj.team.some(m => m && m.userId === userId)) return true;
+
+  // 4. Team membership
+  if (Array.isArray(caseObj.team) && caseObj.team.some(m => m && m.userId === userId)) {
+    return true;
+  }
+
+  // 5. External access (з обмеженням за часом)
   if (Array.isArray(caseObj.externalAccess)) {
     const now = new Date();
     if (caseObj.externalAccess.some(ext =>
       ext && ext.userId === userId &&
       ext.validUntil && new Date(ext.validUntil) > now
-    )) return true;
+    )) {
+      return true;
+    }
   }
-  // Фолбек для старих даних без ownerId/team — дозволити поточному користувачу
-  // (інакше блокуються всі legacy справи).
-  if (!caseObj.ownerId && !Array.isArray(caseObj.team)) return true;
+
   return false;
 }

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { systemConfirm } from "../SystemModal";
+import { logAiUsage } from "../../services/aiUsageService";
+import { resolveModel } from "../../services/modelResolver";
 
 const MONTHS_UK = [
   "Січень","Лютий","Березень","Квітень","Травень","Червень",
@@ -1003,7 +1005,7 @@ const vBtnActive = {
   color: "#fff"
 };
 
-export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
+export default function Dashboard({ cases, calendarEvents, onExecuteAction, setAiUsage }) {
   const [curMonth, setCurMonth] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [calView, setCalView] = useState("month");
@@ -1474,6 +1476,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
         ? newHistory
         : newHistory.slice(newHistory.findIndex(m => m.role === 'user'));
 
+      const dashboardModel = resolveModel('dashboardAgent');
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -1483,7 +1486,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
           "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: dashboardModel,
           max_tokens: 500,
           system: systemPrompt,
           messages: safeHistory
@@ -1498,6 +1501,15 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction }) {
       }
 
       const data = await response.json();
+      try {
+        logAiUsage({
+          agentType: 'dashboard_agent',
+          model: dashboardModel,
+          inputTokens: data?.usage?.input_tokens,
+          outputTokens: data?.usage?.output_tokens,
+          context: { module: 'Dashboard', operation: 'chat' },
+        }, setAiUsage);
+      } catch {}
       const rawText = data.content?.[0]?.text || "Не вдалося отримати відповідь";
       const { text: cleanText, failures } = await handleAgentResponse(rawText);
       setChatHistory(h => [...h, { role: "assistant", content: cleanText }]);

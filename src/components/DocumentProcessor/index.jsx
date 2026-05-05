@@ -9,6 +9,8 @@ import {
   saveFileLocally,
 } from "../../services/driveService.js";
 import { driveRequest } from "../../services/driveAuth.js";
+import { logAiUsage, logAiUsageViaSink } from "../../services/aiUsageService.js";
+import { resolveModel } from "../../services/modelResolver.js";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -147,7 +149,7 @@ async function compressPDF(arrayBuffer) {
 
 // ── PDF DOCUMENT BLOCK ANALYSIS ──────────────────────────────────────────────
 
-async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
+async function analyzePDFWithDocumentBlock(file, apiKey, userHint, options = {}) {
   const arrayBuffer = await file.arrayBuffer();
   const uint8 = new Uint8Array(arrayBuffer);
   let binary = "";
@@ -156,6 +158,7 @@ async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
   }
   const base64 = btoa(binary);
 
+  const docModel = resolveModel('documentProcessor');
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -165,7 +168,7 @@ async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
       "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: docModel,
       max_tokens: 2000,
       messages: [{
         role: "user",
@@ -231,6 +234,16 @@ async function analyzePDFWithDocumentBlock(file, apiKey, userHint) {
     throw new Error(data.error.message);
   }
 
+  try {
+    logAiUsageViaSink({
+      agentType: 'document_parser',
+      model: docModel,
+      inputTokens: data?.usage?.input_tokens,
+      outputTokens: data?.usage?.output_tokens,
+      context: { module: 'DocumentProcessor', operation: 'parse_document' },
+    }, options.aiUsageSink);
+  } catch {}
+
   const text = data.content[0].text;
 
   try {
@@ -253,7 +266,7 @@ function getMimeType(ext) {
   return map[ext] || "application/octet-stream";
 }
 
-export default function DocumentProcessor({ caseData, cases, updateCase, onCreateCase, onNavigateToDossier, apiKey, driveFolderId, driveToken }) {
+export default function DocumentProcessor({ caseData, cases, updateCase, onCreateCase, onNavigateToDossier, apiKey, driveFolderId, driveToken, setAiUsage }) {
   const [files, setFiles] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
@@ -389,6 +402,7 @@ ${filesList}
       const firstUserIdx = messages.findIndex(m => m.role === "user");
       const cleanMessages = firstUserIdx >= 0 ? messages.slice(firstUserIdx) : messages;
 
+      const docChatModel = resolveModel('documentProcessor');
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -398,7 +412,7 @@ ${filesList}
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: docChatModel,
           max_tokens: 2048,
           system: DOC_SYSTEM_PROMPT,
           messages: cleanMessages,
@@ -411,6 +425,15 @@ ${filesList}
       }
 
       const data = await resp.json();
+      try {
+        logAiUsage({
+          agentType: 'document_parser',
+          model: docChatModel,
+          inputTokens: data?.usage?.input_tokens,
+          outputTokens: data?.usage?.output_tokens,
+          context: { caseId: caseData?.id, module: 'DocumentProcessor', operation: 'chat' },
+        }, setAiUsage);
+      } catch {}
       const text = data.content?.[0]?.text || "Не вдалося отримати відповідь";
 
       chatHistoryRef.current.push(
@@ -453,7 +476,12 @@ ${filesList}
     addAgentMessage("\u{1F50D} Читаю весь PDF... (може зайняти 30-60 секунд)");
 
     try {
-      const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, userHint);
+      const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, userHint, {
+        aiUsageSink: setAiUsage ? (entry) => setAiUsage(prev => {
+          const next = Array.isArray(prev) ? [...prev, entry] : [entry];
+          return next.length > 50000 ? next.slice(next.length - 50000) : next;
+        }) : null,
+      });
 
       setSplitPoints(result.documents);
       splitPointsRef.current = result.documents;
@@ -528,6 +556,7 @@ ${filesList}
           }`
         : "\n\n\u0424\u0430\u0439\u043B\u0456\u0432 \u043D\u0435 \u0437\u0430\u0432\u0430\u043D\u0442\u0430\u0436\u0435\u043D\u043E.";
 
+      const docChat2Model = resolveModel('documentProcessor');
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -537,7 +566,7 @@ ${filesList}
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: docChat2Model,
           max_tokens: 2048,
           system: DOC_SYSTEM_PROMPT + docProcessorContext,
           messages: cleanMessages,
@@ -547,6 +576,15 @@ ${filesList}
       if (!resp.ok) throw new Error(`API ${resp.status}`);
 
       const data = await resp.json();
+      try {
+        logAiUsage({
+          agentType: 'document_parser',
+          model: docChat2Model,
+          inputTokens: data?.usage?.input_tokens,
+          outputTokens: data?.usage?.output_tokens,
+          context: { caseId: caseData?.id, module: 'DocumentProcessor', operation: 'chat' },
+        }, setAiUsage);
+      } catch {}
       const reply = data.content?.[0]?.text || "Немає відповіді";
 
       chatHistoryRef.current.push(

@@ -4,6 +4,8 @@ import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToD
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
+import { logAiUsage } from "../../services/aiUsageService.js";
+import { resolveModel } from "../../services/modelResolver.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -397,7 +399,7 @@ function formatNotesForPrompt(notes) {
   return lines.join("\n");
 }
 
-export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected, onExecuteAction }) {
+export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected, onExecuteAction, setAiUsage }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -530,7 +532,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // ── Збереження agent_history.json на Drive ───────────────────────────────
   const saveAgentHistory = async (history) => {
     try {
-      localStorage.setItem(`agent_history_${caseData?.id}`, JSON.stringify((history || []).slice(-20)));
+      localStorage.setItem(`agent_history_${caseData?.id}`, JSON.stringify((history || []).slice(-50)));
     } catch (e) { console.log('[AgentHistory] localStorage save error:', e); }
     if (!caseData?.storage?.driveFolderId) return;
     const token = localStorage.getItem("levytskyi_drive_token");
@@ -757,7 +759,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         concurrency: 3,
         onProgress: (done, total, current) => {
           setContextMsg(`📖 Обробка ${done}/${total}: ${current?.name || '...'}`);
-        }
+        },
+        caseId: caseData?.id,
+        aiUsageSink: setAiUsage ? (entry) => setAiUsage(prev => {
+          const next = Array.isArray(prev) ? [...prev, entry] : [entry];
+          return next.length > 50000 ? next.slice(next.length - 50000) : next;
+        }) : null,
       });
 
       // 5. Якщо ВСІ помилки AUTH — пропонуємо forceConsentRefresh.
@@ -826,6 +833,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       });
 
       // 11. Виклик Anthropic
+      const ctxModel = resolveModel('caseContextGenerator');
       const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -835,7 +843,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: ctxModel,
           max_tokens: 16000,
           system: systemPrompt,
           messages: [{ role: "user", content: userContent }]
@@ -848,6 +856,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       }
 
       const data = await apiRes.json();
+      try {
+        logAiUsage({
+          agentType: 'case_context_generator',
+          model: ctxModel,
+          inputTokens: data?.usage?.input_tokens,
+          outputTokens: data?.usage?.output_tokens,
+          context: { caseId: caseData?.id, module: 'Dossier', operation: 'generate_context' },
+        }, setAiUsage);
+      } catch {}
       const contextMd = data?.content?.[0]?.text || "";
 
       if (!contextMd) {
@@ -1255,6 +1272,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
         const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
 
+        const dossierModel = resolveModel('dossierAgent');
         const response = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: {
@@ -1264,7 +1282,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             'anthropic-dangerous-direct-browser-access': 'true'
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: dossierModel,
             max_tokens: 4000,
             system: systemPrompt,
             messages: [...cleanHistory, { role: 'user', content: userMsg }]
@@ -1283,6 +1301,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           return;
         }
         const data = await response.json();
+        try {
+          logAiUsage({
+            agentType: 'dossier_agent',
+            model: dossierModel,
+            inputTokens: data?.usage?.input_tokens,
+            outputTokens: data?.usage?.output_tokens,
+            context: { caseId: caseData?.id, module: 'Dossier', operation: 'chat' },
+          }, setAiUsage);
+        } catch {}
         const reply = data.content?.[0]?.text || `⚠️ Порожня відповідь. Payload: ${JSON.stringify(data).slice(0, 300)}`;
         const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };
         setAgentMessages(prev => {
@@ -2195,6 +2222,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               apiKey={localStorage.getItem("claude_api_key")}
               driveFolderId={storageState?.driveFolderId}
               driveToken={localStorage.getItem("levytskyi_drive_token")}
+              setAiUsage={setAiUsage}
             />
           )}
           {["position", "templates"].includes(activeTab) && (

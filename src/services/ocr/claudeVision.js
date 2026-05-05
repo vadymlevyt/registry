@@ -7,9 +7,10 @@
 
 import * as pdfjsLib from 'pdfjs-dist';
 import { driveRequest } from '../driveAuth.js';
+import { logAiUsageViaSink } from '../aiUsageService.js';
+import { resolveModel } from '../modelResolver.js';
 
 const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-4-20250514';
 const MAX_TOKENS = 8192;
 const LARGE_PDF_THRESHOLD = 20;
 
@@ -110,6 +111,7 @@ export default {
     });
 
     // 3. Виклик Anthropic API
+    const visionModel = resolveModel('documentParserVision');
     let resp;
     try {
       resp = await fetch(ANTHROPIC_ENDPOINT, {
@@ -121,7 +123,7 @@ export default {
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: MODEL,
+          model: visionModel,
           max_tokens: MAX_TOKENS,
           messages: [{ role: 'user', content }],
         }),
@@ -144,6 +146,19 @@ export default {
     }
 
     const data = await resp.json();
+    try {
+      logAiUsageViaSink({
+        agentType: 'document_parser',
+        model: visionModel,
+        inputTokens: data?.usage?.input_tokens,
+        outputTokens: data?.usage?.output_tokens,
+        context: {
+          caseId: options.caseId || null,
+          module: 'DocumentProcessor',
+          operation: 'parse_document',
+        },
+      }, options.aiUsageSink);
+    } catch {}
     const text = data?.content?.[0]?.text || '';
     return { text: text.trim(), pages, warnings };
   },
