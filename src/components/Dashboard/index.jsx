@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { systemConfirm } from "../SystemModal";
 import { logAiUsage } from "../../services/aiUsageService";
 import { resolveModel } from "../../services/modelResolver";
+import * as activityTracker from "../../services/activityTracker";
 
 const MONTHS_UK = [
   "Січень","Лютий","Березень","Квітень","Травень","Червень",
@@ -1033,6 +1034,12 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [expandedGroups, setExpandedGroups] = useState({});
 
+  // [BILLING] Dashboard session — admin категорія (без caseId).
+  useEffect(() => {
+    try { activityTracker.startSession(null, 'dashboard', { category: 'admin' }); } catch {}
+    return () => { try { activityTracker.endSession({ reason: 'unmount' }); } catch {} };
+  }, []);
+
   function getAllEvents() {
     const events = [];
     const pausedCaseIds = new Set(
@@ -1445,6 +1452,8 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
   async function handleAgentSend(inputOverride) {
     const input = (typeof inputOverride === "string" ? inputOverride : agentInput).trim();
     if (!input || agentLoading) return;
+    // [BILLING] dashboard agent message — без caseId це admin за дефолтом.
+    try { activityTracker.report('agent_message_dashboard', { module: 'dashboard', metadata: { messageLen: input.length } }); } catch {}
 
     const userMsg = { role: "user", content: input };
     // максимум 10 повідомлень у вікні контексту (5 пар user/assistant)
@@ -1509,6 +1518,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
           outputTokens: data?.usage?.output_tokens,
           context: { module: 'Dashboard', operation: 'chat' },
         }, setAiUsage);
+        activityTracker.report('agent_call', {
+          module: 'Dashboard', category: 'admin',
+          metadata: { agentType: 'dashboard_agent', operation: 'chat' }
+        });
       } catch {}
       const rawText = data.content?.[0]?.text || "Не вдалося отримати відповідь";
       const { text: cleanText, failures } = await handleAgentResponse(rawText);
@@ -1562,6 +1575,8 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
 
   function openModalWithRange(startSlotIdx, endSlotIdx, dateStr) {
     const day = dateStr || selectedDay;
+    // [BILLING] drag-create slot — фіксуємо як подію створення.
+    try { activityTracker.report('event_drag_create', { module: 'dashboard', metadata: { date: day } }); } catch {}
     setModalDate(day);
     if (day !== selectedDay) setSelectedDay(day);
     const startTime = SLOTS[startSlotIdx] || SLOTS[0];
@@ -1584,6 +1599,8 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
     const c = cases.find(cs => cs.id === event.caseId);
     const h = c && (c.hearings || []).find(hh => hh.id === event.hearingId);
     if (!h) return;
+    // [BILLING] hearing_viewed — клік по засіданню в календарі.
+    try { activityTracker.report('hearing_viewed', { caseId: c.id, hearingId: h.id, module: 'dashboard' }); } catch {}
     const day = h.date;
     setModalDate(day);
     setSelectedDay(day);

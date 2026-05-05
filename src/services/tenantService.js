@@ -86,6 +86,9 @@ export const DEFAULT_TENANT = {
       lineHeight: 1.5,
       pageSize: 'A4',
     },
+    // v4 Billing Foundation — стандарти часу. Подальше редагування — через
+    // окремий адмін-UI у майбутньому. Дефолти живуть в timeStandards.js.
+    timeStandards: null,
   },
   createdAt: '2016-06-15T00:00:00Z',
   updatedAt: '2026-05-05T00:00:00Z',

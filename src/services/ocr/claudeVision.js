@@ -9,6 +9,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { driveRequest } from '../driveAuth.js';
 import { logAiUsageViaSink } from '../aiUsageService.js';
 import { resolveModel } from '../modelResolver.js';
+import * as activityTracker from '../activityTracker.js';
 
 const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const MAX_TOKENS = 8192;
@@ -158,6 +159,12 @@ export default {
           operation: 'parse_document',
         },
       }, options.aiUsageSink);
+      activityTracker.report('agent_call', {
+        caseId: options.caseId || null,
+        module: 'DocumentProcessor',
+        category: options.caseId ? 'case_work' : 'admin',
+        metadata: { agentType: 'document_parser', operation: 'parse_document', kind: 'ocr_vision' }
+      });
     } catch {}
     const text = data?.content?.[0]?.text || '';
     return { text: text.trim(), pages, warnings };

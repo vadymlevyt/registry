@@ -11,6 +11,11 @@ export const AUDIT_ACTIONS = [
   'destroy_case',
   'delete_hearing',
   'delete_deadline',
+  // v4 Billing Foundation — критичні дії над time_entries.
+  'time_entries_archived',
+  'time_entry_edited',
+  'time_entry_deleted',
+  'time_standards_changed',
 ];
 
 export function shouldAudit(action) {

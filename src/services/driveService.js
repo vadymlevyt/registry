@@ -174,6 +174,44 @@ export async function backupRegistryDataPreV3(token, payload) {
   }
 }
 
+// Бекап перед Billing Foundation v2 міграцією v3 → v4, поза ротацією.
+export async function backupRegistryDataPreBilling(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_billing_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-billing backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+// Одноразовий бекап levytskyi_timelog перед імпортом у time_entries[] (v4).
+export async function backupLegacyTimelogPreImport(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `levytskyi_timelog_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Legacy timelog backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Одноразовий бекап levytskyi_action_log перед видаленням у SaaS Foundation v1.1.
 export async function backupActionLogPreCleanup(token, payload) {
   try {

@@ -6,6 +6,7 @@ import * as ocrService from "../../services/ocrService.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
 import { logAiUsage } from "../../services/aiUsageService.js";
 import { resolveModel } from "../../services/modelResolver.js";
+import * as activityTracker from "../../services/activityTracker.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -430,6 +431,28 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   // Agent state — має бути ВИЩЕ useEffect щоб setAgentMessages був доступний при маунті
   const [agentMessages, setAgentMessages] = useState(() => caseData.agentHistory || []);
 
+  // [BILLING] Dossier session — case_work з прив'язкою до caseId.
+  useEffect(() => {
+    try {
+      activityTracker.startSession(caseData.id, 'case_dossier', { category: 'case_work' });
+      // Окремий маркер один раз — для статистики "скільки разів відкрито".
+      activityTracker.report('case_opened', { caseId: caseData.id, module: 'case_dossier' });
+    } catch {}
+    return () => { try { activityTracker.endSession({ reason: 'unmount' }); } catch {} };
+  }, [caseData.id]);
+
+  // [BILLING] tab_switched.
+  useEffect(() => {
+    try { activityTracker.report('dossier_tab_switched', { caseId: caseData.id, module: 'case_dossier', metadata: { tabTo: activeTab } }); } catch {}
+  }, [activeTab]);
+
+  // [BILLING] document_viewed.
+  useEffect(() => {
+    if (selectedDoc?.id) {
+      try { activityTracker.report('document_viewed', { caseId: caseData.id, documentId: selectedDoc.id, module: 'case_dossier' }); } catch {}
+    }
+  }, [selectedDoc?.id]);
+
   useEffect(() => {
     setStorageState(caseData.storage || {});
   }, [caseData.storage]);
@@ -671,6 +694,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       setContextMsg("⏳ Операція вже виконується. Будь ласка, зачекайте.");
       return;
     }
+    // [BILLING] context_regenerated — важлива дія, окремий звіт.
+    try { activityTracker.report('context_regenerated', { caseId: caseData.id, module: 'case_dossier', category: 'case_work' }); } catch {}
     setIsCreatingContext(true);
     setContextLoading(true);
 
@@ -864,6 +889,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           outputTokens: data?.usage?.output_tokens,
           context: { caseId: caseData?.id, module: 'Dossier', operation: 'generate_context' },
         }, setAiUsage);
+        activityTracker.report('agent_call', {
+          caseId: caseData?.id,
+          module: 'Dossier', category: 'case_work',
+          metadata: { agentType: 'case_context_generator', operation: 'generate_context' }
+        });
       } catch {}
       const contextMd = data?.content?.[0]?.text || "";
 
@@ -1253,6 +1283,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     async function sendAgentMessage() {
       if (!agentInput.trim() || agentLoading) return;
       const userMsg = agentInput.trim();
+      // [BILLING] dossier agent message.
+      try { activityTracker.report('agent_message_dossier', { caseId: caseData.id, module: 'case_dossier', category: 'case_work', metadata: { messageLen: userMsg.length } }); } catch {}
       const userTs = new Date().toISOString();
       setAgentInput('');
       const userEntry = { role: 'user', content: userMsg, ts: userTs };
@@ -1309,6 +1341,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             outputTokens: data?.usage?.output_tokens,
             context: { caseId: caseData?.id, module: 'Dossier', operation: 'chat' },
           }, setAiUsage);
+          activityTracker.report('agent_call', {
+            caseId: caseData?.id,
+            module: 'Dossier', category: 'case_work',
+            metadata: { agentType: 'dossier_agent', operation: 'chat' }
+          });
         } catch {}
         const reply = data.content?.[0]?.text || `⚠️ Порожня відповідь. Payload: ${JSON.stringify(data).slice(0, 300)}`;
         const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };

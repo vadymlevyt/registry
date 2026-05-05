@@ -9,6 +9,11 @@
 //                   case.team[i].permissions з дефолтами по ролі.
 //                   Всі case.id — string ('case_<original_id>'),
 //                   документи всередині справ — string без префікса.
+// schemaVersion 4 — додано time_entries[] (місячна ротація на верхньому рівні),
+//                   master_timer_state{} (стан таймера між сесіями),
+//                   billing_meta{} (службові метадані ротації),
+//                   tenant.settings.timeStandards (стандарти часу за судами/категоріями).
+//                   case.timeLog[] лишається deprecated порожнім (legacy).
 //
 // caseAccess[] — поки порожня заглушка для майбутнього SaaS-масштабу.
 //   Очікувана схема запису (активується в TASK Multi-user Activation):
@@ -23,9 +28,10 @@
 //     }
 
 import { DEFAULT_TENANT, DEFAULT_USER } from './tenantService.js';
+import { DEFAULT_TENANT_TIME_STANDARDS } from './timeStandards.js';
 
-export const CURRENT_SCHEMA_VERSION = 3;
-export const MIGRATION_VERSION = '3.0_patch_and_extension';
+export const CURRENT_SCHEMA_VERSION = 4;
+export const MIGRATION_VERSION = '4.0_billing_foundation';
 
 // Дефолти permissions за caseRole. canRunAI важливий для майбутніх тарифних обмежень.
 const ROLE_PERMISSION_DEFAULTS = {
@@ -127,6 +133,7 @@ function migrateCase(c) {
 
 function migrateTenant(t) {
   if (!t || typeof t !== 'object') return DEFAULT_TENANT;
+  const settings = (t.settings && typeof t.settings === 'object') ? t.settings : {};
   return {
     ...t,
     storage: t.storage || {
@@ -143,6 +150,40 @@ function migrateTenant(t) {
       current: t.subscription?.current || { ...DEFAULT_TENANT.subscription.current },
       alerts: t.subscription?.alerts || { ...DEFAULT_TENANT.subscription.alerts },
     },
+    settings: {
+      ...settings,
+      // v4: timeStandards — ієрархія user→tenant→system. Тут — tenant дефолти.
+      timeStandards: settings.timeStandards || { ...DEFAULT_TENANT_TIME_STANDARDS },
+    },
+  };
+}
+
+function buildEmptyMasterTimerState() {
+  return {
+    isActive: false,
+    isPaused: false,
+    state: 'stopped',
+    startedAt: null,
+    pausedAt: null,
+    totalSecondsToday: 0,
+    lastActivityAt: null,
+    activeCaseId: null,
+    activeCategory: null,
+    lastIdleCheck: null,
+  };
+}
+
+function buildEmptyBillingMeta() {
+  return {
+    currentMonthStart: new Date(Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      1, 0, 0, 0
+    )).toISOString(),
+    lastArchiveCreated: null,
+    totalEntriesAllTime: 0,
+    currentMonthEntries: 0,
+    archiveFiles: [],
   };
 }
 
@@ -150,13 +191,17 @@ export function buildEmptyRegistry() {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     settingsVersion: MIGRATION_VERSION,
-    tenants: [DEFAULT_TENANT],
+    tenants: [migrateTenant(DEFAULT_TENANT)],
     users: [DEFAULT_USER],
     auditLog: [],
     structuralUnits: [],
     ai_usage: [],
     caseAccess: [],
     cases: [],
+    // v4 Billing Foundation
+    time_entries: [],
+    master_timer_state: buildEmptyMasterTimerState(),
+    billing_meta: buildEmptyBillingMeta(),
   };
 }
 
@@ -180,13 +225,20 @@ export function migrateRegistry(raw) {
       schemaVersion: raw.schemaVersion,
       settingsVersion: raw.settingsVersion || MIGRATION_VERSION,
       tenants: Array.isArray(raw.tenants) && raw.tenants.length > 0
-        ? raw.tenants.map(migrateTenant) : [DEFAULT_TENANT],
+        ? raw.tenants.map(migrateTenant) : [migrateTenant(DEFAULT_TENANT)],
       users: Array.isArray(raw.users) && raw.users.length > 0 ? raw.users : [DEFAULT_USER],
       auditLog: Array.isArray(raw.auditLog) ? raw.auditLog : [],
       structuralUnits: Array.isArray(raw.structuralUnits) ? raw.structuralUnits : [],
       ai_usage: Array.isArray(raw.ai_usage) ? raw.ai_usage : [],
       caseAccess: Array.isArray(raw.caseAccess) ? raw.caseAccess : [],
       cases: Array.isArray(raw.cases) ? raw.cases.map(migrateCase).filter(Boolean) : [],
+      time_entries: Array.isArray(raw.time_entries) ? raw.time_entries : [],
+      master_timer_state: (raw.master_timer_state && typeof raw.master_timer_state === 'object')
+        ? { ...buildEmptyMasterTimerState(), ...raw.master_timer_state }
+        : buildEmptyMasterTimerState(),
+      billing_meta: (raw.billing_meta && typeof raw.billing_meta === 'object')
+        ? { ...buildEmptyBillingMeta(), ...raw.billing_meta }
+        : buildEmptyBillingMeta(),
     };
     return {
       registry: safe,
@@ -204,13 +256,16 @@ export function migrateRegistry(raw) {
       registry: {
         schemaVersion: CURRENT_SCHEMA_VERSION,
         settingsVersion: MIGRATION_VERSION,
-        tenants: [DEFAULT_TENANT],
+        tenants: [migrateTenant(DEFAULT_TENANT)],
         users: [DEFAULT_USER],
         auditLog: [],
         structuralUnits: [],
         ai_usage: [],
         caseAccess: [],
         cases,
+        time_entries: [],
+        master_timer_state: buildEmptyMasterTimerState(),
+        billing_meta: buildEmptyBillingMeta(),
       },
       didMigrate: true,
       fromVersion: 1,
@@ -219,10 +274,10 @@ export function migrateRegistry(raw) {
     };
   }
 
-  // Випадок 4: об'єкт з schemaVersion < CURRENT (наприклад 2) — мігруємо до v3
+  // Випадок 4: об'єкт з schemaVersion < CURRENT (2 або 3) — мігруємо до v4
   const cases = Array.isArray(raw?.cases) ? raw.cases.map(migrateCase).filter(Boolean) : [];
   const tenants = Array.isArray(raw?.tenants) && raw.tenants.length > 0
-    ? raw.tenants.map(migrateTenant) : [DEFAULT_TENANT];
+    ? raw.tenants.map(migrateTenant) : [migrateTenant(DEFAULT_TENANT)];
   return {
     registry: {
       schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -234,12 +289,76 @@ export function migrateRegistry(raw) {
       ai_usage: Array.isArray(raw?.ai_usage) ? raw.ai_usage : [],
       caseAccess: Array.isArray(raw?.caseAccess) ? raw.caseAccess : [],
       cases,
+      time_entries: Array.isArray(raw?.time_entries) ? raw.time_entries : [],
+      master_timer_state: (raw?.master_timer_state && typeof raw.master_timer_state === 'object')
+        ? { ...buildEmptyMasterTimerState(), ...raw.master_timer_state }
+        : buildEmptyMasterTimerState(),
+      billing_meta: (raw?.billing_meta && typeof raw.billing_meta === 'object')
+        ? { ...buildEmptyBillingMeta(), ...raw.billing_meta }
+        : buildEmptyBillingMeta(),
     },
     didMigrate: true,
     fromVersion: raw?.schemaVersion || 1,
     toVersion: CURRENT_SCHEMA_VERSION,
     originalRaw: raw,
   };
+}
+
+// ── Імпорт legacy levytskyi_timelog → time_entries[] ────────────────────────
+// Викликається з App.jsx один раз при першому запуску v4 (з прапором).
+// Поля legacy запису:
+//   { id: 'tl_<ts>', userId, caseId, date, duration, description, type, source, createdAt }
+// Мапування на time_entry v4: див. CLAUDE.md / TASK Billing Foundation v2.
+export function importLegacyTimeLog(legacyEntries) {
+  if (!Array.isArray(legacyEntries) || legacyEntries.length === 0) return [];
+  const tenantId = DEFAULT_TENANT.tenantId;
+  const userId = DEFAULT_USER.userId;
+  return legacyEntries.map(le => {
+    if (!le || typeof le !== 'object') return null;
+    const date = le.date || (le.createdAt ? le.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10));
+    const start = `${date}T09:00:00.000Z`;
+    const durMin = Number.isFinite(le.duration) ? le.duration : 60;
+    const end = new Date(new Date(start).getTime() + durMin * 60 * 1000).toISOString();
+    return {
+      id: le.id || `te_legacy_${Math.random().toString(36).slice(2, 8)}`,
+      tenantId,
+      userId: le.userId || userId,
+      createdAt: le.createdAt || new Date().toISOString(),
+      type: 'manual_entry',
+      module: 'legacy',
+      action: 'legacy_import',
+      caseId: le.caseId || null,
+      hearingId: null,
+      documentId: null,
+      duration: durMin * 60, // зберігаємо в секундах
+      startTime: start,
+      endTime: end,
+      category: le.caseId ? 'case_work' : 'admin',
+      subCategory: le.type || null,
+      billable: true,
+      visibleToClient: true,
+      billFactor: 1.0,
+      status: 'confirmed',
+      semanticGroup: null,
+      parentEventId: null,
+      parentEventType: null,
+      parentTimerId: null,
+      subtimerSessionId: null,
+      direction: null,
+      confidence: 'medium',
+      source: 'legacy_import',
+      originalDuration: durMin,
+      actualDuration: null,
+      confirmedDuration: durMin,
+      exitedVia: null,
+      resumedAt: null,
+      metadata: {
+        description: le.description || '',
+        legacyType: le.type || null,
+        legacySource: le.source || null,
+      },
+    };
+  }).filter(Boolean);
 }
 
 // Доступний для нормалізації нових справ зсередини App.jsx

@@ -4,14 +4,19 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from './services/migrationService';
+import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import { driveRequest, refreshDriveToken, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
 import { resolveModel } from './services/modelResolver';
+import * as activityTracker from './services/activityTracker';
+import * as masterTimer from './services/masterTimer';
+import { getTimeStandard, getCategoryDefaults, getVariantDefault } from './services/timeStandards';
+import { checkAndArchive as checkAndArchiveTimeEntries } from './services/timeEntriesArchiver';
+import { handleReturn as smartHandleReturn } from './services/smartReturnHandler';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import './App.css';
 
@@ -1069,6 +1074,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
   // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = async (file) => {
     if (!file) return;
+    // [BILLING] qi_document_uploaded
+    try { activityTracker.report('qi_document_uploaded', { module: 'qi', metadata: { fileType: file.type, fileSize: file.size, fileName: file.name } }); } catch {}
     try {
       let workingFile = file;
       try {
@@ -1318,6 +1325,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
           outputTokens: data?.usage?.output_tokens,
           context: { module: 'QI', operation: 'parse_document' },
         }, setAiUsage);
+        // [BILLING] agent_call паралельно — для зрізу часу адвоката.
+        activityTracker.report('agent_call', {
+          module: 'QI', category: 'admin',
+          metadata: { agentType: 'qi_agent', operation: 'parse_document', kind: 'image' }
+        });
       } catch {}
       const rawText = data?.content?.[0]?.text || '';
       const parsed = validateAndParseJSON(rawText);
@@ -1444,6 +1456,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
           outputTokens: data?.usage?.output_tokens,
           context: { module: 'QI', operation: 'parse_document' },
         }, setAiUsage);
+        activityTracker.report('agent_call', {
+          module: 'QI', category: 'admin',
+          metadata: { agentType: 'qi_agent', operation: 'parse_document', kind: 'text' }
+        });
       } catch {}
       const rawText = data?.content?.[0]?.text || '';
       const parsed = validateAndParseJSON(rawText);
@@ -1631,6 +1647,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
     };
 
     recognition.start();
+    // [BILLING] qi_voice_input — старт голосового вводу.
+    try { activityTracker.report('qi_voice_input', { module: 'qi', metadata: { target: targetKey } }); } catch {}
     setIsRecording(true);
     isRecordingRef.current = true;
     setActiveVoiceTarget(targetKey);
@@ -1658,6 +1676,8 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
   const sendChat = async () => {
     if (!chatInput.trim() || chatLoading) return;
     const userMsg = chatInput.trim();
+    // [BILLING] qi_action_executed (chat — це по суті ініціація дій через агента).
+    try { activityTracker.report('qi_action_executed', { module: 'qi', metadata: { messageLen: userMsg.length, viaVoice: !!voiceInterim } }); } catch {}
     setChatInput('');
     setChatLoading(true);
 
@@ -1710,6 +1730,10 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
             outputTokens: data?.usage?.output_tokens,
             context: { module: 'QI', operation: 'chat' },
           }, setAiUsage);
+          activityTracker.report('agent_call', {
+            module: 'QI', category: 'admin',
+            metadata: { agentType: 'qi_agent', operation: 'chat' }
+          });
         } catch {}
         const responseText = data?.content?.[0]?.text || '';
         const actionMatch = (() => {
@@ -3266,7 +3290,8 @@ function normalizeCases(cases) {
         name: toSafeStr(d.name),
       }));
 
-    // timeLog[] — додати якщо немає
+    // case.timeLog[] — DEPRECATED у v4. Зворотна сумісність: лишаємо порожній []
+    // для legacy документів. Видалення поля — окремий TASK через CLAUDE.md Audit.
     if (!Array.isArray(updated.timeLog)) {
       updated.timeLog = [];
     }
@@ -3388,12 +3413,11 @@ function App() {
     }
     return { ...EMPTY_NOTES };
   });
-  // ── timeLog — облік часу ────────────────────────────────────────────────
-  const [timeLog, setTimeLog] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('levytskyi_timelog') || '[]');
-    } catch { return []; }
-  });
+  // ── timeLog (legacy) — DEPRECATED у v4 на користь time_entries[].
+  // Лишаємо порожній stub щоб старий imports/референси не валились.
+  // case.timeLog[] (вкладений) — теж DEPRECATED, normalize-функція додає [] для сумісності.
+  const timeLog = [];
+  const setTimeLog = () => {};
 
   // ── SaaS Foundation v2 — tenants/users/auditLog/structuralUnits ───────────
   // Ембріон з повним ДНК. Зараз — один tenant, один користувач.
@@ -3458,6 +3482,102 @@ function App() {
     } catch {}
     return [];
   });
+
+  // ── v4 Billing Foundation ───────────────────────────────────────────────────
+  // time_entries[] — поточний місяць, in-state. Місячна ротація виносить
+  // попередній місяць в _archives/time_entries_YYYY-MM.json на Drive.
+  const [timeEntries, setTimeEntries] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_time_entries');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [masterTimerState, setMasterTimerState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_master_timer_state');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return {
+      isActive: false, isPaused: false, state: 'stopped',
+      startedAt: null, pausedAt: null, totalSecondsToday: 0,
+      lastActivityAt: null, activeCaseId: null, activeCategory: null,
+      lastIdleCheck: null,
+    };
+  });
+  const [billingMeta, setBillingMeta] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_billing_meta');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return {
+      currentMonthStart: new Date(Date.UTC(
+        new Date().getUTCFullYear(),
+        new Date().getUTCMonth(),
+        1, 0, 0, 0
+      )).toISOString(),
+      lastArchiveCreated: null,
+      totalEntriesAllTime: 0,
+      currentMonthEntries: 0,
+      archiveFiles: [],
+    };
+  });
+
+  // [BILLING] app_launched — один раз при старті.
+  useEffect(() => {
+    try { activityTracker.report('app_launched', { module: 'system', category: 'system' }); } catch {}
+  }, []);
+
+  // ── activityTracker / masterTimer init ─────────────────────────────────────
+  // Біндимо sink, recover state, реєструємо хук subtimerEnd → smartReturnHandler.
+  useEffect(() => {
+    activityTracker.configure({
+      sink: (entry) => {
+        try {
+          setTimeEntries(prev => {
+            const next = Array.isArray(prev) ? [...prev, entry] : [entry];
+            return next.length > 100000 ? next.slice(next.length - 100000) : next;
+          });
+          setBillingMeta(prev => ({
+            ...prev,
+            totalEntriesAllTime: (prev?.totalEntriesAllTime || 0) + 1,
+            currentMonthEntries: (prev?.currentMonthEntries || 0) + 1,
+          }));
+        } catch (e) { console.warn('activityTracker sink error:', e); }
+      },
+      patchSink: (id, fields) => {
+        try {
+          setTimeEntries(prev => Array.isArray(prev)
+            ? prev.map(e => e?.id === id ? { ...e, ...fields, updatedAt: new Date().toISOString() } : e)
+            : prev
+          );
+        } catch (e) { console.warn('activityTracker patchSink error:', e); }
+      },
+    });
+    masterTimer.configure({
+      stateSink: (s) => setMasterTimerState(s),
+    });
+    masterTimer.bindToActivityTracker();
+    masterTimer.recover(masterTimerState);
+    // autoStart за user.preferences (по замовчуванню — false).
+    try {
+      const u = getCurrentUser();
+      if (u?.preferences?.autoStartMasterTimer?.enabled) {
+        masterTimer.start({ autoStart: true });
+      }
+    } catch {}
+    return () => masterTimer._detach();
+    // eslint-disable-next-line
+  }, []);
 
   // Хелпер: запис в audit log зі state-сеттером, прив'язка до tenant'у/користувача.
   // Не пишемо в auditLog якщо action не входить в AUDIT_ACTIONS — фільтр виконується
@@ -3578,6 +3698,20 @@ function App() {
           }
         }
 
+        // Billing Foundation v2 — pre-v4 бекап, поза ротацією.
+        if (raw != null && (raw.schemaVersion || 1) < 4) {
+          const flagV4 = localStorage.getItem('levytskyi_billing_backup_done_v4');
+          if (!flagV4) {
+            const res = await backupRegistryDataPreBilling(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_billing_backup_done_v4', '1');
+              console.log(`[Billing Foundation v2] Pre-billing backup: ${res.fileName}`);
+            } else {
+              console.warn('[Billing Foundation v2] Pre-billing backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
         // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
         if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
           try {
@@ -3628,6 +3762,79 @@ function App() {
         if (Array.isArray(registry.caseAccess)) {
           setCaseAccess(registry.caseAccess);
         }
+        // v4 Billing Foundation
+        if (Array.isArray(registry.time_entries)) {
+          setTimeEntries(registry.time_entries);
+        }
+        if (registry.master_timer_state && typeof registry.master_timer_state === 'object') {
+          setMasterTimerState(registry.master_timer_state);
+          masterTimer.recover(registry.master_timer_state);
+        }
+        if (registry.billing_meta && typeof registry.billing_meta === 'object') {
+          setBillingMeta(registry.billing_meta);
+        }
+
+        // Billing Foundation v2 — імпорт legacy levytskyi_timelog (одноразово).
+        if (!localStorage.getItem('levytskyi_timelog_imported_v4')) {
+          try {
+            const oldLog = localStorage.getItem('levytskyi_timelog');
+            if (oldLog && oldLog !== '[]' && oldLog !== 'null') {
+              const parsed = JSON.parse(oldLog);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                const backupRes = await backupLegacyTimelogPreImport(token, parsed);
+                if (backupRes.success) {
+                  console.log(`[Billing Foundation v2] Legacy timelog backed up: ${backupRes.fileName}`);
+                }
+                const imported = importLegacyTimeLog(parsed);
+                if (imported.length > 0) {
+                  setTimeEntries(prev => {
+                    const ids = new Set((prev || []).map(e => e.id));
+                    const fresh = imported.filter(e => !ids.has(e.id));
+                    return [...(prev || []), ...fresh];
+                  });
+                  console.log(`[Billing Foundation v2] Imported ${imported.length} legacy entries`);
+                }
+                localStorage.removeItem('levytskyi_timelog');
+                localStorage.setItem('levytskyi_timelog_imported_v4', '1');
+              } else {
+                localStorage.removeItem('levytskyi_timelog');
+                localStorage.setItem('levytskyi_timelog_imported_v4', '1');
+              }
+            } else {
+              localStorage.setItem('levytskyi_timelog_imported_v4', '1');
+            }
+          } catch (e) {
+            console.warn('[Billing Foundation v2] Legacy timelog import error:', e);
+          }
+        }
+
+        // Billing Foundation v2 — місячна ротація на старті (якщо період настав).
+        try {
+          const archiveResult = await checkAndArchiveTimeEntries(
+            token,
+            Array.isArray(registry.time_entries) ? registry.time_entries : timeEntries,
+            registry.billing_meta || billingMeta
+          );
+          if (archiveResult?.archived && archiveResult.keep && archiveResult.archivedCount > 0) {
+            setTimeEntries(archiveResult.keep);
+            setBillingMeta(prev => ({ ...prev, ...(archiveResult.billingMetaUpdate || {}) }));
+            writeAudit({
+              action: 'time_entries_archived',
+              targetType: 'time_entries',
+              targetId: archiveResult.yyyymm,
+              status: 'done',
+              details: {
+                yyyymm: archiveResult.yyyymm,
+                entriesCount: archiveResult.archivedCount,
+                archivePath: archiveResult.archivePath,
+              },
+              context: { module: 'startup', agent: null },
+            });
+            console.log(`[Billing Foundation v2] Archived ${archiveResult.archivedCount} entries to ${archiveResult.archivePath}`);
+          }
+        } catch (e) {
+          console.warn('[Billing Foundation v2] Archive check error:', e);
+        }
 
         if (didMigrate) {
           console.log(`[SaaS Foundation] Migration v${fromVersion} → v${toVersion} done. cases=${registry.cases.length}`);
@@ -3657,6 +3864,10 @@ function App() {
       localStorage.setItem('levytskyi_structural_units', JSON.stringify(structuralUnits));
       localStorage.setItem('levytskyi_ai_usage', JSON.stringify(aiUsage));
       localStorage.setItem('levytskyi_case_access', JSON.stringify(caseAccess));
+      // v4 Billing Foundation
+      localStorage.setItem('levytskyi_time_entries', JSON.stringify(timeEntries));
+      localStorage.setItem('levytskyi_master_timer_state', JSON.stringify(masterTimerState));
+      localStorage.setItem('levytskyi_billing_meta', JSON.stringify(billingMeta));
       setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
     } catch(e) {}
     if (driveConnected) {
@@ -3673,6 +3884,10 @@ function App() {
           ai_usage: aiUsage,
           caseAccess,
           cases,
+          // v4 Billing Foundation
+          time_entries: timeEntries,
+          master_timer_state: masterTimerState,
+          billing_meta: billingMeta,
         };
         // Бекап раз на добу перед sync (зберігаємо повний registry-об'єкт)
         const lastBackup = localStorage.getItem('levytskyi_last_backup') || '';
@@ -3687,12 +3902,10 @@ function App() {
           .catch(() => setDriveSyncStatus('error'));
       }
     }
-  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess]);
+  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, timeEntries, masterTimerState, billingMeta]);
 
-  // ── timeLog persistence ────────────────────────────────────────────────────
-  useEffect(() => {
-    localStorage.setItem('levytskyi_timelog', JSON.stringify(timeLog));
-  }, [timeLog]);
+  // ── timeLog persistence — DEPRECATED у v4. Старий ключ видаляється під час
+  // одноразового імпорту в time_entries[] (див. flag levytskyi_timelog_imported_v4).
 
   // ── rebuildCalendarView — збирає лише нотатки з датою для календаря ─────────
   // Засідання і дедлайни Dashboard читає напряму з cases.hearings[] / cases.deadlines[].
@@ -3803,6 +4016,7 @@ function App() {
       details: { caseName: newCase.name, source: 'ui_form' },
       context: { module: 'add_form', agent: null },
     });
+    try { activityTracker.report('case_created', { caseId: newCase.id, module: 'add_form', category: 'case_work' }); } catch {}
   };
 
   const saveCaseEdit = (form) => {
@@ -3965,6 +4179,7 @@ function App() {
         details: { caseName: target.name, previousStatus: target.status },
         context: { module: 'ui', agent: null },
       });
+      try { activityTracker.report('case_closed', { caseId: id, module: 'ui', category: 'case_work' }); } catch {}
     }
   };
 
@@ -3982,6 +4197,7 @@ function App() {
         details: { caseName: target.name, previousStatus: target.status },
         context: { module: 'ui', agent: null },
       });
+      try { activityTracker.report('case_restored', { caseId: id, module: 'ui', category: 'case_work' }); } catch {}
     }
   };
 
@@ -4324,30 +4540,304 @@ function App() {
     },
 
     // ГРУПА 4 — Час / Сесія
-    add_time_entry: ({ caseId = null, date, duration, description, type = 'billable', source = 'manual' }) => {
+    // add_time_entry: backwards-compatible — пише в новий time_entries[] через activityTracker.
+    add_time_entry: ({ caseId = null, date, duration, description, category, billable, type = 'manual_entry', source = 'manual' }) => {
+      const u = getCurrentUser();
+      const tenant = getCurrentTenant ? null : null;
+      const tenantId = u?.tenantId || DEFAULT_TENANT.tenantId;
+      const dateStr = date || new Date().toISOString().slice(0, 10);
+      const startIso = `${dateStr}T09:00:00.000Z`;
+      const durMin = Number.isFinite(duration) ? duration : 60;
+      const endIso = new Date(new Date(startIso).getTime() + durMin * 60 * 1000).toISOString();
+      const cat = category || (caseId ? 'case_work' : 'admin');
+      const catDef = getCategoryDefaults(cat);
       const entry = {
-        id: `tl_${Date.now()}`,
-        userId: 'vadym',
+        id: `te_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        tenantId,
+        userId: u.userId,
+        createdAt: new Date().toISOString(),
+        type: 'manual_entry',
+        module: 'manual',
+        action: 'add_time_entry',
         caseId,
-        date,
-        duration,
-        description,
-        type,
-        source,
-        createdAt: new Date().toISOString()
+        hearingId: null,
+        documentId: null,
+        duration: durMin * 60,
+        startTime: startIso,
+        endTime: endIso,
+        category: cat,
+        subCategory: type || null,
+        billable: billable !== undefined ? !!billable : catDef.billable,
+        visibleToClient: catDef.visibleToClient,
+        billFactor: catDef.billFactor,
+        status: 'confirmed',
+        semanticGroup: null,
+        parentEventId: null, parentEventType: null,
+        parentTimerId: null, subtimerSessionId: null, direction: null,
+        confidence: 'high',
+        source: source || 'manual',
+        originalDuration: null, actualDuration: null, confirmedDuration: durMin,
+        exitedVia: null, resumedAt: null,
+        metadata: { description: description || '' },
       };
-      setTimeLog(prev => [entry, ...prev]);
-      return { success: true };
+      setTimeEntries(prev => [...(prev || []), entry]);
+      return { success: true, entryId: entry.id };
     },
 
-    track_session_start: ({ caseId = null, sessionId }) => {
-      console.log(`Session started: ${sessionId}, case: ${caseId}`);
-      return { success: true };
+    update_time_entry: ({ id, fields }) => {
+      if (!id || !fields || typeof fields !== 'object') {
+        return { success: false, error: 'id і fields обов\'язкові' };
+      }
+      let found = false;
+      setTimeEntries(prev => Array.isArray(prev)
+        ? prev.map(e => {
+            if (e?.id !== id) return e;
+            found = true;
+            return { ...e, ...fields, status: fields.status || 'user_corrected', updatedAt: new Date().toISOString() };
+          })
+        : prev);
+      if (found) {
+        writeAudit({
+          action: 'time_entry_edited',
+          targetType: 'time_entry',
+          targetId: id,
+          details: { fields },
+          context: { module: 'agent_action', agent: null },
+        });
+      }
+      return { success: found, found };
+    },
+
+    cancel_time_entry: ({ id, reason = null }) => {
+      if (!id) return { success: false, error: 'id обов\'язковий' };
+      let found = false;
+      setTimeEntries(prev => Array.isArray(prev)
+        ? prev.map(e => {
+            if (e?.id !== id) return e;
+            found = true;
+            return { ...e, status: 'cancelled', metadata: { ...(e.metadata || {}), cancelReason: reason }, updatedAt: new Date().toISOString() };
+          })
+        : prev);
+      return { success: found };
+    },
+
+    delete_time_entry: ({ id }) => {
+      if (!id) return { success: false, error: 'id обов\'язковий' };
+      let removed = false;
+      setTimeEntries(prev => {
+        if (!Array.isArray(prev)) return prev;
+        const next = prev.filter(e => {
+          if (e?.id === id) { removed = true; return false; }
+          return true;
+        });
+        return next;
+      });
+      if (removed) {
+        writeAudit({
+          action: 'time_entry_deleted',
+          targetType: 'time_entry',
+          targetId: id,
+          status: 'done',
+          details: {},
+          context: { module: 'agent_action', agent: null },
+        });
+      }
+      return { success: removed };
+    },
+
+    split_time_entry: ({ id, durations = [] }) => {
+      if (!id || !Array.isArray(durations) || durations.length < 2) {
+        return { success: false, error: 'id і масив тривалостей (>=2) обов\'язкові' };
+      }
+      let madeChildren = [];
+      setTimeEntries(prev => {
+        if (!Array.isArray(prev)) return prev;
+        const idx = prev.findIndex(e => e?.id === id);
+        if (idx === -1) return prev;
+        const orig = prev[idx];
+        const startMs = new Date(orig.startTime).getTime();
+        let cursor = startMs;
+        const children = durations.map((minutes, i) => {
+          const dSec = Math.max(0, Math.round(minutes * 60));
+          const start = new Date(cursor).toISOString();
+          cursor += dSec * 1000;
+          const end = new Date(cursor).toISOString();
+          return { ...orig,
+            id: `te_${Date.now()}_${i}_${Math.random().toString(36).slice(2,5)}`,
+            duration: dSec, startTime: start, endTime: end,
+            metadata: { ...(orig.metadata || {}), splitFrom: id },
+          };
+        });
+        madeChildren = children;
+        return [...prev.slice(0, idx), ...children, ...prev.slice(idx + 1)];
+      });
+      return { success: madeChildren.length > 0, count: madeChildren.length };
+    },
+
+    assign_offline_period: ({ from, to, category = 'case_work', caseId = null, subCategory = null, semanticGroup = null }) => {
+      if (!from || !to) return { success: false, error: 'from і to обов\'язкові' };
+      const entry = activityTracker.assignOfflinePeriod(
+        { from, to },
+        category, caseId, { subCategory, semanticGroup }
+      );
+      return { success: !!entry, entryId: entry?.id || null };
+    },
+
+    // Двофазна модель події з резервуванням (Phase 4).
+    // confirmEvent — узагальнений API, не специфічний для hearing.
+    confirm_event: ({ eventId, eventType = 'hearing', decision = {} }) => {
+      if (!eventId) return { success: false, error: 'eventId обов\'язковий' };
+      const variant = decision.variant || 'completed';
+      const traveled = decision.traveled !== false;
+      const variantDefault = getVariantDefault(eventType, variant, traveled);
+      const billFactor = Number.isFinite(decision.billFactor) ? decision.billFactor : variantDefault.billFactor;
+      const newStatus = variant === 'completed' ? 'confirmed' : 'user_corrected';
+      let updatedCount = 0;
+      // Оновлюємо всі time_entries з parentEventId === eventId.
+      setTimeEntries(prev => Array.isArray(prev)
+        ? prev.map(e => {
+            if (e?.parentEventId !== eventId) return e;
+            updatedCount++;
+            // travel: керуємо через decision.traveled.
+            if (e.type === 'travel') {
+              if (!traveled) {
+                return { ...e, status: 'cancelled', billFactor: 0, metadata: { ...(e.metadata || {}), variant }, updatedAt: new Date().toISOString() };
+              }
+              const dir = e.direction;
+              const customDur = dir && decision.travelDuration && Number.isFinite(decision.travelDuration[dir])
+                ? decision.travelDuration[dir]
+                : null;
+              return {
+                ...e,
+                status: newStatus,
+                billFactor,
+                duration: customDur != null ? customDur * 60 : e.duration,
+                confirmedDuration: customDur != null ? customDur : (e.confirmedDuration ?? Math.round(e.duration / 60)),
+                metadata: { ...(e.metadata || {}), variant, customLabel: decision.customLabel || null, notes: decision.notes || null },
+                updatedAt: new Date().toISOString(),
+              };
+            }
+            // Основна подія (hearing_attendance і т.п.) — duration з decision.
+            const fixedDuration = Number.isFinite(decision.duration) ? decision.duration : null;
+            return {
+              ...e,
+              status: newStatus,
+              billFactor,
+              duration: fixedDuration != null ? fixedDuration * 60 : e.duration,
+              confirmedDuration: fixedDuration != null ? fixedDuration : (e.confirmedDuration ?? Math.round(e.duration / 60)),
+              metadata: { ...(e.metadata || {}), variant, customLabel: decision.customLabel || null, notes: decision.notes || null, details: decision.details || null },
+              updatedAt: new Date().toISOString(),
+            };
+          })
+        : prev
+      );
+      return { success: updatedCount > 0, updatedCount, variant, billFactor };
+    },
+
+    add_travel: ({ parentEventId, parentEventType = 'hearing', direction = 'to', duration, caseId = null, court = null, city = null }) => {
+      if (!parentEventId) return { success: false, error: 'parentEventId обов\'язковий' };
+      const u = getCurrentUser();
+      const stdMin = Number.isFinite(duration)
+        ? duration
+        : getTimeStandard('travel', { direction, court, city });
+      const startIso = new Date().toISOString();
+      const endIso = new Date(new Date(startIso).getTime() + stdMin * 60 * 1000).toISOString();
+      const catDef = getCategoryDefaults('travel');
+      const entry = {
+        id: `te_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        tenantId: u.tenantId,
+        userId: u.userId,
+        createdAt: new Date().toISOString(),
+        type: 'travel',
+        module: 'event_reservation',
+        action: 'add_travel',
+        caseId,
+        hearingId: parentEventType === 'hearing' ? parentEventId : null,
+        documentId: null,
+        duration: stdMin * 60,
+        startTime: startIso,
+        endTime: endIso,
+        category: 'travel',
+        subCategory: null,
+        billable: catDef.billable,
+        visibleToClient: catDef.visibleToClient,
+        billFactor: catDef.billFactor,
+        status: 'planned',
+        semanticGroup: 'screen_passive',
+        parentEventId,
+        parentEventType,
+        parentTimerId: null,
+        subtimerSessionId: null,
+        direction,
+        confidence: 'medium',
+        source: 'event_reservation',
+        originalDuration: stdMin,
+        actualDuration: null,
+        confirmedDuration: null,
+        exitedVia: null,
+        resumedAt: null,
+        metadata: { court, city },
+      };
+      setTimeEntries(prev => [...(prev || []), entry]);
+      return { success: true, entryId: entry.id };
+    },
+
+    cancel_travel: ({ travelEntryId, reason = null }) => {
+      if (!travelEntryId) return { success: false, error: 'travelEntryId обов\'язковий' };
+      let found = false;
+      setTimeEntries(prev => Array.isArray(prev)
+        ? prev.map(e => {
+            if (e?.id !== travelEntryId) return e;
+            found = true;
+            return { ...e, status: 'cancelled', metadata: { ...(e.metadata || {}), cancelReason: reason }, updatedAt: new Date().toISOString() };
+          })
+        : prev);
+      return { success: found };
+    },
+
+    track_session_start: ({ caseId = null, sessionId, module = 'system', category = null }) => {
+      try {
+        const sid = activityTracker.startSession(caseId, module, { category });
+        return { success: true, sessionId: sid || sessionId };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
     },
 
     track_session_end: ({ sessionId }) => {
-      console.log(`Session ended: ${sessionId}`);
-      return { success: true };
+      try {
+        const sid = activityTracker.endSession({ reason: 'agent' });
+        return { success: true, sessionId: sid || sessionId };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+
+    start_external_work: ({ category = 'case_work', caseId = null, subCategory = null, plannedDuration = null, semanticGroup = null }) => {
+      try {
+        const id = activityTracker.startSubtimer(category, caseId, subCategory, { plannedDuration, semanticGroup });
+        return { success: !!id, subtimerId: id };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+
+    end_external_work: () => {
+      try {
+        const entry = activityTracker.endSubtimer();
+        return { success: !!entry, entryId: entry?.id || null };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+
+    update_external_work: ({ updates = {} }) => {
+      try {
+        const ok = activityTracker.updateSubtimer(updates);
+        return { success: ok };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
     },
 
     // ГРУПА 5 — Композитна дія
@@ -4392,12 +4882,18 @@ function App() {
       'add_note', 'update_note', 'delete_note',
       'pin_note', 'unpin_note',
       'add_time_entry',
+      // v4 Billing Foundation
+      'update_time_entry', 'cancel_time_entry', 'split_time_entry',
+      'assign_offline_period',
+      'confirm_event', 'add_travel', 'cancel_travel',
+      'start_external_work', 'end_external_work', 'update_external_work',
       'batch_update',
     ],
 
     dashboard_agent: [
       'add_hearing', 'update_hearing', 'delete_hearing',
       'add_note', 'update_note', 'delete_note',
+      'confirm_event', 'add_travel',
       'batch_update',
     ],
 
@@ -4409,10 +4905,15 @@ function App() {
       'add_note', 'update_note', 'delete_note',
       'pin_note', 'unpin_note',
       'add_time_entry',
+      // v4 Billing Foundation
+      'update_time_entry', 'cancel_time_entry', 'split_time_entry',
+      'assign_offline_period',
+      'confirm_event', 'add_travel', 'cancel_travel',
+      'start_external_work', 'end_external_work', 'update_external_work',
       'track_session_start', 'track_session_end',
     ],
 
-    // destroy_case — жоден агент. Тільки UI.
+    // destroy_case, delete_time_entry — жоден агент. Тільки UI.
   };
 
   // ── executeAction — єдина точка входу для всіх дій агентів ─────────────────
@@ -4481,6 +4982,25 @@ function App() {
         });
       }
 
+      // 6. v4 Billing Foundation — звіт у activityTracker для значущих дій.
+      // Не репортимо track_session_*, batch_update і самі _query дії.
+      if (result && (result.success || result.successCount) &&
+          !['track_session_start', 'track_session_end', 'batch_update'].includes(action)) {
+        try {
+          activityTracker.report(action, {
+            type: 'action',
+            module: 'executeAction',
+            caseId: params?.caseId || result?.caseId || null,
+            hearingId: params?.hearingId || result?.hearingId || null,
+            duration: 0,
+            metadata: { agentId, viaAgent: true },
+          });
+        } catch (te) {
+          // Білінг не повинен блокувати юридичну роботу.
+          console.warn('activityTracker.report (executeAction hook) error:', te);
+        }
+      }
+
       return result;
     } catch (e) {
       console.error(`executeAction ERROR [${action}]:`, e);
@@ -4513,7 +5033,11 @@ function App() {
           {id:'add',       label:'➕ Нова справа'},
           {id:'analysis',  label:'🔍 Аналіз системи'},
         ].map(t => (
-          <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => { setDossierCase(null); if (t.id !== 'add') setEditingCase(null); setTab(t.id); }}>
+          <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => {
+            // [BILLING] module_navigation
+            try { activityTracker.report('module_navigation', { module: 'app', category: 'system', metadata: { from: tab, to: t.id } }); } catch {}
+            setDossierCase(null); if (t.id !== 'add') setEditingCase(null); setTab(t.id);
+          }}>
             {t.label}
           </button>
         ))}

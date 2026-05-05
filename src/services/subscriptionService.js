@@ -1,8 +1,9 @@
 // ── SUBSCRIPTION SERVICE ─────────────────────────────────────────────────────
 // Перерахунок поточних метрик у tenant.subscription.current.
 // Поки limits = null — перевірок немає, заглушка для майбутніх тарифних планів.
+// v4 Billing Foundation: додано hoursBilled з time_entries (для звітів адвокату).
 
-export function recalculateCurrent(tenant, aiUsage, cases) {
+export function recalculateCurrent(tenant, aiUsage, cases, timeEntries) {
   if (!tenant || !tenant.subscription || !tenant.subscription.current) return null;
 
   const current = tenant.subscription.current;
@@ -23,11 +24,24 @@ export function recalculateCurrent(tenant, aiUsage, cases) {
   );
   const casesActiveCount = tenantCases.filter(c => c.status === 'active').length;
 
+  // v4: hoursBilled з time_entries[]. duration зберігається в секундах.
+  const periodTimeEntries = (Array.isArray(timeEntries) ? timeEntries : []).filter(e => {
+    if (!e || e.tenantId !== tenant.tenantId) return false;
+    const t = e.startTime ? new Date(e.startTime) : null;
+    if (!t) return false;
+    return t >= periodStart && t <= periodEnd;
+  });
+  const billableSeconds = periodTimeEntries
+    .filter(e => e.billable && e.status !== 'cancelled')
+    .reduce((s, e) => s + (Number(e.duration) || 0), 0);
+  const hoursBilled = Number((billableSeconds / 3600).toFixed(2));
+
   return {
     ...current,
     tokensUsed,
     costUsedUSD: Number(costUsedUSD.toFixed(6)),
     casesActiveCount,
+    hoursBilled,
   };
 }
 

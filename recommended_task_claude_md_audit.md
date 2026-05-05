@@ -169,3 +169,81 @@ update_case_status, delete_case, create_case, save_note
 ## Приоритет
 
 **Низький.** Не блокує жоден інший TASK. Корисно зробити перед наступним великим епіком (Tool Use / Canvas / CRM) — щоб Claude Code мав свіжий контекст.
+
+---
+
+## Розділ Billing Foundation v2 (додано 2026-05-05)
+
+Після TASK Billing Foundation v2 в CLAUDE.md потрібен новий розділ. Пропоновано:
+
+### activityTracker і time_entries
+- `src/services/activityTracker.js` — центральна служба обліку часу.
+- `report(eventType, context)` — базовий звіт.
+- `startSession/endSession` — сесія в модулі (case_dossier, dashboard).
+- `startSubtimer/endSubtimer` — категоризований субтаймер з semanticGroup.
+- `assignOfflinePeriod(period, category, caseId)` — retroactive запис.
+- Падіння tracker не блокує юридичну роботу: усі публічні методи в try/catch.
+
+### Master timer state machine
+- `src/services/masterTimer.js` — state machine.
+- States: stopped | active | paused | idle.
+- Page Visibility, Idle Detection (Chromium), BroadcastChannel cross-tab.
+- Persist в `master_timer_state` кожні 60 сек.
+- Recovery з 30-хв порогом (більше → reset).
+- autoStart керується `user.preferences.autoStartMasterTimer.enabled`.
+
+### Стандарти часу
+- `src/services/timeStandards.js`.
+- `getTimeStandard(activity, context)` — ієрархія user → tenant → system.
+- Категорії: case_work, hearing_attendance, hearing_preparation, travel, client_communication, admin, system, break, manual_entry.
+- ACTIVITY_CATEGORIES визначає billable / visibleToClient / billFactor.
+- Усі стандарти та матриці — `// experimental — review after 1 month`.
+
+### Двофазна модель події з резервуванням
+- При створенні hearing — резервується основний time_entry.
+- travel — окрема категорія, додається через `add_travel(parentEventId, parentEventType, direction, duration, options)`.
+- Підтвердження через `confirm_event(eventId, eventType, decision)` — узагальнений API.
+- Матриця варіантів для hearing: completed, postponed_opponent, postponed_self, court_fault, custom.
+- Statusи time_entry: planned | active | needs_review | confirmed | auto_confirmed | user_corrected | cancelled | archived.
+
+### smartReturnHandler
+- `src/services/smartReturnHandler.js` — ізольований сервіс реакції на повернення.
+- semanticGroup: screen_active (екран мав не гаснути) vs screen_passive (екран гасне нормально).
+- Повертає `{ dialog, suggestion }` — викликач сам показує UI.
+- // experimental — review after 1 month.
+
+### Місячна ротація
+- `src/services/timeEntriesArchiver.js`.
+- Перевірка на старті: `shouldArchive(billing_meta)`.
+- Виносить попередній місяць у `_archives/time_entries_YYYY-MM.json` на Drive.
+- Активний registry тримає тільки поточний місяць.
+- Кеш архівів — у пам'яті, очищається на reload.
+
+### Query API
+- `src/services/timeEntriesQuery.js`.
+- `getTimeEntries({ activeEntries, token, query })` — об'єднує активні + архіви по даті.
+- `getSummary({ ... })` — totalDuration, byCategory, byCase, byUser.
+
+### Інтеграція з ai_usage[]
+- 10 точок виклику Anthropic API мають паралельне `activityTracker.report('agent_call', {...})`.
+- ai_usage[] — токени/вартість для оператора.
+- time_entries[] — час/категорія для адвоката.
+
+### Permissions для time_entries
+- `TIME_ENTRY_ACTIONS` в permissionService.
+- `canViewTimeEntries(userId, targetUserId, tenantId)` — bureau_owner бачить все, інші — свої.
+- `canEditTimeEntry(userId, entry)` — автор або bureau_owner.
+
+### subscription.current — hoursBilled
+- `recalculateCurrent` тепер приймає 4-й параметр `timeEntries`.
+- Додає поле `hoursBilled` (billable секунди / 3600).
+
+### Переоцінка через 1-3 місяці
+- ACTIVITY_CATEGORIES (billFactor для client_communication = 0.5)
+- EVENT_VARIANT_MATRIX (court_fault розщеплення на traveled/no_travel)
+- timeStandards (по судам/містам)
+- semanticGroup logic у smartReturnHandler
+- IDLE_TIMEOUT_MIN (зараз 5 хв)
+- Місячна ротація — чи доцільно тижнева
+
+Усі ці значення спочатку — стартові точки, не остаточні рішення.

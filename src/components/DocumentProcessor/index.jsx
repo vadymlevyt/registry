@@ -11,6 +11,7 @@ import {
 import { driveRequest } from "../../services/driveAuth.js";
 import { logAiUsage, logAiUsageViaSink } from "../../services/aiUsageService.js";
 import { resolveModel } from "../../services/modelResolver.js";
+import * as activityTracker from "../../services/activityTracker.js";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -242,6 +243,10 @@ async function analyzePDFWithDocumentBlock(file, apiKey, userHint, options = {})
       outputTokens: data?.usage?.output_tokens,
       context: { module: 'DocumentProcessor', operation: 'parse_document' },
     }, options.aiUsageSink);
+    activityTracker.report('agent_call', {
+      module: 'DocumentProcessor', category: 'admin',
+      metadata: { agentType: 'document_parser', operation: 'parse_document' }
+    });
   } catch {}
 
   const text = data.content[0].text;
@@ -310,6 +315,16 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
       status: "pending",
       progress: 0,
     }));
+    // [BILLING] docproc_batch_started
+    try { activityTracker.report('docproc_batch_started', {
+      caseId: caseData?.id || null,
+      module: 'document_processor',
+      category: caseData?.id ? 'case_work' : 'admin',
+      metadata: {
+        fileCount: newFiles.length,
+        totalSize: Array.from(fileList).reduce((s, f) => s + (f.size || 0), 0),
+      }
+    }); } catch {}
     setFiles(prev => [...prev, ...newFiles]);
 
     // Detect PDF and store file for document block analysis
@@ -433,6 +448,11 @@ ${filesList}
           outputTokens: data?.usage?.output_tokens,
           context: { caseId: caseData?.id, module: 'DocumentProcessor', operation: 'chat' },
         }, setAiUsage);
+        activityTracker.report('agent_call', {
+          caseId: caseData?.id,
+          module: 'DocumentProcessor', category: caseData?.id ? 'case_work' : 'admin',
+          metadata: { agentType: 'document_parser', operation: 'chat', kind: 'analyze' }
+        });
       } catch {}
       const text = data.content?.[0]?.text || "Не вдалося отримати відповідь";
 
@@ -445,6 +465,13 @@ ${filesList}
       if (action) {
         setParsedAction(action);
       }
+      // [BILLING] docproc_ocr_processed — оброблено партію через AI-аналіз.
+      try { activityTracker.report('docproc_ocr_processed', {
+        caseId: caseData?.id || null,
+        module: 'document_processor',
+        category: caseData?.id ? 'case_work' : 'admin',
+        metadata: { fileCount: newFiles.length, hasAction: !!action }
+      }); } catch {}
 
       const displayText = text.replace(/ACTION_JSON:\{[\s\S]*$/, "").trim();
       setChatMessages(prev => [...prev, { role: "assistant", content: displayText }]);
@@ -491,6 +518,13 @@ ${filesList}
       });
       setProposedStructure("document_block_analysis");
       setTotalPages(result.totalPages || totalPages);
+      // [BILLING] docproc_split_proposed
+      try { activityTracker.report('docproc_split_proposed', {
+        caseId: caseData?.id || null,
+        module: 'document_processor',
+        category: caseData?.id ? 'case_work' : 'admin',
+        metadata: { documentsCount: result.documents.length, totalPages: result.totalPages }
+      }); } catch {}
 
       const tree = result.documents.map((d, i) =>
         `${i + 1}. \u{1F4C4} ${d.name}\n   Сторінки: ${d.startPage}-${d.endPage} (${d.endPage - d.startPage + 1} стор.)`
@@ -584,6 +618,11 @@ ${filesList}
           outputTokens: data?.usage?.output_tokens,
           context: { caseId: caseData?.id, module: 'DocumentProcessor', operation: 'chat' },
         }, setAiUsage);
+        activityTracker.report('agent_call', {
+          caseId: caseData?.id,
+          module: 'DocumentProcessor', category: caseData?.id ? 'case_work' : 'admin',
+          metadata: { agentType: 'document_parser', operation: 'chat', kind: 'followup' }
+        });
       } catch {}
       const reply = data.content?.[0]?.text || "Немає відповіді";
 
@@ -671,6 +710,21 @@ ${filesList}
     console.log("uploadedFile:", (uploadedFileRef.current || uploadedFile)?.name);
     console.log("splitPoints:", (splitPointsRef.current.length > 0 ? splitPointsRef.current : splitPoints)?.length);
     console.log("parsedAction:", parsedAction?.action);
+
+    // [BILLING] docproc_split_confirmed (для split дії) АБО batch_confirm (для classify).
+    try {
+      activityTracker.report(parsedAction?.action === 'split' ? 'docproc_split_confirmed' : 'docproc_batch_completed', {
+        caseId: caseData?.id || null,
+        module: 'document_processor',
+        category: caseData?.id ? 'case_work' : 'admin',
+        metadata: {
+          action: parsedAction?.action,
+          documentsCount: parsedAction?.action === 'split'
+            ? (parsedAction?.split_points?.length || 0)
+            : (parsedAction?.documents?.length || files.length),
+        }
+      });
+    } catch {}
 
     if (!updateCase || !caseData) {
       addAgentMessage("Помилка: немає зв'язку зі справою для збереження.");

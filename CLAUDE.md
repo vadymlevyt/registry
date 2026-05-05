@@ -396,6 +396,114 @@ settingsVersion: "3.0_patch_and_extension"
 
 ---
 
+## BILLING FOUNDATION v4.0
+
+### schemaVersion і ключові константи
+- `CURRENT_SCHEMA_VERSION = 4`
+- `MIGRATION_VERSION = '4.0_billing_foundation'`
+
+### Нові структури в registry_data.json
+
+```json
+{
+  "schemaVersion": 4,
+  "settingsVersion": "4.0_billing_foundation",
+  "time_entries": [...],     // поточний місяць, in-memory
+  "master_timer_state": {},  // стан таймера між сесіями
+  "billing_meta": {}         // службові метадані ротації
+}
+```
+
+`tenant.settings.timeStandards` — стандарти часу за судами/категоріями (ієрархія user → tenant → system).
+
+### Сервіси Billing Foundation
+- `src/services/activityTracker.js` — `report`, `startSession/endSession`, `startSubtimer/endSubtimer`, `assignOfflinePeriod`, `bindMasterTimer`.
+- `src/services/masterTimer.js` — state machine `stopped|active|paused|idle`, Page Visibility, Idle Detection, BroadcastChannel, persist кожні 60 сек, recovery з 30-хв порогом.
+- `src/services/timeStandards.js` — `getTimeStandard(activity, context)`, `ACTIVITY_CATEGORIES`, `EVENT_VARIANT_MATRIX`, `getVariantDefault`.
+- `src/services/smartReturnHandler.js` — `handleReturn(activeSubtimer, actualDuration, exitReason)` → `{ dialog, suggestion }`. // experimental — review after 1 month
+- `src/services/timeEntriesArchiver.js` — `shouldArchive`, `splitForArchive`, `uploadArchive`, `loadArchive`, `checkAndArchive`.
+- `src/services/timeEntriesQuery.js` — `getTimeEntries({ activeEntries, token, query })`, `getSummary`.
+
+### Категорії time_entry
+- **case_work** — billable, visibleToClient, billFactor 1.0 (caseId є)
+- **hearing_attendance** / **hearing_preparation** / **travel** — billable, visible, factor 1.0
+- **client_communication** — billable, але visibleToClient: false, factor 0.5
+- **admin** / **system** / **break** — non-billable
+
+### ACTIONS для білінгу (через executeAction)
+```
+add_time_entry, update_time_entry, cancel_time_entry, delete_time_entry,
+split_time_entry, assign_offline_period,
+confirm_event(eventId, eventType, decision), add_travel(parentEventId, parentEventType, direction, duration, options),
+cancel_travel(travelEntryId, reason),
+start_external_work(category, caseId, subCategory, plannedDuration, semanticGroup),
+end_external_work, update_external_work,
+track_session_start, track_session_end
+```
+
+### Двофазна модель події з резервуванням
+1. При створенні hearing — резервується основний `time_entry` (status: `planned`).
+2. travel — окрема категорія, додається явно через `add_travel(parentEventId, parentEventType, direction, ...)`.
+3. Підтвердження через `confirm_event(eventId, eventType, decision)` — узагальнений API не специфічний для hearing.
+
+Матриця варіантів для hearing: `completed`, `postponed_opponent`, `postponed_self`, `court_fault` (default factor 0.5/0.3 traveled/no_travel), `custom` (вільний текст + factor вручну).
+
+### Statusи time_entry
+`planned` | `active` | `needs_review` | `confirmed` | `auto_confirmed` | `user_corrected` | `cancelled` | `archived`
+
+### Місячна ротація
+- На 1 число місяця попередній місяць виноситься в `_archives/time_entries_YYYY-MM.json` на Drive.
+- Активний registry тримає тільки поточний місяць.
+- Триггериться у Drive load useEffect, перевіряє `shouldArchive(billing_meta)`.
+
+### Інструментація — 25 точок
+- App.jsx (4): app_launched, module_navigation, case_created, case_closed
+- Dashboard (5): session, hearing_viewed, event_drag_create, agent_message_dashboard, hearing_status (через executeAction)
+- CaseDossier (6): session, case_opened, dossier_tab_switched, document_viewed, context_regenerated, agent_message_dossier
+- QuickInput (3): qi_document_uploaded, qi_voice_input, qi_action_executed
+- Notebook (2): note_created, note_edited
+- DocumentProcessor (5): batch_started, ocr_processed, split_proposed, split_confirmed, batch_completed
+
+Усі обгорнуто в try/catch — падіння tracker не блокує юридичну роботу.
+
+### Інтеграція з ai_usage[]
+10 точок виклику Anthropic API мають паралельний `activityTracker.report('agent_call', ...)`:
+- ai_usage[] — токени/вартість для оператора SaaS
+- time_entries[] — час/категорія для адвоката (CRM-зріз)
+
+### Permissions
+- `TIME_ENTRY_ACTIONS` в `permissionService.js`.
+- `canViewTimeEntries(userId, targetUserId, tenantId)` — bureau_owner все, інші — свої.
+- `canEditTimeEntry(userId, entry)` — автор або bureau_owner.
+
+### auditLog — нові дії
+- `time_entries_archived` — після успішної ротації.
+- `time_entry_edited` / `time_entry_deleted` — через ACTIONS.
+- `time_standards_changed` — резерв для UI редагування стандартів.
+
+### subscription.current — hoursBilled
+`recalculateCurrent(tenant, aiUsage, cases, timeEntries)` — додає `hoursBilled` (billable секунди / 3600).
+
+### Принцип варіабельності
+ВСІ дефолти — стартові точки. У коді позначено `// experimental — review after 1 month`:
+- ACTIVITY_CATEGORIES (зокрема client_communication factor 0.5)
+- EVENT_VARIANT_MATRIX (court_fault traveled vs no_travel)
+- Стандарти часу за судами/містами
+- semanticGroup detection
+- IDLE_TIMEOUT_MIN (5 хв)
+- Місячна ротація (можлива тижнева/квартальна)
+
+Через 1-3 місяці адвокат разом із Claude переоцінює.
+
+### Що НЕ робити
+- НЕ створювати UI білінгу (видимий UI — окремий TASK Billing UI v1 через 6+ міс).
+- НЕ дублювати поля між ai_usage[] і time_entries[] — це різні структури з різними цілями.
+- НЕ робити add_travel автоматичним при створенні hearing — адвокат явно додає (його вибір, чи їде).
+- НЕ обходити activityTracker.report для значущих дій — інакше час не зафіксується.
+- НЕ видаляти `case.timeLog[]` — DEPRECATED, але лишається порожнім для legacy сумісності.
+
+---
+
 ## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
 
 Єдине джерело правди для всіх модулів — App.jsx.

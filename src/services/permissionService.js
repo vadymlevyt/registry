@@ -2,8 +2,19 @@
 // Перевірки прав доступу.
 // Активація v1.1: реальна tenant ізоляція + bureau_owner override + team membership.
 // caseRole permissions поки не використовуються — для майбутньої гранулярності.
+// v4 Billing Foundation — додано TIME_ENTRY_ACTIONS, canViewTimeEntries.
 
 import { getCurrentUser } from './tenantService.js';
+
+// v4: дії над time_entries для майбутніх SaaS-ролей. Поки використовується
+// лише canViewTimeEntries (для запитів getTimeEntries з фронтенду).
+export const TIME_ENTRY_ACTIONS = [
+  'view_own_time_entries',
+  'view_all_time_entries',
+  'edit_time_entries',
+  'delete_time_entries',
+  'export_time_entries',
+];
 
 export function checkTenantAccess(userId, tenantId) {
   if (!userId || !tenantId) return false;
@@ -53,4 +64,25 @@ export function checkCaseAccess(userId, caseObj) {
   }
 
   return false;
+}
+
+// v4: огляд time_entries. У solo-режимі — bureau_owner бачить все,
+// інші — лише свої. Активніша матриця підключиться в Multi-user Activation.
+export function canViewTimeEntries(userId, targetUserId, tenantId) {
+  if (!userId || !tenantId) return false;
+  const u = getCurrentUser();
+  if (!u || u.userId !== userId) return false;
+  if (u.tenantId !== tenantId) return false;
+  if (u.globalRole === 'bureau_owner') return true;
+  return userId === targetUserId;
+}
+
+// v4: редагування — тільки автор або bureau_owner.
+export function canEditTimeEntry(userId, entry) {
+  if (!userId || !entry) return false;
+  const u = getCurrentUser();
+  if (!u || u.userId !== userId) return false;
+  if (u.tenantId !== entry.tenantId) return false;
+  if (u.globalRole === 'bureau_owner') return true;
+  return entry.userId === userId;
 }
