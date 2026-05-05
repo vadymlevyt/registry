@@ -11,6 +11,7 @@
 
 import { getCurrentTenant, getCurrentUser } from './tenantService.js';
 import { ACTIVITY_CATEGORIES, getCategoryDefaults } from './timeStandards.js';
+import { MODULES } from './moduleNames.js';
 
 const MAX_TIME_ENTRIES_BUFFER = 100000; // hard cap, реально ротуємо місячно
 
@@ -91,7 +92,7 @@ export function report(eventType, context = {}) {
       userId: user?.userId || null,
       createdAt: nowIso(),
       type: context.type || 'action',
-      module: context.module || _activeSession?.module || 'system',
+      module: context.module || _activeSession?.module || MODULES.SYSTEM,
       action: eventType,
       caseId: context.caseId ?? _activeSession?.caseId ?? null,
       hearingId: context.hearingId ?? null,
@@ -152,7 +153,7 @@ export function startSession(caseId, module, options = {}) {
     _activeSession = {
       sessionId,
       caseId: caseId || null,
-      module: module || 'system',
+      module: module || MODULES.SYSTEM,
       startedAt: nowIso(),
       category: options.category || (caseId ? 'case_work' : 'admin'),
       subCategory: options.subCategory || null,
@@ -252,7 +253,7 @@ export function endSubtimer(options = {}) {
       endTime: end.toISOString(),
       duration,
       caseId: sub.caseId,
-      module: 'subtimer',
+      module: MODULES.SUBTIMER,
       category: sub.category,
       subCategory: sub.subCategory,
       semanticGroup: sub.semanticGroup,
@@ -287,7 +288,7 @@ export function assignOfflinePeriod(period, category, caseId, options = {}) {
       endTime: end.toISOString(),
       duration,
       caseId: caseId || null,
-      module: 'offline',
+      module: MODULES.OFFLINE,
       category: category || 'case_work',
       subCategory: options.subCategory || null,
       semanticGroup: options.semanticGroup || 'screen_passive',

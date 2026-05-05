@@ -3,6 +3,7 @@ import { systemConfirm } from "../SystemModal";
 import { logAiUsage } from "../../services/aiUsageService";
 import { resolveModel } from "../../services/modelResolver";
 import * as activityTracker from "../../services/activityTracker";
+import { MODULES, categoryForCase } from "../../services/moduleNames.js";
 
 const MONTHS_UK = [
   "Січень","Лютий","Березень","Квітень","Травень","Червень",
@@ -1453,7 +1454,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
     const input = (typeof inputOverride === "string" ? inputOverride : agentInput).trim();
     if (!input || agentLoading) return;
     // [BILLING] dashboard agent message — без caseId це admin за дефолтом.
-    try { activityTracker.report('agent_message_dashboard', { module: 'dashboard', metadata: { messageLen: input.length } }); } catch {}
+    try { activityTracker.report('agent_message_dashboard', { module: MODULES.DASHBOARD, metadata: { messageLen: input.length } }); } catch {}
 
     const userMsg = { role: "user", content: input };
     // максимум 10 повідомлень у вікні контексту (5 пар user/assistant)
@@ -1516,10 +1517,13 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
           model: dashboardModel,
           inputTokens: data?.usage?.input_tokens,
           outputTokens: data?.usage?.output_tokens,
-          context: { module: 'Dashboard', operation: 'chat' },
+          context: { module: MODULES.DASHBOARD, operation: 'chat' },
         }, setAiUsage);
+        // Dashboard agent — без caseId (загальні питання по системі).
         activityTracker.report('agent_call', {
-          module: 'Dashboard', category: 'admin',
+          caseId: null,
+          module: MODULES.DASHBOARD,
+          category: categoryForCase(null),
           metadata: { agentType: 'dashboard_agent', operation: 'chat' }
         });
       } catch {}
@@ -1576,7 +1580,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
   function openModalWithRange(startSlotIdx, endSlotIdx, dateStr) {
     const day = dateStr || selectedDay;
     // [BILLING] drag-create slot — фіксуємо як подію створення.
-    try { activityTracker.report('event_drag_create', { module: 'dashboard', metadata: { date: day } }); } catch {}
+    try { activityTracker.report('event_drag_create', { module: MODULES.DASHBOARD, metadata: { date: day } }); } catch {}
     setModalDate(day);
     if (day !== selectedDay) setSelectedDay(day);
     const startTime = SLOTS[startSlotIdx] || SLOTS[0];
@@ -1600,7 +1604,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
     const h = c && (c.hearings || []).find(hh => hh.id === event.hearingId);
     if (!h) return;
     // [BILLING] hearing_viewed — клік по засіданню в календарі.
-    try { activityTracker.report('hearing_viewed', { caseId: c.id, hearingId: h.id, module: 'dashboard' }); } catch {}
+    try { activityTracker.report('hearing_viewed', { caseId: c.id, hearingId: h.id, module: MODULES.DASHBOARD }); } catch {}
     const day = h.date;
     setModalDate(day);
     setSelectedDay(day);

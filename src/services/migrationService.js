@@ -29,6 +29,7 @@
 
 import { DEFAULT_TENANT, DEFAULT_USER } from './tenantService.js';
 import { DEFAULT_TENANT_TIME_STANDARDS } from './timeStandards.js';
+import { MODULES } from './moduleNames.js';
 
 export const CURRENT_SCHEMA_VERSION = 4;
 export const MIGRATION_VERSION = '4.0_billing_foundation';
@@ -325,7 +326,7 @@ export function importLegacyTimeLog(legacyEntries) {
       userId: le.userId || userId,
       createdAt: le.createdAt || new Date().toISOString(),
       type: 'manual_entry',
-      module: 'legacy',
+      module: MODULES.LEGACY,
       action: 'legacy_import',
       caseId: le.caseId || null,
       hearingId: null,

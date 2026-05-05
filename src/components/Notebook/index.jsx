@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { systemAlert, systemConfirm } from '../SystemModal';
 import * as activityTracker from '../../services/activityTracker';
+import { MODULES, categoryForCase } from '../../services/moduleNames.js';
 
 const CAT_META = {
   general: { label: '📝 Загальні',  icon: '📝' },
@@ -133,8 +134,8 @@ function NotesTab({ cases, onUpdateCase, notesProp, onAddNote, onUpdateNote, onD
     // [BILLING] note_created
     try { activityTracker.report('note_created', {
       caseId: payload.caseId || null,
-      module: 'notebook',
-      category: payload.caseId ? 'case_work' : 'admin',
+      module: MODULES.NOTEBOOK,
+      category: categoryForCase(payload.caseId),
       metadata: { noteCategory: payload.category || 'general', contentLen: (payload.text || '').length }
     }); } catch {}
     if (onAddNote) {
@@ -169,8 +170,8 @@ function NotesTab({ cases, onUpdateCase, notesProp, onAddNote, onUpdateNote, onD
     // [BILLING] note_edited
     try { activityTracker.report('note_edited', {
       caseId: note.caseId || null,
-      module: 'notebook',
-      category: note.caseId ? 'case_work' : 'admin',
+      module: MODULES.NOTEBOOK,
+      category: categoryForCase(note.caseId),
       metadata: { noteId: note.id }
     }); } catch {}
     if (onUpdateNote) {

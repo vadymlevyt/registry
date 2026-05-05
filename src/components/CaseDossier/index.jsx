@@ -7,6 +7,7 @@ import { systemAlert, systemConfirm } from "../SystemModal";
 import { logAiUsage } from "../../services/aiUsageService.js";
 import { resolveModel } from "../../services/modelResolver.js";
 import * as activityTracker from "../../services/activityTracker.js";
+import { MODULES, categoryForCase } from "../../services/moduleNames.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -436,20 +437,20 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     try {
       activityTracker.startSession(caseData.id, 'case_dossier', { category: 'case_work' });
       // Окремий маркер один раз — для статистики "скільки разів відкрито".
-      activityTracker.report('case_opened', { caseId: caseData.id, module: 'case_dossier' });
+      activityTracker.report('case_opened', { caseId: caseData.id, module: MODULES.CASE_DOSSIER });
     } catch {}
     return () => { try { activityTracker.endSession({ reason: 'unmount' }); } catch {} };
   }, [caseData.id]);
 
   // [BILLING] tab_switched.
   useEffect(() => {
-    try { activityTracker.report('dossier_tab_switched', { caseId: caseData.id, module: 'case_dossier', metadata: { tabTo: activeTab } }); } catch {}
+    try { activityTracker.report('dossier_tab_switched', { caseId: caseData.id, module: MODULES.CASE_DOSSIER, metadata: { tabTo: activeTab } }); } catch {}
   }, [activeTab]);
 
   // [BILLING] document_viewed.
   useEffect(() => {
     if (selectedDoc?.id) {
-      try { activityTracker.report('document_viewed', { caseId: caseData.id, documentId: selectedDoc.id, module: 'case_dossier' }); } catch {}
+      try { activityTracker.report('document_viewed', { caseId: caseData.id, documentId: selectedDoc.id, module: MODULES.CASE_DOSSIER }); } catch {}
     }
   }, [selectedDoc?.id]);
 
@@ -695,7 +696,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       return;
     }
     // [BILLING] context_regenerated — важлива дія, окремий звіт.
-    try { activityTracker.report('context_regenerated', { caseId: caseData.id, module: 'case_dossier', category: 'case_work' }); } catch {}
+    try { activityTracker.report('context_regenerated', { caseId: caseData.id, module: MODULES.CASE_DOSSIER, category: 'case_work' }); } catch {}
     setIsCreatingContext(true);
     setContextLoading(true);
 
@@ -887,11 +888,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           model: ctxModel,
           inputTokens: data?.usage?.input_tokens,
           outputTokens: data?.usage?.output_tokens,
-          context: { caseId: caseData?.id, module: 'Dossier', operation: 'generate_context' },
+          context: { caseId: caseData?.id || null, module: MODULES.CASE_DOSSIER, operation: 'generate_context' },
         }, setAiUsage);
+        // Досьє завжди має caseId — категорія детермінована.
         activityTracker.report('agent_call', {
-          caseId: caseData?.id,
-          module: 'Dossier', category: 'case_work',
+          caseId: caseData?.id || null,
+          module: MODULES.CASE_DOSSIER,
+          category: categoryForCase(caseData?.id),
           metadata: { agentType: 'case_context_generator', operation: 'generate_context' }
         });
       } catch {}
@@ -1284,7 +1287,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       if (!agentInput.trim() || agentLoading) return;
       const userMsg = agentInput.trim();
       // [BILLING] dossier agent message.
-      try { activityTracker.report('agent_message_dossier', { caseId: caseData.id, module: 'case_dossier', category: 'case_work', metadata: { messageLen: userMsg.length } }); } catch {}
+      try { activityTracker.report('agent_message_dossier', { caseId: caseData.id, module: MODULES.CASE_DOSSIER, category: 'case_work', metadata: { messageLen: userMsg.length } }); } catch {}
       const userTs = new Date().toISOString();
       setAgentInput('');
       const userEntry = { role: 'user', content: userMsg, ts: userTs };
@@ -1339,11 +1342,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             model: dossierModel,
             inputTokens: data?.usage?.input_tokens,
             outputTokens: data?.usage?.output_tokens,
-            context: { caseId: caseData?.id, module: 'Dossier', operation: 'chat' },
+            context: { caseId: caseData?.id || null, module: MODULES.CASE_DOSSIER, operation: 'chat' },
           }, setAiUsage);
           activityTracker.report('agent_call', {
-            caseId: caseData?.id,
-            module: 'Dossier', category: 'case_work',
+            caseId: caseData?.id || null,
+            module: MODULES.CASE_DOSSIER,
+            category: categoryForCase(caseData?.id),
             metadata: { agentType: 'dossier_agent', operation: 'chat' }
           });
         } catch {}

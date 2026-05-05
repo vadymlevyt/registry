@@ -12,6 +12,7 @@ import { driveRequest } from "../../services/driveAuth.js";
 import { logAiUsage, logAiUsageViaSink } from "../../services/aiUsageService.js";
 import { resolveModel } from "../../services/modelResolver.js";
 import * as activityTracker from "../../services/activityTracker.js";
+import { MODULES, categoryForCase } from "../../services/moduleNames.js";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -241,10 +242,12 @@ async function analyzePDFWithDocumentBlock(file, apiKey, userHint, options = {})
       model: docModel,
       inputTokens: data?.usage?.input_tokens,
       outputTokens: data?.usage?.output_tokens,
-      context: { module: 'DocumentProcessor', operation: 'parse_document' },
+      context: { caseId: options.caseId || null, module: MODULES.DOCUMENT_PROCESSOR, operation: 'parse_document' },
     }, options.aiUsageSink);
     activityTracker.report('agent_call', {
-      module: 'DocumentProcessor', category: 'admin',
+      caseId: options.caseId || null,
+      module: MODULES.DOCUMENT_PROCESSOR,
+      category: categoryForCase(options.caseId),
       metadata: { agentType: 'document_parser', operation: 'parse_document' }
     });
   } catch {}
@@ -318,8 +321,8 @@ export default function DocumentProcessor({ caseData, cases, updateCase, onCreat
     // [BILLING] docproc_batch_started
     try { activityTracker.report('docproc_batch_started', {
       caseId: caseData?.id || null,
-      module: 'document_processor',
-      category: caseData?.id ? 'case_work' : 'admin',
+      module: MODULES.DOCUMENT_PROCESSOR,
+      category: categoryForCase(caseData?.id),
       metadata: {
         fileCount: newFiles.length,
         totalSize: Array.from(fileList).reduce((s, f) => s + (f.size || 0), 0),
@@ -446,11 +449,12 @@ ${filesList}
           model: docChatModel,
           inputTokens: data?.usage?.input_tokens,
           outputTokens: data?.usage?.output_tokens,
-          context: { caseId: caseData?.id, module: 'DocumentProcessor', operation: 'chat' },
+          context: { caseId: caseData?.id || null, module: MODULES.DOCUMENT_PROCESSOR, operation: 'chat' },
         }, setAiUsage);
         activityTracker.report('agent_call', {
-          caseId: caseData?.id,
-          module: 'DocumentProcessor', category: caseData?.id ? 'case_work' : 'admin',
+          caseId: caseData?.id || null,
+          module: MODULES.DOCUMENT_PROCESSOR,
+          category: categoryForCase(caseData?.id),
           metadata: { agentType: 'document_parser', operation: 'chat', kind: 'analyze' }
         });
       } catch {}
@@ -468,8 +472,8 @@ ${filesList}
       // [BILLING] docproc_ocr_processed — оброблено партію через AI-аналіз.
       try { activityTracker.report('docproc_ocr_processed', {
         caseId: caseData?.id || null,
-        module: 'document_processor',
-        category: caseData?.id ? 'case_work' : 'admin',
+        module: MODULES.DOCUMENT_PROCESSOR,
+        category: categoryForCase(caseData?.id),
         metadata: { fileCount: newFiles.length, hasAction: !!action }
       }); } catch {}
 
@@ -504,6 +508,7 @@ ${filesList}
 
     try {
       const result = await analyzePDFWithDocumentBlock(uploadedFile, apiKey, userHint, {
+        caseId: caseData?.id || null,
         aiUsageSink: setAiUsage ? (entry) => setAiUsage(prev => {
           const next = Array.isArray(prev) ? [...prev, entry] : [entry];
           return next.length > 50000 ? next.slice(next.length - 50000) : next;
@@ -521,8 +526,8 @@ ${filesList}
       // [BILLING] docproc_split_proposed
       try { activityTracker.report('docproc_split_proposed', {
         caseId: caseData?.id || null,
-        module: 'document_processor',
-        category: caseData?.id ? 'case_work' : 'admin',
+        module: MODULES.DOCUMENT_PROCESSOR,
+        category: categoryForCase(caseData?.id),
         metadata: { documentsCount: result.documents.length, totalPages: result.totalPages }
       }); } catch {}
 
@@ -616,11 +621,12 @@ ${filesList}
           model: docChat2Model,
           inputTokens: data?.usage?.input_tokens,
           outputTokens: data?.usage?.output_tokens,
-          context: { caseId: caseData?.id, module: 'DocumentProcessor', operation: 'chat' },
+          context: { caseId: caseData?.id || null, module: MODULES.DOCUMENT_PROCESSOR, operation: 'chat' },
         }, setAiUsage);
         activityTracker.report('agent_call', {
-          caseId: caseData?.id,
-          module: 'DocumentProcessor', category: caseData?.id ? 'case_work' : 'admin',
+          caseId: caseData?.id || null,
+          module: MODULES.DOCUMENT_PROCESSOR,
+          category: categoryForCase(caseData?.id),
           metadata: { agentType: 'document_parser', operation: 'chat', kind: 'followup' }
         });
       } catch {}
@@ -715,8 +721,8 @@ ${filesList}
     try {
       activityTracker.report(parsedAction?.action === 'split' ? 'docproc_split_confirmed' : 'docproc_batch_completed', {
         caseId: caseData?.id || null,
-        module: 'document_processor',
-        category: caseData?.id ? 'case_work' : 'admin',
+        module: MODULES.DOCUMENT_PROCESSOR,
+        category: categoryForCase(caseData?.id),
         metadata: {
           action: parsedAction?.action,
           documentsCount: parsedAction?.action === 'split'

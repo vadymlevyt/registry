@@ -17,6 +17,7 @@ import * as masterTimer from './services/masterTimer';
 import { getTimeStandard, getCategoryDefaults, getVariantDefault } from './services/timeStandards';
 import { checkAndArchive as checkAndArchiveTimeEntries } from './services/timeEntriesArchiver';
 import { handleReturn as smartHandleReturn } from './services/smartReturnHandler';
+import { MODULES, categoryForCase } from './services/moduleNames';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import './App.css';
 
@@ -1075,7 +1076,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
   const handleFile = async (file) => {
     if (!file) return;
     // [BILLING] qi_document_uploaded
-    try { activityTracker.report('qi_document_uploaded', { module: 'qi', metadata: { fileType: file.type, fileSize: file.size, fileName: file.name } }); } catch {}
+    try { activityTracker.report('qi_document_uploaded', { module: MODULES.QI, metadata: { fileType: file.type, fileSize: file.size, fileName: file.name } }); } catch {}
     try {
       let workingFile = file;
       try {
@@ -1323,11 +1324,12 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
           model: qiImageModel,
           inputTokens: data?.usage?.input_tokens,
           outputTokens: data?.usage?.output_tokens,
-          context: { module: 'QI', operation: 'parse_document' },
+          context: { module: MODULES.QI, operation: 'parse_document' },
         }, setAiUsage);
         // [BILLING] agent_call паралельно — для зрізу часу адвоката.
+        // QI парсер документа — без caseId (підбір справи відбувається пізніше).
         activityTracker.report('agent_call', {
-          module: 'QI', category: 'admin',
+          module: MODULES.QI, category: 'admin',
           metadata: { agentType: 'qi_agent', operation: 'parse_document', kind: 'image' }
         });
       } catch {}
@@ -1454,10 +1456,11 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
           model: qiTextModel,
           inputTokens: data?.usage?.input_tokens,
           outputTokens: data?.usage?.output_tokens,
-          context: { module: 'QI', operation: 'parse_document' },
+          context: { module: MODULES.QI, operation: 'parse_document' },
         }, setAiUsage);
+        // QI парсер тексту — без caseId.
         activityTracker.report('agent_call', {
-          module: 'QI', category: 'admin',
+          module: MODULES.QI, category: 'admin',
           metadata: { agentType: 'qi_agent', operation: 'parse_document', kind: 'text' }
         });
       } catch {}
@@ -1648,7 +1651,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
 
     recognition.start();
     // [BILLING] qi_voice_input — старт голосового вводу.
-    try { activityTracker.report('qi_voice_input', { module: 'qi', metadata: { target: targetKey } }); } catch {}
+    try { activityTracker.report('qi_voice_input', { module: MODULES.QI, metadata: { target: targetKey } }); } catch {}
     setIsRecording(true);
     isRecordingRef.current = true;
     setActiveVoiceTarget(targetKey);
@@ -1677,7 +1680,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
     if (!chatInput.trim() || chatLoading) return;
     const userMsg = chatInput.trim();
     // [BILLING] qi_action_executed (chat — це по суті ініціація дій через агента).
-    try { activityTracker.report('qi_action_executed', { module: 'qi', metadata: { messageLen: userMsg.length, viaVoice: !!voiceInterim } }); } catch {}
+    try { activityTracker.report('qi_action_executed', { module: MODULES.QI, metadata: { messageLen: userMsg.length, viaVoice: !!voiceInterim } }); } catch {}
     setChatInput('');
     setChatLoading(true);
 
@@ -1728,10 +1731,14 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
             model: qiChatModel,
             inputTokens: data?.usage?.input_tokens,
             outputTokens: data?.usage?.output_tokens,
-            context: { module: 'QI', operation: 'chat' },
+            context: { module: MODULES.QI, operation: 'chat' },
           }, setAiUsage);
+          // QI chat — без caseId на рівні самого виклику (caseId визначається
+          // в подальших ACTIONS-маніпуляціях через executeAction).
           activityTracker.report('agent_call', {
-            module: 'QI', category: 'admin',
+            caseId: null,
+            module: MODULES.QI,
+            category: categoryForCase(null),
             metadata: { agentType: 'qi_agent', operation: 'chat' }
           });
         } catch {}
@@ -3534,7 +3541,7 @@ function App() {
 
   // [BILLING] app_launched — один раз при старті.
   useEffect(() => {
-    try { activityTracker.report('app_launched', { module: 'system', category: 'system' }); } catch {}
+    try { activityTracker.report('app_launched', { module: MODULES.APP, category: 'system' }); } catch {}
   }, []);
 
   // ── activityTracker / masterTimer init ─────────────────────────────────────
@@ -3828,7 +3835,7 @@ function App() {
                 entriesCount: archiveResult.archivedCount,
                 archivePath: archiveResult.archivePath,
               },
-              context: { module: 'startup', agent: null },
+              context: { module: MODULES.STARTUP, agent: null },
             });
             console.log(`[Billing Foundation v2] Archived ${archiveResult.archivedCount} entries to ${archiveResult.archivePath}`);
           }
@@ -3844,7 +3851,7 @@ function App() {
             targetType: 'registry',
             targetId: 'registry_data.json',
             details: { fromVersion, toVersion, casesCount: registry.cases.length },
-            context: { module: 'startup', agent: null },
+            context: { module: MODULES.STARTUP, agent: null },
           });
         }
       } catch (e) {
@@ -4014,9 +4021,9 @@ function App() {
       targetType: 'case',
       targetId: newCase.id,
       details: { caseName: newCase.name, source: 'ui_form' },
-      context: { module: 'add_form', agent: null },
+      context: { module: MODULES.ADD_FORM, agent: null },
     });
-    try { activityTracker.report('case_created', { caseId: newCase.id, module: 'add_form', category: 'case_work' }); } catch {}
+    try { activityTracker.report('case_created', { caseId: newCase.id, module: MODULES.ADD_FORM, category: 'case_work' }); } catch {}
   };
 
   const saveCaseEdit = (form) => {
@@ -4177,9 +4184,9 @@ function App() {
         targetType: 'case',
         targetId: id,
         details: { caseName: target.name, previousStatus: target.status },
-        context: { module: 'ui', agent: null },
+        context: { module: MODULES.UI, agent: null },
       });
-      try { activityTracker.report('case_closed', { caseId: id, module: 'ui', category: 'case_work' }); } catch {}
+      try { activityTracker.report('case_closed', { caseId: id, module: MODULES.UI, category: 'case_work' }); } catch {}
     }
   };
 
@@ -4195,9 +4202,9 @@ function App() {
         targetType: 'case',
         targetId: id,
         details: { caseName: target.name, previousStatus: target.status },
-        context: { module: 'ui', agent: null },
+        context: { module: MODULES.UI, agent: null },
       });
-      try { activityTracker.report('case_restored', { caseId: id, module: 'ui', category: 'case_work' }); } catch {}
+      try { activityTracker.report('case_restored', { caseId: id, module: MODULES.UI, category: 'case_work' }); } catch {}
     }
   };
 
@@ -4226,7 +4233,7 @@ function App() {
         driveFolderId: caseItem.driveFolderId || null,
         reason: 'user_initiated',
       },
-      context: { module: 'ui', agent: null },
+      context: { module: MODULES.UI, agent: null },
     });
     try {
       if (caseItem.driveFolderId && driveConnected) {
@@ -4557,7 +4564,7 @@ function App() {
         userId: u.userId,
         createdAt: new Date().toISOString(),
         type: 'manual_entry',
-        module: 'manual',
+        module: MODULES.MANUAL,
         action: 'add_time_entry',
         caseId,
         hearingId: null,
@@ -4602,7 +4609,7 @@ function App() {
           targetType: 'time_entry',
           targetId: id,
           details: { fields },
-          context: { module: 'agent_action', agent: null },
+          context: { module: MODULES.AGENT_ACTION, agent: null },
         });
       }
       return { success: found, found };
@@ -4639,7 +4646,7 @@ function App() {
           targetId: id,
           status: 'done',
           details: {},
-          context: { module: 'agent_action', agent: null },
+          context: { module: MODULES.AGENT_ACTION, agent: null },
         });
       }
       return { success: removed };
@@ -4749,7 +4756,7 @@ function App() {
         userId: u.userId,
         createdAt: new Date().toISOString(),
         type: 'travel',
-        module: 'event_reservation',
+        module: MODULES.EVENT_RESERVATION,
         action: 'add_travel',
         caseId,
         hearingId: parentEventType === 'hearing' ? parentEventId : null,
@@ -4978,7 +4985,7 @@ function App() {
           targetId,
           status: 'done',
           details: { params },
-          context: { module: 'executeAction', agent: agentId },
+          context: { module: MODULES.EXECUTE_ACTION, agent: agentId },
         });
       }
 
@@ -4987,12 +4994,15 @@ function App() {
       if (result && (result.success || result.successCount) &&
           !['track_session_start', 'track_session_end', 'batch_update'].includes(action)) {
         try {
+          // Категорія за наявністю caseId — case_work або admin.
+          const hookCaseId = params?.caseId || result?.caseId || null;
           activityTracker.report(action, {
             type: 'action',
-            module: 'executeAction',
-            caseId: params?.caseId || result?.caseId || null,
+            module: MODULES.EXECUTE_ACTION,
+            caseId: hookCaseId,
             hearingId: params?.hearingId || result?.hearingId || null,
             duration: 0,
+            category: categoryForCase(hookCaseId),
             metadata: { agentId, viaAgent: true },
           });
         } catch (te) {
@@ -5035,7 +5045,7 @@ function App() {
         ].map(t => (
           <button key={t.id} className={`nav-tab${tab===t.id?' active':''}`} onClick={() => {
             // [BILLING] module_navigation
-            try { activityTracker.report('module_navigation', { module: 'app', category: 'system', metadata: { from: tab, to: t.id } }); } catch {}
+            try { activityTracker.report('module_navigation', { module: MODULES.APP, category: 'system', metadata: { from: tab, to: t.id } }); } catch {}
             setDossierCase(null); if (t.id !== 'add') setEditingCase(null); setTab(t.id);
           }}>
             {t.label}
