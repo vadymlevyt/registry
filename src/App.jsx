@@ -9,7 +9,7 @@ import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurr
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
 import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
-import { driveRequest, refreshDriveToken, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
+import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
 import { resolveModel } from './services/modelResolver';
 import * as activityTracker from './services/activityTracker';
@@ -2873,11 +2873,23 @@ const DRIVE_FILE_NAME = 'registry_data.json';
 
 const driveService = {
   _fileId: null,
+  // Останній успішно прочитаний reflection — для write-guard.
+  // Дозволяє блокувати запис, якщо новий payload "значно менший" за прочитаний.
+  lastReadCasesCount: 0,
+  // Щоб writeRegistry знав, що йому дозволено створювати новий файл (POST).
+  // Без цього прапора POST блокується — запобігає випадковому створенню
+  // порожнього файлу при першому запуску, коли на Drive вже міг бути backup.
+  allowFileCreation: false,
 
   isConnected() { return !!localStorage.getItem('levytskyi_drive_token'); },
   getToken()    { return localStorage.getItem('levytskyi_drive_token'); },
   saveToken(t)  { localStorage.setItem('levytskyi_drive_token', t); },
-  clearToken()  { localStorage.removeItem('levytskyi_drive_token'); this._fileId = null; },
+  clearToken()  {
+    localStorage.removeItem('levytskyi_drive_token');
+    this._fileId = null;
+    this.lastReadCasesCount = 0;
+    this.allowFileCreation = false;
+  },
 
   authorize() {
     return new Promise((resolve, reject) => {
@@ -2895,6 +2907,21 @@ const driveService = {
     });
   },
 
+  // Легкий ping для перевірки валідності токена і доступності Drive.
+  // Повертає 'ok' | 'auth_error' | 'network_error'.
+  async ping() {
+    try {
+      const res = await driveRequest(
+        'https://www.googleapis.com/drive/v3/about?fields=user'
+      );
+      if (res.ok) return 'ok';
+      if (res.status === 401 || res.status === 403) return 'auth_error';
+      return 'network_error';
+    } catch (e) {
+      return 'network_error';
+    }
+  },
+
   async _findFileId(token) {
     if (this._fileId) return this._fileId;
     const res = await driveRequest(
@@ -2905,40 +2932,158 @@ const driveService = {
     return this._fileId || null;
   },
 
-  // Читає весь файл як є. Може повернути:
-  //   • null — файлу нема
-  //   • Array — старий формат (schemaVersion: 1)
-  //   • Object — новий формат (schemaVersion: 2+)
+  // Шукає файли registry_data_backup_*.json у папці _backups/ на Drive.
+  // Повертає масив { id, name, modifiedTime, size }, відсортовано за modifiedTime desc.
+  async findBackups() {
+    try {
+      const folderRes = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          "name='_backups' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        )}&fields=files(id,name)`
+      );
+      if (!folderRes.ok) return [];
+      const folderData = await folderRes.json();
+      if (!folderData.files || folderData.files.length === 0) return [];
+      const folderId = folderData.files[0].id;
+      const filesRes = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          `'${folderId}' in parents and trashed=false`
+        )}&fields=files(id,name,modifiedTime,size)&pageSize=50`
+      );
+      if (!filesRes.ok) return [];
+      const filesData = await filesRes.json();
+      const list = (filesData.files || [])
+        .filter(f => /^registry_data_backup_.*\.json$/i.test(f.name) || /^registry_data_.*\.json$/i.test(f.name))
+        .sort((a, b) => (b.modifiedTime || '').localeCompare(a.modifiedTime || ''));
+      return list;
+    } catch (e) {
+      return [];
+    }
+  },
+
+  // Завантажує JSON-вміст бекапу за його id.
+  async readBackup(fileId) {
+    try {
+      const res = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
+      );
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      return null;
+    }
+  },
+
+  // Читає registry-файл з типізованим результатом замість null.
+  // status: 'ok' | 'not_found' | 'auth_error' | 'network_error' | 'parse_error'.
+  // На 'ok' — оновлює lastReadCasesCount для write-guard.
+  async readRegistryStatus(token) {
+    let id;
+    try {
+      id = await this._findFileId(token);
+    } catch (e) {
+      // _findFileId не розрізняє помилки — спробуємо ping.
+      const pinged = await this.ping();
+      if (pinged === 'auth_error') return { status: 'auth_error' };
+      return { status: 'network_error' };
+    }
+    if (!id) return { status: 'not_found' };
+    let res;
+    try {
+      res = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${id}?alt=media`
+      );
+    } catch (e) {
+      return { status: 'network_error' };
+    }
+    if (res.status === 401 || res.status === 403) return { status: 'auth_error' };
+    if (res.status === 404) {
+      // Файл міг бути видалений під час сесії — інвалідуємо кеш id.
+      this._fileId = null;
+      return { status: 'not_found' };
+    }
+    if (!res.ok) return { status: 'network_error' };
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      return { status: 'parse_error' };
+    }
+    // Підрахунок прочитаних справ для write-guard. Підтримує і старий, і новий формат.
+    const cnt = Array.isArray(data)
+      ? data.length
+      : (Array.isArray(data?.cases) ? data.cases.length : 0);
+    this.lastReadCasesCount = cnt;
+    this.allowFileCreation = false;
+    return { status: 'ok', data };
+  },
+
+  // ── LEGACY: readRegistry повертає null/raw для зворотньої сумісності ─────
+  // Використовується в AnalysisPanel.connectDrive (старий imports flow).
   async readRegistry(token) {
-    const id = await this._findFileId(token);
-    if (!id) return null;
-    const res = await driveRequest(
-      `https://www.googleapis.com/drive/v3/files/${id}?alt=media`
-    );
-    if (!res.ok) return null;
-    return await res.json();
+    const r = await this.readRegistryStatus(token);
+    return r.status === 'ok' ? r.data : null;
   },
 
   // Пише весь registry-об'єкт як JSON.
+  // Write-guard: відмова перезаписати, якщо нова кількість справ значно менша
+  // ніж попередньо прочитана. Захищає від race condition і випадкового скидання.
+  // Повертає { ok, status, reason? }.
   async writeRegistry(token, registry) {
+    const newCount = Array.isArray(registry?.cases) ? registry.cases.length : 0;
+    const prevCount = this.lastReadCasesCount || 0;
+    // Дозволяємо одну справу різниці (закриття/видалення) — більше блокуємо.
+    if (prevCount > 0 && newCount < prevCount - 1) {
+      console.error(
+        `[Drive write-guard] Заблоковано запис: cases ${newCount} < lastRead ${prevCount} - 1. ` +
+        `Можлива втрата даних — перевірте hydration або race condition.`
+      );
+      return { ok: false, status: 'guard_blocked', reason: 'cases_count_decreased' };
+    }
     const body = JSON.stringify(registry);
     const id = await this._findFileId(token);
-    if (id) {
-      await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body
-      });
-    } else {
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'application/json' })], { type: 'application/json' }));
-      form.append('file', new Blob([body], { type: 'application/json' }));
-      const res = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        body: form
-      });
-      const created = await res.json();
-      this._fileId = created.id;
+    try {
+      if (id) {
+        const res = await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body
+        });
+        if (res.status === 404) {
+          // Файл під id видалили — інвалідуємо кеш, не створюємо новий автоматично.
+          this._fileId = null;
+          return { ok: false, status: 'file_missing', reason: 'patch_404' };
+        }
+        if (!res.ok) return { ok: false, status: 'http_error', reason: `status_${res.status}` };
+        // Після успішного запису оновлюємо lastReadCasesCount,
+        // щоб наступні writes порівнювалися з найсвіжішим payload.
+        this.lastReadCasesCount = newCount;
+        return { ok: true, status: 'patched' };
+      } else {
+        // POST = створення нового файлу. Дозволено тільки після свідомого рішення
+        // (allowFileCreation=true) — інакше блокуємо, щоб не утворювати порожній
+        // файл при race condition чи відсутності перевірки бекапів.
+        if (!this.allowFileCreation) {
+          console.error('[Drive write-guard] POST заблоковано: allowFileCreation=false');
+          return { ok: false, status: 'creation_not_allowed', reason: 'no_explicit_consent' };
+        }
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'application/json' })], { type: 'application/json' }));
+        form.append('file', new Blob([body], { type: 'application/json' }));
+        const res = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+          method: 'POST',
+          body: form
+        });
+        if (!res.ok) return { ok: false, status: 'http_error', reason: `post_${res.status}` };
+        const created = await res.json();
+        this._fileId = created.id;
+        this.lastReadCasesCount = newCount;
+        // Після створення скидаємо прапор — наступні POST знов потребуватимуть свідомого consent.
+        this.allowFileCreation = false;
+        return { ok: true, status: 'created' };
+      }
+    } catch (e) {
+      return { ok: false, status: 'exception', reason: e?.message || String(e) };
     }
   },
 
@@ -3329,6 +3474,10 @@ function normalizeCases(cases) {
 function App() {
   const [tab, setTab] = useState('dashboard');
   const [cases, setCases] = useState(() => {
+    // INITIAL_CASES — це демо-дані. Fallback на них прибрано (R11):
+    // якщо localStorage порожній, повертаємо []. Splash вимагатиме підключення
+    // Drive перш ніж розблокує UI; до цього моменту cases = [].
+    // INITIAL_CASES доступний лише через Sandbox-кнопку "Скинути дані".
     try {
       const saved = localStorage.getItem('levytskyi_cases');
       if (saved) {
@@ -3339,10 +3488,9 @@ function App() {
         }
       }
     } catch(e) {
-      console.warn('cases init: фолбек на INITIAL_CASES', e);
+      console.warn('cases init: localStorage пошкоджено, фолбек на []', e);
     }
-    try { return normalizeCases(INITIAL_CASES); }
-    catch(e) { console.error('normalizeCases(INITIAL) fail', e); return []; }
+    return [];
   });
   const sanitizeNote = (n) => n && typeof n === 'object' ? ({
     ...n,
@@ -3539,10 +3687,7 @@ function App() {
     };
   });
 
-  // [BILLING] app_launched — один раз при старті.
-  useEffect(() => {
-    try { activityTracker.report('app_launched', { module: MODULES.APP, category: 'system' }); } catch {}
-  }, []);
+  // [BILLING] app_launched — переміщено нижче, після оголошення driveHydrated.
 
   // ── activityTracker / masterTimer init ─────────────────────────────────────
   // Біндимо sink, recover state, реєструємо хук subtimerEnd → smartReturnHandler.
@@ -3595,6 +3740,39 @@ function App() {
   const [lastSaved, setLastSaved] = useState(null);
   const [driveConnected, setDriveConnected] = useState(() => driveService.isConnected());
   const [driveSyncStatus, setDriveSyncStatus] = useState('idle');
+  // Drive-first hydration. driveHydrated блокує запис у Drive до завершення
+  // успішного читання (захист від race-condition: EFFECT-B випереджає EFFECT-A).
+  // driveStatus керує splash-екраном.
+  // Можливі стани:
+  //   'checking'        — на старті, до ping-у
+  //   'ok'              — все добре, UI розблоковано
+  //   'no_token'        — токена нема, показуємо запит на підключення
+  //   'auth_error'      — токен протух, потрібен перепідключення
+  //   'network_error'   — Drive недоступний
+  //   'parse_error'     — JSON битий
+  //   'file_not_found'  — файлу нема, але можуть бути бекапи (модалка вибору)
+  //   'first_run'       — файлу нема і бекапів нема (дозволяємо створення)
+  //   'guard_blocked'   — write-guard заблокував перезапис
+  const [driveHydrated, setDriveHydrated] = useState(false);
+  const [driveStatus, setDriveStatus] = useState(() =>
+    driveService.isConnected() ? 'checking' : 'no_token'
+  );
+  const [driveBackups, setDriveBackups] = useState([]);
+  const [driveErrorMessage, setDriveErrorMessage] = useState('');
+  // Тригер ре-завантаження hydration (без перезавантаження сторінки).
+  // Інкремент → useEffect ремонтує цикл checking → ok / помилка.
+  const [hydrationTrigger, setHydrationTrigger] = useState(0);
+  const [splashBusy, setSplashBusy] = useState(false);
+
+  // Активуємо activityTracker і пишемо app_launched ПІСЛЯ hydration.
+  // До цього моменту трекер вимкнений (див. activityTracker._enabled),
+  // інакше перші event-и потрапили б у time_entries і затерли реальні дані.
+  useEffect(() => {
+    if (!driveHydrated) return;
+    try { activityTracker.enable(); } catch {}
+    try { activityTracker.report('app_launched', { module: MODULES.APP, category: 'system' }); } catch {}
+  }, [driveHydrated]);
+
   const [selected, setSelected] = useState(null);
   const openCase = (c) => { usageLog.log('open_case', {name: c.name}); setSelected(c); };
   const [dossierCase, setDossierCase] = useState(null);
@@ -3666,15 +3844,93 @@ function App() {
     };
   }, []); // eslint-disable-line
 
-  // Load from Drive on mount if connected — з міграцією v1 → v2
+  // Drive-first hydration з типізованим результатом і захистом від race condition.
+  // Послідовність на старті:
+  //   1. Якщо токена нема → driveStatus='no_token', splash, EFFECT-B заблокований.
+  //   2. ping Drive — перевірка валідності токена, не лише його присутності (R7).
+  //   3. readRegistryStatus — typed result.
+  //   4. Реакція на статус:
+  //      ok → setCases etc., setDriveHydrated(true)
+  //      not_found → перевірка _backups/ (R4). Якщо бекапи є — модалка/splash;
+  //                  якщо нема — first_run, дозволяємо створення нового файлу.
+  //      auth_error → splash "перепідключіть Drive", запис заблокований.
+  //      network_error → splash "немає мережі".
+  //      parse_error → splash "файл пошкоджений".
   useEffect(() => {
-    if (!driveConnected) return;
+    if (!driveConnected) {
+      // Без токена — splash з пропозицією підключити Drive. UI заблоковано.
+      setDriveStatus('no_token');
+      setDriveHydrated(false);
+      return;
+    }
     const token = driveService.getToken();
-    if (!token) return;
+    if (!token) {
+      setDriveStatus('no_token');
+      setDriveHydrated(false);
+      return;
+    }
+    setDriveStatus('checking');
 
     (async () => {
+      // 1. Ping Drive — переконатися, що токен ще валідний.
+      // Закриває V1: driveConnected базується на валідності, не на присутності.
+      const pingResult = await driveService.ping();
+      if (pingResult === 'auth_error') {
+        setDriveStatus('auth_error');
+        setDriveErrorMessage('Сесія Google Drive завершилась. Перепідключіть Drive.');
+        return;
+      }
+      if (pingResult === 'network_error') {
+        setDriveStatus('network_error');
+        setDriveErrorMessage('Не вдалось дістатись Google Drive. Перевірте мережу.');
+        return;
+      }
+
+      // 2. Typed readRegistry.
+      const readResult = await driveService.readRegistryStatus(token);
+
+      if (readResult.status === 'auth_error') {
+        setDriveStatus('auth_error');
+        setDriveErrorMessage('Сесія Google Drive завершилась. Перепідключіть Drive.');
+        return;
+      }
+      if (readResult.status === 'network_error') {
+        setDriveStatus('network_error');
+        setDriveErrorMessage('Не вдалось завантажити дані з Drive. Перевірте мережу.');
+        return;
+      }
+      if (readResult.status === 'parse_error') {
+        setDriveStatus('parse_error');
+        setDriveErrorMessage('Файл registry_data.json на Drive пошкоджений. Спробуйте відновити з бекапу.');
+        // Перевіряємо бекапи — для майбутньої кнопки "Відновити".
+        const backups = await driveService.findBackups();
+        setDriveBackups(backups);
+        return;
+      }
+      if (readResult.status === 'not_found') {
+        // Файл не знайдено за точною назвою. Спочатку шукаємо бекапи (R4).
+        const backups = await driveService.findBackups();
+        if (backups.length > 0) {
+          setDriveBackups(backups);
+          setDriveStatus('file_not_found');
+          setDriveErrorMessage(
+            `Файл registry_data.json не знайдено на Drive. Знайдено ${backups.length} бекап(ів).`
+          );
+          // НЕ дозволяємо створення нового файлу автоматично — чекаємо рішення користувача.
+          driveService.allowFileCreation = false;
+          return;
+        }
+        // Бекапів нема — це справді перший запуск. Дозволяємо створення файлу
+        // на першому successful write. Hydration завершено з порожнім registry.
+        setDriveStatus('first_run');
+        driveService.allowFileCreation = true;
+        setDriveHydrated(true);
+        return;
+      }
+
+      // status === 'ok' — нормальний шлях.
+      const raw = readResult.data;
       try {
-        const raw = await driveService.readRegistry(token);
         const { registry, didMigrate, fromVersion, toVersion } = migrateRegistry(raw);
 
         // Якщо реально мігруємо — спочатку фіксований бекап pre_saas, поза ротацією.
@@ -3854,14 +4110,22 @@ function App() {
             context: { module: MODULES.STARTUP, agent: null },
           });
         }
+        // Hydration завершено успішно. Тільки після цього EFFECT-B може писати.
+        setDriveStatus('ok');
+        setDriveHydrated(true);
       } catch (e) {
         console.error('[SaaS Foundation] Drive load/migration error:', e);
+        // Помилка міграції — НЕ ставимо hydrated, інакше EFFECT-B перезапише Drive.
+        setDriveStatus('parse_error');
+        setDriveErrorMessage('Помилка під час обробки даних з Drive: ' + (e?.message || e));
       }
     })();
-  }, []); // eslint-disable-line
+  }, [driveConnected, hydrationTrigger]); // eslint-disable-line
 
-  // Auto-save to localStorage (always) and Drive (if connected)
+  // Auto-save to localStorage (always) and Drive (if connected AND hydrated).
   // Тригер: будь-яка зміна cases/tenants/users/auditLog/structuralUnits/ai_usage/caseAccess.
+  // Захист від race condition: якщо driveConnected=true але !driveHydrated — НЕ ПИШЕМО,
+  // інакше пустий/INITIAL state може перезаписати реальні дані на Drive (V2).
   useEffect(() => {
     try {
       localStorage.setItem('levytskyi_cases', JSON.stringify(cases));
@@ -3878,6 +4142,9 @@ function App() {
       setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
     } catch(e) {}
     if (driveConnected) {
+      // КРИТИЧНО: блокуємо запис на Drive до завершення hydration.
+      // Без цього EFFECT-B випереджає EFFECT-A і затирає реальні дані.
+      if (!driveHydrated) return;
       const token = driveService.getToken();
       if (token) {
         setDriveSyncStatus('syncing');
@@ -3905,11 +4172,29 @@ function App() {
           }).catch(() => {});
         }
         driveService.writeRegistry(token, registry)
-          .then(() => setDriveSyncStatus('synced'))
+          .then(res => {
+            if (res?.ok) {
+              setDriveSyncStatus('synced');
+            } else {
+              // Write-guard заблокував запис або сталася помилка — показуємо в UI.
+              setDriveSyncStatus('error');
+              if (res?.status === 'guard_blocked') {
+                console.error('[Drive] Запис заблоковано write-guard:', res.reason);
+              } else if (res?.status === 'creation_not_allowed') {
+                console.error('[Drive] Створення файлу не дозволено без явного consent.');
+              } else if (res?.status === 'file_missing') {
+                // Файл зник під час сесії — показуємо splash для перевірки бекапів.
+                setDriveStatus('file_not_found');
+                setDriveHydrated(false);
+                setDriveErrorMessage('Файл registry_data.json зник з Drive під час сесії.');
+                driveService.findBackups().then(setDriveBackups);
+              }
+            }
+          })
           .catch(() => setDriveSyncStatus('error'));
       }
     }
-  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, timeEntries, masterTimerState, billingMeta]);
+  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, timeEntries, masterTimerState, billingMeta, driveConnected, driveHydrated]);
 
   // ── timeLog persistence — DEPRECATED у v4. Старий ключ видаляється під час
   // одноразового імпорту в time_entries[] (див. flag levytskyi_timelog_imported_v4).
@@ -5017,6 +5302,229 @@ function App() {
       return { success: false, error: e.message };
     }
   };
+
+  // ── DRIVE-FIRST SPLASH ─────────────────────────────────────────────────────
+  // Блокує UI до завершення hydration. Захищає від випадкового запису
+  // INITIAL_CASES або застарілого state на Drive (V2, V8 у diagnostic_drive_first).
+  const splashConnect = async () => {
+    setSplashBusy(true);
+    try {
+      await driveService.authorize();
+      setDriveConnected(true);
+      setDriveStatus('checking');
+      setDriveErrorMessage('');
+      setHydrationTrigger(n => n + 1);
+    } catch (e) {
+      setDriveErrorMessage('Не вдалось підключити Drive: ' + (e?.message || e));
+    } finally {
+      setSplashBusy(false);
+    }
+  };
+  const splashReconnect = async () => {
+    setSplashBusy(true);
+    try {
+      // Чистимо локальний токен і запитуємо новий через consent.
+      driveService.clearToken();
+      const fresh = await forceConsentRefresh();
+      if (fresh) {
+        setDriveConnected(true);
+        setDriveStatus('checking');
+        setDriveErrorMessage('');
+        setHydrationTrigger(n => n + 1);
+      } else {
+        setDriveErrorMessage('Перепідключення скасовано або не вдалося.');
+      }
+    } catch (e) {
+      setDriveErrorMessage('Помилка перепідключення: ' + (e?.message || e));
+    } finally {
+      setSplashBusy(false);
+    }
+  };
+  const splashRetry = () => {
+    setDriveStatus('checking');
+    setDriveErrorMessage('');
+    setHydrationTrigger(n => n + 1);
+  };
+  const splashRestoreFromBackup = async (backupFileId) => {
+    setSplashBusy(true);
+    try {
+      const raw = await driveService.readBackup(backupFileId);
+      if (!raw) {
+        setDriveErrorMessage('Не вдалось прочитати бекап.');
+        setSplashBusy(false);
+        return;
+      }
+      const { registry } = migrateRegistry(raw);
+      // Розпаковуємо стейт з бекапу.
+      if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));
+      if (Array.isArray(registry.tenants) && registry.tenants.length > 0) setTenants(registry.tenants);
+      if (Array.isArray(registry.users) && registry.users.length > 0) setUsers(registry.users);
+      if (Array.isArray(registry.auditLog)) setAuditLog(registry.auditLog);
+      if (Array.isArray(registry.structuralUnits)) setStructuralUnits(registry.structuralUnits);
+      if (Array.isArray(registry.ai_usage)) setAiUsage(registry.ai_usage);
+      if (Array.isArray(registry.caseAccess)) setCaseAccess(registry.caseAccess);
+      if (Array.isArray(registry.time_entries)) setTimeEntries(registry.time_entries);
+      if (registry.master_timer_state && typeof registry.master_timer_state === 'object') {
+        setMasterTimerState(registry.master_timer_state);
+      }
+      if (registry.billing_meta && typeof registry.billing_meta === 'object') {
+        setBillingMeta(registry.billing_meta);
+      }
+      // Виставляємо лічильник lastReadCasesCount у кількість справ з бекапу,
+      // інакше write-guard міг би заблокувати наступний запис.
+      driveService.lastReadCasesCount = Array.isArray(registry.cases) ? registry.cases.length : 0;
+      // Якщо файлу нема (file_not_found) — дозволяємо POST один раз.
+      driveService.allowFileCreation = true;
+      // Запис в auditLog — сам факт відновлення з бекапу.
+      writeAudit({
+        action: 'restore_from_backup',
+        targetType: 'registry',
+        targetId: backupFileId,
+        details: { casesCount: Array.isArray(registry.cases) ? registry.cases.length : 0 },
+        context: { module: MODULES.STARTUP, agent: null },
+      });
+      setDriveStatus('ok');
+      setDriveHydrated(true);
+    } catch (e) {
+      setDriveErrorMessage('Помилка відновлення: ' + (e?.message || e));
+    } finally {
+      setSplashBusy(false);
+    }
+  };
+  const splashCreateNewFile = () => {
+    // Користувач свідомо погоджується створити новий файл.
+    // На наступному EFFECT-B зробиться POST.
+    driveService.allowFileCreation = true;
+    driveService.lastReadCasesCount = 0;
+    setDriveStatus('first_run');
+    setDriveHydrated(true);
+  };
+
+  // Splash блокує рендер основного UI поки немає hydration.
+  // Винятки:
+  //   driveHydrated=true → завжди показуємо UI
+  //   driveStatus='first_run' → ми вже виставили hydrated, splash не потрібен
+  if (!driveHydrated) {
+    const u = users && users[0];
+    const userLabel = u?.fullName || u?.email || '';
+    let title = '';
+    let body = '';
+    let actions = null;
+    switch (driveStatus) {
+      case 'checking':
+        title = 'Завантаження даних з Google Drive...';
+        body = 'Зачекайте, перевіряємо підключення.';
+        actions = null;
+        break;
+      case 'no_token':
+        title = 'Підключіть Google Drive';
+        body = 'Дані зберігаються в registry_data.json у вашому Drive. Без підключення робота заблокована — це захищає від втрати даних.';
+        actions = (
+          <>
+            <button className="btn-lg primary" disabled={splashBusy} onClick={splashConnect}>
+              {splashBusy ? 'Підключення...' : '🔐 Підключити Drive'}
+            </button>
+          </>
+        );
+        break;
+      case 'auth_error':
+        title = 'Сесія Google Drive завершилась';
+        body = driveErrorMessage || 'Перепідключіть Drive щоб продовжити роботу.';
+        actions = (
+          <>
+            <button className="btn-lg primary" disabled={splashBusy} onClick={splashReconnect}>
+              {splashBusy ? 'Перепідключення...' : '🔄 Перепідключити'}
+            </button>
+          </>
+        );
+        break;
+      case 'network_error':
+        title = 'Немає звʼязку з Google Drive';
+        body = driveErrorMessage || 'Перевірте мережу і спробуйте знову. Дані не завантажено — щоб не перезаписати свіжі зміни старим snapshot.';
+        actions = (
+          <button className="btn-lg primary" disabled={splashBusy} onClick={splashRetry}>
+            ↻ Повторити
+          </button>
+        );
+        break;
+      case 'parse_error':
+        title = 'Файл registry_data.json пошкоджений';
+        body = driveErrorMessage || 'Не вдалось прочитати JSON. Спробуйте відновити з бекапу.';
+        actions = (
+          <>
+            {driveBackups.length > 0 ? (
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {driveBackups.slice(0, 5).map(b => (
+                  <button key={b.id} className="btn-lg secondary" disabled={splashBusy}
+                    onClick={() => splashRestoreFromBackup(b.id)}>
+                    📦 Відновити з {b.name} ({b.modifiedTime ? new Date(b.modifiedTime).toLocaleString('uk-UA') : '—'})
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button className="btn-lg secondary" disabled={splashBusy} onClick={splashRetry}>↻ Повторити</button>
+            )}
+          </>
+        );
+        break;
+      case 'file_not_found':
+        title = 'Файл registry_data.json не знайдено на Drive';
+        body = driveErrorMessage || `Знайдено ${driveBackups.length} бекап(ів). Що зробити?`;
+        actions = (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {driveBackups.slice(0, 5).map(b => (
+              <button key={b.id} className="btn-lg primary" disabled={splashBusy}
+                onClick={() => splashRestoreFromBackup(b.id)}>
+                📦 Відновити з {b.name} {b.modifiedTime ? `(${new Date(b.modifiedTime).toLocaleString('uk-UA')})` : ''}
+              </button>
+            ))}
+            <button className="btn-lg danger" disabled={splashBusy} onClick={async () => {
+              if (await systemConfirm(
+                'Створити новий порожній registry_data.json і почати з нуля? Бекапи залишаться у _backups/.',
+                'Новий порожній файл'
+              )) splashCreateNewFile();
+            }}>
+              ⚠️ Створити новий порожній файл
+            </button>
+          </div>
+        );
+        break;
+      default:
+        title = 'Підготовка системи...';
+        body = '';
+    }
+    return (
+      <div style={{
+        position:'fixed', inset:0, background:'var(--bg, #0e1018)', color:'var(--text, #d8dbe6)',
+        display:'flex', alignItems:'center', justifyContent:'center', padding:24, zIndex:9999,
+        fontFamily:'var(--font-body)',
+      }}>
+        <div style={{
+          maxWidth:520, width:'100%', background:'var(--surface, #181b25)',
+          border:'1px solid var(--border, #2a2e3c)', borderRadius:12, padding:32,
+          boxShadow:'0 12px 40px rgba(0,0,0,0.4)',
+        }}>
+          <div style={{fontSize:11, opacity:0.6, letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:8}}>
+            АБ Левицького
+            {userLabel ? ` · ${userLabel}` : ''}
+          </div>
+          <div style={{fontSize:18, fontWeight:700, marginBottom:12, lineHeight:1.3}}>{title}</div>
+          {body && (
+            <div style={{fontSize:13, color:'var(--text2, #9aa0b8)', marginBottom:20, lineHeight:1.5}}>
+              {body}
+            </div>
+          )}
+          {driveErrorMessage && driveStatus !== 'auth_error' && driveStatus !== 'network_error' && driveStatus !== 'file_not_found' && driveStatus !== 'parse_error' && (
+            <div style={{fontSize:12, color:'var(--red, #ff4f6a)', marginBottom:12}}>{driveErrorMessage}</div>
+          )}
+          <div className="modal-actions" style={{marginTop:8}}>
+            {actions}
+          </div>
+        </div>
+        <SystemModalRoot />
+      </div>
+    );
+  }
 
   return (
     <div className="app">

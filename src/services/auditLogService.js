@@ -16,6 +16,8 @@ export const AUDIT_ACTIONS = [
   'time_entry_edited',
   'time_entry_deleted',
   'time_standards_changed',
+  // Drive-first hydration — критичне відновлення з бекапу.
+  'restore_from_backup',
 ];
 
 export function shouldAudit(action) {

@@ -247,3 +247,75 @@ update_case_status, delete_case, create_case, save_note
 - Місячна ротація — чи доцільно тижнева
 
 Усі ці значення спочатку — стартові точки, не остаточні рішення.
+
+---
+
+## ДОДАТОК: DRIVE-FIRST HYDRATION (2026-05-06)
+
+Реалізовано окремим TASK після інциденту з перезаписом 156 КБ → 43-66 КБ
+(див. `diagnostic_drive_first.md`). CLAUDE.md потрібно доповнити такими пунктами:
+
+### Нове критичне правило (#11)
+
+```
+### №11 — Drive-first hydration і блокування запису до hydration
+
+`driveHydrated` — локальний state, що блокує EFFECT-B (запис у Drive)
+до завершення EFFECT-A (читання). Без цього race condition призводить
+до перезапису справжніх даних на Drive порожнім state-ом.
+
+Splash-екран блокує UI поки:
+- токена немає (no_token)
+- ping Drive повернув 401 (auth_error)
+- мережа недоступна (network_error)
+- файл пошкоджений (parse_error)
+- файл не знайдено і знайдено бекапи (file_not_found)
+
+Тільки після успішного readRegistry або свідомого вибору в splash
+(create new file / restore from backup) — `driveHydrated = true`,
+EFFECT-B може писати, activityTracker.enable() активує білінг.
+
+**INITIAL_CASES — лише демо-дані**, доступні через Sandbox-кнопку.
+Виробничий fallback на них прибрано.
+```
+
+### Зміни в driveService
+
+- `readRegistryStatus(token)` — typed result `{ status, data? }`.
+  - `'ok'` — все добре, `data` присутнє.
+  - `'not_found'` — файла нема (404 або _findFileId не знайшов).
+  - `'auth_error'` — 401/403.
+  - `'network_error'` — мережа/5xx.
+  - `'parse_error'` — JSON битий.
+- `readRegistry(token)` — legacy-обгортка над status (для AnalysisPanel).
+- `ping()` — легкий запит `about?fields=user`, повертає `'ok'|'auth_error'|'network_error'`.
+- `findBackups()` — список файлів з папки `_backups/` Drive.
+- `readBackup(fileId)` — читання конкретного бекапу.
+- `lastReadCasesCount` — для write-guard.
+- `allowFileCreation` — захист від випадкового POST нового файлу
+  (потрібен явний consent через splashCreateNewFile або splashRestoreFromBackup).
+- `writeRegistry(token, registry)` повертає `{ ok, status, reason? }`:
+  - `guard_blocked` — нова cases.length < lastRead - 1.
+  - `creation_not_allowed` — POST без allowFileCreation.
+  - `file_missing` — PATCH повернув 404 під час сесії.
+  - `http_error` / `exception` / `patched` / `created`.
+- 404 під час сесії → інвалідація `_fileId` (не пише в неіснуючий id).
+
+### Зміни в activityTracker
+
+- `enable()` / `disable()` / `isEnabled()`.
+- `report()` повертає null якщо `!_enabled`.
+- В App.jsx — `activityTracker.enable()` викликається тільки після
+  `setDriveHydrated(true)`. До цього всі точки інструментації — no-op.
+
+### Audit log
+
+- Додано `'restore_from_backup'` у `AUDIT_ACTIONS`.
+
+### Залишилось майбутнім TASK
+
+- R5 (appProperties для стабільного пошуку файлу замість name=) —
+  закриває проблему `registry_data.json"` (з лапкою) і файлів-дублікатів.
+- R9 (розділення data vs config у localStorage) — структурний рефакторинг.
+- R12 (ChunkifyHydration: state починає життя порожнім, localStorage
+  лише як транзитний кеш) — глибший рефакторинг, не блокуючий.

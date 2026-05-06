@@ -28,6 +28,11 @@ let _sink = null;        // (entry) => void  — пише в React state (setTim
 let _patchSink = null;   // (id, patch) => void — оновлює існуючий запис
 let _activeSession = null; // { caseId, module, startedAt, sessionId, category, subCategory }
 let _activeSubtimer = null; // { id, category, caseId, subCategory, semanticGroup, startedAt, plannedDuration, parentTimerId }
+// _enabled керує тим, чи трекер реально пише events. До hydration з Drive
+// трекер вимкнений — щоб app_launched / module_navigation не потрапили
+// в time_entries, які потім перезаписують реальні дані з Drive.
+// Вмикається в App.jsx після успішного setDriveHydrated(true).
+let _enabled = false;
 let _hooks = {           // зовнішні слухачі (Master timer, smart return, etc.)
   onSessionStart: [],
   onSessionEnd: [],
@@ -41,6 +46,10 @@ export function configure({ sink, patchSink } = {}) {
   if (typeof sink === 'function') _sink = sink;
   if (typeof patchSink === 'function') _patchSink = patchSink;
 }
+
+export function enable()  { _enabled = true; }
+export function disable() { _enabled = false; }
+export function isEnabled() { return _enabled; }
 
 export function getActiveSession() {
   return _activeSession ? { ..._activeSession } : null;
@@ -74,6 +83,11 @@ function emit(eventName, payload) {
 // Базовий звіт про подію. eventType — короткий рядок ("hearing_viewed" і т.д.).
 // Повертає створений запис або null.
 export function report(eventType, context = {}) {
+  // Не пишемо нічого до hydration — захист від race condition між
+  // EFFECT-A (Drive load) і EFFECT-B (Drive write). Без цього перші
+  // app_launched / module_navigation потрапили б у time_entries[] і
+  // трапили на Drive до того, як ми прочитали реальні дані звідти.
+  if (!_enabled) return null;
   try {
     const tenant = getCurrentTenant();
     const user = getCurrentUser();
