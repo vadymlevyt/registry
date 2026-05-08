@@ -825,6 +825,52 @@ src/services/
 
 ---
 
+## ТЕСТУВАННЯ
+
+**Стек:** Vitest 4.x (test runner), Node environment.
+
+### Команди
+
+- `npm test` — повний прогон (для CI/CD).
+- `npm run test:watch` — watch mode під час розробки.
+- `npm run test:ui` — графічний UI у браузері (опційно).
+
+### Структура
+
+```
+tests/
+├── unit/                   — юніт-тести сервісів (чисті функції, без DOM)
+│   ├── documentFactory.test.js
+│   ├── documentSchema.test.js
+│   ├── documentsExtended.test.js
+│   ├── migrations.test.js
+│   ├── toolDefinitions.test.js
+│   └── toolUseRunner.test.js
+└── integration/            — workflow-тести (executeAction + ACTIONS + PERMISSIONS)
+    ├── _actionsHarness.js  — спільний harness (повторює логіку з App.jsx)
+    ├── actions.test.js
+    ├── drag-n-drop.test.js
+    ├── agent-workflow.test.js
+    └── document-processor.test.js
+```
+
+`tests/integration/_actionsHarness.js` — поки ACTIONS і PERMISSIONS живуть закритими в App.jsx, harness повторює мінімум логіки що тестується. Окремий TASK ActionsRegistry refactor винесе ACTIONS у `src/services/actionsRegistry.js` як factory з deps injection — тоді harness видаляється і тести імпортуватимуть `createActions(deps)` напряму. Поки що — синхронізація вручну: при зміні ACTIONS у App.jsx оновлювати harness.
+
+### Правило для нових TASK
+
+Кожен TASK з суттєвими змінами повинен:
+1. Додати юніт-тести для нових сервісних функцій у `tests/unit/`.
+2. Додати інтеграційні тести для нових workflow'ів у `tests/integration/` якщо торкається ACTIONS/PERMISSIONS.
+3. Перед коммітом — `npm test` повністю зелений.
+
+CI/CD блокує деплой якщо хоч один тест червоний.
+
+### CI/CD
+
+`.github/workflows/deploy.yml` має три послідовні job-и: `test → build → deploy`. Будь-який red test блокує build і deploy. Артефакти не публікуються поки тести не зелені.
+
+---
+
 ## ПОТОЧНИЙ СТАН СИСТЕМИ
 
 ### Завершено
@@ -835,6 +881,7 @@ src/services/
 - ✅ SaaS Foundation v1.1 Patch (2026-05-05) — schemaVersion 3, ai_usage, modelPreferences, subscriptions
 - ✅ Billing Foundation v2 (2026-05-05) — schemaVersion 4, time_entries, master_timer, archives
 - ✅ Document AI інтеграція
+- ✅ Test Infrastructure (2026-05-08) — Vitest з 180+ тестами і CI блокуванням деплою при red тестах
 
 ### В роботі / спостереження
 
