@@ -9,6 +9,8 @@ import { logAiUsage } from "../../services/aiUsageService.js";
 import { resolveModel } from "../../services/modelResolver.js";
 import * as activityTracker from "../../services/activityTracker.js";
 import { MODULES, categoryForCase } from "../../services/moduleNames.js";
+import { runMultiTurnConversation, callAPIWithRetry } from "../../services/toolUseRunner.js";
+import { DOSSIER_AGENT_TOOLS } from "../../services/toolDefinitions.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -602,30 +604,31 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
     prompt += `
 
-## РЕЖИМ ВИКОНАННЯ
+## РЕЖИМ ВИКОНАННЯ (Tool Use)
 
-Ти маєш технічну можливість змінювати дані справи через ACTION_JSON команди.
+Ти маєш набір інструментів (tools) для зміни даних справи. Викликай їх НАПРЯМУ
+коли адвокат просить внести зміни — система виконає дію і повернеться з
+результатом, після чого продовжиш розмову.
 
-Коли користувач просить змінити дані справи — ВИКОНУЙ через ACTION_JSON.
-НЕ пояснюй як це зробити вручну.
-НЕ питай підтвердження для простих дій якщо засідання одне.
-Якщо в hearings[] кілька scheduled — постав одне питання "яке саме — [дата1] чи [дата2]?"
-Аналогічно для deadlines[] коли їх кілька.
-НЕ кажи "я не маю доступу" — у тебе є доступ через ACTION_JSON.
+Принципи виклику tools:
+- Виклик tool — це фактична дія, не симуляція. Не вигадуй ID — користуйся
+  тими що є в контексті справи нижче.
+- Дати у форматі YYYY-MM-DD, час у HH:MM (24-год). Якщо адвокат сказав
+  "наступного понеділка" — обчисли реальну дату самостійно.
+- Якщо в hearings[] кілька scheduled і незрозуміло яке змінювати — спочатку
+  перепитай "яке саме — [дата1] чи [дата2]?" замість виклику tool. Після
+  відповіді — викликай tool.
+- Аналогічно для deadlines[] коли їх кілька.
+- Якщо параметр невизначений (наприклад тип документа) — передавай null.
+  Документ отримає маркер ⚠ для подальшої ручної класифікації.
+- Видалення документів і проваджень — через UI, у тебе таких tools немає.
+  Якщо адвокат просить видалити — поясни що це треба зробити в інтерфейсі.
 
-Формат ACTION_JSON (додавати в кінці відповіді):
-ACTION_JSON: {"action": "delete_hearing", "caseId": "${caseData.id}", "hearingId": "..."}
-ACTION_JSON: {"action": "delete_deadline", "caseId": "${caseData.id}", "deadlineId": "..."}
-ACTION_JSON: {"action": "update_hearing", "caseId": "${caseData.id}", "hearingId": "...", "date": "YYYY-MM-DD", "time": "HH:MM"}
-ACTION_JSON: {"action": "add_deadline", "caseId": "${caseData.id}", "name": "...", "date": "YYYY-MM-DD"}
-ACTION_JSON: {"action": "update_case_field", "caseId": "${caseData.id}", "field": "...", "value": "..."}
-
-Для delete_hearing: якщо scheduled засідань рівно одне — беремо його без питань.
-Якщо кілька scheduled — питаємо "яке саме — [дата1] чи [дата2]?" і чекаємо відповідь.
-Для delete_deadline: якщо дедлайн один — беремо без питань. Якщо кілька — питаємо.
+Доступні tools тобі: засідання, дедлайни, нотатки, документи (без delete),
+провадження (без delete), оновлення полів справи, закриття/відновлення справи.
 
 Статуси засідань: тільки scheduled і completed. Cancelled не існує.
-Минуле засідання = дата менша за сьогодні. Не чіпати без явної вказівки.
+Минулі засідання (дата менша за сьогодні) — не чіпати без явної вказівки.
 
 Поточна справа має caseId: "${caseData.id}".
 Hearings: ${JSON.stringify(caseData.hearings || [])}
@@ -1253,37 +1256,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     agentPendingTranscript.current = '';
   }
 
-  // ── АГЕНТ ДОСЬЄ ────────────────────────────────────────────────────────────
+  // ── АГЕНТ ДОСЬЄ (Tool Use) ─────────────────────────────────────────────────
   function renderAgentPanel() {
-    function parseAndExecuteDossierAction(responseText) {
-      const idx = responseText.indexOf('ACTION_JSON:');
-      if (idx === -1) return;
-
-      const start = responseText.indexOf('{', idx);
-      if (start === -1) return;
-
-      let depth = 0, end = -1;
-      for (let i = start; i < responseText.length; i++) {
-        if (responseText[i] === '{') depth++;
-        else if (responseText[i] === '}') {
-          depth--;
-          if (depth === 0) { end = i; break; }
-        }
-      }
-
-      if (end === -1) return;
-
-      try {
-        const actionData = JSON.parse(responseText.slice(start, end + 1));
-        const { action, ...params } = actionData;
-        if (action && onExecuteAction) {
-          onExecuteAction('dossier_agent', action, params);
-        }
-      } catch (e) {
-        console.warn('Dossier ACTION_JSON parse error:', e);
-      }
-    }
-
     async function sendAgentMessage() {
       if (!agentInput.trim() || agentLoading) return;
       const userMsg = agentInput.trim();
@@ -1294,79 +1268,99 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       const userEntry = { role: 'user', content: userMsg, ts: userTs };
       setAgentMessages(prev => [...prev, userEntry]);
       setAgentLoading(true);
+
+      const apiKey = localStorage.getItem('claude_api_key');
+      const systemPrompt = buildAgentSystemPrompt();
+      const dossierModel = resolveModel('dossierAgent');
+
+      // Останні 10 повідомлень історії для API (token economy).
+      // API вимагає щоб перше повідомлення було user.
+      const historyForAPI = agentMessages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .slice(-10)
+        .map(m => ({ role: m.role, content: m.content }));
+      const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
+      const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
+      const initialMessages = [...cleanHistory, { role: 'user', content: userMsg }];
+
       try {
-        const apiKey = localStorage.getItem('claude_api_key');
-        const systemPrompt = buildAgentSystemPrompt();
-
-        // Send last 10 messages as context for API (token economy)
-        const historyForAPI = agentMessages
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .slice(-10)
-          .map(m => ({ role: m.role, content: m.content }));
-
-        // API requires first message to be role:'user'
-        const firstUserIdx = historyForAPI.findIndex(m => m.role === 'user');
-        const cleanHistory = firstUserIdx >= 0 ? historyForAPI.slice(firstUserIdx) : [];
-
-        const dossierModel = resolveModel('dossierAgent');
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-access': 'true'
+        const result = await runMultiTurnConversation({
+          callAnthropicAPI: async ({ messages, tools, systemPrompt: sp }) => {
+            return await callAPIWithRetry({
+              model: dossierModel,
+              max_tokens: 4000,
+              system: sp,
+              messages,
+              tools
+            }, { apiKey });
           },
-          body: JSON.stringify({
+          initialMessages,
+          tools: DOSSIER_AGENT_TOOLS,
+          systemPrompt,
+          context: {
+            agentId: 'dossier_agent',
+            executeAction: (agentId, action, params) => onExecuteAction(agentId, action, params),
+            caseId: caseData.id,
             model: dossierModel,
-            max_tokens: 4000,
-            system: systemPrompt,
-            messages: [...cleanHistory, { role: 'user', content: userMsg }]
-          })
+            module: MODULES.CASE_DOSSIER,
+            operation: 'chat',
+            setAiUsage,
+          },
+          maxTurns: 10
         });
-        if (!response.ok) {
-          const errText = await response.text();
-          const errEntry = { role: 'assistant', content: `⚠️ Помилка ${response.status}: ${errText.slice(0, 300)}`, ts: new Date().toISOString() };
-          setAgentMessages(prev => {
-            const updated = [...prev, errEntry].slice(-50);
-            updateCase && updateCase(caseData.id, 'agentHistory', updated);
-            saveAgentHistory(updated);
-            return updated;
-          });
-          setAgentLoading(false);
-          return;
-        }
-        const data = await response.json();
+
+        // [BILLING] activityTracker — один звіт на завершену розмову, не на турн.
         try {
-          logAiUsage({
-            agentType: 'dossier_agent',
-            model: dossierModel,
-            inputTokens: data?.usage?.input_tokens,
-            outputTokens: data?.usage?.output_tokens,
-            context: { caseId: caseData?.id || null, module: MODULES.CASE_DOSSIER, operation: 'chat' },
-          }, setAiUsage);
           activityTracker.report('agent_call', {
             caseId: caseData?.id || null,
             module: MODULES.CASE_DOSSIER,
             category: categoryForCase(caseData?.id),
-            metadata: { agentType: 'dossier_agent', operation: 'chat' }
+            metadata: {
+              agentType: 'dossier_agent',
+              operation: 'chat',
+              turns: result.turns,
+              toolCalls: result.totalToolCalls,
+              truncated: result.truncated
+            }
           });
         } catch {}
-        const reply = data.content?.[0]?.text || `⚠️ Порожня відповідь. Payload: ${JSON.stringify(data).slice(0, 300)}`;
-        const assistantEntry = { role: 'assistant', content: reply, ts: new Date().toISOString() };
+
+        if (result.errors?.length > 0) {
+          console.warn('[dossier_agent] Tool errors:', result.errors);
+        }
+
+        const replyText = result.finalText && result.finalText.trim()
+          ? result.finalText
+          : (result.totalToolCalls > 0
+              ? `✓ Виконано ${result.totalToolCalls} ${result.totalToolCalls === 1 ? 'дію' : 'дій'}.`
+              : '⚠ Порожня відповідь від агента.');
+
+        const assistantEntry = {
+          role: 'assistant',
+          content: replyText,
+          ts: new Date().toISOString(),
+          ...(result.totalToolCalls > 0 ? { toolCalls: result.totalToolCalls } : {}),
+          ...(result.truncated ? { truncated: true } : {})
+        };
         setAgentMessages(prev => {
           const updated = [...prev, assistantEntry].slice(-50);
           updateCase && updateCase(caseData.id, 'agentHistory', updated);
-          saveAgentHistory(updated); // Зберегти на Drive
+          saveAgentHistory(updated);
           return updated;
         });
-        parseAndExecuteDossierAction(reply);
       } catch (err) {
-        const errEntry = { role: 'assistant', content: `⚠️ Мережева помилка: ${err.message}`, ts: new Date().toISOString() };
+        // callAPIWithRetry додає .userMessage для дружнього показу.
+        const friendly = err?.userMessage || `Не вдалось зв'язатись з агентом: ${err?.message || err}`;
+        console.error('[dossier_agent] API error:', err);
+        const errEntry = {
+          role: 'assistant',
+          content: `⚠️ ${friendly}`,
+          ts: new Date().toISOString()
+        };
         setAgentMessages(prev => {
           const updated = [...prev, errEntry].slice(-50);
           updateCase && updateCase(caseData.id, 'agentHistory', updated);
-          saveAgentHistory(updated); // Зберегти на Drive
+          saveAgentHistory(updated);
           return updated;
         });
       }
