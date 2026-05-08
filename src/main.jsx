@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App.jsx';
+import './styles/tokens.css';   // дизайн-токени — мають завантажитись першими
+import App from './App.jsx';    // App.css імпортується всередині App.jsx
 
 function clearAllLocalData() {
   try {
