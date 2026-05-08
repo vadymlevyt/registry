@@ -11,6 +11,13 @@ import * as activityTracker from "../../services/activityTracker.js";
 import { MODULES, categoryForCase } from "../../services/moduleNames.js";
 import { runMultiTurnConversation, callAPIWithRetry } from "../../services/toolUseRunner.js";
 import { DOSSIER_AGENT_TOOLS } from "../../services/toolDefinitions.js";
+import {
+  Bot, FileText, FolderOpen, Folder, Cloud, Link2, Pin,
+  Edit, Trash2, Paperclip, Image, GitBranch, ClipboardList,
+  Wrench, Scale, Calendar, Archive, Lightbulb, Check, MessageSquare,
+  ArrowLeft, AlertTriangle,
+} from "lucide-react";
+import { ICON_SIZE } from "../UI/icons.js";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -1415,17 +1422,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     return (
       <>
         <div style={{ padding: '10px 12px', borderBottom: '1px solid #2e3148', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 14 }}>{"🤖"}</span>
+          <span style={{ fontSize: 14, display: "inline-flex", alignItems: "center" }}><Bot size={ICON_SIZE.md} /></span>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
             <div style={{ fontSize: 10, color: '#5a6080' }}>
               {"Sonnet · знає справу"}
-              {caseContext && <span style={{ marginLeft: 4, color: '#2ecc71' }}>📄</span>}
+              {caseContext && <span style={{ marginLeft: 4, color: '#2ecc71', display: 'inline-flex', alignItems: 'center' }} title="Контекст справи створено"><FileText size={ICON_SIZE.xs} /></span>}
             </div>
             <div style={{ fontSize: 10, color: agentMessages.length > 0 ? '#2ecc71' : '#5a6080', marginTop: 2 }}>
               {agentMessages.length > 0
                 ? `📂 Завантажено ${agentMessages.length} повідомлень з попередньої розмови`
-                : "🆕 Нова розмова"}
+                : "Нова розмова"}
             </div>
           </div>
           <button onClick={() => setConfirmClearOpen(true)} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
@@ -1733,7 +1740,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                         borderBottom: i < pinned.length - 1 ? "1px solid #2e3148" : "none"
                       }}>
                         <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 2 }}>
-                          {"📌 "}{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}
+                          <Pin size={ICON_SIZE.xs} style={{ marginRight: 4, verticalAlign: 'middle' }} />{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}
                         </div>
                         <div>{String(note.text || "")}</div>
                       </div>
@@ -1763,12 +1770,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 padding: "8px 16px", cursor: creatingStructure ? "wait" : "pointer", fontSize: 13,
               }}
             >
-              {creatingStructure ? "⏳ Створюю..." : "📁 Створити структуру на Drive"}
+              {creatingStructure ? "⏳ Створюю..." : <><Folder size={ICON_SIZE.sm} style={{ verticalAlign: 'middle', marginRight: 6 }} />Створити структуру на Drive</>}
             </button>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ color: "#4caf50", fontSize: 13 }}>
-                {"☁️ "}{storageState.driveFolderName || "Drive папка"}
+                <Cloud size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />{storageState.driveFolderName || "Drive папка"}
               </span>
               <button
                 onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")}
@@ -1776,7 +1783,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   background: "none", border: "1px solid #333", borderRadius: 6,
                   padding: "4px 10px", color: "#aaa", cursor: "pointer", fontSize: 12,
                 }}
-              >{"🔗 Відкрити"}</button>
+              ><Link2 size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />Відкрити</button>
             </div>
           )}
           {storageMsg && (
@@ -1870,7 +1877,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   />
                   <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                     <button onClick={() => { onUpdateNote && onUpdateNote(note.id, { text: editingNoteText }); setEditingNoteId(null); setEditingNoteText(""); }} style={{ background: "#1a4a8a", color: "#fff", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
-                      {"✓ Зберегти"}
+                      <Check size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />Зберегти
                     </button>
                     <button onClick={() => setEditingNoteId(null)} style={{ background: "#333", color: "#aaa", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
                       {"Скасувати"}
@@ -1887,12 +1894,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                       onClick={() => { setEditingNoteId(note.id); setEditingNoteText(note.text || ""); }}
                       title="Редагувати"
                       style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
-                    >{"✏️"}</button>
+                     aria-label="Редагувати"><Edit size={ICON_SIZE.sm} /></button>
                     <button
                       onClick={() => onDeleteNote && onDeleteNote(note.id)}
                       title="Видалити"
                       style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
-                    >{"🗑️"}</button>
+                     aria-label="Видалити"><Trash2 size={ICON_SIZE.sm} /></button>
                     {(() => {
                       const isNotePinned = (caseData.pinnedNoteIds || []).includes(String(note.id));
                       return (
@@ -1907,7 +1914,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                             color: isNotePinned ? '#e53935' : '#888',
                             transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
                           }}
-                        >📌</button>
+                         aria-label="Закріпити"><Pin size={ICON_SIZE.sm} /></button>
                       );
                     })()}
                   </div>
@@ -1936,7 +1943,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             cursor: "pointer", transition: "all .2s", marginBottom: 12
           }}
         >
-          <div style={{ fontSize: 28, marginBottom: 8, opacity: .4 }}>{"📎"}</div>
+          <div style={{ marginBottom: 8, opacity: .4, display: "flex", justifyContent: "center" }}><Paperclip size={28} /></div>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#9aa0b8", marginBottom: 4 }}>
             {isDragOver ? "Відпустіть файли" : "Перетягніть або натисніть"}
           </div>
@@ -1959,7 +1966,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 8, overflow: "hidden", marginBottom: 12 }}>
             {dropQueue.map((item, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #2e3148" }}>
-                <span style={{ fontSize: 13 }}>{item.file.name.match(/\.(jpg|jpeg|png|heic)$/i) ? "🖼" : "📄"}</span>
+                <span style={{ fontSize: 13, display: "inline-flex", alignItems: "center" }}>{item.file.name.match(/\.(jpg|jpeg|png|heic)$/i) ? <Image size={ICON_SIZE.sm} /> : <FileText size={ICON_SIZE.sm} />}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.file.name}</div>
                   <div style={{ fontSize: 10, color: "#5a6080" }}>{(item.file.size / 1024 / 1024).toFixed(1)} {"МБ"}</div>
@@ -2042,9 +2049,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
           {/* Перемикач Дерево / Реєстр */}
           <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0 }}>
-            {[["tree", "🌳 Дерево"], ["registry", "📋 Реєстр"]].map(([id, label]) => (
-              <button key={id} onClick={() => setMatMode(id)} style={{ flex: 1, padding: 8, border: "none", background: "none", color: matMode === id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${matMode === id ? "#4f7cff" : "transparent"}`, fontWeight: matMode === id ? 500 : 400 }}>
-                {label}
+            {[["tree", GitBranch, "Дерево"], ["registry", ClipboardList, "Реєстр"]].map(([id, Ic, label]) => (
+              <button key={id} onClick={() => setMatMode(id)} style={{ flex: 1, padding: 8, border: "none", background: "none", color: matMode === id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${matMode === id ? "#4f7cff" : "transparent"}`, fontWeight: matMode === id ? 500 : 400, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <Ic size={ICON_SIZE.sm} />
+                <span>{label}</span>
               </button>
             ))}
           </div>
@@ -2203,7 +2211,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {!selectedDoc ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 8 }}>
-              <div style={{ fontSize: 36, opacity: .2 }}>{"📄"}</div>
+              <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}><FileText size={36} /></div>
               <div style={{ fontSize: 12 }}>{"Оберіть документ зі списку"}</div>
             </div>
           ) : (
@@ -2263,11 +2271,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   // ── RENDER ─────────────────────────────────────────────────────────────────
 
   const tabs = [
-    { id: "overview", label: "📋 Огляд" },
-    { id: "materials", label: "📁 Матеріали", badge: documents.length },
-    { id: "docprocessor", label: "🔧 Робота з документами" },
-    { id: "position", label: "⚖️ Позиція" },
-    { id: "templates", label: "📄 Шаблони" }
+    { id: "overview",     icon: ClipboardList, label: "Огляд" },
+    { id: "materials",    icon: Folder,        label: "Матеріали", badge: documents.length },
+    { id: "docprocessor", icon: Wrench,        label: "Робота з документами" },
+    { id: "position",     icon: Scale,         label: "Позиція" },
+    { id: "templates",    icon: FileText,      label: "Шаблони" }
   ];
 
   return (
@@ -2275,7 +2283,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
       {/* ШАПКА */}
       <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#0d0f1a", position: "relative", zIndex: 200 }}>
-        <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>{"\u2190 Реєстр"}</button>
+        <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <ArrowLeft size={ICON_SIZE.sm} />
+          <span>Реєстр</span>
+        </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{caseData.name}</div>
           <div style={{ fontSize: 11, color: "#5a6080", marginTop: 2 }}>
@@ -2284,11 +2295,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
-          {(() => { const _nh = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return _nh ? <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12" }}>{"📅 "}{_nh.date}{_nh.time ? ` о ${_nh.time}` : ''}</span> : null; })()}
+          {(() => { const _nh = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return _nh ? <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12", display: "inline-flex", alignItems: "center", gap: 4 }}><Calendar size={ICON_SIZE.xs} />{_nh.date}{_nh.time ? ` о ${_nh.time}` : ''}</span> : null; })()}
           {storageState?.driveFolderId ? (
-            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer" }} title={storageState.driveFolderName || "Drive папка"}>{"☁️ Drive 🔗"}</button>
+            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }} title={storageState.driveFolderName || "Drive папка"}><Cloud size={ICON_SIZE.xs} /><span>Drive</span><Link2 size={ICON_SIZE.xs} /></button>
           ) : (
-            <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(231,76,60,.1)", color: "#e74c3c" }}>{"⚠️ Без папки"}</span>
+            <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(231,76,60,.1)", color: "#e74c3c", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={ICON_SIZE.xs} /><span>Без папки</span></span>
           )}
           {caseData.status !== "closed" && onCloseCase && (
             <button onClick={async () => {
@@ -2296,24 +2307,28 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 onCloseCase(caseData.id);
                 onClose();
               }
-            }} style={{ background: "none", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"📦 Закрити"}</button>
+            }} style={{ background: "none", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6 }}><Archive size={ICON_SIZE.sm} /><span>Закрити</span></button>
           )}
           {caseData.status === "closed" && onDeleteCase && (
-            <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>{"🗑 Видалити назавжди"}</button>
+            <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6 }}><Trash2 size={ICON_SIZE.sm} /><span>Видалити назавжди</span></button>
           )}
-          <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 14 }}>{"💡"}</button>
-          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{agentOpen ? "🤖 Сховати агента" : "🤖 Агент"}</button>
+          <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" aria-label="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Lightbulb size={ICON_SIZE.md} /></button>
+          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}><Bot size={ICON_SIZE.sm} /><span>{agentOpen ? "Сховати агента" : "Агент"}</span></button>
         </div>
       </div>
 
       {/* ВКЛАДКИ */}
       <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0, padding: "0 16px", gap: 2, background: "#0d0f1a", position: "relative", zIndex: 200 }}>
-        {tabs.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: "8px 14px", border: "none", background: "none", color: activeTab === tab.id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${activeTab === tab.id ? "#9aa0b8" : "transparent"}`, fontWeight: activeTab === tab.id ? 500 : 400, whiteSpace: "nowrap", transition: "all .15s" }}>
-            {tab.label}
-            {tab.badge > 0 && <span style={{ fontSize: 9, background: "#222536", padding: "1px 5px", borderRadius: 8, marginLeft: 4, color: "#5a6080" }}>{tab.badge}</span>}
-          </button>
-        ))}
+        {tabs.map(tab => {
+          const Ic = tab.icon;
+          return (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: "8px 14px", border: "none", background: "none", color: activeTab === tab.id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${activeTab === tab.id ? "#9aa0b8" : "transparent"}`, fontWeight: activeTab === tab.id ? 500 : 400, whiteSpace: "nowrap", transition: "all .15s", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {Ic && <Ic size={ICON_SIZE.sm} />}
+              <span>{tab.label}</span>
+              {tab.badge > 0 && <span style={{ fontSize: 9, background: "#222536", padding: "1px 5px", borderRadius: 8, marginLeft: 4, color: "#5a6080" }}>{tab.badge}</span>}
+            </button>
+          );
+        })}
       </div>
 
       {/* BODY */}
@@ -2337,7 +2352,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           )}
           {["position", "templates"].includes(activeTab) && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 12 }}>
-              <div style={{ fontSize: 48, opacity: .2 }}>{activeTab === "position" ? "⚖️" : "📄"}</div>
+              <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}>{activeTab === "position" ? <Scale size={48} /> : <FileText size={48} />}</div>
               <div style={{ fontSize: 14, fontWeight: 600, color: "#9aa0b8" }}>{activeTab === "position" ? "Позиція" : "Шаблони"}</div>
               <div style={{ fontSize: 12 }}>{"Буде реалізовано в наступній під-сесії"}</div>
             </div>
@@ -2374,7 +2389,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       {ideaOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 360 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{"💡 Ідея для конт��нту"}</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, display: "inline-flex", alignItems: "center", gap: 6 }}><Lightbulb size={ICON_SIZE.md} /><span>Ідея для контенту</span></div>
             <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 12 }}>{"Справа: "}{caseData.name}</div>
             <textarea
               value={ideaText}
