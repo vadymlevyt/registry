@@ -156,6 +156,98 @@ Native `<select>` обгорнутий стилізованою wrapper-обго
 </Card>
 ```
 
+### Chip
+
+Компактний елемент для тегів, фільтрів, статусів. Може бути клікабельним або статичним. Підтримує × кнопку для фільтрів.
+
+| Prop | Тип | Default | Опис |
+|------|-----|---------|------|
+| `variant` | `'default' \| 'accent' \| 'success' \| 'warning' \| 'danger' \| 'proceeding'` | `default` | Колір/стиль |
+| `size` | `'sm' \| 'md'` | `sm` | Розмір |
+| `color` | string | — | Для `variant='proceeding'` — колір (CSS-змінна або hex) |
+| `removable` | boolean | `false` | Показує × кнопку |
+| `onRemove` | function | — | Обробник × |
+| `onClick` | function | — | Робить chip клікабельним |
+| `icon` | ReactNode | — | Іконка зліва |
+
+```jsx
+<Chip variant="success">active</Chip>
+
+<Chip variant="proceeding" color="var(--color-proceeding-appeal)">Апеляція</Chip>
+
+<Chip removable onRemove={() => removeFilter('кат:позов')}>
+  кат: позов
+</Chip>
+```
+
+### Toggle
+
+Перемикач увімк/вимк (switch).
+
+| Prop | Тип | Default | Опис |
+|------|-----|---------|------|
+| `checked` | boolean | `false` | — |
+| `onChange` | `(newValue: boolean) => void` | — | — |
+| `disabled` | boolean | `false` | — |
+| `label` | string | — | Текст біля перемикача |
+| `description` | string | — | Опис під label |
+| `size` | `'sm' \| 'md'` | `md` | — |
+
+```jsx
+<Toggle
+  checked={isVoiceEnabled}
+  onChange={setIsVoiceEnabled}
+  label="Голосовий ввід"
+  description="Увімкнути диктування адресу справи"
+/>
+```
+
+### Tabs
+
+Горизонтальні вкладки (контрольований компонент).
+
+| Prop | Тип | Default | Опис |
+|------|-----|---------|------|
+| `tabs` | `[{id, label, icon?, badge?, disabled?}]` | `[]` | Перелік |
+| `activeId` | string | — | id активної вкладки |
+| `onChange` | `(newId: string) => void` | — | — |
+| `variant` | `'default' \| 'pills'` | `default` | Підкреслення / pill |
+| `fullWidth` | boolean | `false` | Заповнити контейнер |
+
+```jsx
+<Tabs
+  tabs={[
+    { id: 'overview', label: 'Огляд' },
+    { id: 'materials', label: 'Матеріали', badge: 24 },
+    { id: 'work', label: 'Робота' },
+    { id: 'canvas', label: 'Канва', disabled: true },
+  ]}
+  activeId={activeTab}
+  onChange={setActiveTab}
+/>
+```
+
+### Tooltip
+
+Підказка при hover/focus. Wrapper-компонент.
+
+| Prop | Тип | Default | Опис |
+|------|-----|---------|------|
+| `content` | string \| ReactNode | — | Текст підказки |
+| `placement` | `'top' \| 'right' \| 'bottom' \| 'left'` | `top` | Позиція |
+| `delay` | number | `500` | Затримка перед показом, ms |
+| `disabled` | boolean | `false` | Не показувати |
+
+```jsx
+<Tooltip content="Документ потребує перегляду — невідомий тип">
+  <span>⚠</span>
+</Tooltip>
+
+<Tooltip content="Видалити справу" placement="bottom" delay={300}>
+  <Button variant="danger" icon={<Trash2 size={14} />} />
+</Tooltip>
+```
+
 ## Іконки (lucide-react)
 
 Реекспорт у `icons.js` — додавай нові у міру потреби:

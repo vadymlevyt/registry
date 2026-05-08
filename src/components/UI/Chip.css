@@ -1,0 +1,90 @@
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-body);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+/* Розміри */
+.ui-chip--sm {
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  height: 22px;
+}
+.ui-chip--md {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  height: 28px;
+}
+
+/* Варіанти */
+.ui-chip--default {
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+  border: 1px solid var(--color-border);
+}
+.ui-chip--accent {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+}
+.ui-chip--success {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--color-success);
+  border: 1px solid var(--color-success);
+}
+.ui-chip--warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
+}
+.ui-chip--danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+}
+.ui-chip--proceeding {
+  background: color-mix(in srgb, var(--chip-color) 15%, transparent);
+  color: var(--chip-color);
+  border: 1px solid var(--chip-color);
+}
+
+/* Стани */
+.ui-chip--clickable {
+  cursor: pointer;
+}
+.ui-chip--clickable:hover {
+  filter: brightness(1.2);
+}
+
+.ui-chip__icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ui-chip__label {
+  line-height: 1;
+}
+
+.ui-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  margin-left: var(--space-1);
+  border-radius: var(--radius-xs);
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+}
+.ui-chip__remove:hover {
+  opacity: 1;
+}
