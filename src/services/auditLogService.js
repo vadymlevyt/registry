@@ -18,6 +18,14 @@ export const AUDIT_ACTIONS = [
   'time_standards_changed',
   // Drive-first hydration — критичне відновлення з бекапу.
   'restore_from_backup',
+  // Phase 1.5 — документи і провадження.
+  'add_document',
+  'add_documents',
+  'update_document',
+  'delete_document',
+  'add_proceeding',
+  'update_proceeding',
+  'delete_proceeding',
 ];
 
 export function shouldAudit(action) {

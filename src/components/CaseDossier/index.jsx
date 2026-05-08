@@ -1940,10 +1940,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               >{"Очистити"}</button>
               <button
                 onClick={async () => {
-                  // Накопичуємо нові документи в локальному масиві і робимо один
-                  // executeAction(update_case_field, documents) в кінці — щоб уникнути
-                  // race на послідовних setState між файлами.
-                  const created = [];
+                  // Кожен файл додається через окремий add_document ACTION.
+                  // Race-condition між setState послідовних викликів вирішено
+                  // тим, що executeAction → setCases(prev => ...) використовує
+                  // функціональний апдейт (читає актуальний state).
                   for (let i = 0; i < dropQueue.length; i++) {
                     if (dropQueue[i].status === "done") continue;
                     setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "uploading" } : item));
@@ -1969,19 +1969,18 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                         author: null,
                         procId: null,
                       });
-                      created.push(newDoc);
+                      if (onExecuteAction) {
+                        const result = await onExecuteAction('dossier_agent', 'add_document', {
+                          caseId: caseData.id,
+                          document: newDoc,
+                        });
+                        if (!result?.success) throw new Error(result?.error || 'add_document failed');
+                      }
                       setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "done" } : item));
-                    } catch {
+                    } catch (err) {
+                      console.warn('[drag-n-drop] add_document failed:', err?.message || err);
                       setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "error" } : item));
                     }
-                  }
-                  if (created.length > 0 && onExecuteAction) {
-                    const merged = [...(caseData.documents || []), ...created];
-                    onExecuteAction('dossier_agent', 'update_case_field', {
-                      caseId: caseData.id,
-                      field: 'documents',
-                      value: merged,
-                    });
                   }
                 }}
                 style={{ flex: 2, background: "#4f7cff", border: "none", color: "#fff", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 600 }}

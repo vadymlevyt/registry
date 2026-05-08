@@ -343,6 +343,53 @@ export async function createDriveFile(folderId, fileName, content, token) {
   return data;
 }
 
+// Видалити файл з Drive за ID. Обгорнуто try/catch на боці виклику —
+// тут пробрасуємо помилки, щоб caller міг розрізнити "не знайшли" і "не змогли".
+export async function deleteDriveFile(fileId) {
+  if (!fileId) throw new Error('deleteDriveFile: fileId is required');
+  const res = await driveRequest(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'DELETE',
+  });
+  // 204 No Content → ok. 404 → файл вже видалено вручну, теж ок.
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`deleteDriveFile ${res.status}: ${t.slice(0, 200)}`);
+  }
+  return true;
+}
+
+// Видалити OCR-кеш документа з 02_ОБРОБЛЕНІ. Не падає якщо кешу немає
+// (повертає false). Логіка пошуку синхронізована з ocrService.cacheFileName:
+// `${sanitizeBasename(name)}_${driveId}.txt`.
+export async function deleteOcrCacheForDocument(caseData, doc) {
+  if (!caseData || !doc || !doc.driveId) return false;
+  const subFolderId = caseData?.storage?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return false;
+
+  const sanitize = (n) => (n || '')
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[/\\]/g, '_')
+    .slice(0, 150);
+  const baseName = sanitize(doc.originalName || doc.name || '');
+  const cacheName = `${baseName}_${doc.driveId}.txt`;
+
+  // Знайти у 02_ОБРОБЛЕНІ за parent + name. Назва кешу — латиниця/похідна
+  // від оригінальної назви документа з санітизацією; q= по name працює,
+  // але одинарні лапки в імені треба екранувати (правило #8 — кирилиця заборонена,
+  // але кеш-імена не містять кирилиці після sanitize, бо вона не вирізана).
+  // Безпечний варіант: q= по parent, фільтрація у JS.
+  const q = `'${subFolderId}' in parents and trashed=false`;
+  const res = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
+  );
+  if (!res.ok) return false;
+  const data = await res.json();
+  const target = (data.files || []).find(f => f.name === cacheName);
+  if (!target) return false;
+  await deleteDriveFile(target.id);
+  return true;
+}
+
 export async function updateDriveFile(fileId, content, token) {
   const res = await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
     method: 'PATCH',

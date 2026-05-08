@@ -97,6 +97,18 @@ export async function setExtendedForDocument(caseId, caseData, documentId, field
   return merged;
 }
 
+// Видалити extended-запис документа зі справи. Якщо запису не було —
+// no-op. Зберігає оновлений файл на Drive і кеш.
+export async function deleteExtendedForDocument(caseId, caseData, documentId) {
+  if (!caseId || !documentId) return false;
+  const all = await loadExtendedForCase(caseId, caseData);
+  if (!(documentId in all)) return false;
+  const next = { ...all };
+  delete next[documentId];
+  await saveExtendedForCase(caseId, caseData, next);
+  return true;
+}
+
 // Інвалідувати кеш справи (після зовнішніх змін на Drive).
 export function invalidateCache(caseId) {
   if (caseId == null) {

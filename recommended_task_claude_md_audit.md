@@ -398,3 +398,66 @@ schemaVersion 5 — Phase 1.5 (Канон даних):
 - Додати виклик `createDocument()` з `category: null, author: null, procId: null` (маркер ⚠) через `executeAction`.
 
 Деталі цих знахідок — `discovered_issues_during_task1.md`.
+
+---
+
+## TASK 2 — ACTIONS і PERMISSIONS зміни (2026-05-08)
+
+Цей TASK додав 8 нових ACTIONS (документи + провадження + контекст обробки) і нову роль `document_processor_agent`. Зміни які варто відобразити у CLAUDE.md під час майбутнього аудиту:
+
+### Розділ "ACTIONS і PERMISSIONS — централізована архітектура"
+
+**Зараз написано:** "19+" дій, перелік (`add_documents`, `update_processing_context`) у dossier_agent / document_processor_agent — згаданий, але не реалізований.
+
+**Реальність після TASK 2:** 38 ACTIONS у реєстрі. Нова група "Документи і провадження":
+```
+add_document, add_documents, update_document, delete_document,
+add_proceeding, update_proceeding, delete_proceeding,
+update_processing_context
+```
+
+`PERMISSIONS` тепер містить **4 ролі** (qi/dashboard/dossier/document_processor):
+- `document_processor_agent`: вузький набір — `add_documents`, `update_processing_context`, `batch_update`. Не має дозволу на hearings/deadlines/case-create.
+- `dossier_agent` отримав 5 нових дозволів: `add_document`, `update_document`, `add_proceeding`, `update_proceeding`, `update_processing_context`.
+- `qi_agent` отримав 4 нових: `add_document`, `update_document`, `add_proceeding`, `update_proceeding`.
+
+### Новий патерн: UI-only ACTIONS (`_fromUI`)
+
+Додано Set `UI_ONLY_ACTIONS = { 'delete_document', 'delete_proceeding' }`. Перевірка в `executeAction` до PERMISSIONS-allowlist:
+- Без `params._fromUI` → `success: false, error: 'Дія X доступна лише через UI'`
+- З `params._fromUI: true` → пропускаємо PERMISSIONS allowlist (UI має повний доступ); tenant/case checks залишаються.
+
+`destroy_case` залишається UI-only через окрему функцію `deleteCasePermanently`, не через цей патерн (історична причина).
+
+### Update в правилі №7 — `update_case_field`
+
+`'documents'` прибрано з allowlist після TASK 1 patch. Документи модифікуються виключно через нові ACTIONS. У CLAUDE.md це згадати окремим bullet, бо drag-n-drop у досьє більше не використовує `update_case_field`.
+
+### Розділ "Які дії пишуться в auditLog"
+
+Додати:
+- `add_document`, `add_documents`, `update_document`, `delete_document`
+- `add_proceeding`, `update_proceeding`, `delete_proceeding`
+
+`update_processing_context` — навмисно НЕ пишеться (службова дія між DP і Dossier agent).
+
+### Розділ "PHASE 1.5 — CANONICAL DOCUMENT SCHEMA v5.0"
+
+Доповнити підрозділ "Точки створення документа":
+- drag-n-drop drop queue тепер працює через `add_document` (не через `update_case_field`).
+- `delete_document` має три режими: `archive` (status='archived'), `registry_only` (видаляє з реєстру + extended), `full` (registry + extended + Drive file + OCR-кеш у 02_ОБРОБЛЕНІ).
+- Видалення провадження каскадно обнуляє `procId` усіх документів справи; провадження з дочірніми не видаляється поки дочірні не переприв'язано.
+
+### Нові сервіс-функції
+
+| Файл | Функція |
+|------|---------|
+| `driveService.js` | `deleteDriveFile(fileId)`, `deleteOcrCacheForDocument(caseData, doc)` |
+| `documentsExtended.js` | `deleteExtendedForDocument(caseId, caseData, documentId)` |
+| `App.jsx` (top-level) | `isProceedingDescendant(proceedings, candidateId, ancestorId)` — перевірка циклів parentProcId |
+
+### DocumentProcessor — досі поза executeAction
+
+Переписувати DP на `add_documents`/`update_processing_context` — **окремий TASK Document Processor v2** (Фаза 2). У TASK 2 інфраструктура готова (PERMISSIONS + ACTIONS), але DP досі викликає `updateCase` напряму на `DocumentProcessor:826, 966`. Це навмисне обмеження scope — переписування DP вимагає одночасної міграції на Tool Use.
+
+Деталі знахідок — `discovered_issues_during_task2.md` (якщо створено).

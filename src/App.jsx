@@ -4,14 +4,14 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5 } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
 import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
-import { saveExtendedForCase } from './services/documentsExtended';
-import { createDocument } from './services/documentFactory';
+import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
+import { createDocument, validateDocument } from './services/documentFactory';
 import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/documentSchema';
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
@@ -202,6 +202,29 @@ function getHearingTime(c) {
 }
 
 // Найближчий дедлайн справи
+// Чи candidateId є нащадком ancestorId у дереві проваджень.
+// Використовується для перевірки циклів parentProcId у update_proceeding.
+function isProceedingDescendant(proceedings, candidateId, ancestorId) {
+  if (!Array.isArray(proceedings)) return false;
+  let current = proceedings.find(p => p.id === candidateId);
+  const visited = new Set();
+  while (current && current.parentProcId) {
+    if (visited.has(current.id)) return false; // safety guard від циклу в даних
+    visited.add(current.id);
+    if (current.parentProcId === ancestorId) return true;
+    current = proceedings.find(p => p.id === current.parentProcId);
+  }
+  return false;
+}
+
+// UI-only ACTIONS — не доступні агентам через ACTION_JSON, лише через executeAction
+// з прапором _fromUI у params (виставляє UI-обробник). destroy_case реалізовано
+// окремим UI-only шляхом (deleteCasePermanently) і тут не фігурує.
+const UI_ONLY_ACTIONS = new Set([
+  'delete_document',
+  'delete_proceeding',
+]);
+
 function getNextDeadline(caseItem) {
   if (!Array.isArray(caseItem.deadlines) || caseItem.deadlines.length === 0) return null;
   const today = new Date().toISOString().split('T')[0];
@@ -4654,13 +4677,12 @@ function App() {
     },
 
     update_case_field: ({ caseId, field, value }) => {
-      // 'documents' тимчасово в allowlist — потрібен окремий ACTION 'add_document'
-      // (див. discovered_issues_during_task1.md #9). Зараз CaseDossier drag-n-drop
-      // використовує update_case_field з масивом усіх документів справи.
+      // 'documents' навмисно НЕ в allowlist: документи модифікуються через
+      // окремі ACTIONS (add_document/add_documents/update_document/delete_document).
+      // 'proceedings' — аналогічно (add_proceeding/update_proceeding/delete_proceeding).
       const allowedFields = [
         'name', 'client', 'court', 'case_no', 'category',
         'next_action', 'notes', 'judge', 'status',
-        'documents',
       ];
       if (!allowedFields.includes(field)) {
         return { error: `Поле "${field}" не дозволено змінювати через агента` };
@@ -5197,7 +5219,404 @@ function App() {
       }
     },
 
-    // ГРУПА 5 — Композитна дія
+    // ГРУПА 5 — Документи і провадження (Phase 1.5)
+    add_document: async ({ caseId, document }) => {
+      if (!caseId)   return { success: false, error: "caseId обов'язковий" };
+      if (!document) return { success: false, error: "document обов'язковий" };
+
+      const { valid, errors } = validateDocument(document);
+      if (!valid) {
+        return { success: false, error: `Невалідний документ: ${errors.join(', ')}` };
+      }
+
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const existing = (targetCase.documents || []).find(d => d.id === document.id);
+      if (existing) {
+        return { success: false, error: `Документ ${document.id} вже існує у справі` };
+      }
+
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, documents: [...(c.documents || []), document], updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return {
+        success: true,
+        documentId: document.id,
+        message: `Документ "${document.name}" додано у справу`
+      };
+    },
+
+    add_documents: async ({ caseId, documents }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(documents) || documents.length === 0) {
+        return { success: false, error: 'documents має бути непорожнім масивом' };
+      }
+
+      // Атомарна валідація — або всі додаються, або жоден.
+      const validationErrors = [];
+      for (let i = 0; i < documents.length; i++) {
+        const { valid, errors } = validateDocument(documents[i]);
+        if (!valid) {
+          validationErrors.push(`Документ ${i} (${documents[i]?.name || documents[i]?.id || '?'}): ${errors.join(', ')}`);
+        }
+      }
+      if (validationErrors.length > 0) {
+        return {
+          success: false,
+          error: `Валідація не пройдена для ${validationErrors.length} документів`,
+          errors: validationErrors,
+        };
+      }
+
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const existingIds = new Set((targetCase.documents || []).map(d => d.id));
+      const duplicates = documents.filter(d => existingIds.has(d.id));
+      if (duplicates.length > 0) {
+        return {
+          success: false,
+          error: `${duplicates.length} документів з такими id вже існують у справі`,
+          duplicates: duplicates.map(d => d.id),
+        };
+      }
+
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              documents: [...(c.documents || []), ...documents],
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      ));
+      return {
+        success: true,
+        addedCount: documents.length,
+        documentIds: documents.map(d => d.id),
+        message: `Додано ${documents.length} документів у справу`,
+      };
+    },
+
+    update_document: async ({ caseId, documentId, fields }) => {
+      if (!caseId || !documentId || !fields) {
+        return { success: false, error: "caseId, documentId, fields обов'язкові" };
+      }
+      // Allowlist полів — захист від випадкового перезапису id/addedAt/addedBy/driveId.
+      const ALLOWED_UPDATE_FIELDS = [
+        'name', 'category', 'author', 'documentNature', 'namingStatus',
+        'isKey', 'procId', 'driveUrl', 'folder', 'pageCount', 'date',
+        'icon', 'status'
+      ];
+      const invalidFields = Object.keys(fields).filter(f => !ALLOWED_UPDATE_FIELDS.includes(f));
+      if (invalidFields.length > 0) {
+        return {
+          success: false,
+          error: `Заборонено оновлювати поля: ${invalidFields.join(', ')}`,
+        };
+      }
+
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const docIdx = (targetCase.documents || []).findIndex(d => d.id === documentId);
+      if (docIdx === -1) {
+        return { success: false, error: `Документ ${documentId} не знайдено у справі` };
+      }
+      const updatedDoc = {
+        ...targetCase.documents[docIdx],
+        ...fields,
+        updatedAt: new Date().toISOString(),
+      };
+      const { valid, errors } = validateDocument(updatedDoc);
+      if (!valid) {
+        return { success: false, error: `Невалідний документ після оновлення: ${errors.join(', ')}` };
+      }
+
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              documents: c.documents.map(d => d.id === documentId ? updatedDoc : d),
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      ));
+      return {
+        success: true,
+        documentId,
+        updatedFields: Object.keys(fields),
+        message: `Документ "${updatedDoc.name}" оновлено`,
+      };
+    },
+
+    delete_document: async ({ caseId, documentId, mode = 'full' }) => {
+      if (!caseId || !documentId) {
+        return { success: false, error: "caseId і documentId обов'язкові" };
+      }
+      if (!['full', 'registry_only', 'archive'].includes(mode)) {
+        return { success: false, error: `Невідомий режим: ${mode}` };
+      }
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const doc = (targetCase.documents || []).find(d => d.id === documentId);
+      if (!doc) {
+        return { success: false, error: `Документ ${documentId} не знайдено у справі` };
+      }
+
+      // Архівування — тільки status, файли і extended лишаються.
+      if (mode === 'archive') {
+        setCases(prev => prev.map(c =>
+          c.id === caseId
+            ? {
+                ...c,
+                documents: c.documents.map(d =>
+                  d.id === documentId
+                    ? { ...d, status: 'archived', updatedAt: new Date().toISOString() }
+                    : d
+                ),
+                updatedAt: new Date().toISOString(),
+              }
+            : c
+        ));
+        return {
+          success: true,
+          mode: 'archive',
+          documentId,
+          message: `Документ "${doc.name}" архівовано`,
+        };
+      }
+
+      // mode === 'full' або 'registry_only' — видаляємо з реєстру.
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              documents: c.documents.filter(d => d.id !== documentId),
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      ));
+
+      // Прибрати запис з documents_extended (graceful failure — не блокує реєстр).
+      try {
+        await deleteExtendedForDocument(caseId, targetCase, documentId);
+      } catch (err) {
+        console.warn('[delete_document] documents_extended cleanup failed:', err?.message || err);
+      }
+
+      if (mode === 'registry_only') {
+        return {
+          success: true,
+          mode: 'registry_only',
+          documentId,
+          message: `Документ "${doc.name}" видалено з реєстру (файли лишились на Drive)`,
+        };
+      }
+
+      // mode === 'full' — видалити файл з Drive і OCR-кеш.
+      if (doc.driveId) {
+        try {
+          await deleteDriveFile(doc.driveId);
+        } catch (err) {
+          console.warn(`[delete_document] Drive file delete failed: ${err?.message || err}`);
+        }
+      }
+      try {
+        await deleteOcrCacheForDocument(targetCase, doc);
+      } catch (err) {
+        console.warn(`[delete_document] OCR cache cleanup failed: ${err?.message || err}`);
+      }
+
+      return {
+        success: true,
+        mode: 'full',
+        documentId,
+        message: `Документ "${doc.name}" видалено повністю (з реєстру і з Drive)`,
+      };
+    },
+
+    add_proceeding: async ({ caseId, proceeding }) => {
+      if (!caseId)     return { success: false, error: "caseId обов'язковий" };
+      if (!proceeding) return { success: false, error: "proceeding обов'язковий" };
+      // Поточна структура використовує title (див. seed proc_main). Приймаємо
+      // також name як alias для дружнього API.
+      const title = proceeding.title || proceeding.name;
+      if (!proceeding.id || !title || !proceeding.type) {
+        return { success: false, error: 'proceeding має мати id, title (або name), type' };
+      }
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const existingProcs = targetCase.proceedings || [];
+      if (existingProcs.find(p => p.id === proceeding.id)) {
+        return { success: false, error: `Провадження ${proceeding.id} вже існує` };
+      }
+      if (existingProcs.find(p => p.title === title)) {
+        return { success: false, error: `Провадження з назвою "${title}" вже існує` };
+      }
+      if (proceeding.parentProcId) {
+        if (!existingProcs.find(p => p.id === proceeding.parentProcId)) {
+          return {
+            success: false,
+            error: `Батьківське провадження ${proceeding.parentProcId} не знайдено`,
+          };
+        }
+      }
+      const now = new Date().toISOString();
+      const newProc = {
+        ...proceeding,
+        title,
+        status: proceeding.status || 'active',
+        parentProcId: proceeding.parentProcId || null,
+        parentEventId: proceeding.parentEventId || null,
+        addedAt: now,
+        updatedAt: now,
+      };
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, proceedings: [...existingProcs, newProc], updatedAt: now }
+          : c
+      ));
+      return {
+        success: true,
+        proceedingId: newProc.id,
+        message: `Провадження "${title}" додано у справу`,
+      };
+    },
+
+    update_proceeding: async ({ caseId, proceedingId, fields }) => {
+      if (!caseId || !proceedingId || !fields) {
+        return { success: false, error: "caseId, proceedingId, fields обов'язкові" };
+      }
+      // Тип провадження не редагується (структурне рішення).
+      const ALLOWED_UPDATE_FIELDS = [
+        'title', 'parentProcId', 'parentEventId', 'color', 'court',
+        'caseNumber', 'dateOpened', 'judges', 'description', 'status'
+      ];
+      const invalidFields = Object.keys(fields).filter(f => !ALLOWED_UPDATE_FIELDS.includes(f));
+      if (invalidFields.length > 0) {
+        return { success: false, error: `Заборонено оновлювати поля: ${invalidFields.join(', ')}` };
+      }
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const existingProcs = targetCase.proceedings || [];
+      const proc = existingProcs.find(p => p.id === proceedingId);
+      if (!proc) {
+        return { success: false, error: `Провадження ${proceedingId} не знайдено` };
+      }
+      // Перевірка циклів parentProcId.
+      if (fields.parentProcId !== undefined && fields.parentProcId !== null) {
+        if (fields.parentProcId === proceedingId) {
+          return { success: false, error: 'Провадження не може бути батьком самого себе' };
+        }
+        if (isProceedingDescendant(existingProcs, fields.parentProcId, proceedingId)) {
+          return { success: false, error: 'Циклічна залежність — не можна зробити нащадка батьком' };
+        }
+        if (!existingProcs.find(p => p.id === fields.parentProcId)) {
+          return { success: false, error: `Батьківське провадження ${fields.parentProcId} не знайдено` };
+        }
+      }
+      const now = new Date().toISOString();
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              proceedings: c.proceedings.map(p =>
+                p.id === proceedingId ? { ...p, ...fields, updatedAt: now } : p
+              ),
+              updatedAt: now,
+            }
+          : c
+      ));
+      return {
+        success: true,
+        proceedingId,
+        updatedFields: Object.keys(fields),
+      };
+    },
+
+    delete_proceeding: async ({ caseId, proceedingId }) => {
+      if (!caseId || !proceedingId) {
+        return { success: false, error: "caseId і proceedingId обов'язкові" };
+      }
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const existingProcs = targetCase.proceedings || [];
+      const proc = existingProcs.find(p => p.id === proceedingId);
+      if (!proc) {
+        return { success: false, error: `Провадження ${proceedingId} не знайдено` };
+      }
+      const children = existingProcs.filter(p => p.parentProcId === proceedingId);
+      if (children.length > 0) {
+        return {
+          success: false,
+          error: `Не можна видалити — є ${children.length} дочірніх проваджень. Спочатку видаліть або переприв'яжіть їх.`,
+          childrenIds: children.map(c => c.id),
+        };
+      }
+      const affectedDocs = (targetCase.documents || []).filter(d => d.procId === proceedingId);
+      const now = new Date().toISOString();
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              proceedings: c.proceedings.filter(p => p.id !== proceedingId),
+              documents: (c.documents || []).map(d =>
+                d.procId === proceedingId
+                  ? { ...d, procId: null, updatedAt: now }
+                  : d
+              ),
+              updatedAt: now,
+            }
+          : c
+      ));
+      return {
+        success: true,
+        proceedingId,
+        affectedDocumentsCount: affectedDocs.length,
+        message: `Провадження "${proc.title || proc.name}" видалено. ${affectedDocs.length} документів стали "без провадження".`,
+      };
+    },
+
+    update_processing_context: async ({ caseId, context }) => {
+      if (!caseId || !context) {
+        return { success: false, error: "caseId і context обов'язкові" };
+      }
+      const requiredFields = ['processedAt', 'documentsCount', 'summary'];
+      const missing = requiredFields.filter(f => context[f] === undefined || context[f] === null);
+      if (missing.length > 0) {
+        return { success: false, error: `У context відсутні поля: ${missing.join(', ')}` };
+      }
+      const targetCase = cases.find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? { ...c, lastProcessingContext: context, updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return {
+        success: true,
+        message: 'Контекст обробки оновлено для справи',
+      };
+    },
+
+    // ГРУПА 6 — Композитна дія
     batch_update: async ({ operations, agentId }) => {
       const results = [];
       for (const op of operations) {
@@ -5245,6 +5664,9 @@ function App() {
       'confirm_event', 'add_travel', 'cancel_travel',
       'start_external_work', 'end_external_work', 'update_external_work',
       'batch_update',
+      // Phase 1.5 — документи і провадження (одиночне додавання при QI-команді)
+      'add_document', 'update_document',
+      'add_proceeding', 'update_proceeding',
     ],
 
     dashboard_agent: [
@@ -5252,6 +5674,7 @@ function App() {
       'add_note', 'update_note', 'delete_note',
       'confirm_event', 'add_travel',
       'batch_update',
+      // Документи не зона дашборду — нових дозволів немає.
     ],
 
     dossier_agent: [
@@ -5268,9 +5691,24 @@ function App() {
       'confirm_event', 'add_travel', 'cancel_travel',
       'start_external_work', 'end_external_work', 'update_external_work',
       'track_session_start', 'track_session_end',
+      // Phase 1.5 — документи і провадження
+      'add_document', 'update_document',
+      'add_proceeding', 'update_proceeding',
+      'update_processing_context',
+      // delete_document, delete_proceeding — НЕ дозволено, лише UI (UI_ONLY_ACTIONS).
     ],
 
-    // destroy_case, delete_time_entry — жоден агент. Тільки UI.
+    // Phase 1.5 — субагент пакетної обробки документів. Вузька зона:
+    // тільки batch-додавання документів і запис контексту обробки.
+    // hearings/deadlines/create_case/destroy_case — заборонено.
+    document_processor_agent: [
+      'add_documents',
+      'update_processing_context',
+      'batch_update',
+    ],
+
+    // destroy_case, delete_time_entry, delete_document, delete_proceeding —
+    // жоден агент. Тільки UI з підтвердженням.
   };
 
   // ── executeAction — єдина точка входу для всіх дій агентів ─────────────────
@@ -5283,11 +5721,24 @@ function App() {
     const effectiveUserId = userId || currentUser.userId;
     const tenantId = currentUser.tenantId;
 
-    // 1. Перевірка ролей агента (allowlist дій)
-    const allowed = PERMISSIONS[agentId] || [];
-    if (!allowed.includes(action)) {
-      console.warn(`executeAction BLOCKED: ${agentId} → ${action}`);
-      return { success: false, error: `Немає повноважень: ${action}` };
+    // 0. UI-only ACTIONS — мусять мати _fromUI у params (виставляє UI-обробник).
+    // Агенти ніколи не отримують доступу до цих дій, навіть якщо ACTION_JSON
+    // спробує підкласти _fromUI: true — для безпеки можна (в майбутньому)
+    // фільтрувати _* поля при парсингу ACTION_JSON.
+    if (UI_ONLY_ACTIONS.has(action)) {
+      if (!params?._fromUI) {
+        console.warn(`executeAction UI-ONLY: ${agentId} → ${action}`);
+        return { success: false, error: `Дія ${action} доступна лише через UI` };
+      }
+      // _fromUI bypass: пропускаємо PERMISSIONS allowlist (UI має повний доступ
+      // у межах своєї сесії; tenant/case checks нижче залишаються активними).
+    } else {
+      // 1. Перевірка ролей агента (allowlist дій)
+      const allowed = PERMISSIONS[agentId] || [];
+      if (!allowed.includes(action)) {
+        console.warn(`executeAction BLOCKED: ${agentId} → ${action}`);
+        return { success: false, error: `Немає повноважень: ${action}` };
+      }
     }
 
     if (!ACTIONS[action]) {
