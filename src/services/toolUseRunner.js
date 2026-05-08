@@ -105,11 +105,26 @@ export async function runToolUse({ apiResponse, agentId, executeAction, context 
     const { id: toolUseId, name: toolName, input: rawInput } = block;
     const params = (rawInput && typeof rawInput === 'object') ? { ...rawInput } : {};
 
-    // Auto-inject caseId якщо tool його очікує а модель не передала.
-    // Робимо це лише якщо params.caseId явно не задано — щоб модель могла
-    // явно передати інший caseId якщо треба.
-    if (context.caseId && params.caseId === undefined) {
-      params.caseId = context.caseId;
+    // ── caseId protection ─────────────────────────────────────────────────
+    // Якщо runner запущено з закріпленою справою (context.caseId) — агент
+    // не може діяти з іншою справою. Це принципова ізоляція досьє.
+    //
+    //  • Модель пропустила caseId → ставимо контекстний.
+    //  • Модель передала ТОЙ САМИЙ caseId → нічого не змінюємо.
+    //  • Модель передала ІНШИЙ caseId → перезаписуємо на контекстний і
+    //    додаємо помітку у tool_result, щоб модель побачила і не пробувала
+    //    знову.
+    let caseIdOverridden = false;
+    let attemptedCaseId = null;
+    if (context.caseId) {
+      const incoming = params.caseId;
+      if (incoming === undefined || incoming === null || incoming === '') {
+        params.caseId = context.caseId;
+      } else if (incoming !== context.caseId) {
+        attemptedCaseId = incoming;
+        params.caseId = context.caseId;
+        caseIdOverridden = true;
+      }
     }
 
     let resultPayload;
@@ -124,6 +139,15 @@ export async function runToolUse({ apiResponse, agentId, executeAction, context 
         errors.push({ toolName, toolUseId, error: result.error || 'unknown' });
       } else {
         resultPayload = result || { success: true };
+      }
+      // Помітка для моделі — вона має побачити це в tool_result і не
+      // намагатись знову.
+      if (caseIdOverridden) {
+        resultPayload = {
+          ...(typeof resultPayload === 'object' ? resultPayload : { result: resultPayload }),
+          _caseIdOverridden: true,
+          _note: `caseId перезаписано з '${attemptedCaseId}' на поточну справу '${context.caseId}'. Агент досьє може діяти лише в межах поточної справи.`
+        };
       }
     } catch (err) {
       // Тех-помилка (виняток у handler). Логуємо і повертаємо моделі.
@@ -294,15 +318,25 @@ export async function runMultiTurnConversation({
 
 // ── callAPIWithRetry — допоміжна обгортка з retry ───────────────────────────
 //
-// Exponential backoff для 429 і 5xx. Дружні повідомлення для 401/мережа.
-// Викидає Error з полем .userMessage — UI може показати його напряму.
+// Дружні повідомлення для 401/мережа. Для 429 і 5xx — exponential backoff з
+// jitter; для 429 додатково респектуємо retry-after header якщо Anthropic
+// його повертає (у секундах). 429 не показується користувачу одразу — спершу
+// спокійно чекаємо і пробуємо знову, бо при швидкому послідовному введенні
+// частина токенів пер-хвилинного ліміту лишається в попередньому turn.
+//
+// maxRetries=5 і initialDelayMs=1500 обрано так, щоб повне виснаження було
+// близько 1500 + 3000 + 6000 + 12000 + jitter ≈ 24с — тоді нічого не падає
+// при 1-2 секундних "хвилинних спайках" на Tier 1.
+//
+// Викидає Error з полем .userMessage — UI може показати напряму.
 
 export async function callAPIWithRetry(params, options = {}) {
   const {
     apiKey,
     apiUrl = 'https://api.anthropic.com/v1/messages',
-    maxRetries = 3,
-    initialDelayMs = 1000,
+    maxRetries = 5,
+    initialDelayMs = 1500,
+    maxDelayMs = 20000,
   } = options;
 
   if (!apiKey) {
@@ -335,7 +369,7 @@ export async function callAPIWithRetry(params, options = {}) {
         e.cause = networkErr;
         throw e;
       }
-      await sleep(initialDelayMs * Math.pow(2, attempt));
+      await sleep(backoffDelay(attempt, initialDelayMs, maxDelayMs));
       continue;
     }
 
@@ -374,7 +408,13 @@ export async function callAPIWithRetry(params, options = {}) {
           : 'Сервіс агента тимчасово недоступний. Спробуйте через хвилину.';
         throw e;
       }
-      await sleep(initialDelayMs * Math.pow(2, attempt));
+      // Для 429 — респект retry-after header (у секундах).
+      let delayMs = backoffDelay(attempt, initialDelayMs, maxDelayMs);
+      if (status === 429) {
+        const ra = parseRetryAfter(response.headers);
+        if (ra != null) delayMs = Math.min(Math.max(ra, 1000), maxDelayMs);
+      }
+      await sleep(delayMs);
       continue;
     }
 
@@ -388,6 +428,30 @@ export async function callAPIWithRetry(params, options = {}) {
   // Сюди не повинно дійти, але про всяк випадок.
   if (lastError) throw lastError;
   throw new Error('callAPIWithRetry: unexpected end');
+}
+
+// Exponential backoff з jitter (full jitter за рекомендацією AWS).
+// attempt=0 → ~initialDelay, attempt=1 → ~2x, attempt=2 → ~4x, ...
+// Jitter — щоб не синхронізувати retry між паралельними клієнтами.
+function backoffDelay(attempt, initialMs, maxMs) {
+  const exp = initialMs * Math.pow(2, attempt);
+  const capped = Math.min(exp, maxMs);
+  // Full jitter: випадково в [capped/2, capped].
+  return Math.floor(capped / 2 + Math.random() * (capped / 2));
+}
+
+// Anthropic повертає Retry-After як ціле число секунд (або HTTP-date).
+// Тут парсимо лише числовий формат — найчастіший випадок.
+function parseRetryAfter(headers) {
+  if (!headers || typeof headers.get !== 'function') return null;
+  const raw = headers.get('retry-after');
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+  // HTTP-date формат — fallback не реалізуємо, бо рідко.
+  return null;
 }
 
 function sleep(ms) {

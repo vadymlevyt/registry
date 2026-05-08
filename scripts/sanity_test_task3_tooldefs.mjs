@@ -60,6 +60,34 @@ const ALL_INDIVIDUAL_TOOLS = [
   UPDATE_PROCESSING_CONTEXT_TOOL,
 ];
 
+// ACTIONS свідомо виключені з DOSSIER_AGENT_TOOLS, навіть якщо PERMISSIONS
+// агента їх дозволяє. Додавати сюди лише з обґрунтуванням.
+const EXCLUDED_FROM_DOSSIER_TOOLS = {
+  // UI-only через _fromUI прапор (TASK 2).
+  delete_document:    'UI-only — модифікує файли на Drive, потребує підтвердження',
+  delete_proceeding:  'UI-only — каскадно обнуляє procId документів, потребує підтвердження',
+  // Окремий шар білінгу — не зона текстового чату досьє.
+  add_time_entry:           'окремий шар білінгу',
+  update_time_entry:        'окремий шар білінгу',
+  cancel_time_entry:        'окремий шар білінгу',
+  delete_time_entry:        'окремий шар білінгу',
+  split_time_entry:         'окремий шар білінгу',
+  assign_offline_period:    'окремий шар білінгу',
+  confirm_event:            'утиліта календаря/часу',
+  add_travel:               'утиліта календаря/часу',
+  cancel_travel:            'утиліта календаря/часу',
+  start_external_work:      'облік часу',
+  end_external_work:        'облік часу',
+  update_external_work:     'облік часу',
+  track_session_start:      'облік сесій',
+  track_session_end:        'облік сесій',
+  // Створення нової справи — поза межами поточної. Зона QI/Dashboard.
+  create_case:              'агент досьє діє лише з поточною справою',
+  // batch_update прибрано з PERMISSIONS.dossier_agent — модель робить це
+  // нативно через паралельні tool_use блоки. У EXCLUDED не вносимо: якщо
+  // повернеться у PERMISSIONS — тест синхронізації одразу впіймає.
+};
+
 // ── Required fields на кожному tool ──
 for (const tool of ALL_INDIVIDUAL_TOOLS) {
   assert(typeof tool.name === 'string' && tool.name.length > 0, `Tool ${tool.name || '?'} — has name`);
@@ -69,20 +97,24 @@ for (const tool of ALL_INDIVIDUAL_TOOLS) {
   assert(Array.isArray(tool.input_schema.required), `Tool ${tool.name} — required is array`);
 }
 
-// ── Енами відповідають канонічній схемі ──
-const schemaCategoryEnum = CANONICAL_DOCUMENT_FIELDS.category.enum;
+// ── Енами відповідають канонічній схемі (без null — Anthropic-friendly) ──
+// Tool Use не любить enum що містить null; null обробляється через "опуск поля".
+const dropNull = (arr) => arr.filter(v => v !== null);
+const schemaCategoryEnum = dropNull(CANONICAL_DOCUMENT_FIELDS.category.enum);
 const toolCategoryEnum = ADD_DOCUMENT_TOOL.input_schema.properties.document.properties.category.enum;
 assert(JSON.stringify(toolCategoryEnum) === JSON.stringify(schemaCategoryEnum),
-  'category enum синхронізований зі schema',
+  'category enum синхронізований зі schema (без null)',
   `tool=${JSON.stringify(toolCategoryEnum)} schema=${JSON.stringify(schemaCategoryEnum)}`);
 
-const schemaAuthorEnum = CANONICAL_DOCUMENT_FIELDS.author.enum;
+const schemaAuthorEnum = dropNull(CANONICAL_DOCUMENT_FIELDS.author.enum);
 const toolAuthorEnum = ADD_DOCUMENT_TOOL.input_schema.properties.document.properties.author.enum;
 assert(JSON.stringify(toolAuthorEnum) === JSON.stringify(schemaAuthorEnum),
-  'author enum синхронізований зі schema');
+  'author enum синхронізований зі schema (без null)');
 
 assert(toolAuthorEnum.includes('opponent'), 'author enum містить opponent (а не opp)');
 assert(!toolAuthorEnum.includes('opp'), 'author enum НЕ містить legacy opp');
+assert(!toolCategoryEnum.includes(null), 'category enum НЕ містить null (Anthropic-friendly)');
+assert(!toolAuthorEnum.includes(null), 'author enum НЕ містить null (Anthropic-friendly)');
 
 const schemaFolderEnum = CANONICAL_DOCUMENT_FIELDS.folder.enum;
 const toolFolderEnum = ADD_DOCUMENT_TOOL.input_schema.properties.document.properties.folder.enum;
@@ -96,13 +128,37 @@ assert(JSON.stringify(toolFolderEnum) === JSON.stringify(schemaFolderEnum),
   assert(names.length === unique.size, 'Немає дублікатів tool.name', `names=${JSON.stringify(names)}`);
 }
 
-// ── DOSSIER_AGENT_TOOLS включає всі індивідуальні константи ──
+// ── DOSSIER_AGENT_TOOLS включає всі індивідуальні константи (без CREATE_CASE_TOOL) ──
 {
   const dossierNames = DOSSIER_AGENT_TOOLS.map(t => t.name).sort();
-  const expectedNames = ALL_INDIVIDUAL_TOOLS.map(t => t.name).sort();
+  const expectedNames = ALL_INDIVIDUAL_TOOLS
+    .filter(t => t !== CREATE_CASE_TOOL) // create_case свідомо виключено
+    .map(t => t.name).sort();
   assert(JSON.stringify(dossierNames) === JSON.stringify(expectedNames),
-    'DOSSIER_AGENT_TOOLS містить усі індивідуальні константи',
+    'DOSSIER_AGENT_TOOLS містить усі індивідуальні константи (окрім CREATE_CASE_TOOL)',
     `dossier=${JSON.stringify(dossierNames)}`);
+  assert(!dossierNames.includes('create_case'),
+    'create_case свідомо виключений з DOSSIER_AGENT_TOOLS (агент діє лише з поточною справою)');
+}
+
+// ── Явна наявність кожного очікуваного tool у DOSSIER_AGENT_TOOLS ──
+// Це ловить регресії типу "агент каже у мене немає delete_hearing".
+{
+  const expectedDossierTools = [
+    'add_hearing', 'update_hearing', 'delete_hearing',
+    'add_deadline', 'update_deadline', 'delete_deadline',
+    'add_note', 'update_note', 'delete_note', 'pin_note', 'unpin_note',
+    'add_document', 'update_document',
+    'add_proceeding', 'update_proceeding',
+    'update_case_field', 'close_case', 'restore_case',
+    'update_processing_context',
+  ];
+  const dossierNamesSet = new Set(DOSSIER_AGENT_TOOLS.map(t => t.name));
+  for (const expected of expectedDossierTools) {
+    assert(dossierNamesSet.has(expected),
+      `DOSSIER_AGENT_TOOLS містить ${expected}`,
+      `dossier=${[...dossierNamesSet].join(',')}`);
+  }
 }
 
 // ── Синхронізація з PERMISSIONS.dossier_agent з App.jsx ──
@@ -113,7 +169,7 @@ assert(JSON.stringify(toolFolderEnum) === JSON.stringify(schemaFolderEnum),
   const src = fs.readFileSync(appJsxPath, 'utf8');
 
   // Знаходимо dossier_agent: [ ... ] (multiline). Простий пошук — від
-  // 'dossier_agent: [' до закриття дужок з ', або ]\n. Достатньо для тесту.
+  // 'dossier_agent: [' до закриття дужок з ', або ]\n.
   const startIdx = src.indexOf('dossier_agent: [');
   assert(startIdx > -1, 'dossier_agent блок знайдено в App.jsx');
   const endIdx = src.indexOf('],', startIdx);
@@ -123,30 +179,55 @@ assert(JSON.stringify(toolFolderEnum) === JSON.stringify(schemaFolderEnum),
   const actions = [...block.matchAll(/['"]([a-z_]+)['"]/g)].map(m => m[1]);
   const actionsSet = new Set(actions);
 
-  // UI-only ACTIONS свідомо ВІДСУТНІ у DOSSIER_AGENT_TOOLS.
-  const UI_ONLY = ['delete_document', 'delete_proceeding'];
-
-  // Перевіряємо що у tools є все з PERMISSIONS, окрім UI-only;
-  // і що у tools немає чогось зайвого що не дозволено в PERMISSIONS.
   const toolNames = new Set(DOSSIER_AGENT_TOOLS.map(t => t.name));
 
+  // Кожен дозволений ACTION (без EXCLUDED_FROM_DOSSIER_TOOLS) має tool.
   const missingFromTools = [...actionsSet].filter(a =>
-    !toolNames.has(a) &&
-    !UI_ONLY.includes(a) &&
-    a !== 'batch_update' && // композитна, не tool
-    a !== 'add_time_entry' && a !== 'update_time_entry' && a !== 'cancel_time_entry' && a !== 'split_time_entry' && a !== 'assign_offline_period' &&
-    a !== 'confirm_event' && a !== 'add_travel' && a !== 'cancel_travel' &&
-    a !== 'start_external_work' && a !== 'end_external_work' && a !== 'update_external_work' &&
-    a !== 'track_session_start' && a !== 'track_session_end'
+    !toolNames.has(a) && !(a in EXCLUDED_FROM_DOSSIER_TOOLS)
   );
   assert(missingFromTools.length === 0,
-    'У DOSSIER_AGENT_TOOLS є tool для кожного нетаймового дозволеного ACTION (окрім UI-only)',
+    'Кожен дозволений ACTION (поза EXCLUDED_FROM_DOSSIER_TOOLS) має tool',
     `missing=${missingFromTools.join(', ')}`);
 
   const extra = [...toolNames].filter(t => !actionsSet.has(t));
   assert(extra.length === 0,
     'Жодного tool не дозволено агенту що відсутнє в PERMISSIONS',
     `extra=${extra.join(', ')}`);
+
+  // Кожен EXCLUDED — реально дозволений у PERMISSIONS (інакше exclusion зайва).
+  // Виняток: delete_document, delete_proceeding, delete_time_entry — це UI-only,
+  // їх може не бути в PERMISSIONS взагалі (заборонено всім агентам).
+  const UI_ONLY_NEVER_IN_PERMS = new Set(['delete_document', 'delete_proceeding', 'delete_time_entry']);
+  const stale = Object.keys(EXCLUDED_FROM_DOSSIER_TOOLS).filter(a =>
+    !actionsSet.has(a) && !UI_ONLY_NEVER_IN_PERMS.has(a)
+  );
+  assert(stale.length === 0,
+    'EXCLUDED_FROM_DOSSIER_TOOLS не містить застарілих записів',
+    `stale=${stale.join(', ')}`);
+}
+
+// ── Жодного type:[string,null] у схемі (Anthropic Tool Use стабільніше з простими типами) ──
+{
+  function checkNoArrayTypes(schema, path = '') {
+    if (!schema || typeof schema !== 'object') return [];
+    const issues = [];
+    if (Array.isArray(schema.type)) {
+      issues.push(`${path}.type=${JSON.stringify(schema.type)}`);
+    }
+    if (schema.properties) {
+      for (const [k, v] of Object.entries(schema.properties)) {
+        issues.push(...checkNoArrayTypes(v, `${path}.${k}`));
+      }
+    }
+    if (schema.items) issues.push(...checkNoArrayTypes(schema.items, `${path}.items`));
+    return issues;
+  }
+  for (const tool of ALL_INDIVIDUAL_TOOLS) {
+    const issues = checkNoArrayTypes(tool.input_schema, tool.name);
+    assert(issues.length === 0,
+      `${tool.name} — input_schema без масивних type (Anthropic-friendly)`,
+      issues.join(', '));
+  }
 }
 
 // ── DOCUMENT_PROCESSOR_AGENT_TOOLS — заглушка ──

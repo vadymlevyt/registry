@@ -154,16 +154,51 @@ function makeExecuteAction({ behavior } = {}) {
   assert(r.errors.length === 1, 'Test 6: тільки 1 помилка');
 }
 
-// ── Test 7: caseId auto-injection НЕ перезаписує model-передану ──
+// ── Test 7: caseId protection — runner перезаписує іншу caseId на context ──
+// Принципова ізоляція досьє: агент не може діяти з іншою справою.
 {
   const apiResponse = {
-    content: [{ type: 'tool_use', id: 'tu_z', name: 'add_hearing', input: { caseId: 'case_explicit', date: '2026-05-15', time: '10:00' } }],
+    content: [{ type: 'tool_use', id: 'tu_z', name: 'add_hearing', input: { caseId: 'case_other', date: '2026-05-15', time: '10:00' } }],
     stop_reason: 'tool_use'
   };
   const exec = makeExecuteAction();
-  const r = await runToolUse({ apiResponse, agentId: 'dossier_agent', executeAction: exec, context: { caseId: 'case_default' } });
+  const r = await runToolUse({ apiResponse, agentId: 'dossier_agent', executeAction: exec, context: { caseId: 'case_current' } });
 
-  assert(exec.calls[0].params.caseId === 'case_explicit', 'Test 7: модель може передати свій caseId — не перезаписується контекстом');
+  assert(exec.calls[0].params.caseId === 'case_current',
+    'Test 7: caseId protection — params.caseId перезаписано на context.caseId');
+  assert(/case_other/.test(r.toolResults[0].content),
+    'Test 7: tool_result містить попередження про перезапис');
+  assert(/перезаписано|caseId|поточну/i.test(r.toolResults[0].content),
+    'Test 7: tool_result пояснює моделі що caseId перезаписано');
+}
+
+// ── Test 7b: caseId injection якщо модель пропустила (без context — без впливу) ──
+{
+  const apiResponse = {
+    content: [{ type: 'tool_use', id: 'tu_inj', name: 'add_hearing', input: { date: '2026-05-15', time: '10:00' } }],
+    stop_reason: 'tool_use'
+  };
+  const exec = makeExecuteAction();
+  const r = await runToolUse({ apiResponse, agentId: 'dossier_agent', executeAction: exec, context: { caseId: 'case_current' } });
+
+  assert(exec.calls[0].params.caseId === 'case_current',
+    'Test 7b: caseId auto-injected коли модель пропустила');
+  assert(!/перезаписано/.test(r.toolResults[0].content),
+    'Test 7b: жодного попередження про перезапис коли caseId не суперечив');
+}
+
+// ── Test 7c: модель передала ту саму caseId — нічого не змінюється ──
+{
+  const apiResponse = {
+    content: [{ type: 'tool_use', id: 'tu_same', name: 'add_hearing', input: { caseId: 'case_current', date: '2026-05-15', time: '10:00' } }],
+    stop_reason: 'tool_use'
+  };
+  const exec = makeExecuteAction();
+  const r = await runToolUse({ apiResponse, agentId: 'dossier_agent', executeAction: exec, context: { caseId: 'case_current' } });
+
+  assert(exec.calls[0].params.caseId === 'case_current', 'Test 7c: caseId зберігається');
+  assert(!/перезаписано/.test(r.toolResults[0].content),
+    'Test 7c: жодного попередження коли caseId збігається');
 }
 
 // ── Test 8: пустий content → no-op ──

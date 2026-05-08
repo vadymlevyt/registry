@@ -14,9 +14,13 @@
 
 import { CANONICAL_DOCUMENT_FIELDS } from '../schemas/documentSchema.js';
 
-// Витягуємо canonical енами безпосередньо зі схеми — single source of truth.
-const CATEGORY_ENUM = CANONICAL_DOCUMENT_FIELDS.category.enum;
-const AUTHOR_ENUM = CANONICAL_DOCUMENT_FIELDS.author.enum;
+// Витягуємо canonical енами зі схеми — single source of truth.
+// Anthropic Tool Use стабільніше працює з простими type=string + enum БЕЗ null
+// (замість type:[string,null]). Optional поля просто опускаються — модель
+// розуміє з description і не передає поле взагалі.
+const dropNull = (arr) => arr.filter(v => v !== null);
+const CATEGORY_ENUM = dropNull(CANONICAL_DOCUMENT_FIELDS.category.enum);
+const AUTHOR_ENUM = dropNull(CANONICAL_DOCUMENT_FIELDS.author.enum);
 const DOC_NATURE_ENUM = CANONICAL_DOCUMENT_FIELDS.documentNature.enum;
 const NAMING_STATUS_ENUM = CANONICAL_DOCUMENT_FIELDS.namingStatus.enum;
 const FOLDER_ENUM = CANONICAL_DOCUMENT_FIELDS.folder.enum;
@@ -52,28 +56,29 @@ export const ADD_DOCUMENT_TOOL = {
   input_schema: {
     type: 'object',
     properties: {
-      caseId: { type: 'string', description: 'ID справи (зазвичай поточна)' },
+      caseId: { type: 'string', description: 'ID поточної справи (агент досьє завжди працює лише з нею)' },
       document: {
         type: 'object',
-        description: 'Повний об\'єкт документа за канонічною схемою v5 (18 полів). ' +
-          'Створюй через документ-factory якщо є, або забезпеч усі required поля.',
+        description: 'Об\'єкт документа за канонічною схемою v5. Опціональні поля ' +
+          '(originalName, category, author, procId, driveId, driveUrl, pageCount, date) ' +
+          'просто пропускай якщо невідомі — буде маркер ⚠ для ручної класифікації.',
         properties: {
           id: { type: 'string', description: 'doc_<timestamp>_<random>; згенеруй якщо не задано' },
           name: { type: 'string', description: 'Людська назва документа' },
-          originalName: { type: ['string', 'null'], description: 'Оригінальне ім\'я файлу' },
-          category: { type: ['string', 'null'], enum: CATEGORY_ENUM, description: 'Тип документа; null = маркер ⚠' },
-          author: { type: ['string', 'null'], enum: AUTHOR_ENUM, description: 'Хто автор; null = маркер ⚠' },
+          originalName: { type: 'string', description: 'Опційне. Оригінальне ім\'я файлу' },
+          category: { type: 'string', enum: CATEGORY_ENUM, description: 'Опційне. Тип документа; пропусти якщо невідомий (= маркер ⚠)' },
+          author: { type: 'string', enum: AUTHOR_ENUM, description: 'Опційне. Автор; пропусти якщо невідомий (= маркер ⚠)' },
           documentNature: { type: 'string', enum: DOC_NATURE_ENUM },
           namingStatus: { type: 'string', enum: NAMING_STATUS_ENUM },
           isKey: { type: 'boolean', description: 'Чи ключовий документ ⭐' },
-          procId: { type: ['string', 'null'], description: 'ID провадження; null = маркер ⚠' },
-          driveId: { type: ['string', 'null'], description: 'Google Drive file ID' },
-          driveUrl: { type: ['string', 'null'] },
+          procId: { type: 'string', description: 'Опційне. ID провадження; пропусти якщо невідомо (= маркер ⚠)' },
+          driveId: { type: 'string', description: 'Опційне. Google Drive file ID' },
+          driveUrl: { type: 'string', description: 'Опційне. URL до файлу на Drive' },
           folder: { type: 'string', enum: FOLDER_ENUM },
-          pageCount: { type: ['number', 'null'] },
+          pageCount: { type: 'number', description: 'Опційне. Кількість сторінок' },
           size: { type: 'number', description: 'Розмір у байтах' },
           icon: { type: 'string' },
-          date: { type: ['string', 'null'], description: 'YYYY-MM-DD' },
+          date: { type: 'string', description: 'Опційне. Дата документа YYYY-MM-DD (НЕ дата запису)' },
           addedAt: { type: 'string', description: 'ISO timestamp' },
           updatedAt: { type: 'string', description: 'ISO timestamp' },
           addedBy: { type: 'string', enum: ['lawyer_via_dp', 'lawyer_manual', 'agent', 'ecits', 'migration'] },
@@ -106,16 +111,16 @@ export const UPDATE_DOCUMENT_TOOL = {
           'pageCount, date, icon, status.',
         properties: {
           name: { type: 'string' },
-          category: { type: ['string', 'null'], enum: CATEGORY_ENUM },
-          author: { type: ['string', 'null'], enum: AUTHOR_ENUM },
+          category: { type: 'string', enum: CATEGORY_ENUM, description: 'Опційне. Пропусти щоб не змінювати' },
+          author: { type: 'string', enum: AUTHOR_ENUM, description: 'Опційне. Пропусти щоб не змінювати' },
           documentNature: { type: 'string', enum: DOC_NATURE_ENUM },
           namingStatus: { type: 'string', enum: NAMING_STATUS_ENUM },
           isKey: { type: 'boolean' },
-          procId: { type: ['string', 'null'] },
-          driveUrl: { type: ['string', 'null'] },
+          procId: { type: 'string', description: 'Опційне. Прив\'язка до провадження' },
+          driveUrl: { type: 'string' },
           folder: { type: 'string', enum: FOLDER_ENUM },
-          pageCount: { type: ['number', 'null'] },
-          date: { type: ['string', 'null'] },
+          pageCount: { type: 'number' },
+          date: { type: 'string', description: 'YYYY-MM-DD' },
           icon: { type: 'string' },
           status: { type: 'string', enum: ['active', 'archived'] }
         }
@@ -146,13 +151,13 @@ export const ADD_PROCEEDING_TOOL = {
           type: { type: 'string', enum: PROCEEDING_TYPE_ENUM },
           title: { type: 'string', description: 'Назва (alias: name)' },
           name: { type: 'string', description: 'Alias до title — використовуй один з двох' },
-          parentProcId: { type: ['string', 'null'], description: 'ID батьківського провадження (для апеляції тощо)' },
-          parentEventId: { type: ['string', 'null'], description: 'ID події яка породила це провадження (опційно)' },
-          court: { type: ['string', 'null'] },
-          caseNumber: { type: ['string', 'null'] },
+          parentProcId: { type: 'string', description: 'Опційне. ID батьківського провадження (для апеляції тощо)' },
+          parentEventId: { type: 'string', description: 'Опційне. ID події яка породила це провадження' },
+          court: { type: 'string', description: 'Опційне. Назва суду' },
+          caseNumber: { type: 'string', description: 'Опційне. Номер справи у суді' },
           color: { type: 'string', enum: PROCEEDING_COLOR_ENUM },
           status: { type: 'string', enum: ['active', 'paused', 'closed'] },
-          dateOpened: { type: ['string', 'null'] },
+          dateOpened: { type: 'string', description: 'Опційне. YYYY-MM-DD' },
           judges: { type: 'array', items: { type: 'string' } },
           description: { type: 'string' }
         },
@@ -178,12 +183,12 @@ export const UPDATE_PROCEEDING_TOOL = {
         type: 'object',
         properties: {
           title: { type: 'string' },
-          parentProcId: { type: ['string', 'null'] },
-          parentEventId: { type: ['string', 'null'] },
+          parentProcId: { type: 'string', description: 'Опційне. Перепривʼязка до іншого батька' },
+          parentEventId: { type: 'string' },
           color: { type: 'string', enum: PROCEEDING_COLOR_ENUM },
-          court: { type: ['string', 'null'] },
-          caseNumber: { type: ['string', 'null'] },
-          dateOpened: { type: ['string', 'null'] },
+          court: { type: 'string' },
+          caseNumber: { type: 'string' },
+          dateOpened: { type: 'string', description: 'YYYY-MM-DD' },
           judges: { type: 'array', items: { type: 'string' } },
           description: { type: 'string' },
           status: { type: 'string', enum: ['active', 'paused', 'closed'] }
@@ -209,7 +214,7 @@ export const ADD_HEARING_TOOL = {
       date: { type: 'string', description: 'YYYY-MM-DD' },
       time: { type: 'string', description: 'HH:MM (24-год)' },
       duration: { type: 'number', description: 'У хвилинах; default 120' },
-      type: { type: ['string', 'null'], description: 'Тип: підготовче/основне/інше' }
+      type: { type: 'string', description: 'Опційне. Тип: підготовче/основне/інше' }
     },
     required: ['caseId', 'date', 'time']
   }
@@ -229,7 +234,7 @@ export const UPDATE_HEARING_TOOL = {
       date: { type: 'string', description: 'YYYY-MM-DD' },
       time: { type: 'string', description: 'HH:MM' },
       duration: { type: 'number' },
-      type: { type: ['string', 'null'] }
+      type: { type: 'string' }
     },
     required: ['caseId']
   }
@@ -314,12 +319,12 @@ export const ADD_NOTE_TOOL = {
   input_schema: {
     type: 'object',
     properties: {
-      caseId: { type: ['string', 'null'] },
+      caseId: { type: 'string', description: 'ID поточної справи (агент досьє завжди працює лише з нею)' },
       text: { type: 'string' },
       category: { type: 'string', description: 'general / strategy / records / тощо' },
-      date: { type: ['string', 'null'] },
-      time: { type: ['string', 'null'] },
-      duration: { type: ['number', 'null'] }
+      date: { type: 'string', description: 'Опційне. YYYY-MM-DD' },
+      time: { type: 'string', description: 'Опційне. HH:MM' },
+      duration: { type: 'number', description: 'Опційне. Хвилин' }
     },
     required: ['text']
   }
@@ -337,10 +342,10 @@ export const UPDATE_NOTE_TOOL = {
     properties: {
       noteId: { type: 'string' },
       text: { type: 'string' },
-      date: { type: ['string', 'null'] },
-      time: { type: ['string', 'null'] },
-      duration: { type: ['number', 'null'] },
-      caseId: { type: ['string', 'null'] }
+      date: { type: 'string' },
+      time: { type: 'string' },
+      duration: { type: 'number' },
+      caseId: { type: 'string' }
     },
     required: ['noteId']
   }
@@ -521,8 +526,8 @@ export const DOSSIER_AGENT_TOOLS = [
   DELETE_NOTE_TOOL,
   PIN_NOTE_TOOL,
   UNPIN_NOTE_TOOL,
-  // Справа
-  CREATE_CASE_TOOL,
+  // Справа (без CREATE_CASE_TOOL — агент досьє не створює нові справи; це
+  // для QI/Dashboard, які діють поза контекстом конкретної справи)
   UPDATE_CASE_FIELD_TOOL,
   CLOSE_CASE_TOOL,
   RESTORE_CASE_TOOL,
