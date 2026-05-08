@@ -13,6 +13,7 @@ import { logAiUsage, logAiUsageViaSink } from "../../services/aiUsageService.js"
 import { resolveModel } from "../../services/modelResolver.js";
 import * as activityTracker from "../../services/activityTracker.js";
 import { MODULES, categoryForCase } from "../../services/moduleNames.js";
+import { createDocument } from "../../services/documentFactory.js";
 
 const DOC_SYSTEM_PROMPT = `Ти — агент обробки документів для адвокатського бюро Левицького.
 Твоя задача: прийняти сирі файли, обробити їх і організувати в чітку структуру.
@@ -800,9 +801,11 @@ ${filesList}
       // Save to Drive / local
       const storageResults = await saveFilesToStorage(processedFiles);
 
-      // Build document entries for case
-      const newDocuments = processedFiles.map((pf, i) => ({
-        id: `doc_${Date.now()}_${i}`,
+      // Build document entries for case via canonical factory
+      // (status/originalSize/savedLocally \u2014 DP-internal \u043f\u043e\u043b\u044f, \u043d\u0435 \u0432\u0445\u043e\u0434\u044f\u0442\u044c \u0443 canonical
+      // schema; \u0437\u0431\u0435\u0440\u0456\u0433\u0430\u0442\u0438 \u0457\u0445 \u043d\u0435 \u0442\u0440\u0435\u0431\u0430, \u0431\u043e \u0434\u043b\u044f status \u0432 canonical \u0454 'active'/'archived',
+      // \u0430 originalSize/savedLocally \u2014 runtime-\u043c\u0435\u0442\u0430\u0434\u0430\u043d\u0456 storage \u0430 \u043d\u0435 \u0437\u0430\u043f\u0438\u0441\u0430\u043d\u0438\u0439 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442.)
+      const newDocuments = processedFiles.map((pf, i) => createDocument({
         name: pf.name,
         originalName: pf.originalName,
         category: pf.category,
@@ -811,15 +814,12 @@ ${filesList}
         date: pf.date,
         pageCount: pf.pageCount,
         size: pf.data ? pf.data.byteLength : pf.originalSize,
-        originalSize: pf.originalSize,
         icon: CATEGORY_ICONS[pf.category] || FORMAT_ICONS[pf.ext] || "\ud83d\udcc4",
         procId: caseData.proceedings?.[0]?.id || "proc_main",
-        tags: [],
-        status: "ready",
         driveId: storageResults[i]?.driveId || null,
         driveUrl: storageResults[i]?.driveUrl || null,
-        savedLocally: storageResults[i]?.savedLocally || false,
-        addedAt: new Date().toISOString(),
+        addedBy: 'lawyer_via_dp',
+        namingStatus: 'auto',
       }));
 
       const existingDocs = caseData.documents || [];
@@ -951,15 +951,16 @@ ${filesList}
           );
         }
 
-        // Оновити Матеріали
-        const newDocs = results.map((r, i) => ({
-          id: `doc_${Date.now()}_${i}`,
+        // Оновити Матеріали — через canonical factory.
+        // r.type тут — категорія від split-агента (pleading/evidence/...).
+        const newDocs = results.map((r) => createDocument({
           name: r.name,
-          type: r.type,
+          category: r.type || null,
           pageCount: r.pageCount,
           folder: "02_ОБРОБЛЕНІ",
-          status: "ready",
-          addedAt: new Date().toISOString(),
+          procId: caseData.proceedings?.[0]?.id || "proc_main",
+          addedBy: 'lawyer_via_dp',
+          namingStatus: 'auto',
         }));
 
         updateCase(caseData.id, "documents", [

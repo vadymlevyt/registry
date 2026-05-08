@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import DocumentProcessor from "../DocumentProcessor/index.jsx";
 import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
+import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
 import { systemAlert, systemConfirm } from "../SystemModal";
@@ -1939,18 +1940,48 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               >{"Очистити"}</button>
               <button
                 onClick={async () => {
+                  // Накопичуємо нові документи в локальному масиві і робимо один
+                  // executeAction(update_case_field, documents) в кінці — щоб уникнути
+                  // race на послідовних setState між файлами.
+                  const created = [];
                   for (let i = 0; i < dropQueue.length; i++) {
                     if (dropQueue[i].status === "done") continue;
                     setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "uploading" } : item));
                     try {
+                      const file = dropQueue[i].file;
+                      let driveId = null;
                       if (driveConnected) {
-                        const prepared = await prepareFile(dropQueue[i].file);
-                        await uploadFileLocal(prepared, caseData);
+                        const prepared = await prepareFile(file);
+                        driveId = await uploadFileLocal(prepared, caseData);
                       }
+                      // category/author/procId = null → маркер ⚠ для подальшої
+                      // ручної класифікації адвокатом (потребує перегляду).
+                      const newDoc = createDocument({
+                        driveId: driveId || null,
+                        driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
+                        name: file.name,
+                        originalName: file.name,
+                        size: file.size,
+                        folder: '01_ОРИГІНАЛИ',
+                        addedBy: 'lawyer_manual',
+                        namingStatus: 'pending',
+                        category: null,
+                        author: null,
+                        procId: null,
+                      });
+                      created.push(newDoc);
                       setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "done" } : item));
                     } catch {
                       setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "error" } : item));
                     }
+                  }
+                  if (created.length > 0 && onExecuteAction) {
+                    const merged = [...(caseData.documents || []), ...created];
+                    onExecuteAction('dossier_agent', 'update_case_field', {
+                      caseId: caseData.id,
+                      field: 'documents',
+                      value: merged,
+                    });
                   }
                 }}
                 style={{ flex: 2, background: "#4f7cff", border: "none", color: "#fff", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 600 }}
@@ -2461,19 +2492,24 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   }
                 }
                 const ICONS = { court_act: "\ud83d\udccb", pleading: "\ud83d\udcc4", motion: "\ud83d\udcdd", evidence: "\ud83d\udcce", correspondence: "\u2709\ufe0f", other: "\ud83d\udcc1" };
-                const doc = {
-                  id: Date.now(),
+                // \u041a\u0430\u043d\u043e\u043d\u0456\u0447\u043d\u0430 \u0444\u0430\u0431\u0440\u0438\u043a\u0430. tags/notes \u2014 extended-\u043f\u043e\u043b\u044f,
+                // \u0437\u0431\u0435\u0440\u0456\u0433\u0430\u044e\u0442\u044c\u0441\u044f \u043e\u043a\u0440\u0435\u043c\u043e \u0443 .metadata/documents_extended.json
+                // \u0456 \u0434\u043e\u0434\u0430\u044e\u0442\u044c\u0441\u044f \u0432 \u043d\u0430\u0441\u0442\u0443\u043f\u043d\u043e\u043c\u0443 TASK Document Processor v2.
+                const doc = createDocument({
                   procId: newDoc.procId || proceedings[0]?.id || "proc_main",
                   name: newDoc.name.trim(),
                   icon: ICONS[newDoc.category] || "\ud83d\udcc4",
-                  date: newDoc.date.trim() || new Date().toLocaleDateString("uk-UA"),
+                  date: newDoc.date.trim() || null,
                   category: newDoc.category,
                   author: newDoc.author,
-                  tags: newDoc.tags,
                   driveId,
                   driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-                  notes: ""
-                };
+                  size: newDoc.file?.size || 0,
+                  originalName: newDoc.file?.name || null,
+                  folder: '01_\u041e\u0420\u0418\u0413\u0406\u041d\u0410\u041b\u0418',
+                  addedBy: 'lawyer_manual',
+                  namingStatus: 'manual',
+                });
                 const updated = [...(caseData.documents || []), doc];
                 updateCase && updateCase(caseData.id, "documents", updated);
                 setDocModalOpen(false);

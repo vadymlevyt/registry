@@ -174,6 +174,25 @@ export async function backupRegistryDataPreV3(token, payload) {
   }
 }
 
+// Бекап перед Phase 1.5 міграцією v4 → v5 (canonical document schema), поза ротацією.
+export async function backupRegistryDataPreV5(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_v5_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-v5 backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Бекап перед Billing Foundation v2 міграцією v3 → v4, поза ротацією.
 export async function backupRegistryDataPreBilling(token, payload) {
   try {

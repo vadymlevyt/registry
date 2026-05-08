@@ -319,3 +319,82 @@ EFFECT-B може писати, activityTracker.enable() активує білі
 - R9 (розділення data vs config у localStorage) — структурний рефакторинг.
 - R12 (ChunkifyHydration: state починає життя порожнім, localStorage
   лише як транзитний кеш) — глибший рефакторинг, не блокуючий.
+
+---
+
+## ДОДАНО 2026-05-08 (TASK 1 — Канонічна схема документа, Phase 1.5)
+
+### P1.5.1 — Розділ "СТРУКТУРА ДАНИХ → Справа (Case)" застарів
+
+**Зараз CLAUDE.md** показує:
+```
+documents: [{ id, name, type, date, driveId }]
+```
+
+**Має бути:**
+```
+documents: [{
+  id, name, originalName,
+  category, author, documentNature, namingStatus, isKey,
+  procId,
+  driveId, driveUrl, folder,
+  pageCount, size, icon,
+  date, addedAt, updatedAt,
+  addedBy, status
+}]  // 18 канонічних полів — src/schemas/documentSchema.js
+    // важкі поля (tags, notes, annotations, processingHistory,
+    // extractedTextSummary, customFields) у .metadata/documents_extended.json
+```
+
+### P1.5.2 — schemaVersion 5
+
+Додати в перелік версій схеми:
+```
+schemaVersion 5 — Phase 1.5 (Канон даних):
+  Канонічна схема документа (18 полів) у cases[].documents[].
+  Важкі поля винесені у .metadata/documents_extended.json з lazy-load
+  через src/services/documentsExtended.js.
+  Міграція: src/services/migrations/v4ToV5.js.
+  Бекап: registry_data_backup_pre_v5_<ts>.json у _backups/.
+```
+
+### P1.5.3 — Нові сервіси
+
+Додати:
+- `documentFactory.js` — `createDocument()`, `validateDocument()`, `needsReview()`, `getMissingCriticalFields()`. Єдина точка створення документа.
+- `documentsExtended.js` — lazy-load для `.metadata/documents_extended.json` з in-memory кешем по `caseId`.
+
+### P1.5.4 — Структура файлів
+
+Додати:
+```
+├── src/
+│   ├── schemas/
+│   │   └── documentSchema.js   — канонічна схема документа (18 + 6 полів)
+│   ├── services/
+│   │   ├── documentFactory.js
+│   │   ├── documentsExtended.js
+│   │   ├── migrations/
+│   │   │   └── v4ToV5.js
+```
+
+### P1.5.5 — Бекапи
+
+Додати запис для `registry_data_backup_pre_v5_*.json` (фабрика: `backupRegistryDataPreV5` у `driveService.js`).
+
+### P1.5.6 — Окремі TASK (не CLAUDE.md правки, але запам'ятати)
+
+**Author enum unification** (2-3 год):
+- TASK 1.1 хотів `enum: ['ours', 'opp', 'court', 'third_party', null]`.
+- Реальний UI/seed уживає `opponent`. Зараз enum розширено на обидва.
+- Окремий TASK: вибрати канонічне (рекомендую `opponent` як менш інвазивне).
+
+**Category enum unification** (1 год):
+- `motion` вживається у seed і UI, був відсутній у TASK 1.1 enum. Розширено.
+- Залишити `motion` постійно (юридично окрема категорія).
+
+**CaseDossier drag-n-drop creates document** (2-3 год):
+- `src/components/CaseDossier/index.jsx:1940-1958`: `uploadFileLocal` завантажує файл але не створює запис у `cases[].documents[]`.
+- Додати виклик `createDocument()` з `category: null, author: null, procId: null` (маркер ⚠) через `executeAction`.
+
+Деталі цих знахідок — `discovered_issues_during_task1.md`.

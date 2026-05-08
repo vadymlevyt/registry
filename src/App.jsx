@@ -4,11 +4,15 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5 } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
 import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
+import { saveExtendedForCase } from './services/documentsExtended';
+import { createDocument } from './services/documentFactory';
+import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/documentSchema';
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
 import { resolveModel } from './services/modelResolver';
@@ -97,19 +101,25 @@ const INITIAL_CASES = [
       { id: "proc_main", type: "first", title: "Основне провадження", court: "Пустомитівський районний суд Львівської обл.", status: "paused", parentProcId: null, parentEventId: null },
       { id: "proc_appeal_1", type: "appeal", title: "Апеляція: ухвала 03.2024", court: "Київський апеляційний суд", status: "active", parentProcId: "proc_main", parentEventId: "event_4" }
     ],
+    // Seed-документи Брановського проходять через canonical factory.
+    // tags ["key"] → isKey: true. Текстові дати ("березень 2023") в legacy
+    // форматі — НЕ потрапляють у canonical date (YYYY-MM-DD), зберігаються
+    // у документах для UI-сумісності окремим полем seedDate (не входить
+    // у канонічну схему — для відображення legacy-демо). Реальний extended
+    // notes збережеться у TASK Document Processor v2.
     documents: [
-      { id: "1",  procId: "proc_main", name: "Позовна заява", icon: "📄", date: "березень 2023", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-      { id: "2",  procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", date: "березень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-      { id: "3",  procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", date: "грудень 2023", category: "court_act", author: "court", tags: [], notes: "" },
-      { id: "4",  procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", date: "лютий 2024", category: "pleading", author: "opponent", tags: [], notes: "" },
-      { id: "5",  procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", date: "лютий 2024", category: "motion", author: "opponent", tags: [], notes: "" },
-      { id: "6",  procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", date: "березень 2024", category: "court_act", author: "court", tags: ["key"], notes: "" },
-      { id: "7",  procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", date: "квітень 2024", category: "court_act", author: "court", tags: [], notes: "" },
-      { id: "8",  procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", date: "квітень 2024", category: "pleading", author: "opponent", tags: ["key"], notes: "" },
-      { id: "9",  procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", date: "квітень 2024", category: "other", author: "opponent", tags: [], notes: "" },
-      { id: "10", procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", date: "травень 2024", category: "pleading", author: "ours", tags: ["key"], notes: "" },
-      { id: "11", procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", date: "червень 2024", category: "pleading", author: "opponent", tags: [], notes: "⚠️ Лікарняний лист — перевірити автентичність" },
-      { id: "12", procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", date: "липень 2024", category: "pleading", author: "ours", tags: [], notes: "" }
+      createDocument({ id: "doc_seed_branovsky_01", procId: "proc_main", name: "Позовна заява", icon: "📄", category: "pleading", author: "ours", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_02", procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", category: "court_act", author: "court", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_03", procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", category: "court_act", author: "court", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_04", procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", category: "pleading", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_05", procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", category: "motion", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_06", procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", category: "court_act", author: "court", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_07", procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", category: "court_act", author: "court", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_08", procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", category: "pleading", author: "opponent", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_09", procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", category: "other", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_10", procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", category: "pleading", author: "ours", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_11", procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", category: "pleading", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_12", procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", category: "pleading", author: "ours", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' })
     ]
   },
   { id:'case_5',  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearings:mkHearing(15,'Рівненський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'', pinnedNoteIds:[] },
@@ -3931,7 +3941,8 @@ function App() {
       // status === 'ok' — нормальний шлях.
       const raw = readResult.data;
       try {
-        const { registry, didMigrate, fromVersion, toVersion } = migrateRegistry(raw);
+        // `registry` — let, бо v4→v5 міграція може його перепризначити.
+        let { registry, didMigrate, fromVersion, toVersion } = migrateRegistry(raw);
 
         // Якщо реально мігруємо — спочатку фіксований бекап pre_saas, поза ротацією.
         if (didMigrate && raw != null) {
@@ -3972,6 +3983,35 @@ function App() {
             } else {
               console.warn('[Billing Foundation v2] Pre-billing backup failed, продовжую без нього:', res.error);
             }
+          }
+        }
+
+        // Phase 1.5 — pre-v5 бекап, поза ротацією. Якщо raw уже v5 — не бекапимо.
+        if (raw != null && (registry.schemaVersion || 4) < DOCUMENT_SCHEMA_VERSION) {
+          const flagV5 = localStorage.getItem('levytskyi_pre_v5_backup_done');
+          if (!flagV5) {
+            const res = await backupRegistryDataPreV5(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v5_backup_done', '1');
+              console.log(`[Phase 1.5] Pre-v5 backup: ${res.fileName}`);
+            } else {
+              console.warn('[Phase 1.5] Pre-v5 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // Phase 1.5 — canonical document schema (v4 → v5).
+        // migrateRegistry підняв до v4, тут піднімаємо до v5 і збираємо
+        // extended-поля (tags/notes/...) для запису в .metadata/documents_extended.json.
+        let extendedByCaseV5 = {};
+        if ((registry.schemaVersion || 1) < DOCUMENT_SCHEMA_VERSION) {
+          const v5 = migrateRegistryV4toV5(registry);
+          if (v5.didMigrate) {
+            registry = v5.registry;
+            extendedByCaseV5 = v5.extendedByCase || {};
+            didMigrate = true;
+            toVersion = v5.toVersion;
+            console.log(`[Phase 1.5] Migration v${v5.fromVersion} → v${v5.toVersion} done. extended caseIds=${Object.keys(extendedByCaseV5).length}`);
           }
         }
 
@@ -4110,6 +4150,27 @@ function App() {
             context: { module: MODULES.STARTUP, agent: null },
           });
         }
+
+        // Phase 1.5 — записати extended-поля у .metadata/documents_extended.json
+        // кожної справи де вони виявились непорожніми. Послідовно, з окремим
+        // try/catch на кожну — якщо одна справа без Drive-папки, інші все одно
+        // отримають свої метадані.
+        for (const [caseId, extended] of Object.entries(extendedByCaseV5)) {
+          if (!extended || Object.keys(extended).length === 0) continue;
+          const caseData = registry.cases.find(c => c.id === caseId);
+          if (!caseData?.storage?.driveFolderId) {
+            // Seed-справи без Drive-папки (демо-набір) — extended залишиться
+            // в memory і запишеться коли справа отримає driveFolderId.
+            continue;
+          }
+          try {
+            await saveExtendedForCase(caseId, caseData, extended);
+            console.log(`[Phase 1.5] Saved extended for case ${caseId} (${Object.keys(extended).length} docs)`);
+          } catch (e) {
+            console.warn(`[Phase 1.5] Failed to save extended for case ${caseId}:`, e?.message || e);
+          }
+        }
+
         // Hydration завершено успішно. Тільки після цього EFFECT-B може писати.
         setDriveStatus('ok');
         setDriveHydrated(true);
@@ -4593,9 +4654,13 @@ function App() {
     },
 
     update_case_field: ({ caseId, field, value }) => {
+      // 'documents' тимчасово в allowlist — потрібен окремий ACTION 'add_document'
+      // (див. discovered_issues_during_task1.md #9). Зараз CaseDossier drag-n-drop
+      // використовує update_case_field з масивом усіх документів справи.
       const allowedFields = [
         'name', 'client', 'court', 'case_no', 'category',
-        'next_action', 'notes', 'judge', 'status'
+        'next_action', 'notes', 'judge', 'status',
+        'documents',
       ];
       if (!allowedFields.includes(field)) {
         return { error: `Поле "${field}" не дозволено змінювати через агента` };
