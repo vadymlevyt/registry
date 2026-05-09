@@ -23,6 +23,7 @@ import { checkAndArchive as checkAndArchiveTimeEntries } from './services/timeEn
 import { handleReturn as smartHandleReturn } from './services/smartReturnHandler';
 import { MODULES, categoryForCase } from './services/moduleNames';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
+import { ToastContainer } from './components/UI/ToastContainer.jsx';
 import './App.css';
 
 const Notebook = React.lazy(() => import('./components/Notebook'));
@@ -6038,6 +6039,7 @@ function App() {
           </div>
         </div>
         <SystemModalRoot />
+        <ToastContainer />
       </div>
     );
   }
@@ -6265,6 +6267,7 @@ function App() {
         }}
       >⚡</button>}
       <SystemModalRoot />
+      <ToastContainer />
     </div>
   );
 }

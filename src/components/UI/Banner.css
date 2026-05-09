@@ -1,0 +1,73 @@
+.ui-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border-left: 3px solid;
+}
+
+.ui-banner--success {
+  background: rgba(34, 197, 94, 0.08);
+  border-left-color: var(--color-success);
+}
+.ui-banner--success .ui-banner__icon { color: var(--color-success); }
+
+.ui-banner--error {
+  background: rgba(239, 68, 68, 0.08);
+  border-left-color: var(--color-danger);
+}
+.ui-banner--error .ui-banner__icon { color: var(--color-danger); }
+
+.ui-banner--warning {
+  background: rgba(245, 158, 11, 0.08);
+  border-left-color: var(--color-warning);
+}
+.ui-banner--warning .ui-banner__icon { color: var(--color-warning); }
+
+.ui-banner--info {
+  background: rgba(59, 130, 246, 0.08);
+  border-left-color: var(--color-accent);
+}
+.ui-banner--info .ui-banner__icon { color: var(--color-accent); }
+
+.ui-banner__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ui-banner__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-banner__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.ui-banner__description {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  margin-top: var(--space-1);
+  line-height: var(--leading-normal);
+}
+
+.ui-banner__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.ui-banner__close {
+  background: transparent;
+  border: none;
+  color: var(--color-text-3);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  margin-top: 2px;
+}
+.ui-banner__close:hover { color: var(--color-text); }

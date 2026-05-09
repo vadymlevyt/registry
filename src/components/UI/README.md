@@ -248,6 +248,61 @@ Native `<select>` обгорнутий стилізованою wrapper-обго
 </Tooltip>
 ```
 
+### Toast
+
+Короткі статусні повідомлення які зʼявляються справа знизу і автоматично зникають. Викликаються імперативно через сервіс `toast`.
+
+| Prop | Тип | Опис |
+|------|-----|------|
+| `variant` | `'success' \| 'error' \| 'warning' \| 'info'` | Колір/іконка |
+| `title` | string | Коротко суть |
+| `description` | string | Опис (опційно) |
+| `action` | `{ label, onClick }` | Опційна кнопка дії (закриває toast після кліку) |
+| `onDismiss` | function | Закриття × кнопкою |
+
+**ToastContainer** — підключається на верхньому рівні App.jsx (вже зроблено). Toast'и викликаються через `toast.*` з будь-якого місця:
+
+```javascript
+import { toast } from '@/services/toast.js';
+
+toast.success('Документ збережено');
+toast.error('Не вдалось зберегти', {
+  description: 'Перевірте підключення до Drive.',
+  action: { label: 'Спробувати ще', onClick: () => retry() },
+});
+
+// З персистентним прогресом:
+const id = toast.info('Обробка PDF...', { persistent: true });
+// коли готово:
+toast.dismiss(id);
+
+// Зі словника:
+import { messages } from '@/services/messages.js';
+toast.show(messages.drive.saveFailed(filename), { onAction: () => retry() });
+```
+
+### Banner
+
+Inline-попередження в межах секції. На відміну від Toast — не зникає автоматично.
+
+| Prop | Тип | Default | Опис |
+|------|-----|---------|------|
+| `variant` | `'success' \| 'error' \| 'warning' \| 'info'` | `info` | — |
+| `title` | string | — | Заголовок |
+| `description` | string | — | Опис (опційно) |
+| `actions` | `[{ label, onClick, variant? }]` | — | Кнопки дій |
+| `dismissible` | boolean | `false` | Показати × кнопку |
+| `onDismiss` | function | — | — |
+
+```jsx
+<Banner
+  variant="warning"
+  title="Drive не підключено"
+  description="Підключіть Google Drive щоб зберігати документи."
+  actions={[{ label: 'Підключити', onClick: connectDrive, variant: 'primary' }]}
+/>
+```
+
 ## Іконки (lucide-react)
 
 Реекспорт у `icons.js` — додавай нові у міру потреби:

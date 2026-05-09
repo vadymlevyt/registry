@@ -15,21 +15,48 @@ const btnBase = {
   fontSize: 13, fontWeight: 600, cursor: 'pointer',
 };
 
-export default function SystemModal({ open, title, message, onOk, onCancel, okText, cancelText, type }) {
+export default function SystemModal({ open, title, message, onOk, onCancel, okText, cancelText, type, inputType, inputDefault }) {
+  const [value, setValue] = React.useState('');
+  React.useEffect(() => {
+    if (open) setValue(inputDefault || '');
+  }, [open, inputDefault]);
+
   if (!open) return null;
   const isConfirm = type === 'confirm';
+  const isPrompt = type === 'prompt';
+
+  const handleOk = () => onOk?.(isPrompt ? value : true);
+
   return (
     <div style={overlay} onClick={e => { if (e.target === e.currentTarget && onCancel) onCancel(); }}>
       <div style={box}>
         {title && <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>{title}</div>}
-        <div style={{ whiteSpace: 'pre-wrap', marginBottom: 20, color: '#b0b4cc' }}>{message}</div>
+        <div style={{ whiteSpace: 'pre-wrap', marginBottom: isPrompt ? 12 : 20, color: '#b0b4cc' }}>{message}</div>
+        {isPrompt && (
+          <input
+            autoFocus
+            type={inputType || 'text'}
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') handleOk();
+              if (e.key === 'Escape' && onCancel) onCancel();
+            }}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              background: '#0f1117', border: '1px solid #2e3148',
+              color: '#e8eaf0', borderRadius: 6, padding: '8px 10px',
+              fontSize: 13, marginBottom: 16, outline: 'none',
+            }}
+          />
+        )}
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          {isConfirm && onCancel && (
+          {(isConfirm || isPrompt) && onCancel && (
             <button style={{ ...btnBase, background: '#2e3148', color: '#9aa0b8' }} onClick={onCancel}>
               {cancelText || 'Скасувати'}
             </button>
           )}
-          <button style={{ ...btnBase, background: '#4f7cff', color: '#fff' }} onClick={onOk}>
+          <button style={{ ...btnBase, background: '#4f7cff', color: '#fff' }} onClick={handleOk}>
             {okText || 'OK'}
           </button>
         </div>
@@ -53,8 +80,10 @@ export function SystemModalRoot() {
       type={state.type}
       okText={state.okText}
       cancelText={state.cancelText}
-      onOk={() => { setState({ open: false }); _resolveModal && _resolveModal(true); }}
-      onCancel={() => { setState({ open: false }); _resolveModal && _resolveModal(false); }}
+      inputType={state.inputType}
+      inputDefault={state.inputDefault}
+      onOk={(value) => { setState({ open: false }); _resolveModal && _resolveModal(state.type === 'prompt' ? value : true); }}
+      onCancel={() => { setState({ open: false }); _resolveModal && _resolveModal(state.type === 'prompt' ? null : false); }}
     />
   );
 }
@@ -72,5 +101,28 @@ export function systemConfirm(message, title, okText, cancelText) {
   return new Promise(resolve => {
     _resolveModal = resolve;
     _setModal({ open: true, type: 'confirm', message, title: title || '', okText: okText || 'OK', cancelText: cancelText || 'Скасувати' });
+  });
+}
+
+// systemPrompt — фірмова заміна window.prompt. Повертає Promise<string|null>.
+// null якщо адвокат натиснув «Скасувати» або Escape.
+// inputType: 'text' | 'date' | 'time' | 'number' тощо — нативні HTML5 типи.
+export function systemPrompt(message, { title, defaultValue, inputType, okText, cancelText } = {}) {
+  if (!_setModal) {
+    const v = window.prompt(message, defaultValue || '');
+    return Promise.resolve(v == null ? null : v);
+  }
+  return new Promise(resolve => {
+    _resolveModal = resolve;
+    _setModal({
+      open: true,
+      type: 'prompt',
+      message,
+      title: title || '',
+      inputType: inputType || 'text',
+      inputDefault: defaultValue || '',
+      okText: okText || 'OK',
+      cancelText: cancelText || 'Скасувати',
+    });
   });
 }

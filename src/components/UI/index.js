@@ -9,3 +9,6 @@ export { Chip } from './Chip.jsx';
 export { Toggle } from './Toggle.jsx';
 export { Tabs } from './Tabs.jsx';
 export { Tooltip } from './Tooltip.jsx';
+export { Toast } from './Toast.jsx';
+export { ToastContainer } from './ToastContainer.jsx';
+export { Banner } from './Banner.jsx';

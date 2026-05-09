@@ -4,7 +4,9 @@ import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToD
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
-import { systemAlert, systemConfirm } from "../SystemModal";
+import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
+import { toast } from "../../services/toast.js";
+import { messages } from "../../services/messages.js";
 import { logAiUsage } from "../../services/aiUsageService.js";
 import { resolveModel } from "../../services/modelResolver.js";
 import * as activityTracker from "../../services/activityTracker.js";
@@ -748,7 +750,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
   async function handleCreateContext() {
     if (isCreatingContext) {
-      setContextMsg("⏳ Операція вже виконується. Будь ласка, зачекайте.");
+      toast.show(messages.context.alreadyRunning());
       return;
     }
     // [BILLING] context_regenerated — важлива дія, окремий звіт.
@@ -760,8 +762,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       const token = localStorage.getItem("levytskyi_drive_token");
       const folderId = storageState?.driveFolderId;
 
-      if (!token) { setContextMsg("❌ Немає токена Drive"); return; }
-      if (!folderId) { setContextMsg("❌ Немає folderId в storage"); return; }
+      if (!token) { toast.show(messages.drive.notConnected()); return; }
+      if (!folderId) { toast.show(messages.drive.folderMissing(caseData.name)); return; }
 
       // 1. Перевірити існуючий case_context.md
       setContextMsg("Перевіряю існуючий контекст...");
@@ -771,7 +773,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         )}&fields=files(id,name,modifiedTime)`
       );
       if (searchRes.status === 401) {
-        setContextMsg("❌ Не вдалося оновити токен Drive. Перевірте підключення.");
+        toast.show(messages.drive.tokenExpired());
         return;
       }
       const searchData = await searchRes.json();
@@ -792,7 +794,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       setContextMsg("Перевіряю структуру папок...");
       const subFolders = await ensureSubFolders(caseData);
       if (!subFolders?.['01_ОРИГІНАЛИ'] && !subFolders?.['02_ОБРОБЛЕНІ']) {
-        setContextMsg("❌ Не знайдено папок 01_ОРИГІНАЛИ і 02_ОБРОБЛЕНІ.");
+        toast.show(messages.context.noSubfolders());
         return;
       }
 
@@ -823,12 +825,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       }
 
       if (allFiles.length === 0) {
-        setContextMsg("❌ Файлів не знайдено в 01_ОРИГІНАЛИ та 02_ОБРОБЛЕНІ.");
+        toast.show(messages.context.noFiles());
         return;
       }
 
       console.log(`[CaseDossier] OCR джерело: ${allFiles.length} файлів`, allFiles.map(f => `${f.name} (${f.sourceLabel})`));
-      setContextMsg(`📄 Знайдено ${allFiles.length} файлів. Запускаю обробку...`);
+      setContextMsg(`Знайдено ${allFiles.length} файлів. Запускаю обробку...`);
 
       // 4. OCR через сервіс — параллельно через Document AI з кешем
       const filesForOcr = allFiles.map(f => ({
@@ -840,7 +842,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       const results = await ocrService.extractTextBatch(filesForOcr, {
         concurrency: 3,
         onProgress: (done, total, current) => {
-          setContextMsg(`📖 Обробка ${done}/${total}: ${current?.name || '...'}`);
+          setContextMsg(`Обробка ${done}/${total}: ${current?.name || '...'}`);
         },
         caseId: caseData?.id,
         aiUsageSink: setAiUsage ? (entry) => setAiUsage(prev => {
@@ -858,9 +860,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         );
         if (goConsent) {
           await forceConsentRefresh();
-          setContextMsg('🔑 Авторизацію оновлено. Натисніть "Створити контекст" ще раз.');
+          toast.show(messages.context.authRefreshed());
         } else {
-          setContextMsg('❌ Скасовано — авторизація не оновлена.');
+          toast.show(messages.context.cancelled());
         }
         return;
       }
@@ -887,7 +889,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       // 7. API ключ Claude
       const apiKey = localStorage.getItem("claude_api_key");
       if (!apiKey) {
-        setContextMsg("Потрібен API ключ Claude. Введіть у налаштуваннях.");
+        toast.show(messages.context.apiKeyMissing());
         return;
       }
 
@@ -957,7 +959,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       const contextMd = data?.content?.[0]?.text || "";
 
       if (!contextMd) {
-        setContextMsg("Claude не повернув результат");
+        toast.show(messages.context.emptyResult());
         return;
       }
 
@@ -989,15 +991,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       );
 
       if (uploadResult?.error) {
-        setContextMsg(`❌ Не вдалося зберегти на Drive: ${uploadResult.error.message || JSON.stringify(uploadResult.error)}`);
+        console.error('[CaseDossier] context save failed:', uploadResult.error);
+        toast.show(messages.context.saveFailed(uploadResult.error.message));
         return;
       }
       if (!uploadResult?.id) {
-        setContextMsg("❌ Drive не повернув id файлу — збереження не підтверджено");
+        toast.show(messages.context.saveFailed());
         return;
       }
 
-      setContextMsg(`✅ Контекст створено (${textDocs.length} документів${cacheHits ? `, ${cacheHits} з кешу` : ''}${failed.length ? `, ${failed.length} помилок` : ''})`);
+      toast.show(messages.context.created({ count: textDocs.length, fromCache: cacheHits, failed: failed.length }));
+      setContextMsg('');
 
       try {
         const fresh = await loadCaseContext();
@@ -1006,7 +1010,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
     } catch (err) {
       console.error("Context creation error:", err);
-      setContextMsg(`Помилка: ${err.message}`);
+      console.error('[CaseDossier] context error:', err);
+      toast.error('Не вдалось створити контекст', { description: 'Перевірте API ключ і підключення Drive.' });
+      setContextMsg('');
     } finally {
       setContextLoading(false);
       setIsCreatingContext(false);
@@ -1027,7 +1033,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
   const handleCreateDriveStructure = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
-    if (!token) { showMsg("❌ Підключіть Google Drive"); return; }
+    if (!token) { toast.show(messages.drive.notConnected()); return; }
 
     setCreatingStructure(true);
     try {
@@ -1042,9 +1048,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       };
       updateCase(caseData.id, "storage", newStorage);
       setStorageState(newStorage);
-      showMsg("✅ Структуру створено: " + caseFolderName);
+      toast.show(messages.drive.structureCreated(caseFolderName));
     } catch (e) {
-      showMsg("❌ Помилка: " + e.message);
+      console.error('[CaseDossier] create structure error:', e);
+      toast.show(messages.drive.folderError());
     } finally {
       setCreatingStructure(false);
     }
@@ -1265,7 +1272,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
   function startAgentVoice() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { systemAlert("Мікрофон не ��ідтримується в цьому браузері"); return; }
+    if (!SR) { toast.show(messages.common.voiceUnsupported()); return; }
     if (agentRecognitionRef.current) { stopAgentVoice(); return; }
     const recognition = new SR();
     recognition.lang = 'uk-UA';
@@ -1585,12 +1592,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
               <div style={{ fontSize: 11, color: "#5a6080" }}>{"Засідання"}</div>
               <button
-                onClick={() => {
-                  const date = window.prompt("Дата засідання (YYYY-MM-DD):");
+                onClick={async () => {
+                  const date = await systemPrompt("Дата засідання", { inputType: "date", title: "Нове засідання" });
                   if (!date || !onExecuteAction) return;
-                  const time = window.prompt("Час (HH:MM, можна порожнім):") || "";
+                  const time = await systemPrompt("Час (можна пропустити)", { inputType: "time", title: "Нове засідання" });
                   onExecuteAction("dossier_agent", "add_hearing", {
-                    caseId: caseData.id, date, time, duration: 120
+                    caseId: caseData.id, date, time: time || "", duration: 120
                   });
                 }}
                 style={{ background: "transparent", border: "1px dashed #2e3148", color: "#9aa0b8", borderRadius: 6, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
@@ -1655,10 +1662,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
               <div style={{ fontSize: 11, color: "#5a6080" }}>{"Дедлайни"}</div>
               <button
-                onClick={() => {
-                  const name = window.prompt("Назва дедлайну:");
+                onClick={async () => {
+                  const name = await systemPrompt("Назва дедлайну", { title: "Новий дедлайн" });
                   if (!name) return;
-                  const date = window.prompt("Дата (YYYY-MM-DD):");
+                  const date = await systemPrompt("Дата дедлайну", { inputType: "date", title: "Новий дедлайн" });
                   if (!date || !onExecuteAction) return;
                   onExecuteAction("dossier_agent", "add_deadline", {
                     caseId: caseData.id, name, date
