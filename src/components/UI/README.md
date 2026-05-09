@@ -313,6 +313,22 @@ import { ChevronDown, Trash2, Star, Pin, ICON_SIZE } from '../UI/icons';
 <Trash2 size={ICON_SIZE.sm} color="var(--color-danger)" />
 ```
 
+## Адаптивність
+
+Усі компоненти UI мають базову responsive поведінку (TASK 9):
+
+- **<480px** — Banner actions перемикаються у вертикальну колонку.
+- **<768px** — Modal на всю ширину (95vw), Toast bottom full-width, Tabs з horizontal scroll, Button/Input/Select мінімум 44px (Apple HIG / Google Material). Input/Select font-size 16px (інакше iOS зумить при focus).
+- **`hover: none`** — Tooltip приховано (на touch замість hover).
+- **≥1280px** — повний layout (десктоп / планшет landscape) — primary use case адвоката.
+
+При додаванні нових компонентів дотримуйся:
+- Touch-friendly targets (мин 44px height на mobile).
+- Font-size ≥16px на input для iOS no-zoom.
+- Уникай fixed pixel widths — використовуй rem/em або CSS-змінні.
+
+Primary use case системи — планшет Lenovo Yoga Tab 13 у landscape (2160×1350). Secondary — десктоп. Mobile — обмежено.
+
 ## Принципи
 
 1. **Тільки CSS-змінні з `tokens.css`.** Жодних inline кольорів типу `#3b82f6` всередині компонентів.

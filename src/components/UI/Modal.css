@@ -70,3 +70,24 @@
   padding: var(--space-4) var(--space-5);
   border-top: 1px solid var(--color-border);
 }
+
+@media (max-width: 768px) {
+  .ui-modal-backdrop {
+    padding: var(--space-2);
+  }
+  .ui-modal,
+  .ui-modal--sm,
+  .ui-modal--md,
+  .ui-modal--lg {
+    width: 95vw;
+    max-width: 95vw;
+    max-height: 95vh;
+  }
+  .ui-modal__header,
+  .ui-modal__actions {
+    padding: var(--space-3) var(--space-4);
+  }
+  .ui-modal__body {
+    padding: var(--space-4);
+  }
+}

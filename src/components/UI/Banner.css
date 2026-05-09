@@ -71,3 +71,12 @@
   margin-top: 2px;
 }
 .ui-banner__close:hover { color: var(--color-text); }
+
+@media (max-width: 480px) {
+  .ui-banner__actions {
+    flex-direction: column;
+  }
+  .ui-banner__actions > * {
+    width: 100%;
+  }
+}

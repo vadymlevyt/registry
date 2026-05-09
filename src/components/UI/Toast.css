@@ -89,3 +89,15 @@
   align-items: center;
 }
 .ui-toast__close:hover { color: var(--color-text); }
+
+@media (max-width: 768px) {
+  .ui-toast-container {
+    bottom: var(--space-4);
+    right: var(--space-4);
+    left: var(--space-4);
+    max-width: none;
+  }
+  .ui-toast {
+    width: 100%;
+  }
+}

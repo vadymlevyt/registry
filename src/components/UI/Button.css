@@ -98,3 +98,10 @@
 @keyframes ui-button-spin {
   to { transform: rotate(360deg); }
 }
+
+@media (max-width: 768px) {
+  .ui-button--md,
+  .ui-button--lg {
+    min-height: 44px;
+  }
+}

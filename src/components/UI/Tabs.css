@@ -89,3 +89,16 @@
   height: 18px;
   justify-content: center;
 }
+
+@media (max-width: 768px) {
+  .ui-tabs {
+    overflow-x: auto;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ui-tabs__tab {
+    flex-shrink: 0;
+    min-height: 44px;
+  }
+}

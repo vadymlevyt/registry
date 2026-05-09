@@ -30,15 +30,15 @@ const CATEGORY_LABELS = {
 const AUTHOR_LABELS = { ours: "Наш", opponent: "Опонент", court: "Суд" };
 
 const TAG_COLORS = {
-  key: { bg: "rgba(79,124,255,.2)", color: "#4f7cff" },
-  ours: { bg: "rgba(46,204,113,.2)", color: "#2ecc71" },
+  key: { bg: "rgba(79,124,255,.2)", color: "var(--color-accent)" },
+  ours: { bg: "rgba(46,204,113,.2)", color: "var(--color-success)" },
   opponent: { bg: "rgba(168,85,247,.2)", color: "#a855f7" }
 };
 
 const PROC_COLORS = {
-  first: "#2ecc71",
+  first: "var(--color-success)",
   appeal: "#a855f7",
-  cassation: "#f39c12"
+  cassation: "var(--color-warning)"
 };
 
 const CASE_TYPE_LABELS = {
@@ -1096,7 +1096,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   }[caseData.category] || caseData.category;
 
   const statusLabel = { active: "Активна", paused: "Призупинена", closed: "Закрита" }[caseData.status] || caseData.status;
-  const statusColor = { active: "#2ecc71", paused: "#f39c12", closed: "#5a6080" }[caseData.status] || "#5a6080";
+  const statusColor = { active: "var(--color-success)", paused: "var(--color-warning)", closed: "var(--color-text-3)" }[caseData.status] || "var(--color-text-3)";
 
   function saveIdea() {
     if (!ideaText.trim()) return;
@@ -1267,8 +1267,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     return file;
   }
 
-  const iconBtn = { background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 };
-  const primaryBtn = { background: "#4f7cff", color: "#fff", border: "none", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12 };
+  const iconBtn = { background: "none", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "5px 10px", borderRadius: 'var(--radius-sm)', cursor: "pointer", fontSize: 12 };
+  const primaryBtn = { background: "var(--color-accent)", color: "#fff", border: "none", padding: "5px 12px", borderRadius: 'var(--radius-sm)', cursor: "pointer", fontSize: 12 };
 
   function startAgentVoice() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1428,25 +1428,25 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
     return (
       <>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid #2e3148', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 14, display: "inline-flex", alignItems: "center" }}><Bot size={ICON_SIZE.md} /></span>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
-            <div style={{ fontSize: 10, color: '#5a6080' }}>
+            <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
               {"Sonnet · знає справу"}
-              {caseContext && <span style={{ marginLeft: 4, color: '#2ecc71', display: 'inline-flex', alignItems: 'center' }} title="Контекст справи створено"><FileText size={ICON_SIZE.xs} /></span>}
+              {caseContext && <span style={{ marginLeft: 4, color: 'var(--color-success)', display: 'inline-flex', alignItems: 'center' }} title="Контекст справи створено"><FileText size={ICON_SIZE.xs} /></span>}
             </div>
-            <div style={{ fontSize: 10, color: agentMessages.length > 0 ? '#2ecc71' : '#5a6080', marginTop: 2 }}>
+            <div style={{ fontSize: 10, color: agentMessages.length > 0 ? 'var(--color-success)' : 'var(--color-text-3)', marginTop: 2 }}>
               {agentMessages.length > 0
                 ? `📂 Завантажено ${agentMessages.length} повідомлень з попередньої розмови`
                 : "Нова розмова"}
             </div>
           </div>
-          <button onClick={() => setConfirmClearOpen(true)} style={{ background: 'none', border: 'none', color: '#5a6080', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
+          <button onClick={() => setConfirmClearOpen(true)} style={{ background: 'none', border: 'none', color: 'var(--color-text-3)', cursor: 'pointer', fontSize: 10 }}>{"\u002B Нова розмова"}</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {agentMessages.length === 0 && (
-            <div style={{ fontSize: 11, color: '#3a3f58', textAlign: 'center', marginTop: 20 }}>
+            <div style={{ fontSize: 11, color: 'var(--color-text-3)', textAlign: 'center', marginTop: 20 }}>
               {"Запитайте про справу, тактику або документи"}
             </div>
           )}
@@ -1457,15 +1457,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             return (
               <div key={i}>
                 {showDate && (
-                  <div style={{ textAlign: 'center', fontSize: 10, color: '#3a3f58', margin: '8px 0' }}>
+                  <div style={{ textAlign: 'center', fontSize: 10, color: 'var(--color-text-3)', margin: '8px 0' }}>
                     {new Date(msg.ts).toLocaleDateString('uk-UA')}
                   </div>
                 )}
                 <div style={{
-                  padding: '8px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.6, maxWidth: '90%',
+                  padding: '8px 10px', borderRadius: 'var(--radius-md)', fontSize: 12, lineHeight: 1.6, maxWidth: '90%',
                   alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                  background: msg.role === 'user' ? 'rgba(79,124,255,.2)' : '#222536',
-                  color: '#e8eaf0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word'
+                  background: msg.role === 'user' ? 'rgba(79,124,255,.2)' : 'var(--color-surface-2)',
+                  color: 'var(--color-text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word'
                 }}>
                   {msg.content}
                 </div>
@@ -1473,10 +1473,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             );
           })}
           {agentLoading && (
-            <div style={{ padding: '8px 10px', borderRadius: 8, background: '#222536', fontSize: 12, color: '#5a6080' }}>{"⏳ Думаю..."}</div>
+            <div style={{ padding: '8px 10px', borderRadius: 'var(--radius-md)', background: 'var(--color-surface-2)', fontSize: 12, color: 'var(--color-text-3)' }}>{"⏳ Думаю..."}</div>
           )}
         </div>
-        <div style={{ padding: 8, borderTop: '1px solid #2e3148', display: 'flex', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
+        <div style={{ padding: 8, borderTop: '1px solid var(--color-border)', display: 'flex', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
           <textarea
             value={agentInput}
             onChange={e => setAgentInput(e.target.value)}
@@ -1484,25 +1484,25 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             placeholder="Запитати агента..."
             rows={2}
             style={{
-              flex: 1, background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0',
-              padding: '6px 8px', borderRadius: 6, fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5,
+              flex: 1, background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)',
+              padding: '6px 8px', borderRadius: 'var(--radius-sm)', fontSize: 12, resize: 'none', outline: 'none', lineHeight: 1.5,
               whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'break-word', fontFamily: 'inherit'
             }}
           />
           {agentRecording ? (
             <>
-              <button onClick={cancelAgentVoice} style={{ background: 'none', border: '1px solid rgba(231,76,60,.4)', color: '#e74c3c', padding: '0 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14, height: 34 }}>{"\u00d7"}</button>
-              <button onClick={stopAgentVoice} style={{ background: '#2ecc71', border: 'none', color: '#fff', padding: '0 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14, height: 34 }}>{"\u2713"}</button>
+              <button onClick={cancelAgentVoice} style={{ background: 'none', border: '1px solid rgba(231,76,60,.4)', color: 'var(--color-danger)', padding: '0 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 14, height: 34 }}>{"\u00d7"}</button>
+              <button onClick={stopAgentVoice} style={{ background: 'var(--color-success)', border: 'none', color: '#fff', padding: '0 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 14, height: 34 }}>{"\u2713"}</button>
             </>
           ) : (
-            <button onClick={startAgentVoice} style={{ background: 'none', border: '1px solid #2e3148', color: '#9aa0b8', padding: '0 10px', borderRadius: 6, cursor: 'pointer', fontSize: 14, height: 34 }}>{"\ud83c\udfa4"}</button>
+            <button onClick={startAgentVoice} style={{ background: 'none', border: '1px solid var(--color-border)', color: 'var(--color-text-2)', padding: '0 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 14, height: 34 }}>{"\ud83c\udfa4"}</button>
           )}
           <button
             onClick={sendAgentMessage}
             disabled={agentLoading || !agentInput.trim()}
             style={{
-              background: '#4f7cff', border: 'none', color: '#fff',
-              padding: '0 12px', borderRadius: 6, height: 34,
+              background: 'var(--color-accent)', border: 'none', color: '#fff',
+              padding: '0 12px', borderRadius: 'var(--radius-sm)', height: 34,
               cursor: agentLoading ? 'default' : 'pointer',
               fontSize: 16, opacity: agentLoading ? 0.5 : 1
             }}
@@ -1513,21 +1513,21 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             background: 'rgba(0,0,0,.6)', display: 'flex',
             alignItems: 'center', justifyContent: 'center', zIndex: 10,
-            borderRadius: 8
+            borderRadius: 'var(--radius-md)'
           }}>
             <div style={{
-              background: '#1e2138', borderRadius: 12, padding: '20px 24px',
-              maxWidth: 300, textAlign: 'center', border: '1px solid #2e3148'
+              background: 'var(--color-surface)', borderRadius: 'var(--radius-lg)', padding: '20px 24px',
+              maxWidth: 300, textAlign: 'center', border: '1px solid var(--color-border)'
             }}>
-              <div style={{ fontSize: 14, color: '#e8eaf0', marginBottom: 16 }}>
+              <div style={{ fontSize: 14, color: 'var(--color-text)', marginBottom: 16 }}>
                 {"Почати нову розмову? Поточна історія буде очищена."}
               </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
                 <button
                   onClick={() => setConfirmClearOpen(false)}
                   style={{
-                    padding: '8px 20px', borderRadius: 6, border: '1px solid #2e3148',
-                    background: 'transparent', color: '#9aa0b8', cursor: 'pointer', fontSize: 13
+                    padding: '8px 20px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)',
+                    background: 'transparent', color: 'var(--color-text-2)', cursor: 'pointer', fontSize: 13
                   }}
                 >{"Скасувати"}</button>
                 <button
@@ -1537,8 +1537,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                     setConfirmClearOpen(false);
                   }}
                   style={{
-                    padding: '8px 20px', borderRadius: 6, border: 'none',
-                    background: '#e74c3c', color: '#fff', cursor: 'pointer', fontSize: 13
+                    padding: '8px 20px', borderRadius: 'var(--radius-sm)', border: 'none',
+                    background: 'var(--color-danger)', color: '#fff', cursor: 'pointer', fontSize: 13
                   }}
                 >{"Очистити"}</button>
               </div>
@@ -1555,8 +1555,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
 
         {/* Поля справи — inline редагування */}
-        <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Інформація про справу"}</div>
+        <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-4)'}}>
+          <div style={{ fontSize: 10, color: "var(--color-text-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Інформація про справу"}</div>
           {[
             { label: "Суд", field: "court", value: caseData.court },
             { label: "Номер справи", field: "case_no", value: caseData.case_no },
@@ -1564,7 +1564,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             { label: "Наступна дія", field: "next_action", value: caseData.next_action },
           ].map(row => (
             <div key={row.field} style={{ display: "flex", gap: 12, marginBottom: 10, alignItems: "flex-start" }}>
-              <div style={{ width: 130, fontSize: 11, color: "#5a6080", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
+              <div style={{ width: 130, fontSize: 11, color: "var(--color-text-3)", flexShrink: 0, paddingTop: 2 }}>{row.label}</div>
               <div
                 contentEditable
                 suppressContentEditableWarning
@@ -1580,9 +1580,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   const value = row.field === "category" ? (CATEGORY_MAP[raw] || raw) : raw;
                   updateCase(caseData.id, row.field, value);
                 }}
-                onFocus={e => { e.target.style.borderColor = "#4f7cff"; }}
+                onFocus={e => { e.target.style.borderColor = "var(--color-accent)"; }}
                 onBlurCapture={e => e.target.style.borderColor = "transparent"}
-                style={{ flex: 1, fontSize: 12, color: row.value ? "#e8eaf0" : "#3a3f58", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 4, border: "1px solid transparent", cursor: "text", transition: "border-color .15s" }}
+                style={{ flex: 1, fontSize: 12, color: row.value ? "var(--color-text)" : "var(--color-text-3)", outline: "none", minHeight: 20, padding: "2px 6px", borderRadius: 'var(--radius-xs)', border: "1px solid transparent", cursor: "text", transition: "border-color .15s" }}
               >{row.value || "\u2014"}</div>
             </div>
           ))}
@@ -1590,7 +1590,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           {/* СЕКЦІЯ ЗАСІДАННЯ */}
           <div style={{ marginTop: 16, marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: "#5a6080" }}>{"Засідання"}</div>
+              <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{"Засідання"}</div>
               <button
                 onClick={async () => {
                   const date = await systemPrompt("Дата засідання", { inputType: "date", title: "Нове засідання" });
@@ -1600,7 +1600,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                     caseId: caseData.id, date, time: time || "", duration: 120
                   });
                 }}
-                style={{ background: "transparent", border: "1px dashed #2e3148", color: "#9aa0b8", borderRadius: 6, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
+                style={{ background: "transparent", border: "1px dashed var(--color-border)", color: "var(--color-text-2)", borderRadius: 'var(--radius-sm)', padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
               >{"+ Додати"}</button>
             </div>
             {(caseData.hearings || [])
@@ -1610,7 +1610,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 const today = new Date().toISOString().split("T")[0];
                 const isPast = (h.date || "") < today;
                 return (
-                  <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "#222536", borderRadius: 6, marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "#3a3f58" : "#4f7cff"}` }}>
+                  <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "var(--color-surface-2)", borderRadius: 'var(--radius-sm)', marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "var(--color-text-3)" : "var(--color-accent)"}` }}>
                     <input
                       type="date"
                       defaultValue={h.date || ""}
@@ -1622,7 +1622,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                           date: v, time: h.time, duration: h.duration
                         });
                       }}
-                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12 }}
                     />
                     <input
                       type="time"
@@ -1635,9 +1635,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                           date: h.date, time: v, duration: h.duration
                         });
                       }}
-                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12 }}
                     />
-                    <span style={{ fontSize: 10, color: "#5a6080", flex: 1 }}>{isPast ? "минуле" : (h.status || "scheduled")}</span>
+                    <span style={{ fontSize: 10, color: "var(--color-text-3)", flex: 1 }}>{isPast ? "минуле" : (h.status || "scheduled")}</span>
                     <button
                       onClick={() => {
                         if (!onExecuteAction) return;
@@ -1645,7 +1645,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                           caseId: caseData.id, hearingId: h.id
                         });
                       }}
-                      style={{ background: "transparent", border: "none", color: "#9aa0b8", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                      style={{ background: "transparent", border: "none", color: "var(--color-text-2)", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
                       title="Видалити засідання"
                     >{"\u{1F5D1}"}</button>
                   </div>
@@ -1653,14 +1653,14 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               })
             }
             {(!caseData.hearings || caseData.hearings.length === 0) && (
-              <div style={{ fontSize: 12, color: "#3a3f58", fontStyle: "italic", padding: "4px 0" }}>{"Засідань немає"}</div>
+              <div style={{ fontSize: 12, color: "var(--color-text-3)", fontStyle: "italic", padding: "4px 0" }}>{"Засідань немає"}</div>
             )}
           </div>
 
           {/* СЕКЦІЯ ДЕДЛАЙНИ */}
           <div style={{ marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: "#5a6080" }}>{"Дедлайни"}</div>
+              <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{"Дедлайни"}</div>
               <button
                 onClick={async () => {
                   const name = await systemPrompt("Назва дедлайну", { title: "Новий дедлайн" });
@@ -1671,7 +1671,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                     caseId: caseData.id, name, date
                   });
                 }}
-                style={{ background: "transparent", border: "1px dashed #2e3148", color: "#9aa0b8", borderRadius: 6, padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
+                style={{ background: "transparent", border: "1px dashed var(--color-border)", color: "var(--color-text-2)", borderRadius: 'var(--radius-sm)', padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
               >{"+ Додати"}</button>
             </div>
             {(caseData.deadlines || [])
@@ -1681,7 +1681,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 const today = new Date().toISOString().split("T")[0];
                 const isPast = (d.date || "") < today;
                 return (
-                  <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "#222536", borderRadius: 6, marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "#3a3f58" : "#f39c12"}` }}>
+                  <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "var(--color-surface-2)", borderRadius: 'var(--radius-sm)', marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "var(--color-text-3)" : "var(--color-warning)"}` }}>
                     <input
                       type="text"
                       defaultValue={d.name || ""}
@@ -1694,7 +1694,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                           name: v, date: d.date
                         });
                       }}
-                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12, flex: 1, minWidth: 80 }}
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12, flex: 1, minWidth: 80 }}
                     />
                     <input
                       type="date"
@@ -1707,7 +1707,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                           name: d.name, date: v
                         });
                       }}
-                      style={{ background: "#1a1d27", border: "1px solid #2e3148", color: "#e8eaf0", borderRadius: 4, padding: "3px 6px", fontSize: 12 }}
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12 }}
                     />
                     <button
                       onClick={() => {
@@ -1716,7 +1716,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                           caseId: caseData.id, deadlineId: d.id
                         });
                       }}
-                      style={{ background: "transparent", border: "none", color: "#9aa0b8", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                      style={{ background: "transparent", border: "none", color: "var(--color-text-2)", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
                       title="Видалити дедлайн"
                     >{"\u{1F5D1}"}</button>
                   </div>
@@ -1724,29 +1724,29 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               })
             }
             {(!caseData.deadlines || caseData.deadlines.length === 0) && (
-              <div style={{ fontSize: 12, color: "#3a3f58", fontStyle: "italic", padding: "4px 0" }}>{"Дедлайнів немає"}</div>
+              <div style={{ fontSize: 12, color: "var(--color-text-3)", fontStyle: "italic", padding: "4px 0" }}>{"Дедлайнів немає"}</div>
             )}
           </div>
 
           {/* Нотатки до справи */}
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 4 }}>{"Нотатки до справи"}</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-3)", marginBottom: 4 }}>{"Нотатки до справи"}</div>
             {(() => {
               const pinned = caseNotes.filter(n => isPinned(n.id));
               if (pinned.length > 0) {
                 return (
                   <div style={{
-                    background: "#1a1d2e", borderRadius: 6, padding: "8px 10px",
-                    fontSize: 12, color: "#c8cce0", lineHeight: 1.6,
-                    borderLeft: "3px solid #4f7cff"
+                    background: "var(--color-surface)", borderRadius: 'var(--radius-sm)', padding: "8px 10px",
+                    fontSize: 12, color: "var(--color-text)", lineHeight: 1.6,
+                    borderLeft: "3px solid var(--color-accent)"
                   }}>
                     {pinned.map((note, i) => (
                       <div key={note.id || i} style={{
                         marginBottom: i < pinned.length - 1 ? 8 : 0,
                         paddingBottom: i < pinned.length - 1 ? 8 : 0,
-                        borderBottom: i < pinned.length - 1 ? "1px solid #2e3148" : "none"
+                        borderBottom: i < pinned.length - 1 ? "1px solid var(--color-border)" : "none"
                       }}>
-                        <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 2 }}>
+                        <div style={{ fontSize: 10, color: "var(--color-text-3)", marginBottom: 2 }}>
                           <Pin size={ICON_SIZE.xs} style={{ marginRight: 4, verticalAlign: 'middle' }} />{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}
                         </div>
                         <div>{String(note.text || "")}</div>
@@ -1756,7 +1756,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 );
               }
               return (
-                <div style={{ fontSize: 12, color: "#5a6080", fontStyle: "italic", padding: "8px 10px" }}>
+                <div style={{ fontSize: 12, color: "var(--color-text-3)", fontStyle: "italic", padding: "8px 10px" }}>
                   {"Закріпіть нотатку 📌 зі списку нижче"}
                 </div>
               );
@@ -1765,15 +1765,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         </div>
 
         {/* Сховище Drive */}
-        <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Сховище"}</div>
+        <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-4)'}}>
+          <div style={{ fontSize: 10, color: "var(--color-text-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Сховище"}</div>
           {!storageState?.driveFolderId ? (
             <button
               onClick={handleCreateDriveStructure}
               disabled={creatingStructure}
               style={{
-                background: creatingStructure ? "#2a2d3e" : "#1a4a8a",
-                color: "#fff", border: "none", borderRadius: 6,
+                background: creatingStructure ? "var(--color-surface-2)" : "var(--color-accent-hover)",
+                color: "#fff", border: "none", borderRadius: 'var(--radius-sm)',
                 padding: "8px 16px", cursor: creatingStructure ? "wait" : "pointer", fontSize: 13,
               }}
             >
@@ -1781,14 +1781,14 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             </button>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ color: "#4caf50", fontSize: 13 }}>
+              <span style={{ color: "var(--color-success)", fontSize: 13 }}>
                 <Cloud size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />{storageState.driveFolderName || "Drive папка"}
               </span>
               <button
                 onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")}
                 style={{
-                  background: "none", border: "1px solid #333", borderRadius: 6,
-                  padding: "4px 10px", color: "#aaa", cursor: "pointer", fontSize: 12,
+                  background: "none", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-sm)',
+                  padding: "4px 10px", color: "var(--color-text-2)", cursor: "pointer", fontSize: 12,
                 }}
               ><Link2 size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />Відкрити</button>
             </div>
@@ -1796,7 +1796,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           {storageMsg && (
             <div style={{
               marginTop: 6, fontSize: 12,
-              color: storageMsg.startsWith("\u2705") ? "#4caf50" : "#f44336",
+              color: storageMsg.startsWith("\u2705") ? "var(--color-success)" : "var(--color-danger)",
             }}>
               {storageMsg}
             </div>
@@ -1805,25 +1805,25 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
         {/* Контекст справи */}
         {storageState?.driveFolderId && (
-          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Контекст справи"}</div>
-            <div style={{ fontSize: 12, color: "#9aa0b8", marginBottom: 10 }}>
+          <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-4)'}}>
+            <div style={{ fontSize: 10, color: "var(--color-text-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Контекст справи"}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-2)", marginBottom: 10 }}>
               {"Автоматичний аналіз всіх документів справи — огляд, сторони, хронологія, слабкі місця."}
             </div>
             <button
               disabled={contextLoading}
               onClick={handleCreateContext}
               style={{
-                background: contextLoading ? "#2e3148" : "rgba(79,124,255,.12)",
-                color: contextLoading ? "#5a6080" : "#4f7cff",
-                border: "none", borderRadius: 6, padding: "8px 16px",
+                background: contextLoading ? "var(--color-border)" : "rgba(79,124,255,.12)",
+                color: contextLoading ? "var(--color-text-3)" : "var(--color-accent)",
+                border: "none", borderRadius: 'var(--radius-sm)', padding: "8px 16px",
                 fontSize: 12, fontWeight: 600, cursor: contextLoading ? "wait" : "pointer"
               }}
             >
               {contextLoading ? "Створюю..." : "Створити контекст"}
             </button>
             {contextMsg && (
-              <div style={{ marginTop: 8, fontSize: 11, color: contextMsg.startsWith("Помилка") ? "#e74c3c" : "#9aa0b8" }}>
+              <div style={{ marginTop: 8, fontSize: 11, color: contextMsg.startsWith("Помилка") ? "var(--color-danger)" : "var(--color-text-2)" }}>
                 {contextMsg}
               </div>
             )}
@@ -1832,31 +1832,31 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
         {/* Провадження */}
         {proceedings.length > 0 && (
-          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>{"Провадження"}</div>
+          <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-4)'}}>
+            <div style={{ fontSize: 10, color: "var(--color-text-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 10 }}>{"Провадження"}</div>
             {proceedings.map(proc => (
-              <div key={proc.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "#222536", borderRadius: 7, marginBottom: 6, borderLeft: `3px solid ${PROC_COLORS[proc.type] || "#2e3148"}` }}>
+              <div key={proc.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "var(--color-surface-2)", borderRadius: 'var(--radius-sm)', marginBottom: 6, borderLeft: `3px solid ${PROC_COLORS[proc.type] || "var(--color-border)"}` }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, fontWeight: 500 }}>{proc.title}</div>
-                  <div style={{ fontSize: 10, color: "#5a6080", marginTop: 2 }}>{proc.court}</div>
-                  {proc.parentProcId && <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 2 }}>{"\u2190 з "}{proceedings.find(p => p.id === proc.parentProcId)?.title}</div>}
+                  <div style={{ fontSize: 10, color: "var(--color-text-3)", marginTop: 2 }}>{proc.court}</div>
+                  {proc.parentProcId && <div style={{ fontSize: 10, color: "var(--color-text-3)", marginTop: 2 }}>{"\u2190 з "}{proceedings.find(p => p.id === proc.parentProcId)?.title}</div>}
                 </div>
-                <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 3, fontWeight: 600, background: proc.status === "active" ? "rgba(46,204,113,.15)" : "rgba(243,156,18,.15)", color: proc.status === "active" ? "#2ecc71" : "#f39c12" }}>
+                <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 3, fontWeight: 600, background: proc.status === "active" ? "rgba(46,204,113,.15)" : "rgba(243,156,18,.15)", color: proc.status === "active" ? "var(--color-success)" : "var(--color-warning)" }}>
                   {proc.status === "active" ? "Активне" : "На паузі"}
                 </span>
               </div>
             ))}
             <button
               onClick={() => setProcModalOpen(true)}
-              style={{ width: '100%', padding: '7px', background: 'none', border: '1px dashed #2e3148', borderRadius: 7, color: '#5a6080', cursor: 'pointer', fontSize: 12, marginTop: 6 }}
+              style={{ width: '100%', padding: '7px', background: 'none', border: '1px dashed var(--color-border)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-3)', cursor: 'pointer', fontSize: 12, marginTop: 6 }}
             >+ Додати провадження</button>
           </div>
         )}
 
         {/* Нотатки */}
-        <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+        <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-4)'}}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <div style={{ fontSize: 10, color: "#5a6080", textTransform: "uppercase", letterSpacing: ".06em" }}>{"Нотатки по справі"}</div>
+            <div style={{ fontSize: 10, color: "var(--color-text-3)", textTransform: "uppercase", letterSpacing: ".06em" }}>{"Нотатки по справі"}</div>
             <div style={{ display: "flex", gap: 6 }}>
               {caseNotes.length > 1 && (
                 <button onClick={() => setNotesExpanded(!notesExpanded)} style={iconBtn}>
@@ -1867,12 +1867,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             </div>
           </div>
           {caseNotes.length === 0 ? (
-            <div style={{ fontSize: 12, color: "#3a3f58" }}>{"Нотаток поки немає"}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-3)" }}>{"Нотаток поки немає"}</div>
           ) : (notesExpanded ? caseNotes : [pinnedNote]).filter(Boolean).map(note => (
             <div key={note.id} style={{
-              padding: "8px 10px", borderRadius: 7, marginBottom: 6, fontSize: 12, color: "#9aa0b8", lineHeight: 1.6,
-              background: isPinned(note.id) ? "rgba(79,124,255,0.08)" : "#222536",
-              borderLeft: isPinned(note.id) ? "2px solid #4f7cff" : "2px solid transparent",
+              padding: "8px 10px", borderRadius: 'var(--radius-sm)', marginBottom: 6, fontSize: 12, color: "var(--color-text-2)", lineHeight: 1.6,
+              background: isPinned(note.id) ? "rgba(79,124,255,0.08)" : "var(--color-surface-2)",
+              borderLeft: isPinned(note.id) ? "2px solid var(--color-accent)" : "2px solid transparent",
               transition: "all 0.2s"
             }}>
               {editingNoteId === note.id ? (
@@ -1880,13 +1880,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   <textarea
                     value={editingNoteText}
                     onChange={e => setEditingNoteText(e.target.value)}
-                    style={{ width: "100%", minHeight: 80, background: "#0d0f1a", color: "#e8eaf0", border: "1px solid #4f7cff", borderRadius: 6, padding: 8, fontSize: 13, resize: "vertical", boxSizing: "border-box" }}
+                    style={{ width: "100%", minHeight: 80, background: "var(--color-bg)", color: "var(--color-text)", border: "1px solid var(--color-accent)", borderRadius: 'var(--radius-sm)', padding: 8, fontSize: 13, resize: "vertical", boxSizing: "border-box" }}
                   />
                   <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                    <button onClick={() => { onUpdateNote && onUpdateNote(note.id, { text: editingNoteText }); setEditingNoteId(null); setEditingNoteText(""); }} style={{ background: "#1a4a8a", color: "#fff", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
+                    <button onClick={() => { onUpdateNote && onUpdateNote(note.id, { text: editingNoteText }); setEditingNoteId(null); setEditingNoteText(""); }} style={{ background: "var(--color-accent-hover)", color: "#fff", border: "none", borderRadius: 'var(--radius-sm)', padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
                       <Check size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />Зберегти
                     </button>
-                    <button onClick={() => setEditingNoteId(null)} style={{ background: "#333", color: "#aaa", border: "none", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
+                    <button onClick={() => setEditingNoteId(null)} style={{ background: "var(--color-surface-2)", color: "var(--color-text-2)", border: "none", borderRadius: 'var(--radius-sm)', padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>
                       {"Скасувати"}
                     </button>
                   </div>
@@ -1900,12 +1900,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                     <button
                       onClick={() => { setEditingNoteId(note.id); setEditingNoteText(note.text || ""); }}
                       title="Редагувати"
-                      style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+                      style={{ background: "none", border: "none", color: "var(--color-text-3)", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
                      aria-label="Редагувати"><Edit size={ICON_SIZE.sm} /></button>
                     <button
                       onClick={() => onDeleteNote && onDeleteNote(note.id)}
                       title="Видалити"
-                      style={{ background: "none", border: "none", color: "#5a6080", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
+                      style={{ background: "none", border: "none", color: "var(--color-text-3)", cursor: "pointer", fontSize: 12, padding: "2px 4px", flexShrink: 0 }}
                      aria-label="Видалити"><Trash2 size={ICON_SIZE.sm} /></button>
                     {(() => {
                       const isNotePinned = (caseData.pinnedNoteIds || []).includes(String(note.id));
@@ -1918,14 +1918,14 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                             fontSize: 16, padding: '2px 4px', display: 'inline-block',
                             transform: isNotePinned ? 'rotate(-45deg)' : 'rotate(0deg)',
                             opacity: isNotePinned ? 1 : 0.4,
-                            color: isNotePinned ? '#e53935' : '#888',
+                            color: isNotePinned ? 'var(--color-danger)' : 'var(--color-text-3)',
                             transition: 'transform 0.2s ease, opacity 0.2s ease, color 0.2s ease'
                           }}
                          aria-label="Закріпити"><Pin size={ICON_SIZE.sm} /></button>
                       );
                     })()}
                   </div>
-                  <div style={{ fontSize: 10, color: "#3a3f58", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
+                  <div style={{ fontSize: 10, color: "var(--color-text-3)", marginTop: 4 }}>{(note.ts || note.createdAt) ? new Date(note.ts || note.createdAt).toLocaleDateString("uk-UA") : ""}</div>
                 </>
               )}
             </div>
@@ -1944,17 +1944,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           }}
           onClick={() => document.getElementById("dossierDropInput").click()}
           style={{
-            background: isDragOver ? "rgba(79,124,255,.05)" : "#1a1d27",
-            border: `2px dashed ${isDragOver ? "#4f7cff" : "#2e3148"}`,
-            borderRadius: 10, padding: 20, textAlign: "center",
+            background: isDragOver ? "rgba(79,124,255,.05)" : "var(--color-surface)",
+            border: `2px dashed ${isDragOver ? "var(--color-accent)" : "var(--color-border)"}`,
+            borderRadius: 'var(--radius-md)', padding: 'var(--space-5)', textAlign: "center",
             cursor: "pointer", transition: "all .2s", marginBottom: 12
           }}
         >
           <div style={{ marginBottom: 8, opacity: .4, display: "flex", justifyContent: "center" }}><Paperclip size={28} /></div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#9aa0b8", marginBottom: 4 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-2)", marginBottom: 4 }}>
             {isDragOver ? "Відпустіть файли" : "Перетягніть або натисніть"}
           </div>
-          <div style={{ fontSize: 11, color: "#5a6080" }}>{"PDF, JPEG, PNG, HEIC, Word, HTML — будь-яка кількість"}</div>
+          <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{"PDF, JPEG, PNG, HEIC, Word, HTML — будь-яка кількість"}</div>
           <input
             id="dossierDropInput"
             type="file"
@@ -1970,17 +1970,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
         {/* Черга файлів */}
         {dropQueue.length > 0 && (
-          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 8, overflow: "hidden", marginBottom: 12 }}>
+          <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', overflow: "hidden", marginBottom: 12 }}>
             {dropQueue.map((item, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #2e3148" }}>
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--color-border)" }}>
                 <span style={{ fontSize: 13, display: "inline-flex", alignItems: "center" }}>{item.file.name.match(/\.(jpg|jpeg|png|heic)$/i) ? <Image size={ICON_SIZE.sm} /> : <FileText size={ICON_SIZE.sm} />}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.file.name}</div>
-                  <div style={{ fontSize: 10, color: "#5a6080" }}>{(item.file.size / 1024 / 1024).toFixed(1)} {"МБ"}</div>
+                  <div style={{ fontSize: 10, color: "var(--color-text-3)" }}>{(item.file.size / 1024 / 1024).toFixed(1)} {"МБ"}</div>
                 </div>
                 <span style={{
                   fontSize: 10, fontWeight: 600,
-                  color: item.status === "done" ? "#2ecc71" : item.status === "error" ? "#e74c3c" : "#9aa0b8"
+                  color: item.status === "done" ? "var(--color-success)" : item.status === "error" ? "var(--color-danger)" : "var(--color-text-2)"
                 }}>
                   {item.status === "done" ? "\u2713" : item.status === "error" ? "\u2717" : "\u23f3"}
                 </span>
@@ -1989,7 +1989,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             <div style={{ padding: 8, display: "flex", gap: 6 }}>
               <button
                 onClick={() => setDropQueue([])}
-                style={{ flex: 1, background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}
+                style={{ flex: 1, background: "none", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}
               >{"Очистити"}</button>
               <button
                 onClick={async () => {
@@ -2036,7 +2036,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                     }
                   }
                 }}
-                style={{ flex: 2, background: "#4f7cff", border: "none", color: "#fff", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 600 }}
+                style={{ flex: 2, background: "var(--color-accent)", border: "none", color: "#fff", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 600 }}
               >{"\u25b6 Завантажити на Drive"}</button>
             </div>
           </div>
@@ -2055,18 +2055,18 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         <div style={{ width: matWidth, flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
           {/* Перемикач Дерево / Реєстр */}
-          <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0 }}>
+          <div style={{ display: "flex", borderBottom: "1px solid var(--color-border)", flexShrink: 0 }}>
             {[["tree", GitBranch, "Дерево"], ["registry", ClipboardList, "Реєстр"]].map(([id, Ic, label]) => (
-              <button key={id} onClick={() => setMatMode(id)} style={{ flex: 1, padding: 8, border: "none", background: "none", color: matMode === id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${matMode === id ? "#4f7cff" : "transparent"}`, fontWeight: matMode === id ? 500 : 400, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <button key={id} onClick={() => setMatMode(id)} style={{ flex: 1, padding: 8, border: "none", background: "none", color: matMode === id ? "var(--color-text)" : "var(--color-text-2)", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${matMode === id ? "var(--color-accent)" : "transparent"}`, fontWeight: matMode === id ? 500 : 400, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                 <Ic size={ICON_SIZE.sm} />
                 <span>{label}</span>
               </button>
             ))}
           </div>
-          <div style={{ padding: "6px 8px", borderBottom: "1px solid #2e3148", flexShrink: 0 }}>
+          <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--color-border)", flexShrink: 0 }}>
             <button
               onClick={() => { setNewDoc(d => ({ ...d, procId: proceedings[0]?.id || 'proc_main' })); setDocModalOpen(true); }}
-              style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, width: '100%' }}
+              style={{ background: 'var(--color-accent)', color: '#fff', border: 'none', padding: '5px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 12, width: '100%' }}
             >+ Додати документ</button>
           </div>
 
@@ -2078,19 +2078,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 const indent = proc.parentProcId ? 12 : 0;
                 return (
                   <div key={proc.id} style={{ marginBottom: 12, marginLeft: indent }}>
-                    {proc.parentProcId && <div style={{ fontSize: 10, color: "#5a6080", marginBottom: 4, paddingLeft: 4 }}>{"\u2514\u2500"}</div>}
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 6, background: "#222536", borderLeft: `3px solid ${PROC_COLORS[proc.type] || "#2e3148"}`, marginBottom: 4 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: PROC_COLORS[proc.type] || "#9aa0b8", flex: 1 }}>{proc.title}</span>
-                      <span style={{ fontSize: 9, color: "#5a6080" }}>{procDocs.length}</span>
+                    {proc.parentProcId && <div style={{ fontSize: 10, color: "var(--color-text-3)", marginBottom: 4, paddingLeft: 4 }}>{"\u2514\u2500"}</div>}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 'var(--radius-sm)', background: "var(--color-surface-2)", borderLeft: `3px solid ${PROC_COLORS[proc.type] || "var(--color-border)"}`, marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: PROC_COLORS[proc.type] || "var(--color-text-2)", flex: 1 }}>{proc.title}</span>
+                      <span style={{ fontSize: 9, color: "var(--color-text-3)" }}>{procDocs.length}</span>
                     </div>
                     {procDocs.map(doc => (
-                      <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 6px 18px", borderRadius: 6, cursor: "pointer", background: selectedDoc?.id === doc.id ? "#222536" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "#4f7cff" : "transparent"}`, marginBottom: 2, transition: "all .15s" }}>
+                      <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 6px 18px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, transition: "all .15s" }}>
                         <span style={{ fontSize: 13, flexShrink: 0 }}>{doc.icon}</span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>
-                          <div style={{ fontSize: 10, color: "#5a6080" }}>{doc.date}</div>
+                          <div style={{ fontSize: 10, color: "var(--color-text-3)" }}>{doc.date}</div>
                         </div>
-                        {doc.tags?.includes("key") && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(79,124,255,.2)", color: "#4f7cff", flexShrink: 0 }}>{"ключовий"}</span>}
+                        {doc.tags?.includes("key") && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(79,124,255,.2)", color: "var(--color-accent)", flexShrink: 0 }}>{"ключовий"}</span>}
                       </div>
                     ))}
                   </div>
@@ -2102,13 +2102,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           {/* РЕЄСТР з фільтрами */}
           {matMode === "registry" && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              <div style={{ padding: "6px 8px", borderBottom: "1px solid #2e3148", display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
+              <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
 
                 {/* Фільтр провадження */}
                 <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-                  <button onClick={() => setDocFilters(f => ({ ...f, proc: "all" }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, border: "1px solid", borderColor: docFilters.proc === "all" ? "#4f7cff" : "#2e3148", color: docFilters.proc === "all" ? "#4f7cff" : "#9aa0b8", background: docFilters.proc === "all" ? "rgba(79,124,255,.08)" : "none", cursor: "pointer" }}>{"Всі"}</button>
+                  <button onClick={() => setDocFilters(f => ({ ...f, proc: "all" }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 'var(--radius-md)', border: "1px solid", borderColor: docFilters.proc === "all" ? "var(--color-accent)" : "var(--color-border)", color: docFilters.proc === "all" ? "var(--color-accent)" : "var(--color-text-2)", background: docFilters.proc === "all" ? "rgba(79,124,255,.08)" : "none", cursor: "pointer" }}>{"Всі"}</button>
                   {proceedings.map(proc => (
-                    <button key={proc.id} onClick={() => setDocFilters(f => ({ ...f, proc: f.proc === proc.id ? "all" : proc.id }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, border: "1px solid", borderColor: docFilters.proc === proc.id ? PROC_COLORS[proc.type] : "#2e3148", color: docFilters.proc === proc.id ? PROC_COLORS[proc.type] : "#9aa0b8", background: docFilters.proc === proc.id ? `${PROC_COLORS[proc.type]}22` : "none", cursor: "pointer" }}>
+                    <button key={proc.id} onClick={() => setDocFilters(f => ({ ...f, proc: f.proc === proc.id ? "all" : proc.id }))} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 'var(--radius-md)', border: "1px solid", borderColor: docFilters.proc === proc.id ? PROC_COLORS[proc.type] : "var(--color-border)", color: docFilters.proc === proc.id ? PROC_COLORS[proc.type] : "var(--color-text-2)", background: docFilters.proc === proc.id ? `${PROC_COLORS[proc.type]}22` : "none", cursor: "pointer" }}>
                       {proc.type === "first" ? "Перша" : proc.type === "appeal" ? "Апеляція" : "Касація"}
                     </button>
                   ))}
@@ -2117,7 +2117,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 {/* Фільтр типу */}
                 <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                   {["all", "pleading", "motion", "court_act", "evidence", "correspondence"].map(cat => (
-                    <button key={cat} onClick={() => setDocFilters(f => ({ ...f, category: cat }))} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, border: "1px solid", borderColor: docFilters.category === cat ? "#9aa0b8" : "#2e3148", color: docFilters.category === cat ? "#e8eaf0" : "#5a6080", background: "none", cursor: "pointer" }}>
+                    <button key={cat} onClick={() => setDocFilters(f => ({ ...f, category: cat }))} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 'var(--radius-md)', border: "1px solid", borderColor: docFilters.category === cat ? "var(--color-text-2)" : "var(--color-border)", color: docFilters.category === cat ? "var(--color-text)" : "var(--color-text-3)", background: "none", cursor: "pointer" }}>
                       {cat === "all" ? "Всі типи" : CATEGORY_LABELS[cat]}
                     </button>
                   ))}
@@ -2126,7 +2126,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 {/* Фільтр автора */}
                 <div style={{ display: "flex", gap: 3 }}>
                   {["all", "ours", "opponent", "court"].map(auth => (
-                    <button key={auth} onClick={() => setDocFilters(f => ({ ...f, author: auth }))} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, border: "1px solid", borderColor: docFilters.author === auth ? "#9aa0b8" : "#2e3148", color: docFilters.author === auth ? "#e8eaf0" : "#5a6080", background: "none", cursor: "pointer" }}>
+                    <button key={auth} onClick={() => setDocFilters(f => ({ ...f, author: auth }))} style={{ fontSize: 9, padding: "1px 6px", borderRadius: 'var(--radius-md)', border: "1px solid", borderColor: docFilters.author === auth ? "var(--color-text-2)" : "var(--color-border)", color: docFilters.author === auth ? "var(--color-text)" : "var(--color-text-3)", background: "none", cursor: "pointer" }}>
                       {auth === "all" ? "Всі" : AUTHOR_LABELS[auth]}
                     </button>
                   ))}
@@ -2135,15 +2135,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
               <div style={{ flex: 1, overflowY: "auto", padding: 6 }}>
                 {filteredDocs.length === 0 ? (
-                  <div style={{ padding: 20, textAlign: "center", color: "#3a3f58", fontSize: 12 }}>{"Немає документів"}</div>
+                  <div style={{ padding: 'var(--space-5)', textAlign: "center", color: "var(--color-text-3)", fontSize: 12 }}>{"Немає документів"}</div>
                 ) : filteredDocs.map(doc => {
                   const proc = proceedings.find(p => p.id === doc.procId);
                   return (
-                    <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 6, cursor: "pointer", background: selectedDoc?.id === doc.id ? "#222536" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "#4f7cff" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(168,85,247,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "all .15s" }}>
+                    <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(168,85,247,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "all .15s" }}>
                       <span style={{ fontSize: 13, flexShrink: 0 }}>{doc.icon}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>
-                        <div style={{ fontSize: 10, color: "#5a6080" }}>
+                        <div style={{ fontSize: 10, color: "var(--color-text-3)" }}>
                           {doc.date}{" \u00b7 "}{proc?.type === "first" ? "[П]" : proc?.type === "appeal" ? "[А]" : "[К]"}
                         </div>
                         {doc.tags?.length > 0 && (
@@ -2168,7 +2168,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             width: 8,
             flexShrink: 0,
             cursor: 'col-resize',
-            background: '#1a1d2e',
+            background: 'var(--color-surface)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -2211,22 +2211,22 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             document.addEventListener('touchend', onUp);
           }}
         >
-          <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a', pointerEvents: 'none' }} />
+          <div style={{ width: 4, height: 40, borderRadius: 2, background: 'var(--color-text-3)', pointerEvents: 'none' }} />
         </div>
 
         {/* Viewer */}
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {!selectedDoc ? (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 8 }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--color-text-3)", gap: 8 }}>
               <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}><FileText size={36} /></div>
               <div style={{ fontSize: 12 }}>{"Оберіть документ зі списку"}</div>
             </div>
           ) : (
             <>
-              <div style={{ padding: "9px 14px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+              <div style={{ padding: "9px 14px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{selectedDoc.name}</div>
-                  <div style={{ fontSize: 11, color: "#5a6080" }}>{selectedDoc.date}</div>
+                  <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{selectedDoc.date}</div>
                 </div>
                 <div style={{ display: "flex", gap: 5 }}>
                   {["Копіювати", "Завантажити", "🤖 Аналіз"].map(btn => (
@@ -2236,11 +2236,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               </div>
               {selectedDoc.driveId ? (
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: 20 }}>
-                  <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 24, maxWidth: 680, margin: "0 auto", flex: 1, display: "flex", flexDirection: "column" }}>
+                  <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-6)', maxWidth: 680, margin: "0 auto", flex: 1, display: "flex", flexDirection: "column" }}>
                     <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: "center", marginBottom: 16 }}>{selectedDoc.name}</h3>
                     <iframe
                       src={`https://drive.google.com/file/d/${selectedDoc.driveId}/preview`}
-                      style={{ width: "100%", flex: 1, minHeight: 400, border: "none", borderRadius: 8 }}
+                      style={{ width: "100%", flex: 1, minHeight: 400, border: "none", borderRadius: 'var(--radius-md)'}}
                       allow="autoplay"
                       title={selectedDoc.name}
                     />
@@ -2249,22 +2249,22 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                         href={`https://drive.google.com/file/d/${selectedDoc.driveId}/view`}
                         target="_blank"
                         rel="noreferrer"
-                        style={{ background: "#4f7cff", color: "#fff", padding: "6px 14px", borderRadius: 6, fontSize: 12, textDecoration: "none" }}
+                        style={{ background: "var(--color-accent)", color: "#fff", padding: "6px 14px", borderRadius: 'var(--radius-sm)', fontSize: 12, textDecoration: "none" }}
                       >{"Відкрити в Drive"}</a>
                       <a
                         href={`https://drive.google.com/uc?export=download&id=${selectedDoc.driveId}`}
-                        style={{ background: "#222536", color: "#9aa0b8", border: "1px solid #2e3148", padding: "6px 14px", borderRadius: 6, fontSize: 12, textDecoration: "none" }}
+                        style={{ background: "var(--color-surface-2)", color: "var(--color-text-2)", border: "1px solid var(--color-border)", padding: "6px 14px", borderRadius: 'var(--radius-sm)', fontSize: 12, textDecoration: "none" }}
                       >{"Завантажити"}</a>
                     </div>
                   </div>
                 </div>
               ) : (
                 <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
-                  <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 10, padding: 24, maxWidth: 680, margin: "0 auto", lineHeight: 1.8 }}>
+                  <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-6)', maxWidth: 680, margin: "0 auto", lineHeight: 1.8 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: "center", marginBottom: 4 }}>{selectedDoc.name}</h3>
-                    <div style={{ fontSize: 11, color: "#5a6080", textAlign: "center", marginBottom: 16 }}>{selectedDoc.date}</div>
-                    {selectedDoc.notes && <div style={{ background: "rgba(231,76,60,.08)", border: "1px solid rgba(231,76,60,.3)", padding: "8px 12px", borderRadius: 6, marginBottom: 12, fontSize: 11, color: "#e74c3c" }}>{selectedDoc.notes}</div>}
-                    <p style={{ fontSize: 13, color: "#9aa0b8" }}>{"Для перегляду повного тексту прикріпіть файл з Google Drive."}</p>
+                    <div style={{ fontSize: 11, color: "var(--color-text-3)", textAlign: "center", marginBottom: 16 }}>{selectedDoc.date}</div>
+                    {selectedDoc.notes && <div style={{ background: "rgba(231,76,60,.08)", border: "1px solid rgba(231,76,60,.3)", padding: "8px 12px", borderRadius: 'var(--radius-sm)', marginBottom: 12, fontSize: 11, color: "var(--color-danger)" }}>{selectedDoc.notes}</div>}
+                    <p style={{ fontSize: 13, color: "var(--color-text-2)" }}>{"Для перегляду повного тексту прикріпіть файл з Google Drive."}</p>
                   </div>
                 </div>
               )}
@@ -2286,27 +2286,27 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   ];
 
   return (
-    <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "#0d0f1a", display: "flex", flexDirection: "column", overflow: "hidden", color: "#e8eaf0", fontFamily: "'Segoe UI',sans-serif", fontSize: 13 }}>
+    <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "var(--color-bg)", display: "flex", flexDirection: "column", overflow: "hidden", color: "var(--color-text)", fontSize: 13}}>
 
       {/* ШАПКА */}
-      <div style={{ padding: "10px 16px", borderBottom: "1px solid #2e3148", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#0d0f1a", position: "relative", zIndex: 200 }}>
-        <button onClick={onClose} style={{ background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "var(--color-bg)", position: "relative", zIndex: 200 }}>
+        <button onClick={onClose} style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "5px 12px", borderRadius: 'var(--radius-sm)', cursor: "pointer", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <ArrowLeft size={ICON_SIZE.sm} />
           <span>Реєстр</span>
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{caseData.name}</div>
-          <div style={{ fontSize: 11, color: "#5a6080", marginTop: 2 }}>
+          <div style={{ fontSize: 11, color: "var(--color-text-3)", marginTop: 2 }}>
             {categoryLabel}{caseData.court ? ` \u00b7 ${caseData.court}` : ""}{caseData.case_no ? ` \u00b7 \u2116${caseData.case_no}` : ""}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
-          {(() => { const _nh = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return _nh ? <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(243,156,18,.15)", color: "#f39c12", display: "inline-flex", alignItems: "center", gap: 4 }}><Calendar size={ICON_SIZE.xs} />{_nh.date}{_nh.time ? ` о ${_nh.time}` : ''}</span> : null; })()}
+          <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
+          {(() => { const _nh = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return _nh ? <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(243,156,18,.15)", color: "var(--color-warning)", display: "inline-flex", alignItems: "center", gap: 4 }}><Calendar size={ICON_SIZE.xs} />{_nh.date}{_nh.time ? ` о ${_nh.time}` : ''}</span> : null; })()}
           {storageState?.driveFolderId ? (
-            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(79,124,255,.12)", color: "#4f7cff", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }} title={storageState.driveFolderName || "Drive папка"}><Cloud size={ICON_SIZE.xs} /><span>Drive</span><Link2 size={ICON_SIZE.xs} /></button>
+            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(79,124,255,.12)", color: "var(--color-accent)", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }} title={storageState.driveFolderName || "Drive папка"}><Cloud size={ICON_SIZE.xs} /><span>Drive</span><Link2 size={ICON_SIZE.xs} /></button>
           ) : (
-            <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 4, fontWeight: 600, background: "rgba(231,76,60,.1)", color: "#e74c3c", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={ICON_SIZE.xs} /><span>Без папки</span></span>
+            <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(231,76,60,.1)", color: "var(--color-danger)", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={ICON_SIZE.xs} /><span>Без папки</span></span>
           )}
           {caseData.status !== "closed" && onCloseCase && (
             <button onClick={async () => {
@@ -2314,25 +2314,25 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 onCloseCase(caseData.id);
                 onClose();
               }
-            }} style={{ background: "none", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6 }}><Archive size={ICON_SIZE.sm} /><span>Закрити</span></button>
+            }} style={{ background: "none", border: "1px solid rgba(231,76,60,.3)", color: "var(--color-danger)", padding: "5px 10px", borderRadius: 'var(--radius-sm)', cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6 }}><Archive size={ICON_SIZE.sm} /><span>Закрити</span></button>
           )}
           {caseData.status === "closed" && onDeleteCase && (
-            <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "#e74c3c", padding: "5px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6 }}><Trash2 size={ICON_SIZE.sm} /><span>Видалити назавжди</span></button>
+            <button onClick={() => onDeleteCase(caseData)} style={{ background: "rgba(231,76,60,.1)", border: "1px solid rgba(231,76,60,.3)", color: "var(--color-danger)", padding: "5px 10px", borderRadius: 'var(--radius-sm)', cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6 }}><Trash2 size={ICON_SIZE.sm} /><span>Видалити назавжди</span></button>
           )}
-          <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" aria-label="Ідея для контенту" style={{ background: "none", border: "1px solid #2e3148", color: "#9aa0b8", padding: "5px 10px", borderRadius: 6, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Lightbulb size={ICON_SIZE.md} /></button>
-          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "#4f7cff" : "none", color: agentOpen ? "#fff" : "#9aa0b8", border: "1px solid", borderColor: agentOpen ? "#4f7cff" : "#2e3148", padding: "6px 14px", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}><Bot size={ICON_SIZE.sm} /><span>{agentOpen ? "Сховати агента" : "Агент"}</span></button>
+          <button onClick={() => setIdeaOpen(true)} title="Ідея для контенту" aria-label="Ідея для контенту" style={{ background: "none", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "5px 10px", borderRadius: 'var(--radius-sm)', cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Lightbulb size={ICON_SIZE.md} /></button>
+          <button onClick={() => setAgentOpen(prev => !prev)} style={{ background: agentOpen ? "var(--color-accent)" : "none", color: agentOpen ? "#fff" : "var(--color-text-2)", border: "1px solid", borderColor: agentOpen ? "var(--color-accent)" : "var(--color-border)", padding: "6px 14px", borderRadius: 'var(--radius-sm)', cursor: "pointer", fontSize: 12, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}><Bot size={ICON_SIZE.sm} /><span>{agentOpen ? "Сховати агента" : "Агент"}</span></button>
         </div>
       </div>
 
       {/* ВКЛАДКИ */}
-      <div style={{ display: "flex", borderBottom: "1px solid #2e3148", flexShrink: 0, padding: "0 16px", gap: 2, background: "#0d0f1a", position: "relative", zIndex: 200 }}>
+      <div style={{ display: "flex", borderBottom: "1px solid var(--color-border)", flexShrink: 0, padding: "0 16px", gap: 2, background: "var(--color-bg)", position: "relative", zIndex: 200 }}>
         {tabs.map(tab => {
           const Ic = tab.icon;
           return (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: "8px 14px", border: "none", background: "none", color: activeTab === tab.id ? "#e8eaf0" : "#9aa0b8", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${activeTab === tab.id ? "#9aa0b8" : "transparent"}`, fontWeight: activeTab === tab.id ? 500 : 400, whiteSpace: "nowrap", transition: "all .15s", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ padding: "8px 14px", border: "none", background: "none", color: activeTab === tab.id ? "var(--color-text)" : "var(--color-text-2)", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${activeTab === tab.id ? "var(--color-text-2)" : "transparent"}`, fontWeight: activeTab === tab.id ? 500 : 400, whiteSpace: "nowrap", transition: "all .15s", display: "inline-flex", alignItems: "center", gap: 6 }}>
               {Ic && <Ic size={ICON_SIZE.sm} />}
               <span>{tab.label}</span>
-              {tab.badge > 0 && <span style={{ fontSize: 9, background: "#222536", padding: "1px 5px", borderRadius: 8, marginLeft: 4, color: "#5a6080" }}>{tab.badge}</span>}
+              {tab.badge > 0 && <span style={{ fontSize: 9, background: "var(--color-surface-2)", padding: "1px 5px", borderRadius: 'var(--radius-md)', marginLeft: 4, color: "var(--color-text-3)" }}>{tab.badge}</span>}
             </button>
           );
         })}
@@ -2358,9 +2358,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             />
           )}
           {["position", "templates"].includes(activeTab) && (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#5a6080", gap: 12 }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--color-text-3)", gap: 12 }}>
               <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}>{activeTab === "position" ? <Scale size={48} /> : <FileText size={48} />}</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#9aa0b8" }}>{activeTab === "position" ? "Позиція" : "Шаблони"}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-2)" }}>{activeTab === "position" ? "Позиція" : "Шаблони"}</div>
               <div style={{ fontSize: 12 }}>{"Буде реалізовано в наступній під-сесії"}</div>
             </div>
           )}
@@ -2371,19 +2371,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           <div
             onMouseDown={() => { agentDragRef.current = true; }}
             onTouchStart={() => { agentDragRef.current = true; }}
-            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: '#1a1d2e', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s', zIndex: 10, position: 'relative' }}
-            onMouseEnter={e => e.currentTarget.style.background = '#2a2d44'}
-            onMouseLeave={e => e.currentTarget.style.background = '#1e2130'}
+            style={{ width: 8, cursor: 'col-resize', flexShrink: 0, background: 'var(--color-surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', transition: 'background .15s', zIndex: 10, position: 'relative' }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--color-surface-2)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'var(--color-surface)'}
           >
-            <div style={{ width: 4, height: 40, borderRadius: 2, background: '#3a3d5a' }} />
+            <div style={{ width: 4, height: 40, borderRadius: 2, background: 'var(--color-text-3)' }} />
           </div>
         )}
 
         {/* Панель агента */}
         {agentOpen && (
           <div style={{
-            width: agentWidth, flexShrink: 0, borderLeft: '1px solid #2e3148',
-            display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#1a1d27',
+            width: agentWidth, flexShrink: 0, borderLeft: '1px solid var(--color-border)',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--color-surface)',
             position: 'relative'
           }}>
             {renderAgentPanel()}
@@ -2395,14 +2395,14 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       {/* МОДАЛКА ІДЕЯ ДЛЯ КОНТЕНТУ */}
       {ideaOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
-          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 360 }}>
+          <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)', width: 360}}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, display: "inline-flex", alignItems: "center", gap: 6 }}><Lightbulb size={ICON_SIZE.md} /><span>Ідея для контенту</span></div>
-            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 12 }}>{"Справа: "}{caseData.name}</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-3)", marginBottom: 12 }}>{"Справа: "}{caseData.name}</div>
             <textarea
               value={ideaText}
               onChange={e => setIdeaText(e.target.value)}
               placeholder="Опиши ідею..."
-              style={{ width: "100%", height: 100, background: "#222536", border: "1px solid #2e3148", color: "#e8eaf0", padding: 10, borderRadius: 7, fontSize: 12, resize: "none", outline: "none", lineHeight: 1.6, boxSizing: "border-box" }}
+              style={{ width: "100%", height: 100, background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text)", padding: 10, borderRadius: 'var(--radius-sm)', fontSize: 12, resize: "none", outline: "none", lineHeight: 1.6, boxSizing: "border-box" }}
               autoFocus
             />
             <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
@@ -2416,15 +2416,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       {/* МОДАЛКА НОТАТКИ */}
       {noteModalOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300 }}>
-          <div style={{ background: "#1a1d27", border: "1px solid #2e3148", borderRadius: 12, padding: 20, width: 400 }}>
+          <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)', width: 400}}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{"+ Нова нотатка"}</div>
-            <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 8 }}>{"Справа: "}{caseData.name}</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-3)", marginBottom: 8 }}>{"Справа: "}{caseData.name}</div>
             <textarea
               value={noteText}
               onChange={e => setNoteText(e.target.value)}
               placeholder="Текст нотатки..."
               rows={5}
-              style={{ width: "100%", background: "#222536", border: "1px solid #2e3148", color: "#e8eaf0", padding: 10, borderRadius: 7, fontSize: 12, resize: "vertical", outline: "none", lineHeight: 1.6, boxSizing: "border-box" }}
+              style={{ width: "100%", background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text)", padding: 10, borderRadius: 'var(--radius-sm)', fontSize: 12, resize: "vertical", outline: "none", lineHeight: 1.6, boxSizing: "border-box" }}
               autoFocus
             />
             <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
@@ -2443,28 +2443,28 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       {/* МОДАЛКА + ПРОВАДЖЕННЯ */}
       {procModalOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
-          <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 360 }}>
+          <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)', width: 360}}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Нове провадження</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div>
-                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Тип</div>
-                <select value={newProc.type} onChange={e => setNewProc(p => ({ ...p, type: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>Тип</div>
+                <select value={newProc.type} onChange={e => setNewProc(p => ({ ...p, type: e.target.value }))} style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12 }}>
                   <option value="appeal">{"Апеляційне провадження"}</option>
                   <option value="cassation">{"Касація"}</option>
                   <option value="first">{"Перша інстанція (додаткова)"}</option>
                 </select>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Назва</div>
-                <input value={newProc.title} onChange={e => setNewProc(p => ({ ...p, title: e.target.value }))} placeholder="напр. Апеляція: ухвала 03.2024" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>Назва</div>
+                <input value={newProc.title} onChange={e => setNewProc(p => ({ ...p, title: e.target.value }))} placeholder="напр. Апеляція: ухвала 03.2024" style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
               </div>
               <div>
-                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Суд</div>
-                <input value={newProc.court} onChange={e => setNewProc(p => ({ ...p, court: e.target.value }))} placeholder="напр. Київський апеляційний суд" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>Суд</div>
+                <input value={newProc.court} onChange={e => setNewProc(p => ({ ...p, court: e.target.value }))} placeholder="напр. Київський апеляційний суд" style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-              <button onClick={() => { setProcModalOpen(false); setNewProc({ title: '', court: '', type: 'appeal' }); }} style={{ background: 'none', border: '1px solid #2e3148', color: '#9aa0b8', padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Скасувати</button>
+              <button onClick={() => { setProcModalOpen(false); setNewProc({ title: '', court: '', type: 'appeal' }); }} style={{ background: 'none', border: '1px solid var(--color-border)', color: 'var(--color-text-2)', padding: '5px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 12 }}>Скасувати</button>
               <button onClick={() => {
                 if (!newProc.title.trim()) return;
                 const proc = { id: 'proc_' + Date.now(), type: newProc.type, title: newProc.title.trim(), court: newProc.court.trim(), status: 'active', parentProcId: 'proc_main', parentEventId: null };
@@ -2473,7 +2473,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 setProceedings(updated);
                 setProcModalOpen(false);
                 setNewProc({ title: '', court: '', type: 'appeal' });
-              }} style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Додати</button>
+              }} style={{ background: 'var(--color-accent)', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 12 }}>Додати</button>
             </div>
           </div>
         </div>
@@ -2482,29 +2482,29 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       {/* МОДАЛКА + ДОКУМЕНТ */}
       {docModalOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
-          <div style={{ background: '#1a1d27', border: '1px solid #2e3148', borderRadius: 12, padding: 20, width: 400 }}>
+          <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)', width: 400}}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Новий документ</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div>
-                <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>{"Назва *"}</div>
-                <input value={newDoc.name} onChange={e => setNewDoc(d => ({ ...d, name: e.target.value }))} placeholder="напр. Ухвала про відкриття провадження" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} autoFocus />
+                <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>{"Назва *"}</div>
+                <input value={newDoc.name} onChange={e => setNewDoc(d => ({ ...d, name: e.target.value }))} placeholder="напр. Ухвала про відкриття провадження" style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12, outline: 'none', boxSizing: 'border-box' }} autoFocus />
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Дата</div>
-                  <input value={newDoc.date} onChange={e => setNewDoc(d => ({ ...d, date: e.target.value }))} placeholder="напр. березень 2023" style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+                  <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>Дата</div>
+                  <input value={newDoc.date} onChange={e => setNewDoc(d => ({ ...d, date: e.target.value }))} placeholder="напр. березень 2023" style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Провадження</div>
-                  <select value={newDoc.procId} onChange={e => setNewDoc(d => ({ ...d, procId: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>Провадження</div>
+                  <select value={newDoc.procId} onChange={e => setNewDoc(d => ({ ...d, procId: e.target.value }))} style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12 }}>
                     {proceedings.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
                   </select>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>Тип</div>
-                  <select value={newDoc.category} onChange={e => setNewDoc(d => ({ ...d, category: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>Тип</div>
+                  <select value={newDoc.category} onChange={e => setNewDoc(d => ({ ...d, category: e.target.value }))} style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12 }}>
                     <option value="court_act">{"Судовий акт"}</option>
                     <option value="pleading">{"Заява по суті"}</option>
                     <option value="motion">{"Клопотання"}</option>
@@ -2514,8 +2514,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   </select>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, color: '#5a6080', marginBottom: 4 }}>{"Від кого"}</div>
-                  <select value={newDoc.author} onChange={e => setNewDoc(d => ({ ...d, author: e.target.value }))} style={{ width: '100%', background: '#222536', border: '1px solid #2e3148', color: '#e8eaf0', padding: '7px 10px', borderRadius: 6, fontSize: 12 }}>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-3)', marginBottom: 4 }}>{"Від кого"}</div>
+                  <select value={newDoc.author} onChange={e => setNewDoc(d => ({ ...d, author: e.target.value }))} style={{ width: '100%', background: 'var(--color-surface-2)', border: '1px solid var(--color-border)', color: 'var(--color-text)', padding: '7px 10px', borderRadius: 'var(--radius-sm)', fontSize: 12 }}>
                     <option value="court">Суд</option>
                     <option value="ours">Наш</option>
                     <option value="opponent">Опонент</option>
@@ -2525,21 +2525,21 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               <div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                   <input type="checkbox" checked={newDoc.tags.includes('key')} onChange={e => setNewDoc(d => ({ ...d, tags: e.target.checked ? [...d.tags, 'key'] : d.tags.filter(t => t !== 'key') }))} />
-                  <span style={{ fontSize: 12, color: '#9aa0b8' }}>{"Позначити як ключовий"}</span>
+                  <span style={{ fontSize: 12, color: 'var(--color-text-2)' }}>{"Позначити як ключовий"}</span>
                 </label>
               </div>
               <div>
-                <div style={{ fontSize: 11, color: "#5a6080", marginBottom: 4 }}>{"Файл (необов\u02BCязково)"}</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-3)", marginBottom: 4 }}>{"Файл (необов\u02BCязково)"}</div>
                 <input
                   type="file"
                   accept=".pdf,.jpeg,.jpg,.png,.heic,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm"
                   onChange={e => setNewDoc(d => ({ ...d, file: e.target.files[0] || null }))}
-                  style={{ width: "100%", background: "#222536", border: "1px solid #2e3148", color: "#9aa0b8", padding: "6px 10px", borderRadius: 6, fontSize: 11, boxSizing: "border-box" }}
+                  style={{ width: "100%", background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "6px 10px", borderRadius: 'var(--radius-sm)', fontSize: 11, boxSizing: "border-box" }}
                 />
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-              <button onClick={() => { setDocModalOpen(false); setNewDoc({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null }); }} style={{ background: 'none', border: '1px solid #2e3148', color: '#9aa0b8', padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Скасувати</button>
+              <button onClick={() => { setDocModalOpen(false); setNewDoc({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null }); }} style={{ background: 'none', border: '1px solid var(--color-border)', color: 'var(--color-text-2)', padding: '5px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 12 }}>Скасувати</button>
               <button onClick={async () => {
                 if (!newDoc.name.trim()) return;
                 let driveId = null;
@@ -2574,7 +2574,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 updateCase && updateCase(caseData.id, "documents", updated);
                 setDocModalOpen(false);
                 setNewDoc({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null });
-              }} style={{ background: '#4f7cff', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>{"Додати документ"}</button>
+              }} style={{ background: 'var(--color-accent)', color: '#fff', border: 'none', padding: '5px 14px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 12 }}>{"Додати документ"}</button>
             </div>
           </div>
         </div>
