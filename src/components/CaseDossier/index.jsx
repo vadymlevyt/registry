@@ -32,12 +32,12 @@ const AUTHOR_LABELS = { ours: "Наш", opponent: "Опонент", court: "Су
 const TAG_COLORS = {
   key: { bg: "rgba(79,124,255,.2)", color: "var(--color-accent)" },
   ours: { bg: "rgba(46,204,113,.2)", color: "var(--color-success)" },
-  opponent: { bg: "rgba(168,85,247,.2)", color: "#a855f7" }
+  opponent: { bg: "rgba(245,158,11,.2)", color: "var(--color-warning)" }
 };
 
 const PROC_COLORS = {
   first: "var(--color-success)",
-  appeal: "#a855f7",
+  appeal: "var(--color-proceeding-appeal)",
   cassation: "var(--color-warning)"
 };
 
@@ -2139,7 +2139,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 ) : filteredDocs.map(doc => {
                   const proc = proceedings.find(p => p.id === doc.procId);
                   return (
-                    <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(168,85,247,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "all .15s" }}>
+                    <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(59,130,246,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "all .15s" }}>
                       <span style={{ fontSize: 13, flexShrink: 0 }}>{doc.icon}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>

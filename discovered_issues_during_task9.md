@@ -2,24 +2,18 @@
 
 **Дата:** 2026-05-09
 
-## Кольори без відповідного токена
+## Кольори без відповідного токена — РОЗВ'ЯЗАНО (TASK 9 patch)
 
-### `#a855f7` (фіолетовий)
+### `#a855f7` (фіолетовий) → patch 2026-05-09
 
-Використання:
-- `TAG_COLORS.opponent.color` (line 35)
-- `PROC_COLORS.appeal` (line 40)
-- `borderLeft: 3px solid rgba(168,85,247,.45)` (line 2142, document list для апеляції)
+Фіксували одночасне використання фіолетового для двох ролей: апеляційне провадження і тег opponent. Це потрапило в код з ранніх HTML-зразків — не з дизайн-системи.
 
-В `tokens.css` найближчий:
-- `--color-proceeding-appeal: #3b82f6` — синій, **інший колір**.
+**Рішення (TASK 9 patch):**
+- `PROC_COLORS.appeal` → `var(--color-proceeding-appeal)` (синій #3b82f6) — згідно дизайн-системи
+- `TAG_COLORS.opponent` → `var(--color-warning)` (помаранчевий #f59e0b) — не плутається з danger / success / accent
+- `borderLeft` для документів апеляції → `rgba(59,130,246,.45)` (синій alpha)
 
-Лишено як hex `#a855f7`. Розв'язання — окремий розгляд:
-1. Або додати `--color-purple` / `--color-tag-opponent` в `tokens.css`
-2. Або змінити `PROC_COLORS.appeal` на `var(--color-proceeding-appeal)` (зміна кольору з фіолетового на синій)
-3. Або переключити `--color-proceeding-appeal` в `tokens.css` на `#a855f7` (фіолетовий)
-
-Потрібне рішення адвоката який візуальний код кращий за змістом.
+Жодних `#a855f7` / `168,85,247` в коді не лишилось.
 
 ## Alpha-варіанти кольорів (rgba)
 

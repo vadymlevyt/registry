@@ -83,7 +83,7 @@ describe('Tokens в використанні — CaseDossier', () => {
       'utf8'
     );
     const hexes = src.match(/#[0-9a-fA-F]{3,8}/g) || [];
-    const allowedHexes = new Set(['#fff', '#a855f7']);
+    const allowedHexes = new Set(['#fff']);
     const unexpected = hexes.filter(h => !allowedHexes.has(h.toLowerCase()));
     expect(unexpected).toEqual([]);
   });
