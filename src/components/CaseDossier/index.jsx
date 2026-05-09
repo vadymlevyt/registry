@@ -17,10 +17,14 @@ import {
   Bot, FileText, FolderOpen, Folder, Cloud, Link2, Pin,
   Edit, Trash2, Paperclip, Image, GitBranch, ClipboardList,
   Wrench, Scale, Calendar, Archive, Lightbulb, Check, MessageSquare,
-  ArrowLeft, AlertTriangle,
+  ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
 import { DocumentViewer } from "../DocumentViewer";
+import { AddDocumentModal } from "./AddDocumentModal.jsx";
+import { DeleteDocumentModal } from "./DeleteDocumentModal.jsx";
+import { ArchiveView } from "./ArchiveView.jsx";
+import "./CaseDossier.css";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -1032,6 +1036,41 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   const [matWidth, setMatWidth] = useState(280);
   const matDragRef = useRef(false);
 
+  // Materials panel collapse state — окрема логіка для лівої панелі і агента.
+  // Зберігається в localStorage щоб адвокат повертався до того ж стану.
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(() => {
+    try { return localStorage.getItem('materials_left_panel_collapsed') === '1'; }
+    catch { return false; }
+  });
+  const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(() => {
+    try { return localStorage.getItem('materials_agent_panel_collapsed') === '1'; }
+    catch { return false; }
+  });
+  const [treeExpanded, setTreeExpanded] = useState(() => {
+    try { return localStorage.getItem('materials_tree_expanded') === '1'; }
+    catch { return false; }
+  });
+  // memoized попередній стан лівої — щоб повертати після закриття агента.
+  const leftPanelPrevRef = useRef(false);
+
+  useEffect(() => {
+    try { localStorage.setItem('materials_left_panel_collapsed', leftPanelCollapsed ? '1' : '0'); } catch {}
+  }, [leftPanelCollapsed]);
+  useEffect(() => {
+    try { localStorage.setItem('materials_agent_panel_collapsed', agentPanelCollapsed ? '1' : '0'); } catch {}
+  }, [agentPanelCollapsed]);
+  useEffect(() => {
+    try { localStorage.setItem('materials_tree_expanded', treeExpanded ? '1' : '0'); } catch {}
+  }, [treeExpanded]);
+
+  // Архів матеріалів — режим перегляду архівних документів і batch-операцій.
+  const [showArchived, setShowArchived] = useState(false);
+  const [selectedArchivedIds, setSelectedArchivedIds] = useState(() => new Set());
+
+  // Модалка видалення документа з Viewer'а.
+  const [deleteDocOpen, setDeleteDocOpen] = useState(false);
+  const [docPendingDelete, setDocPendingDelete] = useState(null);
+
   const handleCreateDriveStructure = async () => {
     const token = localStorage.getItem("levytskyi_drive_token");
     if (!token) { toast.show(messages.drive.notConnected()); return; }
@@ -1077,7 +1116,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       setProceedings(caseData.proceedings);
     }
   }, [caseData.proceedings]);
-  const documents = caseData.documents || [];
+  const allDocuments = caseData.documents || [];
+  // Активні документи (без архівних) — для дерева/реєстру і badge "Матеріали".
+  const documents = allDocuments.filter(d => d.status !== 'archived');
+  const archivedDocuments = allDocuments.filter(d => d.status === 'archived');
 
   const caseNotes = (notesProp || []).slice().sort((a, b) => new Date(b.ts || b.createdAt || 0) - new Date(a.ts || a.createdAt || 0));
   const pinnedIds = caseData.pinnedNoteIds || [];
@@ -1136,6 +1178,24 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   useEffect(() => {
     setAgentOpen(activeTab === 'overview');
   }, [activeTab]);
+
+  // Auto-collapse лівої при відкритті агента, відновлення при закритті.
+  // Користувач явно натиснув "Агент" → ховаємо ліву щоб дати документу
+  // більше місця. Коли закривається — повертаємо попередній стан лівої.
+  useEffect(() => {
+    if (agentOpen && !agentPanelCollapsed) {
+      leftPanelPrevRef.current = leftPanelCollapsed;
+      setLeftPanelCollapsed(true);
+    } else if (!agentOpen) {
+      // Повертаємо попередній стан лівої тільки якщо ми її автоматично згорнули.
+      // Якщо адвокат сам розгорнув ліву поки агент був видимим — leftPanelCollapsed
+      // вже false і setLeft(false) нічого не змінить.
+      if (leftPanelPrevRef.current === false) {
+        setLeftPanelCollapsed(false);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentOpen]);
 
   // Migrate caseData.notes string to a proper note in notes[]
   useEffect(() => {
@@ -2049,14 +2109,35 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
   // ── МАТЕРІАЛИ ──────────────────────────────────────────────────────────────
   function renderMaterials() {
+    const archivedCount = archivedDocuments.length;
+    const leftClass = [
+      'materials-left-panel',
+      leftPanelCollapsed && 'materials-left-panel--collapsed',
+      !leftPanelCollapsed && treeExpanded && matMode === 'tree' && 'materials-left-panel--tree-expanded',
+    ].filter(Boolean).join(' ');
+    const leftStyle = leftPanelCollapsed
+      ? {}
+      : (treeExpanded && matMode === 'tree' ? {} : { width: matWidth });
+
     return (
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      <div className="materials-layout">
 
         {/* Ліва панель */}
-        <div style={{ width: matWidth, flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div className={leftClass} style={leftStyle}>
 
-          {/* Перемикач Дерево / Реєстр */}
-          <div style={{ display: "flex", borderBottom: "1px solid var(--color-border)", flexShrink: 0 }}>
+          {/* Кнопка-стрілочка колапсу/розкриття */}
+          <button
+            type="button"
+            className="materials-collapse-toggle"
+            onClick={() => setLeftPanelCollapsed(c => !c)}
+            aria-label={leftPanelCollapsed ? 'Розгорнути панель' : 'Згорнути панель'}
+            title={leftPanelCollapsed ? 'Розгорнути панель' : 'Згорнути панель'}
+          >
+            {leftPanelCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
+
+          {/* Перемикач Дерево / Реєстр + бар з керуванням архівом / розширенням */}
+          <div className="materials-mode-bar">
             {[["tree", GitBranch, "Дерево"], ["registry", ClipboardList, "Реєстр"]].map(([id, Ic, label]) => (
               <button key={id} onClick={() => setMatMode(id)} style={{ flex: 1, padding: 8, border: "none", background: "none", color: matMode === id ? "var(--color-text)" : "var(--color-text-2)", cursor: "pointer", fontSize: 12, borderBottom: `2px solid ${matMode === id ? "var(--color-accent)" : "transparent"}`, fontWeight: matMode === id ? 500 : 400, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                 <Ic size={ICON_SIZE.sm} />
@@ -2064,15 +2145,127 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               </button>
             ))}
           </div>
+          <div className="materials-mode-bar" style={{ borderBottom: '1px solid var(--color-border)' }}>
+            {matMode === 'tree' && !showArchived && (
+              <button
+                type="button"
+                className={`materials-tree-expand-toggle ${treeExpanded ? 'materials-tree-expand-toggle--active' : ''}`}
+                onClick={() => setTreeExpanded(v => !v)}
+                title={treeExpanded ? 'Стандартна ширина' : 'Розширити дерево'}
+              >
+                {treeExpanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+                <span>{treeExpanded ? 'Звузити' : 'Розширити'}</span>
+              </button>
+            )}
+            <span className="materials-mode-bar__filler" />
+            <button
+              type="button"
+              className={`materials-archive-toggle ${showArchived ? 'materials-archive-toggle--active' : ''}`}
+              onClick={() => {
+                setShowArchived(v => !v);
+                setSelectedArchivedIds(new Set());
+              }}
+              title="Архів матеріалів"
+            >
+              <Archive size={12} />
+              <span>Архів</span>
+              <span className="materials-archive-toggle__count">{archivedCount}</span>
+            </button>
+          </div>
+          {!showArchived && (
           <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--color-border)", flexShrink: 0 }}>
             <button
-              onClick={() => { setNewDoc(d => ({ ...d, procId: proceedings[0]?.id || 'proc_main' })); setDocModalOpen(true); }}
+              onClick={() => setDocModalOpen(true)}
               style={{ background: 'var(--color-accent)', color: '#fff', border: 'none', padding: '5px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 12, width: '100%' }}
             >+ Додати документ</button>
           </div>
+          )}
+
+          {showArchived && (
+            <ArchiveView
+              archived={archivedDocuments}
+              selectedIds={selectedArchivedIds}
+              onExit={() => { setShowArchived(false); setSelectedArchivedIds(new Set()); }}
+              onSelectAll={(all) => {
+                if (all) setSelectedArchivedIds(new Set(archivedDocuments.map(d => d.id)));
+                else setSelectedArchivedIds(new Set());
+              }}
+              onToggleSelected={(id, value) => {
+                setSelectedArchivedIds(prev => {
+                  const next = new Set(prev);
+                  if (value) next.add(id); else next.delete(id);
+                  return next;
+                });
+              }}
+              onRestoreOne={async (doc) => {
+                if (!onExecuteAction) return;
+                const r = await onExecuteAction('dossier_agent', 'update_document', {
+                  caseId: caseData.id, documentId: doc.id, fields: { status: 'active' },
+                });
+                if (r?.success) toast.success(`«${doc.name}» відновлено`);
+                else toast.error('Не вдалось відновити', { description: r?.error });
+              }}
+              onRestoreAll={async () => {
+                const ok = await systemConfirm(`Відновити всі ${archivedDocuments.length} документів з архіву?`);
+                if (!ok || !onExecuteAction) return;
+                for (const doc of archivedDocuments) {
+                  await onExecuteAction('dossier_agent', 'update_document', {
+                    caseId: caseData.id, documentId: doc.id, fields: { status: 'active' },
+                  });
+                }
+                toast.success(`Відновлено документів: ${archivedDocuments.length}`);
+                setShowArchived(false);
+                setSelectedArchivedIds(new Set());
+              }}
+              onRestoreSelected={async () => {
+                if (!onExecuteAction) return;
+                const ids = Array.from(selectedArchivedIds);
+                for (const id of ids) {
+                  await onExecuteAction('dossier_agent', 'update_document', {
+                    caseId: caseData.id, documentId: id, fields: { status: 'active' },
+                  });
+                }
+                toast.success(`Відновлено документів: ${ids.length}`);
+                setSelectedArchivedIds(new Set());
+              }}
+              onDeleteOne={async (doc) => {
+                const ok = await systemConfirm(`Видалити «${doc.name}» назавжди? Файл зникне з Drive і реєстру.`);
+                if (!ok || !onExecuteAction) return;
+                const r = await onExecuteAction('dossier_agent', 'delete_document', {
+                  caseId: caseData.id, documentId: doc.id, mode: 'full', _fromUI: true,
+                });
+                if (r?.success) toast.success(`«${doc.name}» видалено повністю`);
+                else toast.error('Не вдалось видалити', { description: r?.error });
+              }}
+              onDeleteAll={async () => {
+                const ok = await systemConfirm(`Видалити назавжди всі ${archivedDocuments.length} архівних документів? Файли зникнуть з Drive.`);
+                if (!ok || !onExecuteAction) return;
+                for (const doc of archivedDocuments) {
+                  await onExecuteAction('dossier_agent', 'delete_document', {
+                    caseId: caseData.id, documentId: doc.id, mode: 'full', _fromUI: true,
+                  });
+                }
+                toast.success(`Видалено документів: ${archivedDocuments.length}`);
+                setShowArchived(false);
+                setSelectedArchivedIds(new Set());
+              }}
+              onDeleteSelected={async () => {
+                const ids = Array.from(selectedArchivedIds);
+                const ok = await systemConfirm(`Видалити назавжди ${ids.length} обраних документів? Файли зникнуть з Drive.`);
+                if (!ok || !onExecuteAction) return;
+                for (const id of ids) {
+                  await onExecuteAction('dossier_agent', 'delete_document', {
+                    caseId: caseData.id, documentId: id, mode: 'full', _fromUI: true,
+                  });
+                }
+                toast.success(`Видалено документів: ${ids.length}`);
+                setSelectedArchivedIds(new Set());
+              }}
+            />
+          )}
 
           {/* ДЕРЕВО */}
-          {matMode === "tree" && (
+          {!showArchived && matMode === "tree" && (
             <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
               {proceedings.map(proc => {
                 const procDocs = documents.filter(d => d.procId === proc.id);
@@ -2101,7 +2294,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           )}
 
           {/* РЕЄСТР з фільтрами */}
-          {matMode === "registry" && (
+          {!showArchived && matMode === "registry" && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
               <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
 
@@ -2242,9 +2435,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               toast.warning('Перерозпізнання потребує файлу на Drive');
               return;
             }
+            const rawName = doc.originalName || doc.name || '';
+            const normalizedName = typeof rawName.normalize === 'function'
+              ? rawName.normalize('NFC')
+              : rawName;
             const file = {
               id: doc.driveId,
-              name: doc.originalName || doc.name,
+              name: normalizedName,
               mimeType: doc.mimeType || 'application/pdf',
               subFolders,
             };
@@ -2253,6 +2450,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               await ocrService.extractText(file, { skipCache: true });
               toast.dismiss(tId);
               toast.success('Текст оновлено');
+              // Поставити мітку lastOcrAt — DocumentViewerContent на неї
+              // ре-фетчить кеш з 02_ОБРОБЛЕНІ (без неї text не оновлюється).
+              if (onExecuteAction) {
+                try {
+                  await onExecuteAction('dossier_agent', 'update_document', {
+                    caseId: caseData.id,
+                    documentId: doc.id,
+                    fields: { lastOcrAt: new Date().toISOString() },
+                  });
+                } catch (e) {
+                  console.warn('[reprocess] update_document lastOcrAt failed:', e?.message || e);
+                }
+              }
             } catch (err) {
               toast.dismiss(tId);
               const localized = ocrService.localizeOcrError
@@ -2260,6 +2470,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 : err.message;
               toast.error('Не вдалось розпізнати', { description: localized });
             }
+          }}
+          onDelete={() => {
+            if (!selectedDoc) return;
+            setDocPendingDelete(selectedDoc);
+            setDeleteDocOpen(true);
           }}
         />
       </div>
@@ -2377,6 +2592,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--color-surface)',
             position: 'relative'
           }}>
+            <button
+              type="button"
+              className="agent-panel-collapse-toggle"
+              onClick={() => setAgentOpen(false)}
+              aria-label="Сховати агента"
+              title="Сховати агента"
+            >
+              <ChevronRight size={14} />
+            </button>
             {renderAgentPanel()}
           </div>
         )}
@@ -2470,8 +2694,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         </div>
       )}
 
-      {/* МОДАЛКА + ДОКУМЕНТ */}
-      {docModalOpen && (
+      {/* Стара inline-модалка замінена на AddDocumentModal (нижче). Залишена
+          в коді як no-op (false-guard) — буде видалена окремим cleanup TASK. */}
+      {false && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
           <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-5)', width: 400}}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>+ Новий документ</div>
@@ -2570,6 +2795,81 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           </div>
         </div>
       )}
+
+      {/* Фірмова модалка додавання документа (replace native Android picker) */}
+      <AddDocumentModal
+        isOpen={docModalOpen}
+        onClose={() => setDocModalOpen(false)}
+        caseData={{ ...caseData, proceedings }}
+        onSubmit={async ({ name, category, author, procId, date, isKey, file }) => {
+          let driveId = null;
+          if (file && driveConnected) {
+            try {
+              const prepared = await prepareFile(file);
+              driveId = await uploadFileLocal(prepared, caseData);
+            } catch (err) {
+              console.error('Drive upload error:', err);
+              toast.error('Не вдалось завантажити на Drive', { description: err?.message });
+            }
+          }
+          const ICONS = {
+            court_act: '📋', pleading: '📄', motion: '📝',
+            evidence: '📎', contract: '📄', correspondence: '✉️',
+            identification: '🪪', other: '📁',
+          };
+          const doc = createDocument({
+            procId: procId || proceedings[0]?.id || 'proc_main',
+            name,
+            icon: ICONS[category] || '📄',
+            date,
+            category,
+            author,
+            isKey,
+            driveId,
+            driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
+            size: file?.size || 0,
+            originalName: file?.name || null,
+            folder: '01_ОРИГІНАЛИ',
+            addedBy: 'lawyer_manual',
+            namingStatus: 'manual',
+          });
+          if (onExecuteAction) {
+            const r = await onExecuteAction('dossier_agent', 'add_document', {
+              caseId: caseData.id, document: doc,
+            });
+            if (!r?.success) {
+              toast.error('Не вдалось додати документ', { description: r?.error });
+              throw new Error(r?.error || 'add_document failed');
+            }
+          } else {
+            const updated = [...(caseData.documents || []), doc];
+            updateCase && updateCase(caseData.id, 'documents', updated);
+          }
+          toast.success('Документ додано');
+        }}
+      />
+
+      {/* Модалка видалення документа з Viewer'а */}
+      <DeleteDocumentModal
+        isOpen={deleteDocOpen}
+        document={docPendingDelete}
+        onClose={() => { setDeleteDocOpen(false); setDocPendingDelete(null); }}
+        onConfirm={async (mode) => {
+          if (!docPendingDelete || !onExecuteAction) return;
+          const r = await onExecuteAction('dossier_agent', 'delete_document', {
+            caseId: caseData.id,
+            documentId: docPendingDelete.id,
+            mode,
+            _fromUI: true,
+          });
+          if (r?.success) {
+            toast.success(mode === 'archive' ? 'Документ архівовано' : 'Документ видалено');
+            setSelectedDoc(null);
+          } else {
+            toast.error('Не вдалось виконати', { description: r?.error });
+          }
+        }}
+      />
 
     </div>
   );

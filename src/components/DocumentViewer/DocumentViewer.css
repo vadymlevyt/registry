@@ -89,6 +89,18 @@
   color: var(--color-gold);
 }
 
+.document-viewer__icon-button--danger:hover {
+  color: var(--color-danger);
+  background: rgba(231, 76, 60, 0.08);
+}
+
+.document-viewer__header-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--color-border);
+  margin: 0 var(--space-2);
+}
+
 /* ── META ────────────────────────────────────────────────────────────── */
 
 .document-viewer__meta {

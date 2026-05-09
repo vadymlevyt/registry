@@ -1,4 +1,4 @@
-import { Star, Wrench, X } from 'lucide-react';
+import { Star, Wrench, X, Trash2 } from 'lucide-react';
 import { ICON_SIZE } from '../UI/icons.js';
 import { Tooltip } from '../UI';
 import { ScanTextToggle } from './ScanTextToggle.jsx';
@@ -24,6 +24,7 @@ export function DocumentViewerHeader({
   onModeChange,
   onToggleKey,
   onOpenDetails,
+  onDelete,
   onClose,
 }) {
   const proceeding = caseData?.proceedings?.find(p => p.id === document.procId);
@@ -69,6 +70,21 @@ export function DocumentViewerHeader({
               <Wrench size={ICON_SIZE.md} />
             </button>
           </Tooltip>
+
+          {onDelete && (
+            <Tooltip content="Видалити документ">
+              <button
+                type="button"
+                className="document-viewer__icon-button document-viewer__icon-button--danger"
+                onClick={onDelete}
+                aria-label="Видалити"
+              >
+                <Trash2 size={ICON_SIZE.md} />
+              </button>
+            </Tooltip>
+          )}
+
+          <span className="document-viewer__header-divider" aria-hidden="true" />
 
           <Tooltip content="Закрити">
             <button

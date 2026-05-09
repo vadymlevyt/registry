@@ -69,7 +69,9 @@ describe('DocumentViewer labels', () => {
 
   describe('formatFileSize', () => {
     it('байти', () => {
-      expect(formatFileSize(0)).toBe('0 Б');
+      // 0 трактується як "невідомий розмір" (legacy-документи без size) —
+      // повертаємо '' щоб метарядок не показував "0 Б".
+      expect(formatFileSize(0)).toBe('');
       expect(formatFileSize(500)).toBe('500 Б');
     });
     it('кілобайти', () => {

@@ -1,0 +1,115 @@
+.delete-document-modal__intro {
+  margin: 0 0 var(--space-4) 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+}
+
+.delete-document-modal__intro strong {
+  color: var(--color-text);
+}
+
+.delete-document-modal__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.delete-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.delete-option:hover {
+  background: var(--color-surface-2);
+}
+
+.delete-option--selected.delete-option--info {
+  border-color: var(--color-accent);
+  background: rgba(79, 124, 255, 0.06);
+}
+
+.delete-option--selected.delete-option--danger {
+  border-color: var(--color-danger);
+  background: rgba(231, 76, 60, 0.06);
+}
+
+.delete-option__icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+}
+
+.delete-option--info.delete-option--selected .delete-option__icon {
+  background: rgba(79, 124, 255, 0.12);
+  color: var(--color-accent);
+}
+
+.delete-option--danger.delete-option--selected .delete-option__icon {
+  background: rgba(231, 76, 60, 0.12);
+  color: var(--color-danger);
+}
+
+.delete-option__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.delete-option__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.delete-option__description {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  line-height: var(--leading-relaxed);
+}
+
+.delete-option__radio {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.delete-option--info.delete-option--selected .delete-option__radio {
+  border-color: var(--color-accent);
+}
+
+.delete-option--danger.delete-option--selected .delete-option__radio {
+  border-color: var(--color-danger);
+}
+
+.delete-option__radio-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.delete-option--danger.delete-option--selected .delete-option__radio-dot {
+  background: var(--color-danger);
+}

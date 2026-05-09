@@ -7,6 +7,7 @@ export { Modal } from './Modal.jsx';
 export { Card } from './Card.jsx';
 export { Chip } from './Chip.jsx';
 export { Toggle } from './Toggle.jsx';
+export { Checkbox } from './Checkbox.jsx';
 export { Tabs } from './Tabs.jsx';
 export { Tooltip } from './Tooltip.jsx';
 export { Toast } from './Toast.jsx';

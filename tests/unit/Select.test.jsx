@@ -9,25 +9,41 @@ const OPTIONS = [
   { value: 'c', label: 'Третій' },
 ];
 
-describe('Select', () => {
-  it('рендерить native select з опціями', () => {
+describe('Select (custom dropdown)', () => {
+  it('рендерить кнопку combobox замість native select', () => {
     render(<Select value="a" onChange={() => {}} options={OPTIONS} />);
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
-    expect(screen.getByText('Перший')).toBeInTheDocument();
-    expect(screen.getByText('Другий')).toBeInTheDocument();
-    expect(screen.getByText('Третій')).toBeInTheDocument();
+    // має бути власний button з aria-haspopup="listbox", без native <select>
+    const trigger = screen.getByRole('button');
+    expect(trigger).toBeInTheDocument();
+    expect(trigger.getAttribute('aria-haspopup')).toBe('listbox');
+    // native <select> більше не використовується щоб уникати Android picker
+    expect(document.querySelector('select')).toBeNull();
   });
 
-  it('викликає onChange зі string value', () => {
+  it('показує мітку обраного значення на кнопці', () => {
+    render(<Select value="a" onChange={() => {}} options={OPTIONS} />);
+    expect(screen.getByRole('button')).toHaveTextContent('Перший');
+  });
+
+  it('клік відкриває listbox з опціями', () => {
+    render(<Select value="a" onChange={() => {}} options={OPTIONS} />);
+    fireEvent.click(screen.getByRole('button'));
+    const listbox = screen.getByRole('listbox');
+    expect(listbox).toBeInTheDocument();
+    expect(screen.getAllByRole('option')).toHaveLength(3);
+  });
+
+  it('вибір опції викликає onChange зі string value', () => {
     const onChange = vi.fn();
     render(<Select value="a" onChange={onChange} options={OPTIONS} />);
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'b' } });
+    fireEvent.click(screen.getByRole('button'));
+    fireEvent.mouseDown(screen.getByText('Другий'));
     expect(onChange).toHaveBeenCalledWith('b');
   });
 
-  it('placeholder додає disabled <option value="">', () => {
+  it('placeholder показується якщо value порожнє', () => {
     render(<Select value="" onChange={() => {}} options={OPTIONS} placeholder="Оберіть..." />);
-    expect(screen.getByText('Оберіть...')).toBeInTheDocument();
+    expect(screen.getByRole('button')).toHaveTextContent('Оберіть...');
   });
 
   it('label рендериться', () => {
@@ -46,16 +62,22 @@ describe('Select', () => {
     expect(screen.getByText('оберіть зі списку')).toBeInTheDocument();
   });
 
-  it('disabled блокує select', () => {
-    const { container } = render(<Select value="a" onChange={() => {}} options={OPTIONS} disabled />);
-    expect(container.querySelector('select').disabled).toBe(true);
+  it('disabled блокує trigger', () => {
+    render(<Select value="a" onChange={() => {}} options={OPTIONS} disabled />);
+    const trigger = screen.getByRole('button');
+    expect(trigger).toBeDisabled();
   });
 
   it('опція з disabled: true не клікабельна', () => {
-    const opts = [{ value: 'a', label: 'Перший' }, { value: 'b', label: 'Заблокований', disabled: true }];
-    const { container } = render(<Select value="a" onChange={() => {}} options={opts} />);
-    const blocked = container.querySelectorAll('option')[1];
-    expect(blocked.disabled).toBe(true);
+    const onChange = vi.fn();
+    const opts = [
+      { value: 'a', label: 'Перший' },
+      { value: 'b', label: 'Заблокований', disabled: true },
+    ];
+    render(<Select value="a" onChange={onChange} options={opts} />);
+    fireEvent.click(screen.getByRole('button'));
+    fireEvent.mouseDown(screen.getByText('Заблокований'));
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('chevron-індикатор присутній', () => {

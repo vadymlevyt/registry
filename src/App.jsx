@@ -5309,10 +5309,12 @@ function App() {
         return { success: false, error: "caseId, documentId, fields обов'язкові" };
       }
       // Allowlist полів — захист від випадкового перезапису id/addedAt/addedBy/driveId.
+      // lastOcrAt — мітка часу останнього успішного OCR (виставляється з UI
+      // після reprocess, потрібна Viewer'у щоб триґернути перечитку 02_ОБРОБЛЕНІ).
       const ALLOWED_UPDATE_FIELDS = [
         'name', 'category', 'author', 'documentNature', 'namingStatus',
         'isKey', 'procId', 'driveUrl', 'folder', 'pageCount', 'date',
-        'icon', 'status'
+        'icon', 'status', 'lastOcrAt'
       ];
       const invalidFields = Object.keys(fields).filter(f => !ALLOWED_UPDATE_FIELDS.includes(f));
       if (invalidFields.length > 0) {

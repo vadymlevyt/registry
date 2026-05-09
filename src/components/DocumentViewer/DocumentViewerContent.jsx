@@ -13,6 +13,9 @@ import { getCachedText, localizeOcrError } from '../../services/ocrService.js';
  *
  * Text-режим — підтягує OCR-кеш з 02_ОБРОБЛЕНІ через ocrService. Якщо кешу
  * немає — empty state з кнопкою "Розпізнати зараз".
+ *
+ * useEffect залежить від `document.lastOcrAt` — після успішного перерозпізнавання
+ * CaseDossier викликає update_document({ lastOcrAt: now }), що ре-фетчить текст.
  */
 export function DocumentViewerContent({ document, mode, caseData, onReprocess }) {
   if (mode === 'scan') {
@@ -83,9 +86,18 @@ function TextContent({ document, caseData, onReprocess }) {
       return undefined;
     }
 
+    // Імена файлів з Drive повертаються в NFC-нормалізованому Unicode.
+    // ocrService нормалізує сам через name='...' порівняння, але для
+    // надійності передаємо normalize'ed name (важливо для українських
+    // символів які можуть бути у NFD з iOS).
+    const rawName = document.originalName || document.name || '';
+    const normalizedName = typeof rawName.normalize === 'function'
+      ? rawName.normalize('NFC')
+      : rawName;
+
     const file = {
       id: document.driveId,
-      name: document.originalName || document.name,
+      name: normalizedName,
       mimeType: document.mimeType || 'application/pdf',
       subFolders,
     };
@@ -105,7 +117,8 @@ function TextContent({ document, caseData, onReprocess }) {
     return () => {
       cancelled = true;
     };
-  }, [document.id, document.driveId, caseData?.storage?.subFolders]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document.id, document.driveId, document.lastOcrAt, caseData?.storage?.subFolders]);
 
   if (loading) {
     return (

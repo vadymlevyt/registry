@@ -3,6 +3,7 @@ import { FileText } from 'lucide-react';
 import { DocumentViewerHeader } from './DocumentViewerHeader.jsx';
 import { DocumentViewerContent } from './DocumentViewerContent.jsx';
 import { DocumentViewerFooter } from './DocumentViewerFooter.jsx';
+import { defaultNatureForUI, inferNatureFromFile } from '../../services/detectDocumentNature.js';
 import './DocumentViewer.css';
 
 const MODE_KEY_PREFIX = 'viewer_mode_';
@@ -30,10 +31,17 @@ export function DocumentViewer({
   onOpenDetails,
   onDiscussWithAgent,
   onReprocess,
+  onDelete,
 }) {
   const [mode, setMode] = useState(() => loadModePreference(document?.id));
 
-  const isScanned = document?.documentNature === 'scanned';
+  // documentNature може бути не визначений на legacy-документах (до v5).
+  // У такому випадку визначаємо за іменем/mime: PDF/image → 'scanned',
+  // docx/txt → 'searchable'. Це дає valid UI поки фонова detection
+  // обновить поле через update_document.
+  const inferred = inferNatureFromFile(document) || defaultNatureForUI(document);
+  const effectiveNature = document?.documentNature || inferred;
+  const isScanned = effectiveNature === 'scanned';
   const effectiveMode = isScanned ? mode : 'text';
 
   useEffect(() => {
@@ -46,6 +54,18 @@ export function DocumentViewer({
       saveModePreference(document.id, mode);
     }
   }, [mode, document?.id, isScanned]);
+
+  // Якщо documentNature відсутній (legacy <v5 або імпорт без класифікації),
+  // але швидка інференція дала впевнений результат — фіксуємо його через
+  // update_document. Глибока pdf-перевірка не запускається тут (важко без
+  // blob), тільки очевидні висновки за іменем/mimeType. Працює fire-and-forget.
+  useEffect(() => {
+    if (!document?.id || !onUpdate) return;
+    if (document.documentNature === 'scanned' || document.documentNature === 'searchable') return;
+    const sure = inferNatureFromFile(document);
+    if (!sure) return;
+    onUpdate(document.id, { documentNature: sure });
+  }, [document?.id, document?.documentNature, onUpdate]);
 
   if (!document) {
     return (
@@ -62,6 +82,11 @@ export function DocumentViewer({
     onUpdate && onUpdate(document.id, { isKey: nextValue });
   };
 
+  // Для footer "Перерозпізнати" враховуємо ефективну природу.
+  const effectiveDoc = document?.documentNature
+    ? document
+    : { ...document, documentNature: effectiveNature };
+
   return (
     <div className="document-viewer">
       <DocumentViewerHeader
@@ -72,6 +97,7 @@ export function DocumentViewer({
         onModeChange={setMode}
         onToggleKey={handleToggleKey}
         onOpenDetails={() => onOpenDetails && onOpenDetails(document.id)}
+        onDelete={onDelete}
         onClose={onClose}
       />
       <DocumentViewerContent
@@ -81,7 +107,7 @@ export function DocumentViewer({
         onReprocess={onReprocess}
       />
       <DocumentViewerFooter
-        document={document}
+        document={effectiveDoc}
         caseData={caseData}
         mode={effectiveMode}
         onDiscussWithAgent={onDiscussWithAgent}

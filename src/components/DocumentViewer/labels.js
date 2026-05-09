@@ -41,7 +41,9 @@ export function formatDate(value) {
 }
 
 export function formatFileSize(bytes) {
-  if (!bytes && bytes !== 0) return '';
+  // 0 у канонічній схемі — це маркер "розмір невідомий" для legacy-документів,
+  // тож показуємо порожній рядок (метарядок Viewer'а пропустить пункт).
+  if (typeof bytes !== 'number' || !bytes || bytes < 0) return '';
   if (bytes < 1024) return `${bytes} Б`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
   return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;

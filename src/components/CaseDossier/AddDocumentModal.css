@@ -1,0 +1,95 @@
+.add-document-modal__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.add-document-modal__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.add-document-modal__dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  color: var(--color-text-2);
+}
+
+.add-document-modal__dropzone:hover,
+.add-document-modal__dropzone--over {
+  border-color: var(--color-accent);
+  background: rgba(79, 124, 255, 0.06);
+  color: var(--color-text);
+}
+
+.add-document-modal__dropzone-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.add-document-modal__dropzone-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+}
+
+.add-document-modal__file-input {
+  display: none;
+}
+
+.add-document-modal__file-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+
+.add-document-modal__file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.add-document-modal__file-name {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.add-document-modal__file-size {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+}
+
+.add-document-modal__file-clear {
+  background: none;
+  border: none;
+  color: var(--color-text-2);
+  cursor: pointer;
+  padding: var(--space-1);
+  border-radius: var(--radius-xs);
+}
+
+.add-document-modal__file-clear:hover {
+  color: var(--color-danger);
+  background: rgba(231, 76, 60, 0.08);
+}
+
+@media (max-width: 768px) {
+  .add-document-modal__row {
+    grid-template-columns: 1fr;
+  }
+}

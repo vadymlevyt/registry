@@ -84,4 +84,32 @@ describe('DocumentViewer', () => {
     // Searchable у scan режимі показав би iframe — тут iframe не повинно бути
     expect(container.querySelector('iframe.document-viewer__iframe')).toBeNull();
   });
+
+  it('legacy PDF без documentNature → ефективна природа scanned, видно перемикач', () => {
+    const legacy = { ...baseDoc, documentNature: undefined, name: 'doc.pdf', mimeType: 'application/pdf' };
+    render(<DocumentViewer document={legacy} caseData={baseCase} />);
+    expect(screen.getByRole('tab', { name: /Скан/ })).toBeInTheDocument();
+  });
+
+  it('legacy без documentNature з .png іменем → автоматично scanned і fire-and-forget update', () => {
+    const onUpdate = vi.fn();
+    const legacy = { ...baseDoc, documentNature: undefined, name: 'photo.png' };
+    render(<DocumentViewer document={legacy} caseData={baseCase} onUpdate={onUpdate} />);
+    // Інференція впевнена → одразу onUpdate з documentNature:'scanned'
+    expect(onUpdate).toHaveBeenCalledWith('doc_1', { documentNature: 'scanned' });
+  });
+
+  it('кнопка кошика 🗑 показується якщо передано onDelete', () => {
+    const onDelete = vi.fn();
+    render(<DocumentViewer document={baseDoc} caseData={baseCase} onDelete={onDelete} />);
+    const trash = screen.getByLabelText('Видалити');
+    expect(trash).toBeInTheDocument();
+    fireEvent.click(trash);
+    expect(onDelete).toHaveBeenCalled();
+  });
+
+  it('кнопка кошика прихована якщо onDelete не передано', () => {
+    render(<DocumentViewer document={baseDoc} caseData={baseCase} />);
+    expect(screen.queryByLabelText('Видалити')).toBeNull();
+  });
 });

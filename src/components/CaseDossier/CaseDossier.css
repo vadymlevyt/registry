@@ -1,0 +1,188 @@
+/* ── Materials layout: панель колапс / розширення дерева ──────────────── */
+
+.materials-layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.materials-left-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  position: relative;
+  transition: width var(--transition-fast);
+}
+
+.materials-left-panel--collapsed {
+  width: 28px !important;
+  min-width: 28px;
+  border-right: 1px solid var(--color-border);
+}
+
+.materials-left-panel--collapsed > *:not(.materials-collapse-toggle) {
+  display: none !important;
+}
+
+.materials-left-panel--tree-expanded {
+  width: 50% !important;
+}
+
+.materials-collapse-toggle {
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  transform: translate(50%, -50%);
+  width: 22px;
+  height: 44px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-2);
+  cursor: pointer;
+  z-index: 12;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.materials-collapse-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+.materials-collapse-toggle--right {
+  right: auto;
+  left: -1px;
+  transform: translate(-50%, -50%);
+}
+
+.materials-tree-expand-toggle {
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-2);
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.materials-tree-expand-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+.materials-tree-expand-toggle--active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.materials-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.materials-mode-bar__filler {
+  flex: 1;
+}
+
+.materials-archive-toggle {
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-2);
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.materials-archive-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+.materials-archive-toggle--active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: rgba(79, 124, 255, 0.06);
+}
+
+.materials-archive-toggle__count {
+  font-size: 10px;
+  background: var(--color-surface-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-md);
+}
+
+.materials-archive-toggle--active .materials-archive-toggle__count {
+  background: rgba(79, 124, 255, 0.2);
+  color: var(--color-accent);
+}
+
+/* Agent panel collapse */
+
+.agent-panel-collapse-toggle {
+  position: absolute;
+  top: 50%;
+  left: -1px;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 44px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-2);
+  cursor: pointer;
+  z-index: 12;
+}
+
+.agent-panel-collapse-toggle:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+
+/* Responsive */
+
+@media (max-width: 1024px) {
+  .materials-left-panel:not(.materials-left-panel--collapsed) {
+    width: 240px !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .materials-left-panel:not(.materials-left-panel--collapsed) {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 80% !important;
+    z-index: 20;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.3);
+  }
+  .materials-left-panel--collapsed {
+    width: 0 !important;
+    min-width: 0;
+    border: none;
+  }
+  .materials-collapse-toggle {
+    width: 32px;
+    height: 32px;
+  }
+}
