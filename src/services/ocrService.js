@@ -217,9 +217,12 @@ export async function extractText(file, options = {}) {
     if (impl.canHandle && !impl.canHandle(file)) continue;
     try {
       const result = await impl.extract(file, options);
-      // 4. Записати в кеш (якщо не з кешу і провайдер вернув непорожній текст)
+      // 4. Записати в кеш якщо провайдер вернув непорожній текст.
+      // options.skipCache керує лише ЧИТАННЯМ старого кеша (див. рядок 174) —
+      // запис нового свіжого результату має відбуватись завжди, бо при
+      // перерозпізнаванні (skipCache: true) свіжий текст замінює старий.
       let cacheWritten = false;
-      if (result.text && result.text.trim().length > 0 && !options.skipCache) {
+      if (result.text && result.text.trim().length > 0) {
         cacheWritten = await writeCache(file, result.text);
       }
       return {
