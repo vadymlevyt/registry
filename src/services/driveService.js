@@ -33,17 +33,24 @@ export function getFolderForDocument(category) {
 }
 
 export async function findOrCreateFolder(name, parentId, token) {
+  // CLAUDE.md правило #8 — кирилиця в q= filter Drive API ненадійна, а імена
+  // папок справи (01_АКТИВНІ_СПРАВИ, 01_ОРИГІНАЛИ … 05_ЗОВНІШНІ, імена
+  // клієнтів) — переважно кириличні. Тому q= формуємо тільки за parent +
+  // mimeType + trashed, а потрібну папку знаходимо у JavaScript за точним
+  // ім'ям. Той самий патерн застосовано в ocrService.listFolderFilesByName
+  // і driveService.deleteOcrCacheForDocument (рядки 381-388).
   const query = parentId
-    ? `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`
-    : `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    ? `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+    : `'root' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
 
   const searchRes = await driveRequest(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&pageSize=1000`
   );
   const searchData = await searchRes.json();
 
-  if (searchData.files && searchData.files.length > 0) {
-    return searchData.files[0];
+  const match = (searchData.files || []).find((f) => f.name === name);
+  if (match) {
+    return match;
   }
 
   const metadata = {
