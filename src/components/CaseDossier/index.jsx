@@ -2447,9 +2447,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             };
             const tId = toast.info('Розпізнавання...', { persistent: true });
             try {
-              await ocrService.extractText(file, { skipCache: true });
+              const ocrResult = await ocrService.extractText(file, { skipCache: true });
               toast.dismiss(tId);
-              toast.success('Текст оновлено');
+              if (ocrResult?.cacheWritten) {
+                toast.success('Текст розпізнано і збережено');
+              } else {
+                toast.warning('Текст розпізнано, але не вдалось зберегти кеш на Drive', {
+                  description: 'При повторному відкритті може знадобитись повторне розпізнавання',
+                });
+              }
               // Поставити мітку lastOcrAt — DocumentViewerContent на неї
               // ре-фетчить кеш з 02_ОБРОБЛЕНІ (без неї text не оновлюється).
               if (onExecuteAction) {

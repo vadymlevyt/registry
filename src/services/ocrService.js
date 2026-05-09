@@ -92,7 +92,7 @@ async function checkCache(file) {
 
 async function writeCache(file, text) {
   const subFolderId = file.subFolders?.['02_ОБРОБЛЕНІ'];
-  if (!subFolderId) return;
+  if (!subFolderId) return false;
   const name = cacheFileName(file);
   try {
     const existing = await listFolderFilesByName(subFolderId, name);
@@ -102,9 +102,11 @@ async function writeCache(file, text) {
       }).catch(() => {});
     }
     await uploadTextFile(subFolderId, name, text);
+    return true;
   } catch (e) {
     // не падати — кеш не критичний
     console.warn('[ocrService] writeCache failed:', e.message);
+    return false;
   }
 }
 
@@ -177,6 +179,7 @@ export async function extractText(file, options = {}) {
         pages: 0,
         provider: 'cache',
         fromCache: true,
+        cacheWritten: false,
         durationMs: Date.now() - t0,
         warnings: [],
       };
@@ -210,14 +213,16 @@ export async function extractText(file, options = {}) {
     try {
       const result = await impl.extract(file, options);
       // 4. Записати в кеш (якщо не з кешу і провайдер вернув непорожній текст)
+      let cacheWritten = false;
       if (result.text && result.text.trim().length > 0 && !options.skipCache) {
-        await writeCache(file, result.text);
+        cacheWritten = await writeCache(file, result.text);
       }
       return {
         text: result.text || '',
         pages: result.pages || 0,
         provider: name,
         fromCache: false,
+        cacheWritten,
         durationMs: Date.now() - t0,
         warnings: [...warnings, ...(result.warnings || [])],
       };
