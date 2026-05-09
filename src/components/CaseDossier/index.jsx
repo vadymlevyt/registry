@@ -2829,7 +2829,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         onSubmit={async ({ name, category, author, procId, date, isKey, file }) => {
           let driveId = null;
           let prepared = null;
-          if (file && driveConnected) {
+          // Дві гілки джерела файла:
+          //   А) Drive picker — файл вже на Drive, маркер _isDriveSource + _driveId.
+          //      Пропускаємо upload (дублікат не створюємо), беремо driveId одразу.
+          //   Б) Device file picker — реальний File, прогоняємо через prepareFile
+          //      (HEIC→JPEG) і uploadFileLocal у 01_ОРИГІНАЛИ.
+          // Далі обидві гілки сходяться: createDocument → add_document → OCR pipeline.
+          if (file?._isDriveSource && file?._driveId) {
+            driveId = file._driveId;
+          } else if (file && driveConnected) {
             try {
               prepared = await prepareFile(file);
               driveId = await uploadFileLocal(prepared, caseData);

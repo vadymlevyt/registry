@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Upload, Paperclip, X } from 'lucide-react';
+import { Upload, Paperclip, X, Cloud, ChevronRight, ChevronDown } from 'lucide-react';
 import { Modal, Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
+import { driveRequest } from '../../services/driveAuth.js';
 import './AddDocumentModal.css';
 
 const CATEGORY_OPTIONS = [
@@ -52,6 +53,15 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
   const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
+  // Drive picker state — окрема гілка від device file picker. Лежить тут а не у
+  // FileUploadZone, бо потрібна тільки коли каса має Drive-папку 01_ОРИГІНАЛИ
+  // і ми вміємо її прочитати без UI Google Picker (без developerKey).
+  const driveFolderId = caseData?.storage?.subFolders?.['01_ОРИГІНАЛИ'];
+  const [drivePickerOpen, setDrivePickerOpen] = useState(false);
+  const [driveFiles, setDriveFiles] = useState(null); // null=не завантажено, []=порожньо
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [driveError, setDriveError] = useState(null);
+
   // Сброс при відкритті — щоб не було залишків з попереднього виклику.
   useEffect(() => {
     if (isOpen) {
@@ -59,8 +69,52 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
       setTouched(false);
       setSubmitting(false);
       setDragOver(false);
+      setDrivePickerOpen(false);
+      setDriveFiles(null);
+      setDriveError(null);
     }
   }, [isOpen, caseData]);
+
+  async function loadDriveFiles() {
+    if (!driveFolderId) return;
+    setDriveLoading(true);
+    setDriveError(null);
+    try {
+      const q = `'${driveFolderId}' in parents and trashed=false`;
+      const res = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,createdTime)&pageSize=200&orderBy=createdTime desc`
+      );
+      if (!res.ok) {
+        setDriveError(`Drive ${res.status}`);
+        setDriveFiles([]);
+        return;
+      }
+      const data = await res.json();
+      setDriveFiles(data.files || []);
+    } catch (err) {
+      console.warn('[AddDocumentModal] Drive list failed:', err.message);
+      setDriveError(err.message || 'Не вдалось отримати список');
+      setDriveFiles([]);
+    } finally {
+      setDriveLoading(false);
+    }
+  }
+
+  function handleDrivePick(driveFile) {
+    // Маркер-обʼєкт який відрізняється від реального File. CaseDossier:onSubmit
+    // перевіряє _isDriveSource і пропускає uploadFileLocal — driveId уже відомий.
+    setState((s) => ({
+      ...s,
+      file: {
+        _isDriveSource: true,
+        _driveId: driveFile.id,
+        name: driveFile.name,
+        size: driveFile.size != null ? parseInt(driveFile.size, 10) : 0,
+        type: driveFile.mimeType || 'application/octet-stream',
+      },
+    }));
+    setDrivePickerOpen(false);
+  }
 
   const proceedingOptions = (caseData?.proceedings || []).map((p) => ({
     value: p.id,
@@ -169,8 +223,82 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
           onDragOver={setDragOver}
           onChange={handleFile}
         />
+
+        {driveFolderId && !state.file && (
+          <DrivePickerSection
+            isOpen={drivePickerOpen}
+            files={driveFiles}
+            loading={driveLoading}
+            error={driveError}
+            onToggle={() => {
+              const next = !drivePickerOpen;
+              setDrivePickerOpen(next);
+              if (next && driveFiles === null) loadDriveFiles();
+            }}
+            onPick={handleDrivePick}
+            onRefresh={loadDriveFiles}
+          />
+        )}
       </div>
     </Modal>
+  );
+}
+
+function DrivePickerSection({ isOpen, files, loading, error, onToggle, onPick, onRefresh }) {
+  return (
+    <div className="add-document-modal__drive-section">
+      <button
+        type="button"
+        className="add-document-modal__drive-toggle"
+        onClick={onToggle}
+        aria-expanded={isOpen}
+      >
+        {isOpen ? <ChevronDown size={ICON_SIZE.sm} /> : <ChevronRight size={ICON_SIZE.sm} />}
+        <Cloud size={ICON_SIZE.sm} />
+        <span>Або вибрати файл вже на Drive (з папки 01_ОРИГІНАЛИ)</span>
+      </button>
+
+      {isOpen && (
+        <div className="add-document-modal__drive-list">
+          {loading && (
+            <div className="add-document-modal__drive-empty">Завантаження списку...</div>
+          )}
+          {!loading && error && (
+            <div className="add-document-modal__drive-empty">
+              Помилка: {error}
+              <button
+                type="button"
+                className="add-document-modal__drive-retry"
+                onClick={onRefresh}
+              >
+                Спробувати ще
+              </button>
+            </div>
+          )}
+          {!loading && !error && files?.length === 0 && (
+            <div className="add-document-modal__drive-empty">
+              Папка 01_ОРИГІНАЛИ порожня
+            </div>
+          )}
+          {!loading && !error && files?.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              className="add-document-modal__drive-item"
+              onClick={() => onPick(f)}
+            >
+              <Paperclip size={ICON_SIZE.sm} />
+              <div className="add-document-modal__drive-item-info">
+                <div className="add-document-modal__drive-item-name">{f.name}</div>
+                <div className="add-document-modal__drive-item-meta">
+                  {f.size ? `${(parseInt(f.size, 10) / 1024).toFixed(0)} КБ` : '—'}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
