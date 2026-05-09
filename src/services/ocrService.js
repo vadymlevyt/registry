@@ -42,14 +42,19 @@ function cacheFileName(file) {
   return `${sanitizeBasename(file.name)}_${file.id}.txt`;
 }
 
+// CLAUDE.md правило #8 — кирилиця в q= filter Drive API ненадійна.
+// Запитуємо всі файли папки (q= тільки по parent + trashed), фільтруємо по name
+// у JavaScript. Той самий патерн застосовано у driveService.deleteOcrCacheForDocument
+// (driveService.js:381-388).
 async function listFolderFilesByName(folderId, name) {
-  const q = `'${folderId}' in parents and name='${name.replace(/'/g, "\\'")}' and trashed=false`;
+  const q = `'${folderId}' in parents and trashed=false`;
   const res = await driveRequest(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=10`
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
   );
   if (!res.ok) return [];
   const data = await res.json();
-  return data.files || [];
+  const all = data.files || [];
+  return all.filter((f) => f.name === name);
 }
 
 async function readDriveFileText(fileId) {
