@@ -168,11 +168,6 @@ export function DocumentViewerFooter({
         Обговорити
       </Button>
 
-      {/* TEMP DIAGNOSTIC — видалити окремим комітом коли адвокат подивиться */}
-      <small style={{ opacity: 0.5, fontSize: '10px', alignSelf: 'center', padding: '0 6px', whiteSpace: 'nowrap' }}>
-        driveId: {document.driveId || 'NULL'}
-      </small>
-
       {isScanned && (
         <Button
           variant="ghost"
