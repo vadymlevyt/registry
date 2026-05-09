@@ -4,6 +4,7 @@ import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToD
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
+import { inferNatureFromFile, defaultNatureForUI } from "../../services/detectDocumentNature.js";
 import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
 import { toast } from "../../services/toast.js";
 import { messages } from "../../services/messages.js";
@@ -2809,9 +2810,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         caseData={{ ...caseData, proceedings }}
         onSubmit={async ({ name, category, author, procId, date, isKey, file }) => {
           let driveId = null;
+          let prepared = null;
           if (file && driveConnected) {
             try {
-              const prepared = await prepareFile(file);
+              prepared = await prepareFile(file);
               driveId = await uploadFileLocal(prepared, caseData);
             } catch (err) {
               console.error('Drive upload error:', err);
@@ -2823,6 +2825,18 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             evidence: '📎', contract: '📄', correspondence: '✉️',
             identification: '🪪', other: '📁',
           };
+
+          // initialNature — природа документа за File API до запуску OCR.
+          // image/* → 'scanned', docx/txt → 'searchable', PDF без deep-перевірки
+          // → 'scanned' (defaultNatureForUI: безпечно бо Drive iframe однаково
+          // покаже PDF). Після OCR коригуємо за тим який провайдер реально витяг
+          // текст: pdfjsLocal → 'searchable', documentAi/claudeVision → 'scanned'.
+          const fileForInfer = prepared || file;
+          const initialNature = fileForInfer
+            ? (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
+                || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name }))
+            : 'searchable';
+
           const doc = createDocument({
             procId: procId || proceedings[0]?.id || 'proc_main',
             name,
@@ -2838,6 +2852,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             folder: '01_ОРИГІНАЛИ',
             addedBy: 'lawyer_manual',
             namingStatus: 'manual',
+            documentNature: initialNature,
           });
           if (onExecuteAction) {
             const r = await onExecuteAction('dossier_agent', 'add_document', {
@@ -2851,7 +2866,58 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             const updated = [...(caseData.documents || []), doc];
             updateCase && updateCase(caseData.id, 'documents', updated);
           }
-          toast.success('Документ додано');
+
+          // Якщо немає файлу або Drive недоступний — без OCR pipeline.
+          const subFolders = caseData?.storage?.subFolders;
+          const hasOcrTarget = !!fileForInfer && !!driveId && !!subFolders?.['02_ОБРОБЛЕНІ'];
+          if (!hasOcrTarget) {
+            toast.success('Документ додано');
+            return;
+          }
+
+          // OCR pipeline — запускається ПІСЛЯ add_document, тому документ
+          // з'являється в реєстрі одразу і модалка може закритись. Корекція
+          // documentNature і lastOcrAt — окремим update_document по результату.
+          const ocrToastId = toast.info('Документ додано. Розпізнаю текст...', { persistent: true });
+          const ocrFile = {
+            id: driveId,
+            name: fileForInfer.name,
+            mimeType: fileForInfer.type,
+            subFolders,
+          };
+          try {
+            const result = await ocrService.extractText(ocrFile);
+            toast.dismiss(ocrToastId);
+            if (result.text && result.text.trim().length > 0) {
+              const finalNature = result.provider === 'pdfjsLocal' ? 'searchable' : 'scanned';
+              const fields = { lastOcrAt: new Date().toISOString() };
+              if (finalNature !== initialNature) fields.documentNature = finalNature;
+              if (onExecuteAction) {
+                try {
+                  await onExecuteAction('dossier_agent', 'update_document', {
+                    caseId: caseData.id,
+                    documentId: doc.id,
+                    fields,
+                  });
+                } catch (e) {
+                  console.warn('[add_document pipeline] update_document failed:', e?.message || e);
+                }
+              }
+              toast.success('Документ додано і розпізнано');
+            } else {
+              toast.warning('Документ додано, але текст порожній', {
+                description: 'Файл міг бути порожнім або не розпізнаваним',
+              });
+            }
+          } catch (err) {
+            toast.dismiss(ocrToastId);
+            const localized = ocrService.localizeOcrError
+              ? ocrService.localizeOcrError(err.code)
+              : err.message;
+            toast.warning('Документ додано, але не вдалось розпізнати текст', {
+              description: localized,
+            });
+          }
         }}
       />
 
