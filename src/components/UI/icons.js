@@ -57,6 +57,9 @@ export {
   RefreshCw,
   Settings,
   MoreVertical, MoreHorizontal,
+
+  // DocumentViewer і агенти
+  Image, Wrench, Bot,
 } from 'lucide-react';
 
 /**

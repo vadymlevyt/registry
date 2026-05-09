@@ -20,6 +20,7 @@ import {
   ArrowLeft, AlertTriangle,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
+import { DocumentViewer } from "../DocumentViewer";
 
 const CATEGORY_LABELS = {
   pleading: "Заява по суті", motion: "Клопотання",
@@ -2215,62 +2216,52 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         </div>
 
         {/* Viewer */}
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {!selectedDoc ? (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--color-text-3)", gap: 8 }}>
-              <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}><FileText size={36} /></div>
-              <div style={{ fontSize: 12 }}>{"Оберіть документ зі списку"}</div>
-            </div>
-          ) : (
-            <>
-              <div style={{ padding: "9px 14px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{selectedDoc.name}</div>
-                  <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{selectedDoc.date}</div>
-                </div>
-                <div style={{ display: "flex", gap: 5 }}>
-                  {["Копіювати", "Завантажити", "🤖 Аналіз"].map(btn => (
-                    <button key={btn} style={iconBtn}>{btn}</button>
-                  ))}
-                </div>
-              </div>
-              {selectedDoc.driveId ? (
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: 20 }}>
-                  <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-6)', maxWidth: 680, margin: "0 auto", flex: 1, display: "flex", flexDirection: "column" }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: "center", marginBottom: 16 }}>{selectedDoc.name}</h3>
-                    <iframe
-                      src={`https://drive.google.com/file/d/${selectedDoc.driveId}/preview`}
-                      style={{ width: "100%", flex: 1, minHeight: 400, border: "none", borderRadius: 'var(--radius-md)'}}
-                      allow="autoplay"
-                      title={selectedDoc.name}
-                    />
-                    <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "center" }}>
-                      <a
-                        href={`https://drive.google.com/file/d/${selectedDoc.driveId}/view`}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ background: "var(--color-accent)", color: "#fff", padding: "6px 14px", borderRadius: 'var(--radius-sm)', fontSize: 12, textDecoration: "none" }}
-                      >{"Відкрити в Drive"}</a>
-                      <a
-                        href={`https://drive.google.com/uc?export=download&id=${selectedDoc.driveId}`}
-                        style={{ background: "var(--color-surface-2)", color: "var(--color-text-2)", border: "1px solid var(--color-border)", padding: "6px 14px", borderRadius: 'var(--radius-sm)', fontSize: 12, textDecoration: "none" }}
-                      >{"Завантажити"}</a>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
-                  <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-6)', maxWidth: 680, margin: "0 auto", lineHeight: 1.8 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 700, textAlign: "center", marginBottom: 4 }}>{selectedDoc.name}</h3>
-                    <div style={{ fontSize: 11, color: "var(--color-text-3)", textAlign: "center", marginBottom: 16 }}>{selectedDoc.date}</div>
-                    {selectedDoc.notes && <div style={{ background: "rgba(231,76,60,.08)", border: "1px solid rgba(231,76,60,.3)", padding: "8px 12px", borderRadius: 'var(--radius-sm)', marginBottom: 12, fontSize: 11, color: "var(--color-danger)" }}>{selectedDoc.notes}</div>}
-                    <p style={{ fontSize: 13, color: "var(--color-text-2)" }}>{"Для перегляду повного тексту прикріпіть файл з Google Drive."}</p>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
+        <DocumentViewer
+          document={selectedDoc}
+          caseData={caseData}
+          onClose={() => setSelectedDoc(null)}
+          onUpdate={(documentId, fields) => {
+            const updated = (caseData.documents || []).map(d =>
+              d.id === documentId ? { ...d, ...fields, updatedAt: new Date().toISOString() } : d
+            );
+            updateCase && updateCase(caseData.id, 'documents', updated);
+            setSelectedDoc(prev => (prev && prev.id === documentId ? { ...prev, ...fields } : prev));
+          }}
+          onOpenDetails={() => {
+            toast.info('Панель деталей у розробці');
+          }}
+          onDiscussWithAgent={() => {
+            setAgentOpen(true);
+            toast.info('Передача документа в чат агента — у розробці', {
+              description: 'Поки що відкрита панель агента — задайте запитання вручну',
+            });
+          }}
+          onReprocess={async (doc) => {
+            const subFolders = caseData?.storage?.subFolders;
+            if (!doc?.driveId || !subFolders?.['02_ОБРОБЛЕНІ']) {
+              toast.warning('Перерозпізнання потребує файлу на Drive');
+              return;
+            }
+            const file = {
+              id: doc.driveId,
+              name: doc.originalName || doc.name,
+              mimeType: doc.mimeType || 'application/pdf',
+              subFolders,
+            };
+            const tId = toast.info('Розпізнавання...', { persistent: true });
+            try {
+              await ocrService.extractText(file, { skipCache: true });
+              toast.dismiss(tId);
+              toast.success('Текст оновлено');
+            } catch (err) {
+              toast.dismiss(tId);
+              const localized = ocrService.localizeOcrError
+                ? ocrService.localizeOcrError(err.code)
+                : err.message;
+              toast.error('Не вдалось розпізнати', { description: localized });
+            }
+          }}
+        />
       </div>
     );
   }

@@ -148,6 +148,20 @@ function fallbackChain(initial, file) {
   });
 }
 
+// ── Public cache lookup (DocumentViewer) ────────────────────────────────────
+//
+// Повертає текст з 02_ОБРОБЛЕНІ якщо є, інакше null. Не запускає OCR.
+// Використовується Viewer'ом у режимі "Текст" — щоб відрізнити "тексту немає"
+// від "ось текст" і показати empty state з кнопкою "Розпізнати зараз".
+
+export async function getCachedText(file) {
+  try {
+    return await checkCache(file);
+  } catch {
+    return null;
+  }
+}
+
 // ── extractText ─────────────────────────────────────────────────────────────
 
 export async function extractText(file, options = {}) {
