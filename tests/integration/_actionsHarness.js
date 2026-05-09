@@ -224,7 +224,7 @@ export function createHarness({ initialCases = [] } = {}) {
 
     update_document: async ({ caseId, documentId, fields }) => {
       if (!caseId || !documentId || !fields) return { success: false, error: "caseId, documentId, fields обов'язкові" };
-      const allowed = ['name', 'category', 'author', 'documentNature', 'namingStatus', 'isKey', 'procId', 'driveUrl', 'folder', 'pageCount', 'date', 'icon', 'status'];
+      const allowed = ['name', 'category', 'author', 'documentNature', 'namingStatus', 'isKey', 'procId', 'driveUrl', 'folder', 'pageCount', 'date', 'icon', 'status', 'lastOcrAt'];
       const invalid = Object.keys(fields).filter(f => !allowed.includes(f));
       if (invalid.length > 0) return { success: false, error: `Заборонено оновлювати поля: ${invalid.join(', ')}` };
       const targetCase = cases.find(c => c.id === caseId);

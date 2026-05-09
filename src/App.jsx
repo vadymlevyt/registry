@@ -5324,39 +5324,53 @@ function App() {
         };
       }
 
-      const targetCase = cases.find(c => c.id === caseId);
-      if (!targetCase) {
-        return { success: false, error: `Справу ${caseId} не знайдено` };
-      }
-      const docIdx = (targetCase.documents || []).findIndex(d => d.id === documentId);
-      if (docIdx === -1) {
-        return { success: false, error: `Документ ${documentId} не знайдено у справі` };
-      }
-      const updatedDoc = {
-        ...targetCase.documents[docIdx],
-        ...fields,
-        updatedAt: new Date().toISOString(),
-      };
-      const { valid, errors } = validateDocument(updatedDoc);
-      if (!valid) {
-        return { success: false, error: `Невалідний документ після оновлення: ${errors.join(', ')}` };
-      }
-
-      setCases(prev => prev.map(c =>
-        c.id === caseId
-          ? {
-              ...c,
-              documents: c.documents.map(d => d.id === documentId ? updatedDoc : d),
-              updatedAt: new Date().toISOString(),
-            }
-          : c
-      ));
-      return {
-        success: true,
-        documentId,
-        updatedFields: Object.keys(fields),
-        message: `Документ "${updatedDoc.name}" оновлено`,
-      };
+      // CLAUDE.md правило #11 + рамка SoT: пайплайн AddDocumentModal спочатку
+      // викликає add_document (setCases enqueue), далі await ocrService.extract
+      // (секунди), потім update_document. До другого виклику React уже встиг
+      // re-render — а замикання in-flight onSubmit досі тримає СТАРИЙ
+      // executeAction зі СТАРИМ cases (без щойно доданого документа). Тому
+      // читаємо актуальний стан через функціональний setCases(prev => …),
+      // а outcome виносимо назовні. updater чистий: щось не знайдено —
+      // повертаємо prev (без зайвого rerender), знайдено — повертаємо новий map.
+      let outcome = null;
+      setCases(prev => {
+        const targetCase = prev.find(c => c.id === caseId);
+        if (!targetCase) {
+          outcome = { success: false, error: `Справу ${caseId} не знайдено` };
+          return prev;
+        }
+        const docIdx = (targetCase.documents || []).findIndex(d => d.id === documentId);
+        if (docIdx === -1) {
+          outcome = { success: false, error: `Документ ${documentId} не знайдено у справі` };
+          return prev;
+        }
+        const updatedDoc = {
+          ...targetCase.documents[docIdx],
+          ...fields,
+          updatedAt: new Date().toISOString(),
+        };
+        const { valid, errors } = validateDocument(updatedDoc);
+        if (!valid) {
+          outcome = { success: false, error: `Невалідний документ після оновлення: ${errors.join(', ')}` };
+          return prev;
+        }
+        outcome = {
+          success: true,
+          documentId,
+          updatedFields: Object.keys(fields),
+          message: `Документ "${updatedDoc.name}" оновлено`,
+        };
+        return prev.map(c =>
+          c.id === caseId
+            ? {
+                ...c,
+                documents: c.documents.map(d => d.id === documentId ? updatedDoc : d),
+                updatedAt: new Date().toISOString(),
+              }
+            : c
+        );
+      });
+      return outcome;
     },
 
     delete_document: async ({ caseId, documentId, mode = 'full' }) => {

@@ -2457,9 +2457,27 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   description: 'При повторному відкритті може знадобитись повторне розпізнавання',
                 });
               }
-              // Поставити мітку lastOcrAt — DocumentViewerContent на неї
-              // ре-фетчить кеш з 02_ОБРОБЛЕНІ (без неї text не оновлюється).
-              if (onExecuteAction) {
+              // lastOcrAt — Viewer на нього ре-фетчить кеш з 02_ОБРОБЛЕНІ.
+              // documentNature — корекція за провайдером, дзеркало логіки
+              // pipeline AddDocumentModal: pdfjsLocal витяг текст → 'searchable',
+              // documentAi/claudeVision (а отже OCR було потрібне) → 'scanned'.
+              // Дозволяє виправити старі/неправильно класифіковані документи
+              // через UI без видалення і повторного додавання.
+              if (onExecuteAction && ocrResult?.text && ocrResult.text.trim().length > 0) {
+                const finalNature = ocrResult.provider === 'pdfjsLocal' ? 'searchable' : 'scanned';
+                const fields = { lastOcrAt: new Date().toISOString() };
+                if (finalNature !== doc.documentNature) fields.documentNature = finalNature;
+                try {
+                  await onExecuteAction('dossier_agent', 'update_document', {
+                    caseId: caseData.id,
+                    documentId: doc.id,
+                    fields,
+                  });
+                } catch (e) {
+                  console.warn('[reprocess] update_document failed:', e?.message || e);
+                }
+              } else if (onExecuteAction) {
+                // Текст порожній — лиш мітка часу, природу не чіпаємо.
                 try {
                   await onExecuteAction('dossier_agent', 'update_document', {
                     caseId: caseData.id,
