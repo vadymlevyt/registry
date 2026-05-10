@@ -115,16 +115,107 @@
   color: var(--color-text);
 }
 
+.add-document-modal__drive-browser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+.add-document-modal__drive-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.add-document-modal__drive-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-2);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.add-document-modal__drive-source-chip:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.add-document-modal__drive-source-chip--active {
+  background: rgba(79, 124, 255, 0.12);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.add-document-modal__drive-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  min-height: 28px;
+}
+
+.add-document-modal__drive-crumb-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.add-document-modal__drive-crumb-sep {
+  color: var(--color-text-3);
+  flex-shrink: 0;
+}
+
+.add-document-modal__drive-crumb {
+  background: none;
+  border: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.add-document-modal__drive-crumb:hover:not(:disabled) {
+  background: rgba(79, 124, 255, 0.08);
+}
+
+.add-document-modal__drive-crumb--current {
+  color: var(--color-text);
+  cursor: default;
+}
+
+.add-document-modal__drive-crumb:disabled {
+  opacity: 1;
+}
+
 .add-document-modal__drive-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  max-height: 240px;
+  gap: 2px;
+  max-height: 280px;
   overflow-y: auto;
   padding: var(--space-1);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-xs);
 }
 
 .add-document-modal__drive-empty {
@@ -132,6 +223,15 @@
   font-size: var(--text-xs);
   color: var(--color-text-3);
   text-align: center;
+}
+
+.add-document-modal__drive-hint {
+  padding: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  text-align: center;
+  border-top: 1px dashed var(--color-border);
+  margin-top: 4px;
 }
 
 .add-document-modal__drive-retry {
@@ -163,6 +263,15 @@
 .add-document-modal__drive-item:hover {
   background: var(--color-surface-2);
   border-color: var(--color-border);
+}
+
+.add-document-modal__drive-item--folder {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.add-document-modal__drive-item--folder svg {
+  color: var(--color-accent);
 }
 
 .add-document-modal__drive-item-info {
