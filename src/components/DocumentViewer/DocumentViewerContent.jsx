@@ -11,9 +11,10 @@ import { HtmlRenderer } from './HtmlRenderer.jsx';
  * Контентна частина Viewer'а.
  *
  * Логіка вибору рендеру:
- *   - mode='scan' для scanned (PDF/image) → Drive iframe / <img> (як було)
- *   - mode='scan' для inline-renderable (searchable) — обираємо власний рендер:
- *       PDF (searchable) → PdfRenderer (canvas + textLayer для виділення)
+ *   - mode='scan' — обираємо власний рендер за типом файлу:
+ *       PDF (searchable і scanned) → PdfRenderer (pdfjs viewer iframe). Один
+ *         тулбар, одне виділення, однаковий UX для всіх PDF (мікро-TASK 5.2-fix5)
+ *       зображення → <img> з Drive
  *       DOCX → DocxRenderer (mammoth → HTML)
  *       HTML → HtmlRenderer (charset detection + iframe srcdoc)
  *       інші (TXT, MD, RTF, XLSX, ODT) → Drive iframe як fallback (нативного
@@ -100,21 +101,11 @@ function ScanContent({ document }) {
     );
   }
 
-  // Scanned PDF — без текстового шару, виділяти нічого. Drive iframe як було.
-  if (document.documentNature === 'scanned') {
-    return (
-      <div className="document-viewer__content document-viewer__content--scan">
-        <iframe
-          className="document-viewer__iframe"
-          src={`https://drive.google.com/file/d/${document.driveId}/preview`}
-          title={document.name}
-          allow="autoplay"
-        />
-      </div>
-    );
-  }
-
-  // Searchable — обираємо власний рендер за типом файлу.
+  // Усі PDF (searchable і scanned) — pdfjs viewer iframe. Одноманітний UI:
+  // той самий тулбар, та сама поведінка zoom/scroll. Виділення тексту в
+  // scanned PDF буде порожнім (немає textLayer бо немає ембедденого тексту) —
+  // це очікувано: для роботи з текстом сканованого документа адвокат
+  // перемикається на режим Текст і працює з extracted OCR-плашкою.
   if (isPdf(document)) {
     return <PdfRenderer driveId={document.driveId} name={document.name} />;
   }
