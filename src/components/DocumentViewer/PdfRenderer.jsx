@@ -33,7 +33,10 @@ export function PdfRenderer({ driveId, name }) {
   const [pdf, setPdf] = useState(null);
   const [pdfError, setPdfError] = useState(null);
   const [containerWidth, setContainerWidth] = useState(0);
-  const containerRef = useRef(null);
+  // Контейнер тримаємо в state (callback ref), а не в useRef. Інакше useEffect
+  // з [] deps пробує читати ref ще до того як умовний контейнер з'явиться у DOM
+  // (поки triває loading state) — і ResizeObserver ніколи не встановлюється.
+  const [containerEl, setContainerEl] = useState(null);
 
   useEffect(() => {
     if (!data) {
@@ -68,17 +71,20 @@ export function PdfRenderer({ driveId, name }) {
   }, [data]);
 
   useEffect(() => {
-    if (!containerRef.current) return undefined;
-    const el = containerRef.current;
-    const ro = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        const w = entry.contentRect.width;
-        if (w > 0) setContainerWidth(prev => (Math.abs(prev - w) > 1 ? w : prev));
+    if (!containerEl) return undefined;
+    // Початковий вимір синхронно, без чекання на ResizeObserver — щоб перша
+    // сторінка отримала ширину одразу.
+    const measure = () => {
+      const w = containerEl.getBoundingClientRect().width;
+      if (w > 0) {
+        setContainerWidth(prev => (Math.abs(prev - w) > 1 ? w : prev));
       }
-    });
-    ro.observe(el);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(containerEl);
     return () => ro.disconnect();
-  }, []);
+  }, [containerEl]);
 
   if (loading) {
     return (
@@ -127,7 +133,7 @@ export function PdfRenderer({ driveId, name }) {
 
   return (
     <div
-      ref={containerRef}
+      ref={setContainerEl}
       className="document-viewer__content document-viewer__content--pdf"
     >
       {pdf && containerWidth > 0 && (
@@ -153,6 +159,17 @@ function PdfPagesList({ pdf, containerWidth, name }) {
   return <div className="pdf-pages">{pages}</div>;
 }
 
+// Обчислює scale так, щоб PDF-сторінка вмістилась по ширині контейнера.
+// Без нижньої межі — для нестандартно широких PDF (рахунки, таблиці) scale<1
+// це нормально, інакше сторінка обрізається з боків. Верхня межа 3 уберігає
+// дрібні PDF (наприклад чеки) від надмірного збільшення.
+function computeFitScale(baseWidth, containerWidth) {
+  if (baseWidth <= 0 || containerWidth <= 0) return 1;
+  const target = Math.max(0, containerWidth - 16);
+  const scale = target / baseWidth;
+  return Math.max(0.1, Math.min(scale, 3));
+}
+
 function PdfPage({ pdf, pageNumber, containerWidth, name }) {
   const pageRef = useRef(null);
   const canvasRef = useRef(null);
@@ -169,11 +186,13 @@ function PdfPage({ pdf, pageNumber, containerWidth, name }) {
         const page = await pdf.getPage(pageNumber);
         if (cancelled) return;
         const baseViewport = page.getViewport({ scale: 1 });
-        const scale = (containerWidth - 32) / baseViewport.width;
-        const safeScale = Math.max(0.5, Math.min(scale, 4));
+        const safeScale = computeFitScale(baseViewport.width, containerWidth);
         const viewport = page.getViewport({ scale: safeScale });
         if (!cancelled) {
           setDims({ width: viewport.width, height: viewport.height });
+          // При зміні containerWidth рендер треба перезапустити, бо canvas
+          // має бути перерендерений під новий розмір. Скидаємо rendered.
+          setRendered(false);
         }
       } catch (e) {
         if (!cancelled) setPageError(e?.message || 'Помилка сторінки');
@@ -205,8 +224,7 @@ function PdfPage({ pdf, pageNumber, containerWidth, name }) {
     try {
       const page = await pdf.getPage(pageNumber);
       const baseViewport = page.getViewport({ scale: 1 });
-      const scale = (containerWidth - 32) / baseViewport.width;
-      const safeScale = Math.max(0.5, Math.min(scale, 4));
+      const safeScale = computeFitScale(baseViewport.width, containerWidth);
       const viewport = page.getViewport({ scale: safeScale });
 
       const canvas = canvasRef.current;

@@ -4,6 +4,7 @@ import {
   detectCharset,
   decodeHtmlBuffer,
   extractEcitsMetaPairs,
+  prepareHtmlForIframe,
 } from '../../src/utils/htmlCharsetDetection.js';
 
 function bytes(arr) {
@@ -113,6 +114,58 @@ describe('decodeHtmlBuffer', () => {
     const r = decodeHtmlBuffer(buf, 'text/html; charset=windows-1251');
     expect(r.text).toBe('Привіт');
     expect(r.charset).toBe('windows-1251');
+  });
+});
+
+describe('prepareHtmlForIframe', () => {
+  it('видаляє <meta charset="windows-1251">', () => {
+    const html = '<html><head><meta charset="windows-1251"><title>X</title></head><body>Текст</body></html>';
+    const out = prepareHtmlForIframe(html);
+    expect(out).not.toMatch(/charset\s*=\s*["']?windows-1251/i);
+    expect(out).toMatch(/<meta charset="utf-8">/);
+  });
+
+  it('видаляє <meta http-equiv="Content-Type" content="...; charset=windows-1251">', () => {
+    const html = '<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1251"></head><body>X</body></html>';
+    const out = prepareHtmlForIframe(html);
+    expect(out).not.toMatch(/http-equiv/i);
+    expect(out).not.toMatch(/windows-1251/i);
+    expect(out).toMatch(/<meta charset="utf-8">/);
+  });
+
+  it("додає <head> якщо його немає", () => {
+    const html = '<html><body>Просто текст</body></html>';
+    const out = prepareHtmlForIframe(html);
+    expect(out).toMatch(/<head><meta charset="utf-8">.*<\/head>/s);
+    expect(out).toMatch(/Просто текст/);
+  });
+
+  it('інжектить стилі у <head>', () => {
+    const html = '<html><head></head><body>X</body></html>';
+    const out = prepareHtmlForIframe(html, 'body { color: black; }');
+    expect(out).toMatch(/<style>body \{ color: black; \}<\/style>/);
+  });
+
+  it('зберігає вміст body', () => {
+    const html = '<html><head><meta charset="windows-1251"></head><body><h1>Заголовок</h1><p>Текст ухвали</p></body></html>';
+    const out = prepareHtmlForIframe(html);
+    expect(out).toMatch(/Заголовок/);
+    expect(out).toMatch(/Текст ухвали/);
+  });
+
+  it('null/empty input — повертає як є', () => {
+    expect(prepareHtmlForIframe(null)).toBe(null);
+    expect(prepareHtmlForIframe('')).toBe('');
+    expect(prepareHtmlForIframe(undefined)).toBe(undefined);
+  });
+
+  it('кілька meta-charset тегів — всі видаляються', () => {
+    const html = '<head><meta charset="windows-1251"><meta charset="koi8-u"></head><body>X</body>';
+    const out = prepareHtmlForIframe(html);
+    const matches = out.match(/<meta charset/gi) || [];
+    // має лишитися рівно один — наш свіжий utf-8
+    expect(matches).toHaveLength(1);
+    expect(out).toMatch(/<meta charset="utf-8">/);
   });
 });
 

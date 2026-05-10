@@ -15,9 +15,26 @@ import { AlertTriangle, RefreshCw, Loader } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { useDriveFileBuffer } from './useDriveFileBuffer.js';
-import { decodeHtmlBuffer, extractEcitsMetaPairs } from '../../utils/htmlCharsetDetection.js';
+import {
+  decodeHtmlBuffer,
+  extractEcitsMetaPairs,
+  prepareHtmlForIframe,
+} from '../../utils/htmlCharsetDetection.js';
 
 const META_DOMINANT_BODY_THRESHOLD = 50; // якщо <body>...</body> текст < 50 символів І є META-пари → ЄСІТС режим
+
+// Стилі що інжектяться у iframe srcdoc щоб документ виглядав як паперовий
+// (чорний текст на білому фоні), незалежно від теми додатку. !important
+// перебиває inline-стилі і color-схеми оригіналу.
+const IFRAME_THEME_STYLE = `
+  html, body { background: #ffffff !important; color: #000000 !important; margin: 0; padding: 16px; }
+  body, body * { color: #000000 !important; }
+  body { font-family: 'Times New Roman', Times, serif; font-size: 14px; line-height: 1.5; }
+  table { border-collapse: collapse; }
+  table, td, th { border-color: #999 !important; }
+  a { color: #1d4ed8 !important; text-decoration: underline; }
+  img { max-width: 100%; height: auto; background: white; }
+`;
 
 function extractBodyText(html) {
   const m = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(html);
@@ -106,14 +123,19 @@ export function HtmlRenderer({ driveId }) {
   }
 
   // Стандартний HTML — рендер у sandbox-iframe через srcdoc для ізоляції стилів.
+  // prepareHtmlForIframe видаляє конфліктний <meta charset="windows-1251">
+  // (інакше браузер всередині iframe інтерпретує наш UTF-16 рядок як CP1251 →
+  // ромбіки) і інжектить <meta charset="utf-8"> + стилі для форсу чорного
+  // на білому як паперовий документ.
   // sandbox без allow-scripts: ніяких скриптів не виконується. Виділення працює
   // нативно у iframe.
+  const preparedHtml = prepareHtmlForIframe(decoded.text, IFRAME_THEME_STYLE);
   return (
     <div className="document-viewer__content document-viewer__content--html">
       <iframe
         className="html-iframe"
         title="Документ"
-        srcDoc={decoded.text}
+        srcDoc={preparedHtml}
         sandbox="allow-same-origin"
       />
     </div>

@@ -261,10 +261,13 @@
 }
 
 /* ── DOCX RENDERER ───────────────────────────────────────────────────── */
+/* Документи завжди чорний текст на білому фоні (як паперові), незалежно
+   від темної теми UI. !important щоб перебити app-вари і inline-стилі
+   які mammoth може унаслідувати з оригіналу. */
 
 .document-viewer__content--docx {
   padding: var(--space-5);
-  background: var(--color-surface);
+  background: white !important;
 }
 
 .docx-content {
@@ -273,12 +276,23 @@
   font-family: 'Times New Roman', Times, serif;
   font-size: var(--text-base);
   line-height: var(--leading-relaxed);
-  color: var(--color-text);
+  background: white !important;
+  color: black !important;
+}
+
+.docx-content,
+.docx-content * {
+  color: black !important;
+}
+
+.docx-content a {
+  color: #1d4ed8 !important;
+  text-decoration: underline;
 }
 
 .docx-content h1, .docx-content h2, .docx-content h3,
 .docx-content h4, .docx-content h5, .docx-content h6 {
-  font-family: var(--font-heading, inherit);
+  font-family: 'Times New Roman', Times, serif;
   margin: 1em 0 0.5em;
   line-height: 1.3;
 }
@@ -305,13 +319,14 @@
 }
 
 .docx-content td, .docx-content th {
-  border: 1px solid var(--color-border);
+  border: 1px solid #999 !important;
   padding: var(--space-2);
   vertical-align: top;
+  background: white !important;
 }
 
 .docx-content th {
-  background: var(--color-surface-2);
+  background: #f0f0f0 !important;
   font-weight: var(--weight-semibold);
 }
 
@@ -320,15 +335,10 @@
   height: auto;
 }
 
-.docx-content a {
-  color: var(--color-primary, #2563eb);
-  text-decoration: underline;
-}
-
 /* ── HTML RENDERER ───────────────────────────────────────────────────── */
 
 .document-viewer__content--html {
-  background: var(--color-surface);
+  background: white !important;
   padding: 0;
 }
 
@@ -340,16 +350,19 @@
   min-height: 400px;
 }
 
+/* ЄСІТС META-table теж форсуємо чорне на білому як паперовий документ. */
 .html-ecits {
   padding: var(--space-5);
   max-width: 760px;
   margin: 0 auto;
+  background: white !important;
+  color: black !important;
 }
 
 .html-ecits__hint {
   margin: 0 0 var(--space-3);
   font-size: var(--text-sm);
-  color: var(--color-text-2);
+  color: #555 !important;
   font-style: italic;
 }
 
@@ -359,21 +372,25 @@
 }
 
 .html-ecits__table td {
-  border: 1px solid var(--color-border);
+  border: 1px solid #999 !important;
   padding: var(--space-2) var(--space-3);
   vertical-align: top;
   font-size: var(--text-sm);
+  color: black !important;
+  background: white !important;
 }
 
 .html-ecits__name {
-  background: var(--color-surface-2);
+  background: #f0f0f0 !important;
   font-weight: var(--weight-semibold);
   width: 30%;
   white-space: nowrap;
+  color: black !important;
 }
 
 .html-ecits__value {
   word-break: break-word;
+  color: black !important;
 }
 
 /* ── FOOTER ──────────────────────────────────────────────────────────── */

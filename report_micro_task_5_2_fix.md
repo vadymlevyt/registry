@@ -1,0 +1,204 @@
+# Звіт — Мікро-TASK 5.2-fix
+
+**Дата:** 2026-05-10
+**Статус:** ✅ виконано
+**Тести:** 475/475 ✓
+**Build:** чистий ✓
+
+---
+
+## 1. Що зроблено
+
+### Проблема 1 — DOCX/HTML у темній темі додатку
+
+DocxRenderer і фолбек ЄСІТС META-table успадковували CSS-вари додатку (`--color-text`, `--color-surface`), через що документ виглядав як «синій/світлий текст на темному фоні». HtmlRenderer iframe-srcdoc браузером ізольований від app-CSS, але сам HTML-документ міг містити inline-стилі з кольорами схеми сайту, з якого був експортований.
+
+**Рішення:** форсуємо чорний текст на білому фоні `!important` у трьох місцях:
+- `.docx-content` і всі дочірні в `DocumentViewer.css`
+- `.html-ecits` і таблиця там же
+- Інжекція `<style>` блоку з тим самим правилом у iframe srcdoc через `prepareHtmlForIframe`
+
+Якщо в майбутньому з'явиться режим «Зберегти оригінальні стилі документа» — це буде окремий toggle. Зараз — завжди як паперовий документ.
+
+### Проблема 2 — PDF searchable показує темний екран
+
+**Корінь:** баг у `PdfRenderer.jsx:70-81` — `useEffect` з `[]`-deps пробував читати `containerRef.current` під час mount, коли ще активний `loading=true` стан і умовно-рендерений контейнер ще не існував у DOM. Ref залишався `null`, ResizeObserver ніколи не встановлювався. Після завантаження PDF контейнер з'являвся — але effect більше не запускався (deps `[]`), тому `containerWidth` назавжди залишалося 0. Гард `containerWidth > 0` блокував рендер сторінок → користувач бачив порожню темну панель UI.
+
+Додатковий баг — `Math.max(0.5, scale)` примусово піднімав scale до 0.5 для PDF з нестандартно великою сторінкою (Рахунок). Сторінка ставала ширшою за контейнер → обрізалася з боків.
+
+**Рішення:**
+- Перейшли з `useRef` на callback-ref через `useState(null)` для контейнера. Тепер effect запускається коли елемент з'являється у DOM (loading→ready transition).
+- Додали синхронний `getBoundingClientRect()` вимір при першому attach, щоб не чекати першу подію ResizeObserver.
+- Витягнули `computeFitScale(baseWidth, containerWidth)` як єдину функцію, прибрали 0.5 floor (зараз 0.1, реальна нижня межа diktуvana розумністю), верхній cap 3 (від 4) щоб дрібні рахунки не роздувались.
+- При зміні `containerWidth` resetimo `rendered=false` щоб canvas перерендерився під новий розмір.
+
+### Проблема 3 — HTML Windows-1251 ромбіки `�`
+
+**Корінь:** після `decodeHtmlBuffer` у JS-рядку лишався оригінальний `<meta charset="windows-1251">`. Браузер при парсингу `srcdoc` бачив meta-тег і пробував повторно інтерпретувати рядок як CP1251 → втрачав українську кирилицю.
+
+**Рішення:** нова утиліта `prepareHtmlForIframe(html, extraStyle)` у `src/utils/htmlCharsetDetection.js`:
+1. Видаляє ВСІ існуючі `<meta charset=...>` (будь-яка кодування) і `<meta http-equiv="Content-Type">`.
+2. Інжектить свіжий `<meta charset="utf-8">` + опційний `<style>` блок у `<head>`. Якщо `<head>` немає — створює.
+
+HtmlRenderer тепер передає в iframe srcdoc результат `prepareHtmlForIframe(decoded.text, IFRAME_THEME_STYLE)`.
+
+## 2. Файли і рядки
+
+| Файл | Зміни |
+|------|-------|
+| `src/components/DocumentViewer/PdfRenderer.jsx` | container: `useRef` → `useState(null)` callback-ref (рядки 35-37, 70-83); ResizeObserver effect deps `[containerEl]` замість `[]` (70-83); нова `computeFitScale()` (рядки 142-149); видалено 0.5 floor; reset rendered при зміні width (190); ref у JSX → `setContainerEl` (130) |
+| `src/components/DocumentViewer/DocxRenderer.jsx` | без змін (фікс лише у CSS) |
+| `src/components/DocumentViewer/HtmlRenderer.jsx` | імпорт `prepareHtmlForIframe`; нова константа `IFRAME_THEME_STYLE`; рендер через `prepareHtmlForIframe(decoded.text, IFRAME_THEME_STYLE)` |
+| `src/components/DocumentViewer/DocumentViewer.css` | `.docx-content` — `background:white !important; color:black !important; * → black`; `.docx-content td/th` — фіксовані бордери `#999`, заголовки `#f0f0f0`; `.html-ecits` і таблиця — те саме; видалено посилання на app-вари `--color-text/--color-surface/--color-border` у документних блоках |
+| `src/utils/htmlCharsetDetection.js` | новий експорт `prepareHtmlForIframe(html, extraStyle)` |
+| `tests/unit/htmlCharsetDetection.test.js` | +7 тестів для `prepareHtmlForIframe` |
+
+## 3. PDF — точна причина і фікс
+
+**До:**
+```jsx
+const containerRef = useRef(null);
+useEffect(() => {
+  if (!containerRef.current) return undefined; // ← завжди null під час loading
+  const ro = new ResizeObserver(...);
+  ro.observe(containerRef.current);
+  return () => ro.disconnect();
+}, []); // ← runs once on mount, ref ще null
+
+return (
+  <div ref={containerRef} ...>
+    {pdf && containerWidth > 0 && <Pages />} {/* ← containerWidth ніколи не виставляється */}
+  </div>
+);
+```
+
+**Після:**
+```jsx
+const [containerEl, setContainerEl] = useState(null);
+useEffect(() => {
+  if (!containerEl) return undefined;
+  const measure = () => {
+    const w = containerEl.getBoundingClientRect().width;
+    if (w > 0) setContainerWidth(prev => Math.abs(prev - w) > 1 ? w : prev);
+  };
+  measure(); // ← синхронно при першому attach
+  const ro = new ResizeObserver(measure);
+  ro.observe(containerEl);
+  return () => ro.disconnect();
+}, [containerEl]); // ← re-runs коли елемент з'являється у DOM
+
+return <div ref={setContainerEl} ...>...</div>;
+```
+
+**Scale floor:**
+```js
+// до:
+const safeScale = Math.max(0.5, Math.min(scale, 4));
+// після:
+function computeFitScale(baseWidth, containerWidth) {
+  const target = Math.max(0, containerWidth - 16);
+  const scale = target / baseWidth;
+  return Math.max(0.1, Math.min(scale, 3));
+}
+```
+
+## 4. HTML — регулярка з прикладом
+
+**Регулярки видалення:**
+```js
+// <meta charset="windows-1251"> або <meta charset='koi8-u'> або <meta charset=utf-8>
+/<meta\s+(?:[^>]*?\s+)?charset\s*=\s*["']?[^"'>\s/]+["']?[^>]*\/?>/gi
+
+// <meta http-equiv="Content-Type" content="text/html; charset=windows-1251">
+/<meta\s+(?:[^>]*?\s+)?http-equiv\s*=\s*["']?content-type[^>]*\/?>/gi
+```
+
+**Інжекція UTF-8 у <head>:**
+```js
+const injection = '<meta charset="utf-8">' + (extraStyle ? `<style>${extraStyle}</style>` : '');
+if (/<head\b[^>]*>/i.test(cleaned)) {
+  cleaned = cleaned.replace(/<head\b[^>]*>/i, m => `${m}${injection}`);
+} else if (/<html\b[^>]*>/i.test(cleaned)) {
+  cleaned = cleaned.replace(/<html\b[^>]*>/i, m => `${m}<head>${injection}</head>`);
+} else {
+  cleaned = `<head>${injection}</head>${cleaned}`;
+}
+```
+
+**Приклад до/після:**
+
+До (як приходить з ЄСІТС, після decodeHtmlBuffer):
+```html
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1251">
+<meta charset="windows-1251">
+<title>Ухвала</title>
+</head>
+<body>
+<h1>Іменем України</h1>
+<p>Розглянувши заяву позивача...</p>
+</body>
+</html>
+```
+
+Після `prepareHtmlForIframe(html, IFRAME_THEME_STYLE)`:
+```html
+<html>
+<head><meta charset="utf-8"><style>html, body { background: #ffffff !important; color: #000000 !important; ... }</style>
+<title>Ухвала</title>
+</head>
+<body>
+<h1>Іменем України</h1>
+<p>Розглянувши заяву позивача...</p>
+</body>
+</html>
+```
+
+## 5. CSS селектори і чому !important
+
+`.docx-content` — це звичайний div у React-дереві Viewer'а, тобто інлайн-DOM-нащадок `.document-viewer__content` де працюють всі app-CSS-вари. mammoth також додає inline-стилі (`<p style="color:rgb(...)">`).
+
+`!important` потрібен щоб:
+1. Перебити app-вари (`color: var(--color-text)` буде темним у dark theme).
+2. Перебити inline-стилі з оригінального DOCX (mammoth конвертує word styles → inline).
+
+Селектори:
+- `.docx-content, .docx-content *` — текст всюди чорний.
+- `.docx-content td, th` — фіксовані бордери `#999`, заголовки `#f0f0f0`. Без `var(--color-border)` бо у темній темі бордер темний на білому = майже невидимий.
+- `.docx-content a` — синій з `!important` щоб лінки лишилися видимі.
+
+Аналогічно для `.html-ecits` (ЄСІТС META-table). Для iframe srcdoc — той самий принцип через `<style>` що інжектиться в `<head>`.
+
+## 6. Інструкція адвокату для повторного тестування
+
+Після GitHub Pages деплою (~1-2 хв після push):
+
+| # | Документ | Очікувана поведінка ПІСЛЯ фіксу |
+|---|----------|-----------------------------------|
+| а | **Рішення суду (PDF searchable)** | Сторінки рендеряться послідовно. Тап-і-тримай на тексті виділяє слово, потяг рамки розширює виділення, з'являється меню «Копіювати». Темний екран зник. |
+| б | **Ухвала додаткове рішення (PDF searchable)** | Те саме — рендер працює, виділення нативне. |
+| в | **Позовна заява (DOCX)** | Документ показано з форматуванням Word, чорним шрифтом Times New Roman на білому фоні. Темна/синя тема UI більше не «протікає» в документ. |
+| г | **Стара ухвала з ЄСІТС (HTML Windows-1251)** | Літери замість ромбиків `�`. Документ виглядає як паперовий — чорний на білому. Якщо це META-only варіант (всі дані у `<meta>` тегах) — показано таблицю ключ-значення. |
+
+**Бонус для перевірки масштабу:**
+- **Рахунок (PDF searchable)** — тепер не обрізається з боків. Якщо PDF дуже широкий, scale автоматично підбирається щоб вмістилося.
+
+**Якщо щось не так:**
+- PDF тримає темний екран → проблема глибша ніж ResizeObserver, потрібна додаткова діагностика з console.log на самому пристрої.
+- DOCX досі синій → перевірити що CSS реально оновився (cache?). Hard reload.
+- HTML досі ромбіки → кодування не виявлено правильно. Можливо файл не має ні BOM, ні Content-Type, ні meta — fallback на utf-8 у такому разі неправильний. Окремий TASK heuristic-детекції.
+
+## 7. Acceptance criteria
+
+- ✅ DocxRenderer чорний на білому незалежно від теми
+- ✅ HtmlRenderer iframe чорний на білому незалежно від теми
+- ✅ ЄСІТС META-table чорна на білому
+- ✅ PdfRenderer ResizeObserver привʼязується коли контейнер зʼявляється
+- ✅ Початковий getBoundingClientRect() вимір — без чекання першого ResizeObserver tick
+- ✅ Scale floor 0.1 замість 0.5 — широкі PDF (Рахунок) вміщуються
+- ✅ Windows-1251 meta видаляється, UTF-8 інжектиться
+- ✅ Ні BOM, ні Content-Type, ні meta → fallback utf-8 (як було)
+- ✅ 475/475 тестів зелені (7 нових для prepareHtmlForIframe)
+- ✅ Vite build чистий
+- ✅ Нічого з працюючого функціоналу (scanned PDF, JPG, OCR text, AddDocumentModal, 02_ОБРОБЛЕНІ pipeline) не зачеплено

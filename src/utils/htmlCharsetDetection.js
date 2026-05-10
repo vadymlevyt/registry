@@ -141,6 +141,55 @@ export function decodeHtmlBuffer(arrayBuffer, contentType) {
 }
 
 /**
+ * Готує HTML до вставки у iframe srcdoc.
+ *
+ * Проблема: після decodeHtmlBuffer (Windows-1251 → UTF-16 JS-string) у тексті
+ * лишається старий <meta charset="windows-1251">. Браузер при парсингу srcdoc
+ * читає цей meta і пробує повторно інтерпретувати рядок як CP1251 → ромбіки
+ * замість літер.
+ *
+ * Рішення: видалити будь-які старі charset-meta, вставити <meta charset="utf-8">
+ * на початок <head>. Опційно — інжектнути <style> для форсу чорного на білому
+ * (документ як паперовий, незалежно від теми додатку).
+ *
+ * @param {string} html — декодований HTML
+ * @param {string} [extraStyle] — необов'язковий CSS для <style> блоку
+ * @returns {string}
+ */
+export function prepareHtmlForIframe(html, extraStyle) {
+  if (typeof html !== 'string' || html.length === 0) return html;
+
+  // 1. Видаляємо ВСІ існуючі meta-charset і meta http-equiv Content-Type
+  //    щоб не лишити суперечливе оголошення кодування.
+  let cleaned = html.replace(
+    /<meta\s+(?:[^>]*?\s+)?charset\s*=\s*["']?[^"'>\s/]+["']?[^>]*\/?>/gi,
+    ''
+  );
+  cleaned = cleaned.replace(
+    /<meta\s+(?:[^>]*?\s+)?http-equiv\s*=\s*["']?content-type[^>]*\/?>/gi,
+    ''
+  );
+
+  // 2. Інжекція UTF-8 charset (+ опційно стилі) у <head>.
+  const injection =
+    '<meta charset="utf-8">' +
+    (extraStyle ? `<style>${extraStyle}</style>` : '');
+
+  if (/<head\b[^>]*>/i.test(cleaned)) {
+    cleaned = cleaned.replace(/<head\b[^>]*>/i, m => `${m}${injection}`);
+  } else if (/<html\b[^>]*>/i.test(cleaned)) {
+    cleaned = cleaned.replace(
+      /<html\b[^>]*>/i,
+      m => `${m}<head>${injection}</head>`
+    );
+  } else {
+    cleaned = `<head>${injection}</head>${cleaned}`;
+  }
+
+  return cleaned;
+}
+
+/**
  * Витягує meta-теги (key/value) зі старого формату ЄСІТС: HTML де реальний
  * зміст документа — у <meta name="..." content="..."> а не в <body>.
  * Повертає масив пар {name, content} або пустий якщо нічого специфічного нема.
