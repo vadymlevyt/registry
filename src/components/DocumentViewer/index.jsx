@@ -13,12 +13,17 @@ const MODE_KEYS_LIMIT = 100;
 /**
  * DocumentViewer — переглядач документа справи.
  *
- * Підтримує два режими:
- *   scan — Drive iframe preview (PDF/image/Office)
- *   text — текстовий вміст з 02_ОБРОБЛЕНІ (через ocrService.getCachedText)
- *
- * Searchable документи — завжди в режимі text без перемикача.
- * Scanned — перемикач видимий, дефолт зі збереженого localStorage чи 'scan'.
+ * Принцип за типом документа:
+ *   - Searchable PDF (текст вже є у файлі) — iframe Drive без перемикача.
+ *     Адвокат бачить оригінал з форматуванням, виділення/копіювання працюють
+ *     нативно через Drive viewer. Окрема Текст-плашка не потрібна — текст є
+ *     прямо в документі.
+ *   - Scanned (PDF/image без текстового шару) — перемикач Скан/Текст. Скан
+ *     показує iframe (PDF) або <img> (image). Текст — плашка з extracted
+ *     text як робочий простір (адвокат не може виділяти на зображенні).
+ *   - Searchable не-PDF (DOCX, TXT) — Текст-плашка (як було). Drive iframe
+ *     для DOCX рендерить Google Docs preview — зміна поведінки відкладена
+ *     на окремий мікро-TASK щоб не розширювати скоуп.
  *
  * Контрольований компонент: батько (CaseDossier) тримає selectedDoc у власному
  * state і передає сюди + обробники подій.
@@ -42,7 +47,18 @@ export function DocumentViewer({
   const inferred = inferNatureFromFile(document) || defaultNatureForUI(document);
   const effectiveNature = document?.documentNature || inferred;
   const isScanned = effectiveNature === 'scanned';
-  const effectiveMode = isScanned ? mode : 'text';
+
+  // Searchable PDF — особливий випадок: оригінал через iframe Drive (як scan),
+  // але без перемикача (текст-плашка не потрібна, текст є у самому документі).
+  const lname = (document?.originalName || document?.name || '').toLowerCase();
+  const mime = (document?.mimeType || '').toLowerCase();
+  const isPdf = mime === 'application/pdf' || lname.endsWith('.pdf');
+  const isSearchablePdf = !isScanned && effectiveNature === 'searchable' && isPdf;
+
+  const showModeToggle = isScanned;
+  // scan — iframe; text — плашка з extracted text. Searchable PDF форсимо у scan
+  // (iframe Drive), решта searchable (DOCX, TXT) — у text як було.
+  const effectiveMode = isScanned ? mode : (isSearchablePdf ? 'scan' : 'text');
 
   useEffect(() => {
     if (!document?.id) return;
@@ -92,7 +108,7 @@ export function DocumentViewer({
       <DocumentViewerHeader
         document={document}
         caseData={caseData}
-        showModeToggle={isScanned}
+        showModeToggle={showModeToggle}
         mode={effectiveMode}
         onModeChange={setMode}
         onToggleKey={handleToggleKey}

@@ -78,11 +78,14 @@ describe('DocumentViewer', () => {
     expect(localStorage.getItem('viewer_mode_doc_1')).toBe('text');
   });
 
-  it('searchable документ → завжди ефективний режим text незалежно від localStorage', () => {
-    localStorage.setItem('viewer_mode_doc_1', 'scan');
+  it('searchable PDF → iframe Drive, перемикач прихований (text-плашка не потрібна)', () => {
+    localStorage.setItem('viewer_mode_doc_1', 'text');
     const { container } = render(<DocumentViewer document={baseDoc} caseData={baseCase} />);
-    // Searchable у scan режимі показав би iframe — тут iframe не повинно бути
-    expect(container.querySelector('iframe.document-viewer__iframe')).toBeNull();
+    // Searchable PDF показуємо як оригінал через iframe — користувач виділяє і
+    // копіює нативно у Drive viewer. Перемикача Скан/Текст немає.
+    expect(container.querySelector('iframe.document-viewer__iframe')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Скан/ })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Текст/ })).toBeNull();
   });
 
   it('legacy PDF без documentNature → ефективна природа scanned, видно перемикач', () => {
