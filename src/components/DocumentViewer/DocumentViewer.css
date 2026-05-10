@@ -230,12 +230,18 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
   border-radius: var(--radius-xs);
   /* НЕ overflow: hidden — обрізає системний caret виділення на мобільному. */
-  user-select: text;
-  -webkit-user-select: text;
-  /* На Android long-tap на тексті → нативне виділення замість системного меню "Поділитись".
-     pan-y дозволяє вертикальний скрол сторінки. */
+  /* Блокуємо Android touch helpers які зривали PDF UX:
+     - touch-callout: none → НЕ показувати системне меню "Поділитись/Друк/Viber"
+       при long-tap (це поведінка Chrome Android для image-like елементів).
+     - tap-highlight-color: transparent → не миготіти сірим прямокутником на тап.
+     - text-size-adjust: none → блокує авто-перерахунок шрифту під ширину екрана
+       яке зміщує span'и textLayer відносно canvas.
+     pan-y дозволяє вертикальний скрол сторінки одночасно з виділенням. */
   touch-action: pan-y;
-  -webkit-touch-callout: default;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: none;
+  -webkit-text-size-adjust: none;
 }
 
 .pdf-page__canvas {
@@ -247,15 +253,28 @@
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+  -webkit-user-drag: none;
 }
 
-/* Не переоголошуємо position/inset/opacity/line-height/transform-origin — це
-   робить офіційний pdf_viewer.css на класі .textLayer. Будь-яке нашарування
-   тут зламає sync з span'ами. */
+/* Не переоголошуємо position/inset/opacity/transform-origin — це робить
+   офіційний pdf_viewer.css на класі .textLayer. line-height тут трохи більший
+   щоб box span'ів покривав хвостики літер (р, у, д, ц, щ) — інакше ::selection
+   обрізає текст знизу. user-modify: read-only повідомляє Android що це не
+   contenteditable → блокує magnifier-лінзу яка з'являлась при long-tap. */
 .pdf-page__text-layer {
   user-select: text;
   -webkit-user-select: text;
+  -webkit-user-modify: read-only;
   cursor: text;
+  line-height: 1.15;
+}
+
+/* span'и pdfjs позиціонуються по baseline тексту з font-size = висота літери.
+   ::selection покриває box-висоту span'а (font-size × line-height). Хвостики
+   нижче baseline залишались відкритими → padding-bottom розширює box вниз
+   без впливу на сусідні span'и (вони absolute-positioned). */
+.pdf-page__text-layer :is(span, br) {
+  padding-bottom: 0.15em;
 }
 
 /* Видиме виділення поверх textLayer — щоб адвокат бачив що виділяється. */
@@ -293,8 +312,11 @@
   align-items: flex-start;
 }
 
-/* Білий аркуш A4 з тінню. min-height гарантує що навіть короткий документ
-   виглядає як аркуш. max-width = A4 ширина при 96 DPI. */
+/* Один довгий аркуш-сувій (НЕ A4 paginated). Аркуш розширюється під весь
+   контент — короткий документ дає малий аркуш, довгий дає довгий аркуш.
+   Сірий фон навколо приходить від батьківського .document-viewer__content--docx.
+   Без min-height: A4 — інакше довгий документ обрізав би аркуш на 1123px і
+   решта контенту виглядала би як на сірому фоні. */
 .docx-page {
   background: white !important;
   max-width: 794px;
@@ -302,7 +324,6 @@
   margin: 0 auto;
   padding: 60px 80px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  min-height: 1123px;
   box-sizing: border-box;
   color: black !important;
 }
