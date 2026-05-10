@@ -1,0 +1,188 @@
+/* ── PdfJsViewer ────────────────────────────────────────────────────────── */
+/* Локальний рендер PDF з canvas + textLayer.                                */
+
+.pdfjs-viewer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+.pdfjs-viewer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  flex-shrink: 0;
+}
+
+.pdfjs-viewer__zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-2);
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.pdfjs-viewer__zoom-btn:hover:not(:disabled) {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.pdfjs-viewer__zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pdfjs-viewer__zoom-value {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  min-width: 44px;
+  text-align: center;
+}
+
+.pdfjs-viewer__page-count {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+}
+
+.pdfjs-viewer__pages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--color-bg);
+}
+
+.pdfjs-viewer__page {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  border-radius: 2px;
+  /* width/height задаються інлайн з viewport — це placeholder поки рендериться */
+  flex-shrink: 0;
+}
+
+.pdfjs-viewer__canvas {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.pdfjs-viewer__loading,
+.pdfjs-viewer__error {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+  color: var(--color-text-3);
+  text-align: center;
+}
+
+.pdfjs-viewer__error p {
+  margin: 0;
+}
+
+.pdfjs-viewer__error-detail {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  max-width: 360px;
+}
+
+@keyframes pdfjs-spin {
+  to { transform: rotate(360deg); }
+}
+.pdfjs-viewer__spinner {
+  animation: pdfjs-spin 1s linear infinite;
+}
+
+/* ── TEXT LAYER ──────────────────────────────────────────────────────────  */
+/* Підмножина офіційних правил pdfjs-dist/web/pdf_viewer.css — тільки те що */
+/* потрібно для виділення тексту поверх canvas. Без highlights/edit         */
+/* функціональності (нам не потрібна).                                       */
+
+.pdfjs-viewer__page .textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  -webkit-text-size-adjust: none;
+  -moz-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.pdfjs-viewer__page .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.pdfjs-viewer__page .textLayer > :not(.markedContent),
+.pdfjs-viewer__page .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.pdfjs-viewer__page .textLayer .markedContent {
+  display: contents;
+}
+
+.pdfjs-viewer__page .textLayer span[role="img"] {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.pdfjs-viewer__page .textLayer ::selection {
+  background: rgba(79, 124, 255, 0.35);
+}
+
+.pdfjs-viewer__page .textLayer ::-moz-selection {
+  background: rgba(79, 124, 255, 0.35);
+}
+
+.pdfjs-viewer__page .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
