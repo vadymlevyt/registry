@@ -21,6 +21,16 @@ function loadMammoth() {
   return mammothPromise;
 }
 
+// styleMap зберігає вирівнювання параграфа з Word у HTML-клас. Без цього
+// mammoth втрачає paragraph.alignment у конвертації — позовна заява у Word з
+// text-align: justify рендериться як left. Класи стилізуються у DocumentViewer.css.
+const MAMMOTH_STYLE_MAP = [
+  "p[alignment='justify'] => p.align-justify:fresh",
+  "p[alignment='center'] => p.align-center:fresh",
+  "p[alignment='right'] => p.align-right:fresh",
+  "p[alignment='left'] => p.align-left:fresh",
+];
+
 export function DocxRenderer({ driveId }) {
   const { data, loading, error, retry } = useDriveFileBuffer(driveId);
   const [html, setHtml] = useState(null);
@@ -38,7 +48,10 @@ export function DocxRenderer({ driveId }) {
         const mammothMod = await loadMammoth();
         if (cancelled) return;
         const mammoth = mammothMod.default || mammothMod;
-        const result = await mammoth.convertToHtml({ arrayBuffer: data });
+        const result = await mammoth.convertToHtml(
+          { arrayBuffer: data },
+          { styleMap: MAMMOTH_STYLE_MAP }
+        );
         if (cancelled) return;
         setHtml(result?.value || '');
         setConvertError(null);
@@ -83,12 +96,14 @@ export function DocxRenderer({ driveId }) {
 
   return (
     <div className="document-viewer__content document-viewer__content--docx">
-      <div
-        className="docx-content"
-        // mammoth повертає sanitized HTML без скриптів. dangerouslySetInnerHTML
-        // тут безпечний бо джерело — наш сервіс mammoth, а не довільний HTML.
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      <div className="docx-page">
+        <div
+          className="docx-content"
+          // mammoth повертає sanitized HTML без скриптів. dangerouslySetInnerHTML
+          // тут безпечний бо джерело — наш сервіс mammoth, а не довільний HTML.
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </div>
     </div>
   );
 }

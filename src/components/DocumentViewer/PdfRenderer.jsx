@@ -243,8 +243,11 @@ function PdfPage({ pdf, pageNumber, containerWidth, name }) {
       const textContainer = textLayerRef.current;
       if (!textContainer) return;
       textContainer.innerHTML = '';
-      textContainer.style.width = `${viewport.width}px`;
-      textContainer.style.height = `${viewport.height}px`;
+      // НЕ задаємо style.width/height — TextLayer розраховує позиції span'ів від
+      // viewport і встановлює власні CSS-variables (--scale-factor, --total-scale-factor).
+      // Inline width/height тут плутає масштаб → проміжки між рядками і зміщення.
+      // Контейнер має inset:0 від батьківського .pdf-page який вже має правильні
+      // dims (через style на pdf-page).
       textLayer = new pdfjsLib.TextLayer({
         textContentSource: page.streamTextContent(),
         container: textContainer,

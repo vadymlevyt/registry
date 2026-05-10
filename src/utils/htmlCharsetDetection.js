@@ -118,9 +118,58 @@ export function detectCharset(arrayBuffer, contentType) {
   return { charset: 'utf-8', confidence: 'low', source: 'default' };
 }
 
+// Content-based heuristic: коли detectCharset повернув low/medium confidence
+// (немає BOM, або meta-charset бреше — типово для старих ЄСІТС файлів),
+// перевіряємо якість декодування і пробуємо windows-1251 як fallback.
+//
+// Signals що декодування невірне:
+//   - багато � (replacement character) — UTF-8 декодер не зміг прочитати байт
+//   - багато байтів у range 0x80-0xFF які при utf-8 декоді стають �,
+//     але при cp1251 декоді стають кириличними літерами
+
+const REPLACEMENT_RATIO_THRESHOLD = 0.005; // > 0.5% � = підозріло
+const MIN_CYRILLIC_AFTER_CP1251 = 30;       // мінімум кириличних літер у перших 4 KB
+const SAMPLE_LENGTH = 4000;
+
+function countReplacementChars(text) {
+  let count = 0;
+  const len = Math.min(text.length, SAMPLE_LENGTH);
+  for (let i = 0; i < len; i++) {
+    if (text.charCodeAt(i) === 0xFFFD) count++;
+  }
+  return count;
+}
+
+function countCyrillicChars(text) {
+  let count = 0;
+  const len = Math.min(text.length, SAMPLE_LENGTH);
+  for (let i = 0; i < len; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x0400 && code <= 0x04FF) count++;
+  }
+  return count;
+}
+
+// Чи має сенс перевіряти windows-1251 fallback для даної детекції.
+// confidence='high' (BOM) — не чіпаємо.
+// charset уже = windows-1251 — теж не чіпаємо (вже декодували cp1251).
+function shouldTryCp1251Fallback(detection, decodedText) {
+  if (detection.confidence === 'high') return false;
+  if (detection.charset === 'windows-1251') return false;
+  if (!decodedText || decodedText.length === 0) return false;
+  const replacements = countReplacementChars(decodedText);
+  const sample = Math.min(decodedText.length, SAMPLE_LENGTH);
+  const ratio = replacements / sample;
+  return ratio > REPLACEMENT_RATIO_THRESHOLD;
+}
+
 /**
  * Декодує buffer у текст з виявленим charset. Якщо TextDecoder не підтримує
  * charset — fallback на utf-8 з прапором 'low' confidence.
+ *
+ * Додатково: якщо первинна детекція дала low/medium confidence І результат
+ * декодування містить багато replacement-символів (�) — пробуємо
+ * windows-1251 і обираємо той варіант де більше кириличних літер.
  *
  * @param {ArrayBuffer} arrayBuffer
  * @param {string} [contentType]
@@ -137,6 +186,26 @@ export function decodeHtmlBuffer(arrayBuffer, contentType) {
     text = new TextDecoder('utf-8').decode(arrayBuffer);
     fallbackUsed = true;
   }
+
+  // Content-based heuristic — пробуємо cp1251 якщо UTF-8 дало багато �.
+  if (shouldTryCp1251Fallback(detection, text)) {
+    try {
+      const cp1251Text = new TextDecoder('windows-1251', { fatal: false }).decode(arrayBuffer);
+      const cp1251Cyrillic = countCyrillicChars(cp1251Text);
+      const cp1251Replacements = countReplacementChars(cp1251Text);
+      // Приймаємо cp1251 якщо: (1) достатньо кирилиці, (2) replacement chars менше або немає.
+      if (cp1251Cyrillic >= MIN_CYRILLIC_AFTER_CP1251 && cp1251Replacements < countReplacementChars(text)) {
+        return {
+          text: cp1251Text,
+          charset: 'windows-1251',
+          confidence: 'medium',
+          source: 'content-heuristic',
+          fallbackUsed: true,
+        };
+      }
+    } catch (e) { /* cp1251 не підтримується — лишаємось на utf-8 */ }
+  }
+
   return { text, ...detection, fallbackUsed };
 }
 
@@ -152,11 +221,15 @@ export function decodeHtmlBuffer(arrayBuffer, contentType) {
  * на початок <head>. Опційно — інжектнути <style> для форсу чорного на білому
  * (документ як паперовий, незалежно від теми додатку).
  *
+ * Опція wrapPage=true обгортає body content у <div class="html-page"> щоб
+ * стилі (з extraStyle) могли намалювати білий аркуш A4 на сірому фоні.
+ *
  * @param {string} html — декодований HTML
  * @param {string} [extraStyle] — необов'язковий CSS для <style> блоку
+ * @param {{ wrapPage?: boolean }} [options]
  * @returns {string}
  */
-export function prepareHtmlForIframe(html, extraStyle) {
+export function prepareHtmlForIframe(html, extraStyle, options = {}) {
   if (typeof html !== 'string' || html.length === 0) return html;
 
   // 1. Видаляємо ВСІ існуючі meta-charset і meta http-equiv Content-Type
@@ -170,7 +243,25 @@ export function prepareHtmlForIframe(html, extraStyle) {
     ''
   );
 
-  // 2. Інжекція UTF-8 charset (+ опційно стилі) у <head>.
+  // 2. Обгортка body у .html-page для page-like layout (білий аркуш на сірому).
+  //    Регексп на пара <body>...</body>; вкладене </body> у HTML недопустиме.
+  if (options.wrapPage) {
+    if (/<body\b[^>]*>[\s\S]*?<\/body>/i.test(cleaned)) {
+      cleaned = cleaned.replace(
+        /<body([^>]*)>([\s\S]*?)<\/body>/i,
+        (m, attrs, content) => `<body${attrs}><div class="html-page">${content}</div></body>`
+      );
+    } else {
+      // body немає — обгортаємо все що є після потенційного <head>.
+      // Безпечно і для голого вмісту без <html>/<body>.
+      cleaned = cleaned.replace(
+        /(<\/head>|^)([\s\S]*)$/i,
+        (m, headEnd, rest) => `${headEnd}<div class="html-page">${rest}</div>`
+      );
+    }
+  }
+
+  // 3. Інжекція UTF-8 charset (+ опційно стилі) у <head>.
   const injection =
     '<meta charset="utf-8">' +
     (extraStyle ? `<style>${extraStyle}</style>` : '');

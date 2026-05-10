@@ -24,12 +24,21 @@ import {
 const META_DOMINANT_BODY_THRESHOLD = 50; // якщо <body>...</body> текст < 50 символів І є META-пари → ЄСІТС режим
 
 // Стилі що інжектяться у iframe srcdoc щоб документ виглядав як паперовий
-// (чорний текст на білому фоні), незалежно від теми додатку. !important
-// перебиває inline-стилі і color-схеми оригіналу.
+// (чорний текст на білому аркуші A4 з тінню, на сірому фоні стола), незалежно
+// від теми додатку. !important перебиває inline-стилі і color-схеми оригіналу.
 const IFRAME_THEME_STYLE = `
-  html, body { background: #ffffff !important; color: #000000 !important; margin: 0; padding: 16px; }
+  html, body { background: #e8e8ec !important; color: #000000 !important; margin: 0; padding: 30px 16px; }
   body, body * { color: #000000 !important; }
   body { font-family: 'Times New Roman', Times, serif; font-size: 14px; line-height: 1.5; }
+  .html-page {
+    background: #ffffff !important;
+    max-width: 794px;
+    margin: 0 auto;
+    padding: 60px 80px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    min-height: 1123px;
+    box-sizing: border-box;
+  }
   table { border-collapse: collapse; }
   table, td, th { border-color: #999 !important; }
   a { color: #1d4ed8 !important; text-decoration: underline; }
@@ -129,7 +138,7 @@ export function HtmlRenderer({ driveId }) {
   // на білому як паперовий документ.
   // sandbox без allow-scripts: ніяких скриптів не виконується. Виділення працює
   // нативно у iframe.
-  const preparedHtml = prepareHtmlForIframe(decoded.text, IFRAME_THEME_STYLE);
+  const preparedHtml = prepareHtmlForIframe(decoded.text, IFRAME_THEME_STYLE, { wrapPage: true });
   return (
     <div className="document-viewer__content document-viewer__content--html">
       <iframe

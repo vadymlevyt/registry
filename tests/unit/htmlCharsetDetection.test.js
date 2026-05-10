@@ -115,6 +115,54 @@ describe('decodeHtmlBuffer', () => {
     expect(r.text).toBe('Привіт');
     expect(r.charset).toBe('windows-1251');
   });
+
+  it('Content heuristic: ЄСІТС CP1251 без charset declaration → автодетекція', () => {
+    // Симулюємо реальну ЄСІТС-ситуацію: HTML без BOM, без http-header,
+    // без meta-charset; тіло — довгий кириличний текст у CP1251.
+    // Coding: 'УХВАЛА Іменем України Суддя Іванов І. І.' повторено для перевищення порогу.
+    const cyrillicText = 'УХВАЛА Іменем України Суддя Іванов І. І. розглянувши справу № 757/123/24'.repeat(15);
+    const cp1251Bytes = [];
+    // Build cp1251 byte mapping inline для тестового тексту.
+    const map = {
+      'У': 0xD3, 'Х': 0xD5, 'В': 0xC2, 'А': 0xC0, 'Л': 0xCB, 'І': 0xB2, 'м': 0xEC,
+      'е': 0xE5, 'н': 0xED, 'и': 0xE8, 'к': 0xEA, 'р': 0xF0, 'а': 0xE0, 'ї': 0xBF,
+      'С': 0xD1, 'у': 0xF3, 'д': 0xE4, 'я': 0xFF, 'в': 0xE2, 'о': 0xEE, 'з': 0xE7,
+      'г': 0xE3, 'л': 0xEB, 'я': 0xFF, 'н': 0xED, 'у': 0xF3, 'в': 0xE2, 'ш': 0xF8,
+      'с': 0xF1, 'п': 0xEF, 'ь': 0xFC, '№': 0xB9,
+    };
+    const text = cyrillicText;
+    for (const ch of text) {
+      if (map[ch]) cp1251Bytes.push(map[ch]);
+      else if (ch === ' ') cp1251Bytes.push(0x20);
+      else if (ch === '.') cp1251Bytes.push(0x2E);
+      else if (ch === '/') cp1251Bytes.push(0x2F);
+      else if (ch >= '0' && ch <= '9') cp1251Bytes.push(ch.charCodeAt(0));
+      else if (/[a-zA-Z]/.test(ch)) cp1251Bytes.push(ch.charCodeAt(0));
+    }
+    const buf = bytes(cp1251Bytes);
+    const r = decodeHtmlBuffer(buf, '');
+    // Heuristic: первинно UTF-8 (default) дав � → пробуємо cp1251 → знайшли кирилицю.
+    expect(r.charset).toBe('windows-1251');
+    expect(r.source).toBe('content-heuristic');
+    expect(r.text).toContain('УХВАЛА');
+  });
+
+  it('Content heuristic не спрацьовує на чистий ASCII (немає підстав)', () => {
+    const buf = ascii('<html><body>Hello world</body></html>');
+    const r = decodeHtmlBuffer(buf, '');
+    expect(r.charset).toBe('utf-8');
+    expect(r.source).toBe('default');
+  });
+
+  it('Content heuristic не змінює BOM-впевнений UTF-8', () => {
+    const utf8Bytes = new TextEncoder().encode('Привіт');
+    const withBom = new Uint8Array(3 + utf8Bytes.length);
+    withBom[0] = 0xEF; withBom[1] = 0xBB; withBom[2] = 0xBF;
+    withBom.set(utf8Bytes, 3);
+    const r = decodeHtmlBuffer(withBom.buffer, '');
+    expect(r.charset).toBe('utf-8');
+    expect(r.confidence).toBe('high');
+  });
 });
 
 describe('prepareHtmlForIframe', () => {
@@ -166,6 +214,25 @@ describe('prepareHtmlForIframe', () => {
     // має лишитися рівно один — наш свіжий utf-8
     expect(matches).toHaveLength(1);
     expect(out).toMatch(/<meta charset="utf-8">/);
+  });
+
+  it('wrapPage:true обгортає body content у <div class="html-page">', () => {
+    const html = '<html><head></head><body><h1>Заголовок</h1><p>Текст</p></body></html>';
+    const out = prepareHtmlForIframe(html, '', { wrapPage: true });
+    expect(out).toMatch(/<body[^>]*><div class="html-page"><h1>Заголовок<\/h1><p>Текст<\/p><\/div><\/body>/);
+  });
+
+  it('wrapPage:false (default) НЕ обгортає body', () => {
+    const html = '<html><head></head><body><p>Текст</p></body></html>';
+    const out = prepareHtmlForIframe(html);
+    expect(out).not.toMatch(/html-page/);
+  });
+
+  it('wrapPage без <body> — обгортає весь вміст', () => {
+    const html = '<html><head></head>Просто текст</html>';
+    const out = prepareHtmlForIframe(html, '', { wrapPage: true });
+    expect(out).toMatch(/<div class="html-page">/);
+    expect(out).toMatch(/Просто текст/);
   });
 });
 
