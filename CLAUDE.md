@@ -1,9 +1,9 @@
 # CLAUDE.md — Legal BMS АБ Левицького
 
-**Версія:** 5.1
-**Останнє оновлення:** 08.05.2026
-**Поточний schemaVersion:** 5
-**Поточний settingsVersion:** "5.0_canonical_documents"
+**Версія:** 5.2
+**Останнє оновлення:** 10.05.2026
+**Поточний schemaVersion:** 6
+**Поточний settingsVersion:** "6.0_founder_flag"
 
 ---
 
@@ -105,13 +105,13 @@ Blank page = JS помилка яка не перехоплена.
 Весь україномовний текст — в подвійних лапках або шаблонних рядках.
 
 ### №6 — schemaVersion registry_data.json
-Поточна версія: `schemaVersion: 5`.
+Поточна версія: `schemaVersion: 6`.
 При зміні структури:
 - Інкрементувати schemaVersion
 - Додати міграцію в `migrationService.js` (для базових структур) або окремий файл у `src/services/migrations/` (для специфічної логіки — як `v4ToV5.js`)
 - Міграція має бути **ідемпотентною** (повторні запуски не ламають дані)
 - Перед першою міграцією — обов'язковий бекап `registry_data_backup_pre_<name>_<ts>.json` у `_backups/` поза ротацією
-- `migrationService.js` тримає `CURRENT_SCHEMA_VERSION = 4` (базовий ланцюг). Документна схема v5 — окремий ланцюг через `migrateRegistryV4toV5` у `App.jsx` EFFECT-A одразу після `migrateRegistry`
+- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 6` і `MIGRATION_VERSION = '6.0_founder_flag'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — окремий крок через `migrateToVersion6`. Усі три послідовно викликаються в `App.jsx` EFFECT-A.
 
 ### №7 — executeAction async
 `executeAction` — **async функція**. Усі callers що читають `.success`/`.error` — мусять `await`.
@@ -708,6 +708,49 @@ extractedTextSummary, customFields
 - НЕ дублювати важкі поля у `cases[].documents[]` (tags, annotations тощо) — вони у `.metadata/documents_extended.json`.
 - НЕ використовувати кирилицю в `q=` Drive API при роботі з `.metadata/` (правило #8).
 - НЕ додавати поля у канонічну схему без міграції — інкрементувати schemaVersion.
+
+---
+
+## TASK 0.1 — FOUNDER FLAG v6.0
+
+**Дата:** 2026-05-10
+**schemaVersion:** 6
+**settingsVersion:** "6.0_founder_flag"
+
+### Призначення
+
+Прапорець `users[].isFounder` — глобальна позначка власника продукту. Не залежить від `tenantId`. Точка розширення для майбутніх founder-only модулів (Розвідник у «Електронному суді», Admin metrics, Dev tools, повна версія Content Hub).
+
+Тільки одна людина в системі концептуально має `isFounder: true` (технічно не enforce'ується). У `DEFAULT_USER` (`vadym`) — `isFounder: true`. Решта користувачів за замовчуванням `false`.
+
+### Хелпер
+
+```js
+import { isCurrentUserFounder } from './services/tenantService';
+
+if (isCurrentUserFounder()) {
+  // показати founder-only UI
+}
+```
+
+Логіка: `getCurrentUser()?.isFounder === true`. Повертає `false` для null/undefined/без поля.
+
+### Міграція v5 → v6
+
+`migrateToVersion6(registry)` у `src/services/migrationService.js`:
+- Проставляє `isFounder: false` усім існуючим users без поля
+- Для `userId === 'vadym'` (засновник) проставляє `isFounder: true`
+- Не торкається інших полів
+- Ідемпотентна (повторні запуски — no-op коли schemaVersion вже 6)
+- Не перезатирає вже встановлений boolean isFounder (edge case: розжалуваний vadym)
+
+Викликається в `App.jsx` EFFECT-A послідовно після `migrateRegistryV4toV5`. Перед міграцією створюється `registry_data_backup_pre_v6_<ts>.json` у `_backups/` поза ротацією. Прапор `levytskyi_pre_v6_backup_done` запобігає повторному бекапу.
+
+### Заборонено
+
+- НЕ використовувати `isFounder` для перевірок tenant-доступу — це **глобальна** позначка, не tenant-scoped.
+- НЕ зав'язувати білінгові ліміти на `isFounder` — це окрема відповідальність `tenant.subscription`.
+- НЕ створювати UI для перемикання `isFounder` (наразі — тільки код / міграція).
 
 ---
 

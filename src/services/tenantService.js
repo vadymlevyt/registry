@@ -112,6 +112,10 @@ export const DEFAULT_USER = {
   structuralUnit: null,
   supervisorId: null,
   billingRate: null,
+  // isFounder — глобальна позначка власника продукту, не залежить від tenantId.
+  // true тільки для одного користувача (засновника); точка розширення для
+  // майбутніх founder-only модулів (Розвідник, Admin metrics, Dev tools).
+  isFounder: true,
   createdAt: '2016-06-15T00:00:00Z',
   lastLoginAt: null,
 };
@@ -132,4 +136,11 @@ export function getCurrentUserId() {
 
 export function getCurrentTenantId() {
   return getCurrentTenant().tenantId;
+}
+
+// isFounder — глобальна позначка власника продукту. Точка розширення для
+// founder-only модулів. У SaaS перевіряється на сесії; зараз — на DEFAULT_USER.
+export function isCurrentUserFounder() {
+  const user = getCurrentUser();
+  return user?.isFounder === true;
 }

@@ -14,6 +14,15 @@
 //                   billing_meta{} (службові метадані ротації),
 //                   tenant.settings.timeStandards (стандарти часу за судами/категоріями).
 //                   case.timeLog[] лишається deprecated порожнім (legacy).
+// schemaVersion 5 — canonical document schema (18 легких + 6 важких полів).
+//                   Окремий ланцюг — migrations/v4ToV5.js, оркеструється в App.jsx.
+// schemaVersion 6 — users[].isFounder (глобальна позначка власника продукту).
+//                   Окремий крок — migrateToVersion6 нижче, оркеструється в App.jsx
+//                   після migrateRegistryV4toV5.
+//
+// migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
+// функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
+// найвищу досяжну версію після повного ланцюга.
 //
 // caseAccess[] — поки порожня заглушка для майбутнього SaaS-масштабу.
 //   Очікувана схема запису (активується в TASK Multi-user Activation):
@@ -31,8 +40,17 @@ import { DEFAULT_TENANT, DEFAULT_USER } from './tenantService.js';
 import { DEFAULT_TENANT_TIME_STANDARDS } from './timeStandards.js';
 import { MODULES } from './moduleNames.js';
 
-export const CURRENT_SCHEMA_VERSION = 4;
-export const MIGRATION_VERSION = '4.0_billing_foundation';
+// Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
+// migrateRegistryV4toV5 → migrateToVersion6). Використовується App.jsx для
+// запису нової версії registry і тестами як "це остаточний таргет системи".
+export const CURRENT_SCHEMA_VERSION = 6;
+export const MIGRATION_VERSION = '6.0_founder_flag';
+
+// Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
+// Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
+// founder flag з v5 на v6 — функцією migrateToVersion6 нижче.
+export const BASE_CHAIN_VERSION = 4;
+export const BASE_CHAIN_LABEL = '4.0_billing_foundation';
 
 // Дефолти permissions за caseRole. canRunAI важливий для майбутніх тарифних обмежень.
 const ROLE_PERMISSION_DEFAULTS = {
@@ -159,6 +177,14 @@ function migrateTenant(t) {
   };
 }
 
+// Повертає settingsVersion-label який відповідає переданій version. Для рідкісного
+// випадку коли registry на Drive має schemaVersion але втратив settingsVersion.
+function labelForVersion(version) {
+  if (version >= 6) return '6.0_founder_flag';
+  if (version >= 5) return '5.0_canonical_documents';
+  return '4.0_billing_foundation';
+}
+
 function buildEmptyMasterTimerState() {
   return {
     isActive: false,
@@ -189,6 +215,8 @@ function buildEmptyBillingMeta() {
 }
 
 export function buildEmptyRegistry() {
+  // Порожній реєстр одразу будується на найвищій версії повного ланцюга —
+  // нові установки не потребують міграції.
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     settingsVersion: MIGRATION_VERSION,
@@ -220,11 +248,13 @@ export function migrateRegistry(raw) {
     };
   }
 
-  // Випадок 2: вже об'єкт з schemaVersion >= CURRENT — ідемпотентно (з підтягуванням нових полів)
-  if (!Array.isArray(raw) && typeof raw === 'object' && (raw.schemaVersion || 0) >= CURRENT_SCHEMA_VERSION) {
+  // Випадок 2: вже об'єкт з schemaVersion >= BASE_CHAIN_VERSION — ідемпотентно
+  // (підтягуємо нові поля, але не торкаємось schemaVersion: подальші ланцюги
+  // v4→v5 і v5→v6 розберуться самі).
+  if (!Array.isArray(raw) && typeof raw === 'object' && (raw.schemaVersion || 0) >= BASE_CHAIN_VERSION) {
     const safe = {
       schemaVersion: raw.schemaVersion,
-      settingsVersion: raw.settingsVersion || MIGRATION_VERSION,
+      settingsVersion: raw.settingsVersion || labelForVersion(raw.schemaVersion),
       tenants: Array.isArray(raw.tenants) && raw.tenants.length > 0
         ? raw.tenants.map(migrateTenant) : [migrateTenant(DEFAULT_TENANT)],
       users: Array.isArray(raw.users) && raw.users.length > 0 ? raw.users : [DEFAULT_USER],
@@ -245,18 +275,18 @@ export function migrateRegistry(raw) {
       registry: safe,
       didMigrate: false,
       fromVersion: raw.schemaVersion,
-      toVersion: CURRENT_SCHEMA_VERSION,
+      toVersion: raw.schemaVersion,
       originalRaw: raw,
     };
   }
 
-  // Випадок 3: голий масив cases[] (schemaVersion 1)
+  // Випадок 3: голий масив cases[] (schemaVersion 1) — піднімаємо лише до базового v4
   if (Array.isArray(raw)) {
     const cases = raw.map(migrateCase).filter(Boolean);
     return {
       registry: {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        settingsVersion: MIGRATION_VERSION,
+        schemaVersion: BASE_CHAIN_VERSION,
+        settingsVersion: BASE_CHAIN_LABEL,
         tenants: [migrateTenant(DEFAULT_TENANT)],
         users: [DEFAULT_USER],
         auditLog: [],
@@ -270,19 +300,19 @@ export function migrateRegistry(raw) {
       },
       didMigrate: true,
       fromVersion: 1,
-      toVersion: CURRENT_SCHEMA_VERSION,
+      toVersion: BASE_CHAIN_VERSION,
       originalRaw: raw,
     };
   }
 
-  // Випадок 4: об'єкт з schemaVersion < CURRENT (2 або 3) — мігруємо до v4
+  // Випадок 4: об'єкт з schemaVersion < BASE_CHAIN_VERSION (2 або 3) — мігруємо до v4
   const cases = Array.isArray(raw?.cases) ? raw.cases.map(migrateCase).filter(Boolean) : [];
   const tenants = Array.isArray(raw?.tenants) && raw.tenants.length > 0
     ? raw.tenants.map(migrateTenant) : [migrateTenant(DEFAULT_TENANT)];
   return {
     registry: {
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-      settingsVersion: MIGRATION_VERSION,
+      schemaVersion: BASE_CHAIN_VERSION,
+      settingsVersion: BASE_CHAIN_LABEL,
       tenants,
       users: Array.isArray(raw?.users) && raw.users.length > 0 ? raw.users : [DEFAULT_USER],
       auditLog: Array.isArray(raw?.auditLog) ? raw.auditLog : [],
@@ -300,8 +330,54 @@ export function migrateRegistry(raw) {
     },
     didMigrate: true,
     fromVersion: raw?.schemaVersion || 1,
-    toVersion: CURRENT_SCHEMA_VERSION,
+    toVersion: BASE_CHAIN_VERSION,
     originalRaw: raw,
+  };
+}
+
+// ── v5 → v6: founder flag ────────────────────────────────────────────────────
+// Проставляє users[].isFounder (true тільки для userId='vadym', false для інших).
+// Ідемпотентна: повторний запуск з v6 повертає didMigrate=false і нічого не змінює.
+// Викликається з App.jsx EFFECT-A послідовно після migrateRegistryV4toV5.
+const FOUNDER_USER_ID = 'vadym';
+
+export function migrateToVersion6(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 6) {
+    return {
+      registry,
+      didMigrate: false,
+      fromVersion,
+      toVersion: fromVersion,
+    };
+  }
+
+  const usersIn = Array.isArray(registry?.users) && registry.users.length > 0
+    ? registry.users
+    : [DEFAULT_USER];
+
+  const usersOut = usersIn.map(u => {
+    if (!u || typeof u !== 'object') return u;
+    if (typeof u.isFounder === 'boolean') return u; // вже мігровано — не торкаємось
+    return { ...u, isFounder: u.userId === FOUNDER_USER_ID };
+  });
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 6,
+      settingsVersion: MIGRATION_VERSION,
+      users: usersOut,
+      lastMigration: {
+        from: fromVersion,
+        to: 6,
+        at: new Date().toISOString(),
+      },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 6,
   };
 }
 

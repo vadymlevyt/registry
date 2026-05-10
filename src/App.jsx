@@ -4,11 +4,11 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistry, migrateToVersion6, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
 import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
 import { createDocument, validateDocument } from './services/documentFactory';
@@ -4039,6 +4039,31 @@ function App() {
           }
         }
 
+        // TASK 0.1 — pre-v6 бекап перед проставленням founder flag, поза ротацією.
+        if (raw != null && (registry.schemaVersion || 5) < 6) {
+          const flagV6 = localStorage.getItem('levytskyi_pre_v6_backup_done');
+          if (!flagV6) {
+            const res = await backupRegistryDataPreV6(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v6_backup_done', '1');
+              console.log(`[TASK 0.1] Pre-v6 backup: ${res.fileName}`);
+            } else {
+              console.warn('[TASK 0.1] Pre-v6 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // TASK 0.1 — founder flag (v5 → v6). Проставляє users[].isFounder.
+        if ((registry.schemaVersion || 1) < 6) {
+          const v6 = migrateToVersion6(registry);
+          if (v6.didMigrate) {
+            registry = v6.registry;
+            didMigrate = true;
+            toVersion = v6.toVersion;
+            console.log(`[TASK 0.1] Migration v${v6.fromVersion} → v${v6.toVersion} done. isFounder проставлено.`);
+          }
+        }
+
         // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
         if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
           try {
@@ -5887,7 +5912,12 @@ function App() {
         setSplashBusy(false);
         return;
       }
-      const { registry } = migrateRegistry(raw);
+      let { registry } = migrateRegistry(raw);
+      // TASK 0.1 — підтягнути founder flag і при відновленні з бекапу.
+      if ((registry.schemaVersion || 1) < 6) {
+        const v6 = migrateToVersion6(registry);
+        if (v6.didMigrate) registry = v6.registry;
+      }
       // Розпаковуємо стейт з бекапу.
       if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));
       if (Array.isArray(registry.tenants) && registry.tenants.length > 0) setTenants(registry.tenants);

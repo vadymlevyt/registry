@@ -181,6 +181,25 @@ export async function backupRegistryDataPreV3(token, payload) {
   }
 }
 
+// Бекап перед TASK 0.1 міграцією v5 → v6 (founder flag), поза ротацією.
+export async function backupRegistryDataPreV6(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_v6_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-v6 backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Бекап перед Phase 1.5 міграцією v4 → v5 (canonical document schema), поза ротацією.
 export async function backupRegistryDataPreV5(token, payload) {
   try {
