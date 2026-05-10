@@ -88,7 +88,7 @@ describe('DocumentViewer workflow', () => {
     expect(onReprocess).toHaveBeenCalledWith(document);
   });
 
-  it('searchable документ — режим text, перемикача немає', () => {
+  it('DOCX (inline-renderable) — iframe Drive, перемикача немає', () => {
     const document = {
       id: 'doc_search',
       name: 'Позов.docx',
@@ -97,8 +97,11 @@ describe('DocumentViewer workflow', () => {
       driveId: 'drive_s',
     };
 
-    render(<DocumentViewer document={document} caseData={caseData} />);
+    const { container } = render(<DocumentViewer document={document} caseData={caseData} />);
 
+    // Inline-renderable формати показуємо як оригінал через Drive iframe.
+    // Перемикача Скан/Текст немає — текст є у самому документі.
+    expect(container.querySelector('iframe.document-viewer__iframe')).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /Скан/ })).toBeNull();
     expect(screen.queryByRole('tab', { name: /Текст/ })).toBeNull();
     // Виведено мітку провадження

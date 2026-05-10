@@ -4,6 +4,7 @@ import { DocumentViewerHeader } from './DocumentViewerHeader.jsx';
 import { DocumentViewerContent } from './DocumentViewerContent.jsx';
 import { DocumentViewerFooter } from './DocumentViewerFooter.jsx';
 import { defaultNatureForUI, inferNatureFromFile } from '../../services/detectDocumentNature.js';
+import { isInlineRenderable } from '../../utils/documentTypes.js';
 import './DocumentViewer.css';
 
 const MODE_KEY_PREFIX = 'viewer_mode_';
@@ -48,17 +49,25 @@ export function DocumentViewer({
   const effectiveNature = document?.documentNature || inferred;
   const isScanned = effectiveNature === 'scanned';
 
-  // Searchable PDF — особливий випадок: оригінал через iframe Drive (як scan),
-  // але без перемикача (текст-плашка не потрібна, текст є у самому документі).
-  const lname = (document?.originalName || document?.name || '').toLowerCase();
-  const mime = (document?.mimeType || '').toLowerCase();
-  const isPdf = mime === 'application/pdf' || lname.endsWith('.pdf');
-  const isSearchablePdf = !isScanned && effectiveNature === 'searchable' && isPdf;
+  // isInlineRenderable — широка категорія "Drive iframe рендерить нативно":
+  // searchable PDF, Office (DOCX/XLSX/PPTX), OpenDocument, HTML/TXT/MD/RTF/CSV,
+  // Google Docs/Sheets/Slides. Для таких файлів перемикач Скан/Текст не
+  // потрібен — оригінал з форматуванням і нативним виділенням достатній.
+  // Деталі — у utils/documentTypes.js.
+  const documentForInfer = document?.documentNature
+    ? document
+    : (document ? { ...document, documentNature: effectiveNature } : null);
+  const inlineRenderable = isInlineRenderable(documentForInfer);
 
-  const showModeToggle = isScanned;
-  // scan — iframe; text — плашка з extracted text. Searchable PDF форсимо у scan
-  // (iframe Drive), решта searchable (DOCX, TXT) — у text як було.
-  const effectiveMode = isScanned ? mode : (isSearchablePdf ? 'scan' : 'text');
+  // Перемикач показуємо тільки для scanned (PDF без текстового шару, image) —
+  // там адвокат свідомо переключається між оригіналом-зображенням і
+  // OCR-текстовою копією.
+  const showModeToggle = !inlineRenderable && isScanned;
+  // Inline-renderable → завжди scan (iframe Drive). Scanned → за вибором адвоката.
+  // Інше (рідкісний випадок searchable не-inline) → text плашка як було.
+  const effectiveMode = inlineRenderable
+    ? 'scan'
+    : (isScanned ? mode : 'text');
 
   useEffect(() => {
     if (!document?.id) return;

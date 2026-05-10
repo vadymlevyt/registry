@@ -169,6 +169,15 @@ export async function getCachedText(file) {
   }
 }
 
+// hasOcrSupport — чи існує OCR-провайдер для цього типу файла.
+// Викликається у CaseDossier:onSubmit перед запуском OCR pipeline щоб
+// для непідтримуваних форматів (DOCX, XLSX, PPTX) одразу пропустити OCR
+// крок без warning-тоста: для таких файлів Viewer все одно покаже оригінал
+// через iframe Drive, текстова копія в 02_ОБРОБЛЕНІ не критична.
+export function hasOcrSupport(file) {
+  return pickProviderName(file) !== null;
+}
+
 // ── extractText ─────────────────────────────────────────────────────────────
 
 export async function extractText(file, options = {}) {

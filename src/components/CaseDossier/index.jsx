@@ -2901,16 +2901,26 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             return;
           }
 
-          // OCR pipeline — запускається ПІСЛЯ add_document, тому документ
-          // з'являється в реєстрі одразу і модалка може закритись. Корекція
-          // documentNature і lastOcrAt — окремим update_document по результату.
-          const ocrToastId = toast.info('Документ додано. Розпізнаю текст...', { persistent: true });
           const ocrFile = {
             id: driveId,
             name: fileForInfer.name,
             mimeType: fileForInfer.type,
             subFolders,
           };
+
+          // Якщо для типу немає OCR провайдера (DOCX, XLSX, PPTX, Google Docs
+          // напряму) — пропускаємо OCR крок. Viewer покаже оригінал через
+          // iframe Drive (Drive має нативний preview для цих форматів), а
+          // текстова копія у 02_ОБРОБЛЕНІ адвокату не потрібна для перегляду.
+          if (!ocrService.hasOcrSupport(ocrFile)) {
+            toast.success('Документ додано');
+            return;
+          }
+
+          // OCR pipeline — запускається ПІСЛЯ add_document, тому документ
+          // з'являється в реєстрі одразу і модалка може закритись. Корекція
+          // documentNature і lastOcrAt — окремим update_document по результату.
+          const ocrToastId = toast.info('Документ додано. Розпізнаю текст...', { persistent: true });
           try {
             const result = await ocrService.extractText(ocrFile);
             toast.dismiss(ocrToastId);
