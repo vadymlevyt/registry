@@ -3,19 +3,29 @@ import { FileText, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { getCachedText, localizeOcrError } from '../../services/ocrService.js';
+import { PdfRenderer } from './PdfRenderer.jsx';
+import { DocxRenderer } from './DocxRenderer.jsx';
+import { HtmlRenderer } from './HtmlRenderer.jsx';
 
 /**
  * Контентна частина Viewer'а.
  *
- * Scan-режим — Drive iframe preview (підтримує PDF, image, docx — все що Drive
- * вміє показати). Власний PDF.js render не використовуємо: в існуючому
- * Viewer'і теж був iframe, працює стабільно і не дублює рендер.
+ * Логіка вибору рендеру:
+ *   - mode='scan' для scanned (PDF/image) → Drive iframe / <img> (як було)
+ *   - mode='scan' для inline-renderable (searchable) — обираємо власний рендер:
+ *       PDF (searchable) → PdfRenderer (canvas + textLayer для виділення)
+ *       DOCX → DocxRenderer (mammoth → HTML)
+ *       HTML → HtmlRenderer (charset detection + iframe srcdoc)
+ *       інші (TXT, MD, RTF, XLSX, ODT) → Drive iframe як fallback (нативного
+ *         рендеру для них поза скопом TASK 5.2)
+ *   - mode='text' → плашка з extracted OCR-текстом (для scanned)
  *
- * Text-режим — підтягує OCR-кеш з 02_ОБРОБЛЕНІ через ocrService. Якщо кешу
- * немає — empty state з кнопкою "Розпізнати зараз".
+ * Принцип: .txt у 02_ОБРОБЛЕНІ — ТІЛЬКИ для агента і пошуку. Власні рендери
+ * НЕ використовують .txt як fallback при помилках. Помилка → empty state.
  *
- * useEffect залежить від `document.lastOcrAt` — після успішного перерозпізнавання
- * CaseDossier викликає update_document({ lastOcrAt: now }), що ре-фетчить текст.
+ * useEffect для text-режиму залежить від `document.lastOcrAt` — після успішного
+ * перерозпізнавання CaseDossier викликає update_document({ lastOcrAt: now }),
+ * що ре-фетчить текст.
  */
 export function DocumentViewerContent({ document, mode, caseData, onReprocess }) {
   if (mode === 'scan') {
@@ -27,6 +37,40 @@ export function DocumentViewerContent({ document, mode, caseData, onReprocess })
       caseData={caseData}
       onReprocess={onReprocess}
     />
+  );
+}
+
+function getExtension(name) {
+  if (!name) return '';
+  const m = /\.([^.]+)$/.exec(String(name).toLowerCase());
+  return m ? m[1] : '';
+}
+
+function isPdf(doc) {
+  const mime = (doc.mimeType || '').toLowerCase();
+  const ext = getExtension(doc.originalName || doc.name);
+  return mime === 'application/pdf' || ext === 'pdf';
+}
+
+function isDocx(doc) {
+  const mime = (doc.mimeType || '').toLowerCase();
+  const ext = getExtension(doc.originalName || doc.name);
+  return (
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    ext === 'docx'
+  );
+}
+
+function isHtml(doc) {
+  const mime = (doc.mimeType || '').toLowerCase();
+  const ext = getExtension(doc.originalName || doc.name);
+  return (
+    mime === 'text/html' ||
+    mime === 'application/xhtml+xml' ||
+    ext === 'html' ||
+    ext === 'htm' ||
+    ext === 'xhtml' ||
+    ext === 'xht'
   );
 }
 
@@ -56,6 +100,33 @@ function ScanContent({ document }) {
     );
   }
 
+  // Scanned PDF — без текстового шару, виділяти нічого. Drive iframe як було.
+  if (document.documentNature === 'scanned') {
+    return (
+      <div className="document-viewer__content document-viewer__content--scan">
+        <iframe
+          className="document-viewer__iframe"
+          src={`https://drive.google.com/file/d/${document.driveId}/preview`}
+          title={document.name}
+          allow="autoplay"
+        />
+      </div>
+    );
+  }
+
+  // Searchable — обираємо власний рендер за типом файлу.
+  if (isPdf(document)) {
+    return <PdfRenderer driveId={document.driveId} name={document.name} />;
+  }
+  if (isDocx(document)) {
+    return <DocxRenderer driveId={document.driveId} />;
+  }
+  if (isHtml(document)) {
+    return <HtmlRenderer driveId={document.driveId} />;
+  }
+
+  // Інші inline-renderable (TXT, MD, RTF, CSV, XLSX, PPTX, ODT) — Drive iframe.
+  // Власні рендери для цих типів — поза скопом мікро-TASK 5.2.
   return (
     <div className="document-viewer__content document-viewer__content--scan">
       <iframe

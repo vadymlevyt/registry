@@ -78,12 +78,19 @@ describe('DocumentViewer', () => {
     expect(localStorage.getItem('viewer_mode_doc_1')).toBe('text');
   });
 
-  it('searchable PDF → iframe Drive, перемикач прихований (text-плашка не потрібна)', () => {
+  it('searchable PDF → власний PdfRenderer, перемикач прихований (text-плашка не потрібна)', () => {
     localStorage.setItem('viewer_mode_doc_1', 'text');
-    const { container } = render(<DocumentViewer document={baseDoc} caseData={baseCase} />);
-    // Searchable PDF показуємо як оригінал через iframe — користувач виділяє і
-    // копіює нативно у Drive viewer. Перемикача Скан/Текст немає.
-    expect(container.querySelector('iframe.document-viewer__iframe')).toBeInTheDocument();
+    const { container } = render(
+      <DocumentViewer
+        document={{ ...baseDoc, mimeType: 'application/pdf' }}
+        caseData={baseCase}
+      />
+    );
+    // Searchable PDF тепер рендериться власним PdfRenderer (canvas + textLayer
+    // для нативного виділення), а не Drive iframe. У тестовому середовищі
+    // driveRequest замокано без response — рендерер показує "Завантаження PDF..."
+    // або empty state. Drive iframe не повинен з'явитися.
+    expect(container.querySelector('iframe.document-viewer__iframe')).toBeNull();
     expect(screen.queryByRole('tab', { name: /Скан/ })).toBeNull();
     expect(screen.queryByRole('tab', { name: /Текст/ })).toBeNull();
   });

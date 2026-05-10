@@ -88,7 +88,7 @@ describe('DocumentViewer workflow', () => {
     expect(onReprocess).toHaveBeenCalledWith(document);
   });
 
-  it('DOCX (inline-renderable) — iframe Drive, перемикача немає', () => {
+  it('DOCX (inline-renderable) — власний DocxRenderer, перемикача немає', () => {
     const document = {
       id: 'doc_search',
       name: 'Позов.docx',
@@ -99,13 +99,29 @@ describe('DocumentViewer workflow', () => {
 
     const { container } = render(<DocumentViewer document={document} caseData={caseData} />);
 
-    // Inline-renderable формати показуємо як оригінал через Drive iframe.
-    // Перемикача Скан/Текст немає — текст є у самому документі.
-    expect(container.querySelector('iframe.document-viewer__iframe')).toBeInTheDocument();
+    // DOCX рендериться через власний DocxRenderer (mammoth → HTML). Drive iframe
+    // не використовується — Drive виставляє Google Docs preview що блокує
+    // нативне виділення тексту.
+    expect(container.querySelector('iframe.document-viewer__iframe')).toBeNull();
     expect(screen.queryByRole('tab', { name: /Скан/ })).toBeNull();
     expect(screen.queryByRole('tab', { name: /Текст/ })).toBeNull();
     // Виведено мітку провадження
     expect(screen.getByText(/Апеляція/)).toBeInTheDocument();
+  });
+
+  it('XLSX (inline-renderable, без власного рендеру) — fallback на Drive iframe', () => {
+    const document = {
+      id: 'doc_xlsx',
+      name: 'Розрахунок.xlsx',
+      procId: 'proc_app',
+      documentNature: 'searchable',
+      driveId: 'drive_xlsx',
+    };
+
+    const { container } = render(<DocumentViewer document={document} caseData={caseData} />);
+
+    // Excel/PowerPoint/RTF/TXT — поза скопом мікро-TASK 5.2. Drive iframe як fallback.
+    expect(container.querySelector('iframe.document-viewer__iframe')).toBeInTheDocument();
   });
 
   it('localStorage LRU — обмежено 100 ключами (через saveModePreference напряму)', async () => {
