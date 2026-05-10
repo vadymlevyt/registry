@@ -1,18 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FileText, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { getCachedText, localizeOcrError } from '../../services/ocrService.js';
-import { PdfJsViewer } from './PdfJsViewer.jsx';
 
 /**
  * Контентна частина Viewer'а.
  *
- * Scan-режим:
- *   - PDF (mimeType=application/pdf або *.pdf) → PdfJsViewer (canvas + textLayer)
- *     щоб адвокат міг виділяти текст. На fatal-error — fallback на Drive iframe.
- *   - Зображення (image/*) → <img> з drive.google.com/uc.
- *   - Інші формати (docx тощо) → Drive iframe preview.
+ * Scan-режим — Drive iframe preview (підтримує PDF, image, docx — все що Drive
+ * вміє показати). Власний PDF.js render не використовуємо: в існуючому
+ * Viewer'і теж був iframe, працює стабільно і не дублює рендер.
  *
  * Text-режим — підтягує OCR-кеш з 02_ОБРОБЛЕНІ через ocrService. Якщо кешу
  * немає — empty state з кнопкою "Розпізнати зараз".
@@ -34,19 +31,6 @@ export function DocumentViewerContent({ document, mode, caseData, onReprocess })
 }
 
 function ScanContent({ document }) {
-  // PdfJsViewer може зафейлити (мережа моргнула, ZIP-замаскований PDF тощо).
-  // У такому разі переключаємось на Drive iframe — preview без виділення,
-  // але адвокат хоч щось бачить. Рішення тримається у локальному state поки
-  // документ не зміниться.
-  const [pdfJsFailed, setPdfJsFailed] = useState(false);
-  useEffect(() => {
-    setPdfJsFailed(false);
-  }, [document?.id, document?.driveId]);
-
-  const handlePdfJsFatal = useCallback(() => {
-    setPdfJsFailed(true);
-  }, []);
-
   if (!document.driveId) {
     return (
       <div className="document-viewer__empty-state">
@@ -59,11 +43,7 @@ function ScanContent({ document }) {
     );
   }
 
-  const mime = document.mimeType || '';
-  const lname = (document.originalName || document.name || '').toLowerCase();
-  const isImage = mime.startsWith('image/');
-  const isPdf = mime === 'application/pdf' || lname.endsWith('.pdf');
-
+  const isImage = (document.mimeType || '').startsWith('image/');
   if (isImage) {
     return (
       <div className="document-viewer__content document-viewer__content--scan">
@@ -71,18 +51,6 @@ function ScanContent({ document }) {
           className="document-viewer__image"
           src={`https://drive.google.com/uc?export=view&id=${document.driveId}`}
           alt={document.name}
-        />
-      </div>
-    );
-  }
-
-  if (isPdf && !pdfJsFailed) {
-    return (
-      <div className="document-viewer__content document-viewer__content--scan">
-        <PdfJsViewer
-          driveId={document.driveId}
-          name={document.name}
-          onFatalError={handlePdfJsFatal}
         />
       </div>
     );
