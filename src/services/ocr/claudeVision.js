@@ -3,7 +3,13 @@
 // Кожна сторінка PDF → PNG через canvas → image_block в Anthropic API.
 // БЕЗ обмеження min(numPages, 5) — обробляються ВСІ сторінки.
 //
-// Контракт провайдера — див. TASK.md розділ 2.3.
+// Контракт результату (матриця виконавця):
+//   { text, pageCount, warnings }
+// pageStructure поки не повертає — Claude видає plain text. Розширення на
+// структуру (промпт для повернення pages у форматі Document AI) —
+// окремий TASK коли claudeVision реально використовується як основний
+// провайдер. Зараз це фолбек на випадок коли Document AI недоступний,
+// досить тільки тексту.
 
 import * as pdfjsLib from 'pdfjs-dist';
 import { driveRequest } from '../driveAuth.js';
@@ -59,7 +65,7 @@ export default {
 
     const warnings = [];
     const images = [];
-    let pages = 1;
+    let pageCount = 1;
     let mediaType = 'image/png';
 
     const isPdf =
@@ -79,12 +85,12 @@ export default {
       } catch (e) {
         throw makeError('UNKNOWN', `pdfjs.getDocument: ${e.message}`);
       }
-      pages = pdf.numPages;
-      if (pages > LARGE_PDF_THRESHOLD) {
-        warnings.push(`Дуже великий PDF (${pages} стор.) — обробка може бути повільною і дорогою`);
+      pageCount = pdf.numPages;
+      if (pageCount > LARGE_PDF_THRESHOLD) {
+        warnings.push(`Дуже великий PDF (${pageCount} стор.) — обробка може бути повільною і дорогою`);
       }
 
-      for (let i = 1; i <= pages; i++) {
+      for (let i = 1; i <= pageCount; i++) {
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 1.5 });
         const canvas = document.createElement('canvas');
@@ -97,7 +103,7 @@ export default {
     } else if (file.mimeType?.startsWith('image/')) {
       images.push(arrayBufferToBase64(arrayBuffer));
       mediaType = file.mimeType;
-      pages = 1;
+      pageCount = 1;
     } else {
       throw makeError('UNSUPPORTED', `claudeVision: ${file.mimeType}`);
     }
@@ -168,6 +174,6 @@ export default {
       });
     } catch {}
     const text = data?.content?.[0]?.text || '';
-    return { text: text.trim(), pages, warnings };
+    return { text: text.trim(), pageCount, warnings };
   },
 };

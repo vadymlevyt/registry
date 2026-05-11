@@ -1,14 +1,23 @@
 // ── OCR SERVICE FACADE ──────────────────────────────────────────────────────
 // Універсальний рейл "планки Пікатіні" для витягу тексту з документів.
 // Споживач (CaseDossier) кличе extractText / extractTextBatch — фасад сам
-// обирає провайдера, перевіряє кеш у 02_ОБРОБЛЕНІ і пише результат назад.
+// обирає ланцюжок провайдерів через providerMatrix, перевіряє кеш
+// у 02_ОБРОБЛЕНІ і пише результат назад.
 //
-// Контракт — див. TASK.md розділ 2.2.
+// Збереження артефактів у 02_ОБРОБЛЕНІ:
+//   - <basename>_<driveId>.txt          — текст, завжди коли є непорожній
+//   - <basename>_<driveId>.layout.json  — pageStructure, лише коли провайдер
+//                                          фактично повернув непорожній масив.
+//
+// Контракт результату назовні:
+//   { text, pageCount, hasLayout, provider, fromCache, cacheWritten,
+//     layoutWritten, durationMs, warnings }
 
 import { driveRequest } from './driveAuth.js';
 import documentAi from './ocr/documentAi.js';
 import claudeVision from './ocr/claudeVision.js';
 import pdfjsLocal from './ocr/pdfjsLocal.js';
+import { selectProviderChain, hasAnyProvider } from './ocr/providerMatrix.js';
 
 // ── Provider registry ───────────────────────────────────────────────────────
 
@@ -22,7 +31,7 @@ registerProvider('documentAi', documentAi);
 registerProvider('claudeVision', claudeVision);
 registerProvider('pdfjsLocal', pdfjsLocal);
 
-// ── Feature flag (TASK.md розділ 10) ────────────────────────────────────────
+// ── Feature flag (forced provider override) ─────────────────────────────────
 
 function getForceProvider() {
   if (typeof localStorage === 'undefined') return null;
@@ -38,14 +47,16 @@ function sanitizeBasename(name) {
     .slice(0, 150);
 }
 
-function cacheFileName(file) {
+function textCacheFileName(file) {
   return `${sanitizeBasename(file.name)}_${file.id}.txt`;
 }
 
+function layoutCacheFileName(file) {
+  return `${sanitizeBasename(file.name)}_${file.id}.layout.json`;
+}
+
 // CLAUDE.md правило #8 — кирилиця в q= filter Drive API ненадійна.
-// Запитуємо всі файли папки (q= тільки по parent + trashed), фільтруємо по name
-// у JavaScript. Той самий патерн застосовано у driveService.deleteOcrCacheForDocument
-// (driveService.js:381-388).
+// Запитуємо всі файли папки, фільтруємо по name у JavaScript.
 async function listFolderFilesByName(folderId, name) {
   const q = `'${folderId}' in parents and trashed=false`;
   const res = await driveRequest(
@@ -65,11 +76,11 @@ async function readDriveFileText(fileId) {
   return await res.text();
 }
 
-async function uploadTextFile(folderId, fileName, content) {
+async function uploadTextFile(folderId, fileName, content, mimeType = 'text/plain') {
   const metadata = { name: fileName, parents: [folderId] };
   const form = new FormData();
   form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', new Blob([content], { type: 'text/plain' }));
+  form.append('file', new Blob([content], { type: mimeType }));
   const res = await driveRequest(
     'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
     { method: 'POST', body: form }
@@ -84,7 +95,7 @@ async function uploadTextFile(folderId, fileName, content) {
 async function checkCache(file) {
   const subFolderId = file.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return null;
-  const name = cacheFileName(file);
+  const name = textCacheFileName(file);
   const matches = await listFolderFilesByName(subFolderId, name);
   if (matches.length === 0) return null;
   try {
@@ -95,71 +106,39 @@ async function checkCache(file) {
   }
 }
 
-async function writeCache(file, text) {
+// Записує файл у 02_ОБРОБЛЕНІ, попередньо видаливши існуючий з такою назвою.
+// Використовується для .txt і .layout.json — пара тримається синхронізованою.
+async function writeArtifact(file, fileName, content, mimeType) {
   const subFolderId = file.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return false;
-  const name = cacheFileName(file);
   try {
-    const existing = await listFolderFilesByName(subFolderId, name);
+    const existing = await listFolderFilesByName(subFolderId, fileName);
     for (const e of existing) {
       await driveRequest(`https://www.googleapis.com/drive/v3/files/${e.id}`, {
         method: 'DELETE',
       }).catch(() => {});
     }
-    await uploadTextFile(subFolderId, name, text);
+    await uploadTextFile(subFolderId, fileName, content, mimeType);
     return true;
   } catch (e) {
     // не падати — кеш не критичний
-    console.warn('[ocrService] writeCache failed:', e.message);
+    console.warn('[ocrService] writeArtifact failed:', fileName, e.message);
     return false;
   }
 }
 
-// ── Вибір провайдера ────────────────────────────────────────────────────────
-
-function pickProviderName(file) {
-  if (file.mimeType === 'application/pdf') return 'pdfjsLocal';
-  if (file.mimeType?.startsWith('image/')) return 'documentAi';
-  const lname = file.name?.toLowerCase() || '';
-  if (
-    file.mimeType === 'application/vnd.google-apps.document' ||
-    file.mimeType === 'text/plain' ||
-    file.mimeType === 'text/markdown' ||
-    file.mimeType === 'text/html' ||
-    file.mimeType === 'application/xhtml+xml' ||
-    lname.endsWith('.txt') ||
-    lname.endsWith('.md') ||
-    lname.endsWith('.html') ||
-    lname.endsWith('.htm')
-  ) {
-    return 'pdfjsLocal';
-  }
-  return null;
-}
-
-// Послідовність провайдерів у разі помилки UNSUPPORTED або UNKNOWN
-function fallbackChain(initial, file) {
-  const chain = [initial];
-  if (initial === 'pdfjsLocal' && file.mimeType === 'application/pdf') {
-    chain.push('documentAi');
-    chain.push('claudeVision');
-  } else if (initial === 'documentAi') {
-    chain.push('claudeVision');
-  }
-  // dedupe + only existing
-  const seen = new Set();
-  return chain.filter((n) => {
-    if (seen.has(n)) return false;
-    seen.add(n);
-    return providers.has(n);
+// Серіалізує pageStructure у layout.json формат. Обгортка дозволяє у майбутньому
+// додати поля без зміни схеми (schemaVersion, provider, generatedAt).
+function serializeLayout({ provider, pageStructure }) {
+  return JSON.stringify({
+    schemaVersion: 1,
+    provider,
+    generatedAt: new Date().toISOString(),
+    pages: pageStructure,
   });
 }
 
 // ── Public cache lookup (DocumentViewer) ────────────────────────────────────
-//
-// Повертає текст з 02_ОБРОБЛЕНІ якщо є, інакше null. Не запускає OCR.
-// Використовується Viewer'ом у режимі "Текст" — щоб відрізнити "тексту немає"
-// від "ось текст" і показати empty state з кнопкою "Розпізнати зараз".
 
 export async function getCachedText(file) {
   try {
@@ -169,13 +148,11 @@ export async function getCachedText(file) {
   }
 }
 
-// hasOcrSupport — чи існує OCR-провайдер для цього типу файла.
+// hasOcrSupport — чи існує хоч один OCR-провайдер для цього типу файла.
 // Викликається у CaseDossier:onSubmit перед запуском OCR pipeline щоб
-// для непідтримуваних форматів (DOCX, XLSX, PPTX) одразу пропустити OCR
-// крок без warning-тоста: для таких файлів Viewer все одно покаже оригінал
-// через iframe Drive, текстова копія в 02_ОБРОБЛЕНІ не критична.
+// для непідтримуваних форматів одразу пропустити OCR крок без warning-тоста.
 export function hasOcrSupport(file) {
-  return pickProviderName(file) !== null;
+  return hasAnyProvider(file);
 }
 
 // ── extractText ─────────────────────────────────────────────────────────────
@@ -184,23 +161,25 @@ export async function extractText(file, options = {}) {
   const t0 = Date.now();
   const warnings = [];
 
-  // 1. Кеш
+  // 1. Кеш .txt
   if (options.skipCache !== true) {
     const cached = await checkCache(file);
     if (cached !== null) {
       return {
         text: cached,
-        pages: 0,
+        pageCount: 0,
+        hasLayout: false,
         provider: 'cache',
         fromCache: true,
         cacheWritten: false,
+        layoutWritten: false,
         durationMs: Date.now() - t0,
         warnings: [],
       };
     }
   }
 
-  // 2. Вибір провайдера (forced або auto)
+  // 2. Ланцюжок провайдерів (forced override або з матриці)
   const forced = options.forceProvider || getForceProvider();
   let chain;
   if (forced) {
@@ -209,13 +188,12 @@ export async function extractText(file, options = {}) {
     }
     chain = [forced];
   } else {
-    const initial = pickProviderName(file);
-    if (!initial) {
+    chain = selectProviderChain(file).filter((n) => providers.has(n));
+    if (chain.length === 0) {
       const err = new Error(`Немає провайдера для ${file.mimeType || file.name}`);
       err.code = 'UNSUPPORTED';
       throw err;
     }
-    chain = fallbackChain(initial, file);
   }
 
   // 3. Виклик ланцюжка з фолбеком
@@ -226,20 +204,39 @@ export async function extractText(file, options = {}) {
     if (impl.canHandle && !impl.canHandle(file)) continue;
     try {
       const result = await impl.extract(file, options);
-      // 4. Записати в кеш якщо провайдер вернув непорожній текст.
-      // options.skipCache керує лише ЧИТАННЯМ старого кеша (див. рядок 174) —
-      // запис нового свіжого результату має відбуватись завжди, бо при
-      // перерозпізнаванні (skipCache: true) свіжий текст замінює старий.
+
+      // 4. Запис у кеш. options.skipCache керує лише ЧИТАННЯМ старого кеша —
+      // запис свіжого результату відбувається завжди, бо при перерозпізнаванні
+      // (skipCache: true) свіжий текст і layout замінюють старий.
       let cacheWritten = false;
+      let layoutWritten = false;
+      const hasPageStructure = Array.isArray(result.pageStructure) && result.pageStructure.length > 0;
+
       if (result.text && result.text.trim().length > 0) {
-        cacheWritten = await writeCache(file, result.text);
+        cacheWritten = await writeArtifact(
+          file,
+          textCacheFileName(file),
+          result.text,
+          'text/plain'
+        );
       }
+      if (hasPageStructure) {
+        layoutWritten = await writeArtifact(
+          file,
+          layoutCacheFileName(file),
+          serializeLayout({ provider: name, pageStructure: result.pageStructure }),
+          'application/json'
+        );
+      }
+
       return {
         text: result.text || '',
-        pages: result.pages || 0,
+        pageCount: result.pageCount || 0,
+        hasLayout: hasPageStructure,
         provider: name,
         fromCache: false,
         cacheWritten,
+        layoutWritten,
         durationMs: Date.now() - t0,
         warnings: [...warnings, ...(result.warnings || [])],
       };
@@ -309,7 +306,7 @@ export async function extractTextBatch(files, options = {}) {
   return results;
 }
 
-// ── Локалізація помилок (TASK.md розділ 8.2) ────────────────────────────────
+// ── Локалізація помилок ─────────────────────────────────────────────────────
 
 const ERROR_MESSAGES = {
   AUTH: 'Помилка авторизації Google. Натисніть "Перепідключити Drive" у налаштуваннях.',

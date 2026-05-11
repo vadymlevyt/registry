@@ -2,10 +2,16 @@
 // Sync-обробка через :process endpoint у регіоні europe-west2.
 // Ліміти: 15 сторінок і 20 МБ на запит. Для великих PDF — нарізка через pdf-lib.
 //
-// driveRequest вже додає Authorization: Bearer <token> з cloud-platform scope
-// (scope розширений у Фазі 2).
+// driveRequest вже додає Authorization: Bearer <token> з cloud-platform scope.
 //
-// Контракт провайдера — див. TASK.md розділ 2.3.
+// Контракт результату (матриця виконавця):
+//   { text, pageCount, pageStructure?, warnings }
+//   pageStructure — масив сторінок Document AI з повною структурою
+//   (paragraphs, blocks, tables, headers, footers, layout, dimension).
+//   Кожна сторінка додатково має поле _text — витягнутий текст сторінки.
+//   Це робить layout.json самодостатнім: textAnchor offset'и локальні
+//   для свого чанка, але _text вже підставлений тут, споживач не возиться
+//   з offset математикою при нарізаному PDF.
 
 import { PDFDocument } from 'pdf-lib';
 import { driveRequest } from '../driveAuth.js';
@@ -30,6 +36,22 @@ function arrayBufferToBase64(buffer) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+// Витягнути текст сторінки з textAnchor.textSegments відносно chunkText.
+// Document AI у textAnchor дає startIndex/endIndex у глобальному документі чанка.
+// Робимо тут раз, щоб layout.json був самодостатнім — споживач не возиться
+// з offset математикою коли pageStructure склеєний з кількох чанків.
+function extractPageText(page, chunkText) {
+  const segments = page?.layout?.textAnchor?.textSegments;
+  if (!Array.isArray(segments) || !chunkText) return '';
+  let out = '';
+  for (const seg of segments) {
+    const start = Number(seg.startIndex || 0);
+    const end = Number(seg.endIndex || 0);
+    if (end > start) out += chunkText.slice(start, end);
+  }
+  return out;
 }
 
 async function postToDocAi(bytes, mimeType, externalSignal) {
@@ -82,8 +104,15 @@ async function postToDocAi(bytes, mimeType, externalSignal) {
 
   const data = await resp.json();
   const text = data?.document?.text || '';
-  const pages = data?.document?.pages?.length || 0;
-  return { text, pages };
+  const pages = Array.isArray(data?.document?.pages) ? data.document.pages : [];
+  // Додаємо _text на кожну сторінку — витягнутий через textSegments.
+  // Залишаємо весь оригінальний об'єкт сторінки як є (paragraphs, blocks,
+  // tables, layout, dimension, formFields, tokens, symbols тощо).
+  const pageStructure = pages.map((p) => ({
+    ...p,
+    _text: extractPageText(p, text),
+  }));
+  return { text, pageCount: pageStructure.length, pageStructure };
 }
 
 export default {
@@ -130,8 +159,8 @@ export default {
 
     // 4. Картинка → один запит
     if (!isPdf) {
-      const { text, pages } = await postToDocAi(arrayBuffer, mimeForDocAi, options.signal);
-      return { text, pages: pages || 1, warnings };
+      const { text, pageCount, pageStructure } = await postToDocAi(arrayBuffer, mimeForDocAi, options.signal);
+      return { text, pageCount: pageCount || 1, pageStructure, warnings };
     }
 
     // 5. PDF — підрахувати сторінки
@@ -144,14 +173,25 @@ export default {
     const pageCount = pdfDoc.getPageCount();
 
     if (pageCount <= DOC_AI_PAGES_PER_REQUEST) {
-      const { text, pages } = await postToDocAi(arrayBuffer, mimeForDocAi, options.signal);
-      return { text, pages: pages || pageCount, warnings };
+      const result = await postToDocAi(arrayBuffer, mimeForDocAi, options.signal);
+      return {
+        text: result.text,
+        pageCount: result.pageCount || pageCount,
+        pageStructure: result.pageStructure,
+        warnings,
+      };
     }
 
-    // 6. Великий PDF — нарізка по 15 сторінок
+    // 6. Великий PDF — нарізка по 15 сторінок. pageNumber у кожному чанку
+    // починається з 1 — переіндексовуємо у глобальні позиції. _text вже
+    // підставлений у postToDocAi (локально для чанка), тому склейка
+    // pageStructure безпечна — offset'и більше не потрібні.
     warnings.push(`PDF на ${pageCount} стор. — нарізаємо на чанки по ${DOC_AI_PAGES_PER_REQUEST}`);
-    const chunks = [];
+    const textChunks = [];
+    const pageStructureAll = [];
     let totalPages = 0;
+    let globalPageOffset = 0;
+
     for (let start = 0; start < pageCount; start += DOC_AI_PAGES_PER_REQUEST) {
       const end = Math.min(start + DOC_AI_PAGES_PER_REQUEST, pageCount);
       const chunkDoc = await PDFDocument.create();
@@ -170,11 +210,25 @@ export default {
       }
 
       const result = await postToDocAi(chunkBytes.buffer, mimeForDocAi, options.signal);
-      chunks.push(result.text);
-      totalPages += result.pages || (end - start);
+      textChunks.push(result.text);
+      // Переіндексуємо pageNumber у глобальний.
+      for (const page of (result.pageStructure || [])) {
+        const localNumber = Number(page.pageNumber || 0);
+        pageStructureAll.push({
+          ...page,
+          pageNumber: globalPageOffset + (localNumber || 1),
+        });
+      }
+      totalPages += result.pageCount || (end - start);
+      globalPageOffset += (end - start);
     }
 
-    const text = chunks.join('\n\n--- Page break ---\n\n');
-    return { text, pages: totalPages || pageCount, warnings };
+    const text = textChunks.join('\n\n--- Page break ---\n\n');
+    return {
+      text,
+      pageCount: totalPages || pageCount,
+      pageStructure: pageStructureAll.length > 0 ? pageStructureAll : undefined,
+      warnings,
+    };
   },
 };

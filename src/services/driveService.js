@@ -384,9 +384,11 @@ export async function deleteDriveFile(fileId) {
   return true;
 }
 
-// Видалити OCR-кеш документа з 02_ОБРОБЛЕНІ. Не падає якщо кешу немає
-// (повертає false). Логіка пошуку синхронізована з ocrService.cacheFileName:
-// `${sanitizeBasename(name)}_${driveId}.txt`.
+// Видалити OCR-кеш документа з 02_ОБРОБЛЕНІ. Видаляє пару:
+// `${basename}_${driveId}.txt` і `${basename}_${driveId}.layout.json` —
+// якщо layout існує. Повертає true якщо хоч щось видалено.
+// Парна інвалідація гарантує що не лишиться сирітський layout зі старим
+// текстом після натискання "Розпізнати зараз".
 export async function deleteOcrCacheForDocument(caseData, doc) {
   if (!caseData || !doc || !doc.driveId) return false;
   const subFolderId = caseData?.storage?.subFolders?.['02_ОБРОБЛЕНІ'];
@@ -397,23 +399,32 @@ export async function deleteOcrCacheForDocument(caseData, doc) {
     .replace(/[/\\]/g, '_')
     .slice(0, 150);
   const baseName = sanitize(doc.originalName || doc.name || '');
-  const cacheName = `${baseName}_${doc.driveId}.txt`;
+  const textCacheName = `${baseName}_${doc.driveId}.txt`;
+  const layoutCacheName = `${baseName}_${doc.driveId}.layout.json`;
 
-  // Знайти у 02_ОБРОБЛЕНІ за parent + name. Назва кешу — латиниця/похідна
-  // від оригінальної назви документа з санітизацією; q= по name працює,
-  // але одинарні лапки в імені треба екранувати (правило #8 — кирилиця заборонена,
-  // але кеш-імена не містять кирилиці після sanitize, бо вона не вирізана).
-  // Безпечний варіант: q= по parent, фільтрація у JS.
+  // q= по parent, фільтрація у JS — кеш-імена містять кирилицю від baseName,
+  // правило #8 забороняє кирилицю у q= filter.
   const q = `'${subFolderId}' in parents and trashed=false`;
   const res = await driveRequest(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
   );
   if (!res.ok) return false;
   const data = await res.json();
-  const target = (data.files || []).find(f => f.name === cacheName);
-  if (!target) return false;
-  await deleteDriveFile(target.id);
-  return true;
+  const all = data.files || [];
+
+  let deletedAny = false;
+  for (const name of [textCacheName, layoutCacheName]) {
+    const target = all.find(f => f.name === name);
+    if (target) {
+      try {
+        await deleteDriveFile(target.id);
+        deletedAny = true;
+      } catch (e) {
+        console.warn('[deleteOcrCacheForDocument] delete failed:', name, e.message);
+      }
+    }
+  }
+  return deletedAny;
 }
 
 export async function updateDriveFile(fileId, content, token) {

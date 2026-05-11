@@ -3,7 +3,13 @@
 // Worker pdfjs ініціалізується в App.jsx (GlobalWorkerOptions) — модуль
 // модульного рівня, тому тут просто імпортуємо pdfjsLib.
 //
-// Контракт провайдера — див. TASK.md розділ 2.3.
+// Контракт результату (матриця виконавця):
+//   { text, pageCount, warnings }
+// Без pageStructure — за дизайном. Для searchable PDF структуру дає
+// сам PDF (можна витягти через pdfjs API), але це не OCR-задача —
+// якщо знадобиться, окремий провайдер pdfjsStructure. Тут pdfjsLocal
+// займається тільки витягом тексту; немає текстового шару → UNSUPPORTED,
+// фолбек на documentAi.
 
 import * as pdfjsLib from 'pdfjs-dist';
 import { driveRequest } from '../driveAuth.js';
@@ -44,7 +50,7 @@ export default {
       }
       if (!resp.ok) throw makeError('UNKNOWN', `Drive export ${resp.status}`);
       const text = await resp.text();
-      return { text: text.trim(), pages: 1, warnings: [] };
+      return { text: text.trim(), pageCount: 1, warnings: [] };
     }
 
     // 2. Завантажити байти
@@ -67,7 +73,7 @@ export default {
     // 3. Текстові формати
     if (isText) {
       const text = new TextDecoder('utf-8', { fatal: false }).decode(arrayBuffer);
-      return { text: text.trim().slice(0, 500000), pages: 1, warnings: [] };
+      return { text: text.trim().slice(0, 500000), pageCount: 1, warnings: [] };
     }
 
     // 4. HTML / XHTML (ухвали з ЄСІТС приходять у text/html, часто у
@@ -115,7 +121,7 @@ export default {
 
       return {
         text: text.slice(0, 500000),
-        pages: 1,
+        pageCount: 1,
         warnings: encoding === 'windows-1251' ? ['HTML декодовано як windows-1251'] : [],
       };
     }
@@ -156,6 +162,6 @@ export default {
       throw makeError('UNSUPPORTED', 'PDF без текстового шару (скан) — потрібен OCR');
     }
 
-    return { text: trimmed, pages: numPages, warnings: [] };
+    return { text: trimmed, pageCount: numPages, warnings: [] };
   },
 };
