@@ -21,10 +21,23 @@
 // ─────────────────┼─────────────────┼──────────┼────────────┼──────────┼──────
 // pdfjsLocal       │       1️⃣        │          │    1️⃣      │    1️⃣    │  1️⃣
 // documentAi       │       2️⃣        │   1️⃣     │            │          │
-// claudeVision     │       3️⃣        │   2️⃣     │            │          │
+// claudeVision     │       —         │   —      │            │          │
 //
-// 1️⃣ 2️⃣ 3️⃣ — порядок у ланцюжку фолбеку. pdfjsLocal для PDF пробується першим
+// 1️⃣ 2️⃣ — порядок у ланцюжку фолбеку. pdfjsLocal для PDF пробується першим
 // бо швидко відсіває searchable документи без витрат на Document AI.
+//
+// claudeVision СВІДОМО ВИКЛЮЧЕНИЙ з default chain (раніше був 3️⃣ для PDF і 2️⃣
+// для зображень). Причини:
+//   1. Моргнута мережа на documentAi сприймалась як надійний збій і викликала
+//      silent fallback на claudeVision — даремна витрата токенів Anthropic при
+//      проблемі що вирішується retry того ж documentAi.
+//   2. claudeVision не тестувався як стабільний default для типових документів
+//      адвоката — якість і поведінка непередбачувана.
+//   3. Адвокат працює на планшеті з мобільним інтернетом — мережа моргає,
+//      retry потрібен частіше за справжній fallback.
+// Провайдер залишається зареєстрованим у ocrService і доступний через
+// options.forceProvider='claudeVision' — виключно за явним підтвердженням
+// адвоката (систему підтвердження див. у CaseDossier Reprocess flow).
 //
 // ────────────────────────────────────────────────────────────────────────────
 // МАТРИЦЯ ВИКОНАВЦЯ — що повертає кожен провайдер
@@ -60,12 +73,12 @@ const FALLBACK_CHAINS_BY_MIME = [
       const lname = (file?.name || '').toLowerCase();
       return file?.mimeType === 'application/pdf' || lname.endsWith('.pdf');
     },
-    chain: ['pdfjsLocal', 'documentAi', 'claudeVision'],
+    chain: ['pdfjsLocal', 'documentAi'],
   },
   {
     name: 'image',
     test: (file) => file?.mimeType?.startsWith('image/'),
-    chain: ['documentAi', 'claudeVision'],
+    chain: ['documentAi'],
   },
   {
     name: 'google_doc',

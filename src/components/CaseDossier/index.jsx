@@ -754,6 +754,155 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     return subFolders;
   }
 
+  // ── OCR з retry + опційний Claude Vision fallback за підтвердженням ──────
+  //
+  // Узагальнює два сценарії: Reprocess існуючого документа і AddDocumentModal
+  // OCR pipeline. Обидва запускають той самий ланцюжок (pdfjsLocal → documentAi),
+  // обидва мають однакову поведінку на NETWORK збоях:
+  //
+  //  • Retry: toast оновлюється «Зʼєднання нестабільне. Повторюю спробу (N/3)...»
+  //  • Успіх після retry: toast «Готово»
+  //  • UNSUPPORTED: «Цей формат не підтримується для OCR.», без fallback
+  //  • AUTH/QUOTA: відповідний toast.error, без fallback
+  //  • NETWORK exhausted (3 retry на кожному чанку — вичерпались): діалог
+  //    «Хочете спробувати через Claude Vision?» з вибором «Так» / «Повернутись пізніше»
+  //  • Так → ocrService повторно з forceProvider='claudeVision' (resume з місця збою)
+  //  • Пізніше → resume стан залишається; наступне Перерозпізнати продовжить documentAi
+  //
+  // Параметри:
+  //   file — OCR target { id, name, mimeType, subFolders }
+  //   doc — реєстровий запис документа (для update_document по успіху)
+  //   caseId — case.id (для update_document)
+  //   onExecuteAction — функція виклику action (з пропсів)
+  //   silentSuccess — якщо true, success toast не показується (для AddDoc pipeline)
+  async function runOcrWithRetryUI({ file, doc, caseId, onExecuteAction, silentSuccess = false } = {}) {
+    const initialMsg = 'Розпізнавання...';
+    const tId = toast.info(initialMsg, { persistent: true });
+
+    let lastShownRetry = 0;
+    const opts = {
+      skipCache: true,
+      onRetry: ({ attempt, of }) => {
+        // attempt — номер тієї спроби яка зараз буде запущена після backoff
+        lastShownRetry = attempt;
+        toast.dismiss(tId);
+      },
+      onChunkDone: ({ processedPages, totalPages }) => {
+        // оновлюємо опис прогресу — обчислюємо у новому toast
+        // (toast.js не має update API — dismiss + новий)
+      },
+    };
+
+    const tryProvider = async (providerOpts) => {
+      return await ocrService.extractText(file, { ...opts, ...providerOpts });
+    };
+
+    let ocrResult = null;
+    let ocrErr = null;
+    try {
+      ocrResult = await tryProvider({});
+    } catch (e) {
+      ocrErr = e;
+    }
+    toast.dismiss(tId);
+
+    if (lastShownRetry > 1 && !ocrErr) {
+      // Був ретрай і успіх — повідомляємо
+      toast.success('Розпізнавання продовжується... Готово');
+    }
+
+    // NETWORK exhausted — пропонуємо Claude Vision або «пізніше»
+    if (ocrErr && ocrErr.code === 'NETWORK') {
+      const totalPages = ocrErr.totalPages || 0;
+      const processedPages = ocrErr.processedPages || 0;
+      const partialNote = totalPages > 0
+        ? `Опрацьовано ${processedPages} з ${totalPages} сторінок.`
+        : '';
+      const consent = await systemConfirm(
+        `Не вдалось розпізнати документ через Document AI. Хочете спробувати через Claude Vision? Це повільніше і коштує більше, але може спрацювати при тривалих проблемах з Google API.\n\n${partialNote}`,
+        'Документ AI недоступний'
+      );
+      if (!consent) {
+        toast.info('Стан збережено. Натисніть «Перерозпізнати» коли мережа покращиться', {
+          description: partialNote,
+        });
+        return;
+      }
+      // Адвокат явно обрав Claude Vision
+      const tId2 = toast.info('Розпізнавання через Claude Vision...', { persistent: true });
+      try {
+        ocrResult = await tryProvider({ forceProvider: 'claudeVision' });
+        toast.dismiss(tId2);
+      } catch (e2) {
+        toast.dismiss(tId2);
+        const code2 = e2.code || 'UNKNOWN';
+        toast.error('Claude Vision також не зміг розпізнати', {
+          description: ocrService.localizeOcrError(code2),
+        });
+        return;
+      }
+    } else if (ocrErr) {
+      // UNSUPPORTED / AUTH / QUOTA — без fallback, точкові повідомлення
+      const code = ocrErr.code || 'UNKNOWN';
+      if (code === 'UNSUPPORTED') {
+        toast.error('Цей формат не підтримується для OCR', {
+          description: 'Документ збережено у форматі оригіналу.',
+        });
+      } else if (code === 'AUTH') {
+        toast.error('Помилка доступу до OCR сервісу', {
+          description: 'Зверніться до адміністратора.',
+        });
+      } else if (code === 'QUOTA') {
+        toast.error('Вичерпано ліміт Document AI', {
+          description: 'Спробуйте за хвилину.',
+        });
+      } else {
+        toast.error('Не вдалось розпізнати', {
+          description: ocrService.localizeOcrError(code),
+        });
+      }
+      return;
+    }
+
+    // Успіх — повідомляємо і оновлюємо документ
+    if (!silentSuccess) {
+      if (ocrResult?.cacheWritten) {
+        toast.success('Текст розпізнано і збережено');
+      } else {
+        toast.warning('Текст розпізнано, але не вдалось зберегти кеш на Drive', {
+          description: 'При повторному відкритті може знадобитись повторне розпізнавання',
+        });
+      }
+    }
+
+    // lastOcrAt + documentNature (як було)
+    if (onExecuteAction && ocrResult?.text && ocrResult.text.trim().length > 0 && doc) {
+      const finalNature = ocrResult.provider === 'pdfjsLocal' ? 'searchable' : 'scanned';
+      const fields = { lastOcrAt: new Date().toISOString() };
+      if (finalNature !== doc.documentNature) fields.documentNature = finalNature;
+      try {
+        await onExecuteAction('dossier_agent', 'update_document', {
+          caseId,
+          documentId: doc.id,
+          fields,
+        });
+      } catch (e) {
+        console.warn('[runOcrWithRetryUI] update_document failed:', e?.message || e);
+      }
+    } else if (onExecuteAction && doc) {
+      try {
+        await onExecuteAction('dossier_agent', 'update_document', {
+          caseId,
+          documentId: doc.id,
+          fields: { lastOcrAt: new Date().toISOString() },
+        });
+      } catch (e) {
+        console.warn('[runOcrWithRetryUI] update_document lastOcrAt failed:', e?.message || e);
+      }
+    }
+    return ocrResult;
+  }
+
   async function handleCreateContext() {
     if (isCreatingContext) {
       toast.show(messages.context.alreadyRunning());
@@ -2446,55 +2595,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               mimeType: doc.mimeType || 'application/pdf',
               subFolders,
             };
-            const tId = toast.info('Розпізнавання...', { persistent: true });
-            try {
-              const ocrResult = await ocrService.extractText(file, { skipCache: true });
-              toast.dismiss(tId);
-              if (ocrResult?.cacheWritten) {
-                toast.success('Текст розпізнано і збережено');
-              } else {
-                toast.warning('Текст розпізнано, але не вдалось зберегти кеш на Drive', {
-                  description: 'При повторному відкритті може знадобитись повторне розпізнавання',
-                });
-              }
-              // lastOcrAt — Viewer на нього ре-фетчить кеш з 02_ОБРОБЛЕНІ.
-              // documentNature — корекція за провайдером, дзеркало логіки
-              // pipeline AddDocumentModal: pdfjsLocal витяг текст → 'searchable',
-              // documentAi/claudeVision (а отже OCR було потрібне) → 'scanned'.
-              // Дозволяє виправити старі/неправильно класифіковані документи
-              // через UI без видалення і повторного додавання.
-              if (onExecuteAction && ocrResult?.text && ocrResult.text.trim().length > 0) {
-                const finalNature = ocrResult.provider === 'pdfjsLocal' ? 'searchable' : 'scanned';
-                const fields = { lastOcrAt: new Date().toISOString() };
-                if (finalNature !== doc.documentNature) fields.documentNature = finalNature;
-                try {
-                  await onExecuteAction('dossier_agent', 'update_document', {
-                    caseId: caseData.id,
-                    documentId: doc.id,
-                    fields,
-                  });
-                } catch (e) {
-                  console.warn('[reprocess] update_document failed:', e?.message || e);
-                }
-              } else if (onExecuteAction) {
-                // Текст порожній — лиш мітка часу, природу не чіпаємо.
-                try {
-                  await onExecuteAction('dossier_agent', 'update_document', {
-                    caseId: caseData.id,
-                    documentId: doc.id,
-                    fields: { lastOcrAt: new Date().toISOString() },
-                  });
-                } catch (e) {
-                  console.warn('[reprocess] update_document lastOcrAt failed:', e?.message || e);
-                }
-              }
-            } catch (err) {
-              toast.dismiss(tId);
-              const localized = ocrService.localizeOcrError
-                ? ocrService.localizeOcrError(err.code)
-                : err.message;
-              toast.error('Не вдалось розпізнати', { description: localized });
-            }
+            await runOcrWithRetryUI({
+              file,
+              doc,
+              caseId: caseData.id,
+              onExecuteAction,
+            });
           }}
           onDelete={() => {
             if (!selectedDoc) return;
@@ -2919,41 +3025,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
           // OCR pipeline — запускається ПІСЛЯ add_document, тому документ
           // з'являється в реєстрі одразу і модалка може закритись. Корекція
-          // documentNature і lastOcrAt — окремим update_document по результату.
-          const ocrToastId = toast.info('Документ додано. Розпізнаю текст...', { persistent: true });
-          try {
-            const result = await ocrService.extractText(ocrFile);
-            toast.dismiss(ocrToastId);
-            if (result.text && result.text.trim().length > 0) {
-              const finalNature = result.provider === 'pdfjsLocal' ? 'searchable' : 'scanned';
-              const fields = { lastOcrAt: new Date().toISOString() };
-              if (finalNature !== initialNature) fields.documentNature = finalNature;
-              if (onExecuteAction) {
-                try {
-                  await onExecuteAction('dossier_agent', 'update_document', {
-                    caseId: caseData.id,
-                    documentId: doc.id,
-                    fields,
-                  });
-                } catch (e) {
-                  console.warn('[add_document pipeline] update_document failed:', e?.message || e);
-                }
-              }
-              toast.success('Документ додано і розпізнано');
-            } else {
-              toast.warning('Документ додано, але текст порожній', {
-                description: 'Файл міг бути порожнім або не розпізнаваним',
-              });
-            }
-          } catch (err) {
-            toast.dismiss(ocrToastId);
-            const localized = ocrService.localizeOcrError
-              ? ocrService.localizeOcrError(err.code)
-              : err.message;
-            toast.warning('Документ додано, але не вдалось розпізнати текст', {
-              description: localized,
-            });
-          }
+          // documentNature і lastOcrAt — окремим update_document через
+          // runOcrWithRetryUI. Retry і Claude Vision-діалог — узагальнено.
+          toast.success('Документ додано');
+          await runOcrWithRetryUI({
+            file: ocrFile,
+            doc,
+            caseId: caseData.id,
+            onExecuteAction,
+            silentSuccess: false,
+          });
         }}
       />
 

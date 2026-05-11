@@ -1,4 +1,4 @@
-// ── OCR PROVIDER: Claude Vision (фолбек) ───────────────────────────────────
+// ── OCR PROVIDER: Claude Vision (фолбек за явним підтвердженням адвоката) ──
 // Перенесена логіка з CaseDossier:438-450 + 530-540.
 // Кожна сторінка PDF → PNG через canvas → image_block в Anthropic API.
 // БЕЗ обмеження min(numPages, 5) — обробляються ВСІ сторінки.
@@ -8,8 +8,15 @@
 // pageStructure поки не повертає — Claude видає plain text. Розширення на
 // структуру (промпт для повернення pages у форматі Document AI) —
 // окремий TASK коли claudeVision реально використовується як основний
-// провайдер. Зараз це фолбек на випадок коли Document AI недоступний,
-// досить тільки тексту.
+// провайдер.
+//
+// SVIDOMO ВИКЛЮЧЕНИЙ з default fallback chain у providerMatrix — викликається
+// тільки коли адвокат явно обрав «Так, через Claude Vision» у діалозі після
+// вичерпання retry documentAi. Це робить вартість/час свідомим вибором.
+//
+// options.startPage (1-based) — пропустити перші startPage-1 сторінок.
+// Використовується коли documentAi вже обробив частину чанків і адвокат
+// підтвердив fallback на Claude Vision — обробляємо тільки залишок.
 
 import * as pdfjsLib from 'pdfjs-dist';
 import { driveRequest } from '../driveAuth.js';
@@ -90,7 +97,14 @@ export default {
         warnings.push(`Дуже великий PDF (${pageCount} стор.) — обробка може бути повільною і дорогою`);
       }
 
-      for (let i = 1; i <= pageCount; i++) {
+      // startPage (1-based) — продовжити з місця збою documentAi.
+      // Якщо не передано — обробка з 1-ї сторінки (поведінка за замовчуванням).
+      const startPage = Math.max(1, Number(options.startPage || 1));
+      if (startPage > 1) {
+        warnings.push(`Продовження з сторінки ${startPage} (попередні оброблені documentAi)`);
+      }
+
+      for (let i = startPage; i <= pageCount; i++) {
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 1.5 });
         const canvas = document.createElement('canvas');

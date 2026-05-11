@@ -10,24 +10,24 @@ import {
 } from '../../src/services/ocr/providerMatrix.js';
 
 describe('selectProviderChain', () => {
-  it('PDF: ланцюжок починається з pdfjsLocal (фолбек documentAi → claudeVision)', () => {
+  it('PDF: ланцюжок pdfjsLocal → documentAi (claudeVision виключений з default chain)', () => {
     const file = { name: 'doc.pdf', mimeType: 'application/pdf' };
-    expect(selectProviderChain(file)).toEqual(['pdfjsLocal', 'documentAi', 'claudeVision']);
+    expect(selectProviderChain(file)).toEqual(['pdfjsLocal', 'documentAi']);
   });
 
   it('PDF за розширенням без mimeType — той самий ланцюжок', () => {
     const file = { name: 'scan.PDF' };
-    expect(selectProviderChain(file)).toEqual(['pdfjsLocal', 'documentAi', 'claudeVision']);
+    expect(selectProviderChain(file)).toEqual(['pdfjsLocal', 'documentAi']);
   });
 
-  it('зображення (image/jpeg): documentAi → claudeVision', () => {
+  it('зображення (image/jpeg): тільки documentAi', () => {
     const file = { name: 'scan.jpg', mimeType: 'image/jpeg' };
-    expect(selectProviderChain(file)).toEqual(['documentAi', 'claudeVision']);
+    expect(selectProviderChain(file)).toEqual(['documentAi']);
   });
 
-  it('зображення (image/png): documentAi → claudeVision', () => {
+  it('зображення (image/png): тільки documentAi', () => {
     const file = { name: 'page.png', mimeType: 'image/png' };
-    expect(selectProviderChain(file)).toEqual(['documentAi', 'claudeVision']);
+    expect(selectProviderChain(file)).toEqual(['documentAi']);
   });
 
   it('Google Doc: тільки pdfjsLocal (експорт як text/plain)', () => {
@@ -72,7 +72,17 @@ describe('selectProviderChain', () => {
     const a = selectProviderChain({ name: 'a.pdf', mimeType: 'application/pdf' });
     a.push('mutated');
     const b = selectProviderChain({ name: 'b.pdf', mimeType: 'application/pdf' });
-    expect(b).toEqual(['pdfjsLocal', 'documentAi', 'claudeVision']);
+    expect(b).toEqual(['pdfjsLocal', 'documentAi']);
+  });
+
+  it('claudeVision СВІДОМО виключений з default chain — доступний лише через forceProvider', () => {
+    // Перевіряємо що жоден default chain не містить claudeVision.
+    // Це робить виклик claudeVision явним вибором адвоката, не silent fallback.
+    const allDefaultProviders = new Set();
+    for (const entry of FALLBACK_CHAINS_BY_MIME) {
+      for (const p of entry.chain) allDefaultProviders.add(p);
+    }
+    expect(allDefaultProviders.has('claudeVision')).toBe(false);
   });
 });
 
@@ -105,7 +115,8 @@ describe('FALLBACK_CHAINS_BY_MIME — структура', () => {
   });
 
   it('усі провайдери в ланцюжках — з відомого набору', () => {
-    const known = new Set(['pdfjsLocal', 'documentAi', 'claudeVision']);
+    // claudeVision виключено з default chain — лишився доступний через forceProvider.
+    const known = new Set(['pdfjsLocal', 'documentAi']);
     for (const entry of FALLBACK_CHAINS_BY_MIME) {
       for (const provider of entry.chain) {
         expect(known.has(provider)).toBe(true);

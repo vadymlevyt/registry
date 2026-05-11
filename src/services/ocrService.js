@@ -18,6 +18,7 @@ import documentAi from './ocr/documentAi.js';
 import claudeVision from './ocr/claudeVision.js';
 import pdfjsLocal from './ocr/pdfjsLocal.js';
 import { selectProviderChain, hasAnyProvider } from './ocr/providerMatrix.js';
+import { getResume, clearResume, processedPageCount, hasResume } from './ocr/resumeStore.js';
 
 // ── Provider registry ───────────────────────────────────────────────────────
 
@@ -196,27 +197,73 @@ export async function extractText(file, options = {}) {
     }
   }
 
-  // 3. Виклик ланцюжка з фолбеком
+  // 3. Виклик ланцюжка з фолбеком.
+  //
+  // ВАЖЛИВО (мікро-TASK fix error handling):
+  //   • NETWORK помилка з partial=true (документ AI вичерпав retry) — НЕ
+  //     каскадує на наступний провайдер. Замість silent fallback кидаємо
+  //     наверх — UI покаже діалог з вибором claudeVision або «пізніше».
+  //   • AUTH / QUOTA — як було, break з циклу.
+  //   • UNSUPPORTED — провайдер заявляє «це не моя справа», пробуємо
+  //     наступного (pdfjsLocal → documentAi на сканах це нормально).
+  //   • NETWORK без partial (атомарний провайдер не зміг навіть стартувати)
+  //     — кидаємо наверх. Користувач отримає шанс через діалог.
+  //
+  // Для forceProvider='claudeVision' з попередньою resume-state від
+  // documentAi: підставляємо startPage = lastFailedRange.startPage і
+  // склеюємо результат з уже обробленими чанками.
   let lastErr = null;
   for (const name of chain) {
     const impl = providers.get(name);
     if (!impl) continue;
     if (impl.canHandle && !impl.canHandle(file)) continue;
     try {
-      const result = await impl.extract(file, options);
+      // Підготовка опцій провайдера (зокрема startPage для claudeVision)
+      const providerOpts = { ...options };
+      let mergedTextPrefix = '';
+      let mergedPageStructure = [];
+      let mergedWarnings = [];
+
+      if (name === 'claudeVision' && forced) {
+        const prev = file.id ? getResume(file.id) : null;
+        if (prev && prev.provider === 'documentAi' && prev.lastFailedRange) {
+          providerOpts.startPage = prev.lastFailedRange.startPage;
+          // Готуємо префікс тексту з уже оброблених documentAi чанків.
+          const sortedChunks = [...(prev.textChunks || [])].sort(
+            (a, b) => a.startPage - b.startPage
+          );
+          mergedTextPrefix = sortedChunks.map((c) => c.text).join('\n\n--- Page break ---\n\n');
+          if (mergedTextPrefix) mergedTextPrefix += '\n\n--- Page break ---\n\n';
+          mergedPageStructure = [...(prev.pageStructureAll || [])];
+          mergedWarnings.push(
+            `Продовження після Document AI: сторінки 1-${prev.lastFailedRange.startPage - 1} оброблені раніше`
+          );
+        }
+      }
+
+      const result = await impl.extract(file, providerOpts);
+
+      // Склейка з resume префіксом (тільки для claudeVision-after-documentAi)
+      const finalText = mergedTextPrefix
+        ? mergedTextPrefix + (result.text || '')
+        : (result.text || '');
+      const finalPageStructure = (mergedPageStructure.length > 0 || result.pageStructure)
+        ? [...mergedPageStructure, ...(result.pageStructure || [])]
+        : undefined;
+      const finalPageCount = (mergedPageStructure.length || 0) + (result.pageCount || 0);
 
       // 4. Запис у кеш. options.skipCache керує лише ЧИТАННЯМ старого кеша —
       // запис свіжого результату відбувається завжди, бо при перерозпізнаванні
       // (skipCache: true) свіжий текст і layout замінюють старий.
       let cacheWritten = false;
       let layoutWritten = false;
-      const hasPageStructure = Array.isArray(result.pageStructure) && result.pageStructure.length > 0;
+      const hasPageStructure = Array.isArray(finalPageStructure) && finalPageStructure.length > 0;
 
-      if (result.text && result.text.trim().length > 0) {
+      if (finalText && finalText.trim().length > 0) {
         cacheWritten = await writeArtifact(
           file,
           textCacheFileName(file),
-          result.text,
+          finalText,
           'text/plain'
         );
       }
@@ -224,26 +271,36 @@ export async function extractText(file, options = {}) {
         layoutWritten = await writeArtifact(
           file,
           layoutCacheFileName(file),
-          serializeLayout({ provider: name, pageStructure: result.pageStructure }),
+          serializeLayout({ provider: name, pageStructure: finalPageStructure }),
           'application/json'
         );
       }
 
+      // Успіх — очищуємо resume стан (якщо був)
+      if (file.id) clearResume(file.id);
+
       return {
-        text: result.text || '',
-        pageCount: result.pageCount || 0,
+        text: finalText,
+        pageCount: finalPageCount || result.pageCount || 0,
         hasLayout: hasPageStructure,
         provider: name,
         fromCache: false,
         cacheWritten,
         layoutWritten,
         durationMs: Date.now() - t0,
-        warnings: [...warnings, ...(result.warnings || [])],
+        warnings: [...warnings, ...mergedWarnings, ...(result.warnings || [])],
       };
     } catch (e) {
       lastErr = e;
       // AUTH / QUOTA — фолбек не допоможе
       if (e.code === 'AUTH' || e.code === 'QUOTA') break;
+      // NETWORK з partial=true — Document AI вичерпав retry. Не каскадуємо
+      // на наступний провайдер default-ланцюжка — UI покаже діалог підтвердження.
+      if (e.code === 'NETWORK' && e.partial) break;
+      // NETWORK без partial — атомарний провайдер не зміг навіть стартувати.
+      // Caскадування на наступного непотрібне (у нас все одно немає
+      // claudeVision у default-chain). Виходимо.
+      if (e.code === 'NETWORK') break;
     }
   }
 
@@ -313,9 +370,27 @@ const ERROR_MESSAGES = {
   QUOTA: 'Вичерпано ліміт Document AI. Спробуйте за хвилину.',
   TIMEOUT: 'Документ занадто великий або складний. Файл пропущено.',
   UNSUPPORTED: 'Формат файлу не підтримується (можливо, ZIP-PDF з ЄСІТС).',
+  NETWORK: 'Зʼєднання нестабільне. Спробуйте ще раз коли мережа покращиться.',
   UNKNOWN: 'Невідома помилка обробки. Спробуйте ще раз.',
 };
 
 export function localizeOcrError(code) {
   return ERROR_MESSAGES[code] || ERROR_MESSAGES.UNKNOWN;
+}
+
+// Експорт для UI — щоб модуль Reprocess міг показати "Опрацьовано N з M".
+// Не публікуємо весь resumeStore — тільки read-only хелпери.
+export function getResumeInfo(driveId) {
+  const state = getResume(driveId);
+  if (!state) return null;
+  return {
+    totalPages: state.totalPages || 0,
+    processedPages: processedPageCount(state),
+    lastFailedStartPage: state.lastFailedRange?.startPage || null,
+    provider: state.provider,
+  };
+}
+
+export function hasResumeState(driveId) {
+  return hasResume(driveId);
 }

@@ -168,20 +168,29 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(names).toContain('photo_drive_file_1.layout.json');
   });
 
-  it('claudeVision повертає text без pageStructure → тільки .txt (контракт у відповіді)', async () => {
-    // Симулюємо що pdfjsLocal і documentAi обидва впали — фолбек на claudeVision
+  it('claudeVision виключений з default chain — викликається тільки через forceProvider', async () => {
+    // pdfjsLocal і documentAi обидва впали з NETWORK — раніше було б фолбек на
+    // claudeVision, тепер ні. Кидається NETWORK помилка наверх.
     mockProviderState.pdfjsLocal.error = Object.assign(new Error('no text'), { code: 'UNSUPPORTED' });
-    mockProviderState.documentAi.error = Object.assign(new Error('docai down'), { code: 'UNSUPPORTED' });
+    mockProviderState.documentAi.error = Object.assign(new Error('network'), { code: 'NETWORK' });
     mockProviderState.claudeVision.result = {
       text: 'Текст від Claude Vision',
       pageCount: 3,
     };
 
-    const result = await extractText(fileFixture(), { skipCache: true });
+    // Default chain — claudeVision НЕ викликається
+    await expect(
+      extractText(fileFixture(), { skipCache: true })
+    ).rejects.toMatchObject({ code: 'NETWORK' });
+    expect(mockProviderState.claudeVision.result).toBeTruthy(); // не використано
 
+    // А ось з forceProvider='claudeVision' — викликається явно
+    const result = await extractText(fileFixture(), {
+      skipCache: true,
+      forceProvider: 'claudeVision',
+    });
     expect(result.provider).toBe('claudeVision');
     expect(result.hasLayout).toBe(false);
-
     const names = driveState.uploads.map((u) => u.name);
     expect(names).toContain('scan_drive_file_1.txt');
     expect(names).not.toContain('scan_drive_file_1.layout.json');

@@ -12,9 +12,30 @@
 //   Це робить layout.json самодостатнім: textAnchor offset'и локальні
 //   для свого чанка, але _text вже підставлений тут, споживач не возиться
 //   з offset математикою при нарізаному PDF.
+//
+// КЛАСИФІКАЦІЯ ПОМИЛОК і RETRY (мікро-TASK fix error handling):
+//   • NETWORK — таймаут / fetch обірваний / 5xx / абортнутий запит без явної
+//     причини. Повторювана: 3 спроби з backoff 1s/3s/9s.
+//   • AUTH — 401/403, без retry, fallback не допоможе.
+//   • QUOTA — 429, без retry (адвокату показати "ліміт").
+//   • UNSUPPORTED — 400 від Document AI або наш guard (ZIP-PDF, >20МБ).
+//     Без retry — повторна спроба не змінить вердикт.
+//   • UNKNOWN — за замовчуванням ставимо як NETWORK (краще зайвий retry
+//     ніж тиха ескалація на claudeVision при моргнутій мережі).
+//
+// RESUMABILITY (мікро-TASK fix):
+//   Великий PDF нарізається на чанки по 15 сторінок. Після кожного успішного
+//   чанка стан зберігається в resumeStore (keyed by file.id). Якщо
+//   ВСЕ ще після 3 retry чанк падає на NETWORK — стан остається у store,
+//   а викидається помилка з code=NETWORK, partial=true, processedPages.
+//   Наступний виклик extract() читає resumeStore і продовжує з першого
+//   необробленого чанка. Споживач (ocrService) сам вирішує що з цим робити —
+//   показати діалог з вибором claudeVision або просто залишити state до
+//   наступного Перерозпізнати.
 
 import { PDFDocument } from 'pdf-lib';
 import { driveRequest } from '../driveAuth.js';
+import { getResume, setResume, clearResume, processedPageCount } from './resumeStore.js';
 
 const DOC_AI_ENDPOINT =
   'https://europe-west2-documentai.googleapis.com/v1/projects/73468500916/locations/europe-west2/processors/2cc453e438078154:process';
@@ -22,10 +43,85 @@ const DOC_AI_PAGES_PER_REQUEST = 15;
 const DOC_AI_MB_PER_REQUEST = 20;
 const DOC_AI_TIMEOUT_MS = 120_000;
 
+// RETRY константи для NETWORK/UNKNOWN. 3 спроби, exponential backoff.
+// Перша спроба негайно, далі 1s/3s/9s — total worst-case 13s + 3×timeout.
+const RETRY_MAX_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [1000, 3000, 9000];
+
 function makeError(code, message) {
   const err = new Error(message);
   err.code = code;
   return err;
+}
+
+// Класифікація помилки за повідомленням / типом / HTTP статусом.
+// Один сенс: «це повторювана NETWORK помилка чи ні». Один із 4 кодів.
+export function classifyError(e, httpStatus) {
+  // 1. Явні HTTP статуси (винесено вище для пріоритету над текстом)
+  if (httpStatus === 401 || httpStatus === 403) return 'AUTH';
+  if (httpStatus === 429) return 'QUOTA';
+  if (httpStatus === 400) return 'UNSUPPORTED';
+  if (httpStatus && httpStatus >= 500 && httpStatus < 600) return 'NETWORK';
+
+  // 2. Якщо помилка вже має .code — довіряємо
+  if (e && e.code) {
+    const c = e.code;
+    if (c === 'AUTH' || c === 'QUOTA' || c === 'UNSUPPORTED') return c;
+    if (c === 'TIMEOUT' || c === 'NETWORK') return 'NETWORK';
+    if (c === 'UNKNOWN') return 'NETWORK'; // unknown → краще retry
+  }
+
+  // 3. AbortError → таймаут наш або обірваний адвокатом
+  if (e?.name === 'AbortError') return 'NETWORK';
+
+  // 4. Сигнатури мережевих помилок у повідомленні
+  const msg = (e?.message || String(e || '')).toLowerCase();
+  if (
+    msg.includes('network') ||
+    msg.includes('timeout') ||
+    msg.includes('fetch') ||
+    msg.includes('econnreset') ||
+    msg.includes('enotfound') ||
+    msg.includes('econnrefused') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('load failed') ||           // Safari/iOS варіант failed to fetch
+    msg.includes('the operation was aborted')
+  ) {
+    return 'NETWORK';
+  }
+
+  // 5. За замовчуванням — NETWORK (краще retry ніж тиха ескалація).
+  return 'NETWORK';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Запускає async fn з retry для NETWORK помилок. AUTH/QUOTA/UNSUPPORTED
+// викидаються негайно. onRetry викликається перед кожною повторною спробою
+// (attempt — 1-based номер тієї спроби яка зараз буде запущена, починаючи з 2).
+async function executeWithRetry(fn, { onRetry, signal } = {}) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {
+    if (signal?.aborted) {
+      throw makeError('NETWORK', 'aborted by caller');
+    }
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      lastErr = e;
+      const code = e.code || classifyError(e);
+      if (code !== 'NETWORK') throw e; // фінальні помилки — кидаємо одразу
+      if (attempt >= RETRY_MAX_ATTEMPTS) break;
+      const backoff = RETRY_BACKOFF_MS[attempt - 1] || 9000;
+      try { onRetry && onRetry({ attempt: attempt + 1, of: RETRY_MAX_ATTEMPTS, error: e, backoffMs: backoff }); } catch {}
+      await sleep(backoff);
+    }
+  }
+  // Усі спроби вичерпані — кидаємо останню NETWORK помилку
+  if (!lastErr.code) lastErr.code = 'NETWORK';
+  throw lastErr;
 }
 
 function arrayBufferToBase64(buffer) {
@@ -75,9 +171,9 @@ async function postToDocAi(bytes, mimeType, externalSignal) {
     });
   } catch (e) {
     if (e.name === 'AbortError') {
-      throw makeError('TIMEOUT', 'Document AI таймаут');
+      throw makeError('NETWORK', 'Document AI таймаут');
     }
-    throw makeError('UNKNOWN', `Document AI fetch: ${e.message}`);
+    throw makeError('NETWORK', `Document AI fetch: ${e.message}`);
   } finally {
     clearTimeout(timeout);
     if (externalSignal) externalSignal.removeEventListener('abort', onAbort);
@@ -97,9 +193,13 @@ async function postToDocAi(bytes, mimeType, externalSignal) {
     } catch (e) {}
     throw makeError('UNSUPPORTED', msg);
   }
+  if (resp.status >= 500 && resp.status < 600) {
+    const t = await resp.text().catch(() => '');
+    throw makeError('NETWORK', `Document AI ${resp.status}: ${t.slice(0, 300)}`);
+  }
   if (!resp.ok) {
     const t = await resp.text().catch(() => '');
-    throw makeError('UNKNOWN', `Document AI ${resp.status}: ${t.slice(0, 300)}`);
+    throw makeError('NETWORK', `Document AI ${resp.status}: ${t.slice(0, 300)}`);
   }
 
   const data = await resp.json();
@@ -113,6 +213,26 @@ async function postToDocAi(bytes, mimeType, externalSignal) {
     _text: extractPageText(p, text),
   }));
   return { text, pageCount: pageStructure.length, pageStructure };
+}
+
+// Виклик postToDocAi з retry. options.onRetry піднімається з extract().
+async function postToDocAiWithRetry(bytes, mimeType, options) {
+  return executeWithRetry(
+    () => postToDocAi(bytes, mimeType, options.signal),
+    { onRetry: options.onRetry, signal: options.signal }
+  );
+}
+
+// Кидає помилку з partial state — споживач може показати діалог.
+// e.code='NETWORK', e.partial=true, e.processedPages, e.totalPages.
+function makePartialError(message, state) {
+  const err = new Error(message);
+  err.code = 'NETWORK';
+  err.partial = true;
+  err.totalPages = state.totalPages || 0;
+  err.processedPages = processedPageCount(state);
+  err.lastFailedRange = state.lastFailedRange;
+  return err;
 }
 
 export default {
@@ -134,7 +254,7 @@ export default {
     if (dl.status === 401 || dl.status === 403) {
       throw makeError('AUTH', `Drive download auth ${dl.status}`);
     }
-    if (!dl.ok) throw makeError('UNKNOWN', `Drive download ${dl.status}`);
+    if (!dl.ok) throw makeError('NETWORK', `Drive download ${dl.status}`);
     const arrayBuffer = await dl.arrayBuffer();
 
     const isPdf =
@@ -157,9 +277,11 @@ export default {
     const warnings = [];
     const mimeForDocAi = isPdf ? 'application/pdf' : file.mimeType;
 
-    // 4. Картинка → один запит
+    // 4. Картинка → один запит з retry. Resume не застосовується (1 сторінка).
     if (!isPdf) {
-      const { text, pageCount, pageStructure } = await postToDocAi(arrayBuffer, mimeForDocAi, options.signal);
+      const { text, pageCount, pageStructure } = await postToDocAiWithRetry(
+        arrayBuffer, mimeForDocAi, options
+      );
       return { text, pageCount: pageCount || 1, pageStructure, warnings };
     }
 
@@ -172,8 +294,9 @@ export default {
     }
     const pageCount = pdfDoc.getPageCount();
 
+    // 6. Малий PDF (вкладається в один запит) — теж з retry, без resume.
     if (pageCount <= DOC_AI_PAGES_PER_REQUEST) {
-      const result = await postToDocAi(arrayBuffer, mimeForDocAi, options.signal);
+      const result = await postToDocAiWithRetry(arrayBuffer, mimeForDocAi, options);
       return {
         text: result.text,
         pageCount: result.pageCount || pageCount,
@@ -182,52 +305,132 @@ export default {
       };
     }
 
-    // 6. Великий PDF — нарізка по 15 сторінок. pageNumber у кожному чанку
-    // починається з 1 — переіндексовуємо у глобальні позиції. _text вже
-    // підставлений у postToDocAi (локально для чанка), тому склейка
-    // pageStructure безпечна — offset'и більше не потрібні.
+    // 7. Великий PDF — нарізка по 15 сторінок з resume.
     warnings.push(`PDF на ${pageCount} стор. — нарізаємо на чанки по ${DOC_AI_PAGES_PER_REQUEST}`);
-    const textChunks = [];
-    const pageStructureAll = [];
-    let totalPages = 0;
-    let globalPageOffset = 0;
+
+    // Ініціалізація state з resumeStore (якщо це повторна спроба) або з нуля.
+    const prevState = getResume(file.id);
+    const state = (prevState && prevState.totalPages === pageCount)
+      ? { ...prevState }
+      : {
+          driveId: file.id,
+          totalPages: pageCount,
+          processedRanges: [],
+          textChunks: [],
+          pageStructureAll: [],
+          warnings,
+          lastFailedRange: null,
+          lastError: null,
+          provider: 'documentAi',
+        };
+
+    // Якщо є попередній стан з іншим pageCount (файл змінився) — починаємо з нуля
+    if (prevState && prevState.totalPages !== pageCount) {
+      clearResume(file.id);
+    }
+
+    // Множина «оброблено» для швидкого перевіряння (1-based startPage)
+    const isRangeProcessed = (startPage) =>
+      state.processedRanges.some((r) => r.startPage === startPage);
 
     for (let start = 0; start < pageCount; start += DOC_AI_PAGES_PER_REQUEST) {
       const end = Math.min(start + DOC_AI_PAGES_PER_REQUEST, pageCount);
-      const chunkDoc = await PDFDocument.create();
-      const indices = [];
-      for (let i = start; i < end; i++) indices.push(i);
-      const pages = await chunkDoc.copyPages(pdfDoc, indices);
-      pages.forEach((p) => chunkDoc.addPage(p));
-      const chunkBytes = await chunkDoc.save();
+      const startPage1 = start + 1;       // 1-based для зовнішнього звіту
+      const endPage1 = end;
+
+      if (isRangeProcessed(startPage1)) {
+        // Цей чанк уже оброблено в попередній спробі — пропускаємо.
+        continue;
+      }
+
+      // Підготувати байти чанка (це може кинути pdf-lib помилку — UNSUPPORTED)
+      let chunkBytes;
+      try {
+        const chunkDoc = await PDFDocument.create();
+        const indices = [];
+        for (let i = start; i < end; i++) indices.push(i);
+        const pages = await chunkDoc.copyPages(pdfDoc, indices);
+        pages.forEach((p) => chunkDoc.addPage(p));
+        const saved = await chunkDoc.save();
+        chunkBytes = saved.buffer;
+      } catch (e) {
+        // Зберегти стан і вийти
+        state.lastFailedRange = { startPage: startPage1, endPage: endPage1 };
+        state.lastError = { code: 'UNSUPPORTED', message: e.message };
+        setResume(file.id, state);
+        throw makeError('UNSUPPORTED', `pdf-lib chunk ${startPage1}-${endPage1}: ${e.message}`);
+      }
 
       // Перевірка розміру чанка (на випадок дуже жирних сторінок)
       if (chunkBytes.byteLength > DOC_AI_MB_PER_REQUEST * 1024 * 1024) {
+        state.lastFailedRange = { startPage: startPage1, endPage: endPage1 };
+        state.lastError = { code: 'UNSUPPORTED', message: 'chunk > 20MB' };
+        setResume(file.id, state);
         throw makeError(
           'UNSUPPORTED',
-          `Чанк сторінок ${start + 1}-${end} більший за ${DOC_AI_MB_PER_REQUEST} МБ`
+          `Чанк сторінок ${startPage1}-${endPage1} більший за ${DOC_AI_MB_PER_REQUEST} МБ`
         );
       }
 
-      const result = await postToDocAi(chunkBytes.buffer, mimeForDocAi, options.signal);
-      textChunks.push(result.text);
+      // Виклик з retry. options.onRetry передає toast наверх.
+      // options.onChunkStart дозволяє показати "Обробка сторінок N-M..."
+      try { options.onChunkStart && options.onChunkStart({ startPage: startPage1, endPage: endPage1, totalPages: pageCount, processedPages: processedPageCount(state) }); } catch {}
+
+      let result;
+      try {
+        result = await postToDocAiWithRetry(chunkBytes, mimeForDocAi, options);
+      } catch (e) {
+        // Спроби вичерпані. AUTH/QUOTA/UNSUPPORTED — без resume сенсу.
+        // NETWORK — зберігаємо state і кидаємо partial помилку.
+        const code = e.code || classifyError(e);
+        if (code === 'NETWORK') {
+          state.lastFailedRange = { startPage: startPage1, endPage: endPage1 };
+          state.lastError = { code: 'NETWORK', message: e.message };
+          setResume(file.id, state);
+          throw makePartialError(
+            `Document AI: вичерпано retry на сторінках ${startPage1}-${endPage1}`,
+            state
+          );
+        }
+        // Для AUTH/QUOTA/UNSUPPORTED — кеш стану непотрібен, чистимо
+        clearResume(file.id);
+        throw e;
+      }
+
+      // Успіх чанка — додаємо до state
+      state.processedRanges.push({ startPage: startPage1, endPage: endPage1 });
+      state.textChunks.push({ startPage: startPage1, endPage: endPage1, text: result.text || '' });
       // Переіндексуємо pageNumber у глобальний.
       for (const page of (result.pageStructure || [])) {
         const localNumber = Number(page.pageNumber || 0);
-        pageStructureAll.push({
+        state.pageStructureAll.push({
           ...page,
-          pageNumber: globalPageOffset + (localNumber || 1),
+          pageNumber: start + (localNumber || 1),
         });
       }
-      totalPages += result.pageCount || (end - start);
-      globalPageOffset += (end - start);
+      state.lastFailedRange = null;
+      state.lastError = null;
+      setResume(file.id, state);
+
+      try { options.onChunkDone && options.onChunkDone({ startPage: startPage1, endPage: endPage1, totalPages: pageCount, processedPages: processedPageCount(state) }); } catch {}
     }
 
-    const text = textChunks.join('\n\n--- Page break ---\n\n');
+    // 8. Усе оброблено — склеюємо результат і чистимо resumeStore
+    // Сортуємо textChunks за startPage щоб resume в довільному порядку
+    // не зламав текст (Document AI йде послідовно зараз, але claudeVision
+    // fallback може додати з середини).
+    const sortedTextChunks = [...state.textChunks].sort((a, b) => a.startPage - b.startPage);
+    const sortedPages = [...state.pageStructureAll].sort(
+      (a, b) => (a.pageNumber || 0) - (b.pageNumber || 0)
+    );
+    const text = sortedTextChunks.map((c) => c.text).join('\n\n--- Page break ---\n\n');
+
+    clearResume(file.id);
+
     return {
       text,
-      pageCount: totalPages || pageCount,
-      pageStructure: pageStructureAll.length > 0 ? pageStructureAll : undefined,
+      pageCount: pageCount,
+      pageStructure: sortedPages.length > 0 ? sortedPages : undefined,
       warnings,
     };
   },
