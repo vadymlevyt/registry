@@ -778,6 +778,18 @@ if (isCurrentUserFounder()) {
 
 Модуль використовує лише існуючі design-токени (`var(--color-*)`, `var(--text-*)`). Жодних власних стилів окрім layout flex/grid. Іконки — lucide-react через `components/UI/icons.js`. Жодних емодзі в інтерфейсі модуля.
 
+### Recon-інфраструктура (TASK 0.3, 2026-05-10)
+
+Read-only розвідка кабінету ЄСІТС через офіційне розширення Claude for Chrome (Опція А, BYOK). Адвокат-засновник копіює готовий промпт у вікно Claude for Chrome, той виконує план обходу і складає артефакти на Drive.
+
+- **Сценарії** — `src/services/recon/scenarios/ecitsBasic.js`, реєстр `RECON_SCENARIOS`. Поки що один: `RECON_ecits_basic_v1` (5 етапів, ~10-15 хв).
+- **API** — `ecitsService.getReconScenarios/getReconHistory/registerReconRun/markReconCompleted/exportReconForAnalysis/testProviderConnection`.
+- **Зберігання** — артефакти на Drive у `_research/ecits/<reconId>/`, історія запусків у `localStorage('levytskyi_recon_history')` + поле `tenant.recon_history[]` (додано в `DEFAULT_TENANT` без schema bump за принципом «розширення без міграції»).
+- **UI** — `src/components/CourtSync/Reconnaissance/index.jsx` (видима тільки founder'ам через `isCurrentUserFounder()`) + `setup/ClaudeForChromeSetup.jsx` (one-time walkthrough встановлення/входу). Прохід setup'у зберігається в `localStorage('levytskyi_claude_for_chrome_setup_done_v1')`.
+- **Аналіз** — артефакти розпаковуються в окремому Claude-чаті адвоката; ця сторінка лише запускає і реєструє recon, не парсить результат.
+
+Recon не публікує події в eventBus і не списує AI-токени з нашої сторони (виконується через підписку Claude for Chrome адвоката).
+
 ## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
 
 Єдине джерело правди для всіх модулів — `App.jsx`.

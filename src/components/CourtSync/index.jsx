@@ -16,6 +16,7 @@ import React, { useState } from 'react';
 import { Scale, Search } from 'lucide-react';
 import { ICON_SIZE } from '../UI/icons.js';
 import { isCurrentUserFounder } from '../../services/tenantService.js';
+import Reconnaissance from './Reconnaissance/index.jsx';
 
 // ── Підвкладки ───────────────────────────────────────────────────────────────
 
@@ -27,7 +28,7 @@ const ECITS_SUBTABS = [
 ];
 
 const SCOUT_SUBTABS = [
-  { id: 'tools', label: 'Інструменти' },
+  { id: 'reconnaissance', label: 'Розвідка ЄСІТС' },
 ];
 
 // ── Заглушка вмісту ──────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ export default function CourtSync() {
   // Вкладки верхнього рівня модуля: 'ecits' завжди, 'scout' тільки для засновника.
   const [section, setSection] = useState('ecits');
   const [ecitsSubtab, setEcitsSubtab] = useState('overview');
-  const [scoutSubtab, setScoutSubtab] = useState('tools');
+  const [scoutSubtab, setScoutSubtab] = useState('reconnaissance');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -187,10 +188,7 @@ export default function CourtSync() {
               </SubtabButton>
             ))}
           </div>
-          <PlaceholderPanel
-            title="Інструменти розвідки"
-            hint="У розробці."
-          />
+          {scoutSubtab === 'reconnaissance' && <Reconnaissance />}
         </div>
       )}
     </div>

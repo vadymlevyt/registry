@@ -102,6 +102,11 @@ export const DEFAULT_TENANT = {
       },
     },
   },
+  // TASK 0.3 — історія recon-запусків (read-only розвідка ЄСІТС). Додано без
+  // schema bump (розширення без міграції): існуючі реєстри без поля читаються
+  // як порожня історія. Реальне джерело правди — localStorage до моменту коли
+  // App.jsx починає синхронізувати з registry_data.json.
+  recon_history: [],
   createdAt: '2016-06-15T00:00:00Z',
   updatedAt: '2026-05-05T00:00:00Z',
 };
