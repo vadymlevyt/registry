@@ -10,11 +10,13 @@ import {
 
 describe('documentSchema', () => {
   describe('CANONICAL_DOCUMENT_FIELDS', () => {
-    it('містить 20 полів (документація CLAUDE.md каже "18 + 6 extended" — насправді 20 canonical, бо TASK 1 розділив originalName, driveUrl, pageCount, icon як окремі поля)', () => {
-      // 20 = id, name, originalName, category, author, documentNature, namingStatus, isKey,
+    it('містить 21 поле (TASK 0.2 додав source як 21-ше)', () => {
+      // 21 = id, name, originalName, category, author, documentNature, namingStatus, isKey,
       //      procId, driveId, driveUrl, folder, pageCount, size, icon, date,
-      //      addedAt, updatedAt, addedBy, status
-      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(20);
+      //      addedAt, updatedAt, addedBy, status, source
+      // source — канал надходження (manual_upload / ecits / telegram / email / null),
+      // nullable, default null. Старі документи отримують null без schema bump.
+      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(21);
     });
 
     it('має ідентифікаційні поля: id, name, originalName', () => {

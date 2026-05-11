@@ -51,6 +51,10 @@ export function createDocument(metadata = {}) {
 
     addedBy: metadata.addedBy || 'lawyer_manual',
     status: metadata.status || 'active',
+
+    // source — канал надходження. null означає "невідомо" (старі документи
+    // або точки створення які ще не передають source).
+    source: metadata.source ?? null,
   };
 }
 

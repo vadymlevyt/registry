@@ -89,6 +89,18 @@ export const DEFAULT_TENANT = {
     // v4 Billing Foundation — стандарти часу. Подальше редагування — через
     // окремий адмін-UI у майбутньому. Дефолти живуть в timeStandards.js.
     timeStandards: null,
+    // TASK 0.2 — налаштування інтеграцій з зовнішніми системами.
+    // Кожен модуль інтеграції тримає свою секцію тут. Зараз — лише ecits.
+    moduleIntegration: {
+      ecits: {
+        autoSync: false,
+        syncIntervalMinutes: null,
+        casesToSync: 'all',
+        autoProcessIncoming: false,
+        detectDeadlinesOnReceive: false,
+        executionProvider: 'claudeForChrome',
+      },
+    },
   },
   createdAt: '2016-06-15T00:00:00Z',
   updatedAt: '2026-05-05T00:00:00Z',

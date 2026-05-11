@@ -173,7 +173,31 @@ function migrateTenant(t) {
       ...settings,
       // v4: timeStandards — ієрархія user→tenant→system. Тут — tenant дефолти.
       timeStandards: settings.timeStandards || { ...DEFAULT_TENANT_TIME_STANDARDS },
+      // TASK 0.2: моduleIntegration — налаштування інтеграцій з зовнішніми
+      // системами. Додавання nullable полів з дефолтами, без schema bump.
+      moduleIntegration: ensureModuleIntegration(settings.moduleIntegration),
     },
+  };
+}
+
+// Дефолти налаштувань модуля «Електронний суд». Дублюються в ecitsService.js
+// (DEFAULT_ECITS_SETTINGS) — це навмисно: tenant-секція є шейпом структури,
+// сервісний дефолт — fallback коли структура порожня. Якщо одне зміниться —
+// синхронізувати вручну.
+const DEFAULT_ECITS_SETTINGS_FOR_TENANT = {
+  autoSync: false,
+  syncIntervalMinutes: null,
+  casesToSync: 'all',
+  autoProcessIncoming: false,
+  detectDeadlinesOnReceive: false,
+  executionProvider: 'claudeForChrome',
+};
+
+function ensureModuleIntegration(existing) {
+  const base = (existing && typeof existing === 'object') ? existing : {};
+  return {
+    ...base,
+    ecits: { ...DEFAULT_ECITS_SETTINGS_FOR_TENANT, ...(base.ecits || {}) },
   };
 }
 

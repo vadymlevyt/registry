@@ -88,6 +88,24 @@ export async function createCaseStructure(caseName, token) {
   return { caseFolderId: caseFolder.id, caseFolderName: caseName, subFolders };
 }
 
+// TASK 0.2 — lazy-loading папок розвідки. Папки _research/ecits/ і
+// _research/competitors/ створюються тільки коли реально кладеться перший
+// артефакт. Не викликати при відкритті модуля.
+//
+// type: 'ecits' | 'competitors' — тільки латиниця, безпечно для q= Drive API.
+// name (опційно) — додатковий рівень всередині (наприклад tenantId або
+// конкретний кейс розвідки). null = повернути сам _research/<type>/.
+export async function getOrCreateResearchFolder(type, name = null) {
+  if (type !== 'ecits' && type !== 'competitors') {
+    throw new Error(`getOrCreateResearchFolder: invalid type '${type}'`);
+  }
+  const root = await findOrCreateFolder('_research', null);
+  const typeFolder = await findOrCreateFolder(type, root.id);
+  if (!name) return typeFolder;
+  const subFolder = await findOrCreateFolder(name, typeFolder.id);
+  return subFolder;
+}
+
 export async function uploadFileToDrive(fileName, fileBlob, parentFolderId, token) {
   const metadata = {
     name: fileName,

@@ -97,6 +97,20 @@ export const CANONICAL_DOCUMENT_FIELDS = {
     required: true,
     enum: ['active', 'archived'],
     default: 'active'
+  },
+
+  // ── Джерело надходження ──────────────────────────────────────────────────
+  // source — канал по якому документ потрапив у систему. Універсальне поле
+  // для всіх майбутніх каналів (manual_upload, ecits, telegram, email).
+  // Nullable, default null — старі документи отримують null автоматично без
+  // schema bump (це додавання nullable поля з дефолтом, не зміна структури).
+  // Довідник значень — src/constants/documentSources.js.
+  source: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    enum: ['manual_upload', 'ecits', 'telegram', 'email', null],
+    description: 'Канал надходження. null = старі документи до TASK 0.2'
   }
 };
 

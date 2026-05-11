@@ -754,6 +754,30 @@ if (isCurrentUserFounder()) {
 
 ---
 
+## МОДУЛЬ ЕЛЕКТРОННИЙ СУД (TASK 0.2)
+
+**Дата:** 2026-05-10
+**Стан:** інфраструктурний скелет, без реального функціоналу
+
+Вкладка «Електронний суд» (іконка `Scale` з lucide-react) між «Книжкою» і «Новою справою». Компонент: `src/components/CourtSync/index.jsx`.
+
+### Структура
+
+- **ЄСІТС** — видима всім. Підвкладки: Огляд, Журнал, Налаштування, Розбіжності. Всі — заглушки «У розробці».
+- **Розвідник** — видима тільки коли `isCurrentUserFounder() === true`. Інструменти розвідки. Заглушка.
+
+### Точки розширення
+
+- `src/services/eventBus.js` — pub/sub для крос-модульної комунікації. Топіки в `eventBusTopics.js` (`ecits.documents_received`, `ecits.hearing_scheduled`, `ecits.case_status_changed`, `ecits.submission_completed`).
+- `src/services/ecitsService.js` — EcitsAPI фасад (`triggerSync`, `getLastSyncTime`, `getSyncReport`, `getSettings`, `updateSettings`). Зараз — заглушки. Реальна RPA-інтеграція з cabinet.court.gov.ua через Computer Use (Claude for Chrome або власне розширення) — наступні TASK.
+- `tenant.settings.moduleIntegration.ecits` — налаштування модуля (autoSync, syncIntervalMinutes, casesToSync, autoProcessIncoming, detectDeadlinesOnReceive, executionProvider). Tenant-scoped, переноситься між організаціями без міграції.
+- `document.source` — універсальне nullable поле каналу надходження (`manual_upload | ecits | telegram | email | null`). Додано в канонічну схему (21 поле) **без schema bump** (nullable default null). Довідник у `src/constants/documentSources.js`.
+- `driveService.getOrCreateResearchFolder(type, name)` — lazy-loading папок `_research/ecits/` і `_research/competitors/` (створюються лише при першому записі).
+
+### Дизайн
+
+Модуль використовує лише існуючі design-токени (`var(--color-*)`, `var(--text-*)`). Жодних власних стилів окрім layout flex/grid. Іконки — lucide-react через `components/UI/icons.js`. Жодних емодзі в інтерфейсі модуля.
+
 ## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
 
 Єдине джерело правди для всіх модулів — `App.jsx`.

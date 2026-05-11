@@ -24,9 +24,12 @@ import { handleReturn as smartHandleReturn } from './services/smartReturnHandler
 import { MODULES, categoryForCase } from './services/moduleNames';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import { ToastContainer } from './components/UI/ToastContainer.jsx';
+import { Scale } from 'lucide-react';
+import { ICON_SIZE } from './components/UI/icons.js';
 import './App.css';
 
 const Notebook = React.lazy(() => import('./components/Notebook'));
+const CourtSync = React.lazy(() => import('./components/CourtSync'));
 
 class ModuleErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { hasError: false }; }
@@ -6112,6 +6115,12 @@ function App() {
           {id:'dashboard', label:'📊 Дашборд'},
           {id:'cases',     label:`📁 Справи (${cases.filter(c=>c.status==='active').length})`},
           {id:'notebook',  label:'📓 Книжка'},
+          {id:'courtsync', label:(
+            <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+              <Scale size={ICON_SIZE.sm} />
+              <span>Електронний суд</span>
+            </span>
+          )},
           {id:'add',       label:'➕ Нова справа'},
           {id:'analysis',  label:'🔍 Аналіз системи'},
         ].map(t => (
@@ -6193,6 +6202,13 @@ function App() {
             <ModuleErrorBoundary>
               <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
                 <Notebook cases={cases} onUpdateCase={updateCase} notes={notes} onAddNote={addNote} onUpdateNote={updateNote} onDeleteNote={deleteNote} onPinNote={pinNote} />
+              </React.Suspense>
+            </ModuleErrorBoundary>
+          )}
+          {!dossierCase && tab === 'courtsync' && (
+            <ModuleErrorBoundary>
+              <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
+                <CourtSync />
               </React.Suspense>
             </ModuleErrorBoundary>
           )}
