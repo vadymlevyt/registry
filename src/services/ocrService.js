@@ -193,6 +193,18 @@ export async function writeExtractedTextArtifact(file, text) {
   return await writeArtifact(file, textCacheFileName(file), text, 'text/plain');
 }
 
+// writeLayoutArtifact — публічний запис .layout.json для caller'а який
+// отримав структуровану розмітку БЕЗ запуску OCR на склеєному PDF (TASK B
+// multiImageToPdf — OCR виконано на кожному оригінальному зображенні,
+// результати об'єднані у layoutJson). Це повторне OCR на merged PDF —
+// порушення Розумної економії.
+//
+// Один сенс: «записати готовий layout.json як ніби це результат OCR».
+export async function writeLayoutArtifact(file, layoutJson) {
+  if (!layoutJson) return false;
+  return await writeArtifact(file, layoutCacheFileName(file), layoutJson, 'application/json');
+}
+
 // hasOcrSupport — чи існує хоч один OCR-провайдер для цього типу файла.
 // Викликається у CaseDossier:onSubmit перед запуском OCR pipeline щоб
 // для непідтримуваних форматів одразу пропустити OCR крок без warning-тоста.

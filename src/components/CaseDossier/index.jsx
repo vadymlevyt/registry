@@ -2933,7 +2933,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         isOpen={docModalOpen}
         onClose={() => setDocModalOpen(false)}
         caseData={{ ...caseData, proceedings }}
-        onSubmit={async ({ name, category, author, procId, date, isKey, file }) => {
+        onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts }) => {
           let driveId = null;
           let originalDriveId = null;
           let originalMime = null;
@@ -2948,6 +2948,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // вибору natureOverride і skip-OCR логіки нижче.
           let extractedText = null;
           let converterType = null;
+          // mergeArtifacts — від ImageMergePanel (TASK B). Містить готові
+          // extractedText + layoutJson з OCR який ВЖЕ був виконаний у multiImageToPdf
+          // pipeline. Тут НЕ запускаємо OCR заново (КРИТИЧНА вимога TASK B —
+          // один OCR на зображення, не на склеєний PDF).
+          let mergeLayoutJson = null;
           // Дві гілки джерела файла:
           //   А) Drive picker — файл вже на Drive, маркер _isDriveSource + _driveId.
           //      Конвертацію не робимо (passthrough), беремо driveId одразу.
@@ -3017,6 +3022,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               console.info('[convertToPdf] warnings:', conversion.warnings);
             }
           }
+
+          // mergeArtifacts (TASK B) — file прийшов як готовий PDF з ImageMergePanel.
+          // OCR уже виконаний на КОЖНОМУ оригінальному зображенні всередині pipeline
+          // (multiImageToPdf.js), результати об'єднані у extractedText + layoutJson.
+          // Тут не запускаємо повторний OCR на склеєному PDF (Розумна економія).
+          if (mergeArtifacts) {
+            extractedText = mergeArtifacts.extractedText || null;
+            mergeLayoutJson = mergeArtifacts.layoutJson || null;
+            converterType = 'multiImageToPdf';
+            // Скан-документ (фото сторінок) — documentNature 'scanned'.
+            // pageStructure у layoutJson забезпечить майбутні модулі (AI Очищення).
+          }
+
           const ICONS = {
             court_act: '📋', pleading: '📄', motion: '📝',
             evidence: '📎', contract: '📄', correspondence: '✉️',
@@ -3106,6 +3124,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               }
             } catch (e) {
               console.warn('[writeExtractedTextArtifact] failed:', e?.message || e);
+            }
+            // mergeArtifacts: додатково записуємо .layout.json (pageStructure
+            // об'єднана у фінальному порядку всіх сторінок). Це дозволяє
+            // майбутньому AI Очищенню працювати з координатами слів.
+            if (mergeLayoutJson) {
+              try {
+                await ocrService.writeLayoutArtifact?.(ocrFile, mergeLayoutJson);
+              } catch (e) {
+                console.warn('[writeLayoutArtifact merge] failed:', e?.message || e);
+              }
             }
             // lastOcrAt відмічаємо щоб Viewer не намагався запустити re-OCR.
             if (onExecuteAction && doc) {

@@ -35,9 +35,11 @@ describe('AddDocumentModal — стартовий екран', () => {
     expect(screen.getByText('Склеїти зображення')).toBeInTheDocument();
   });
 
-  it('"Склеїти зображення" має позначку "Доступно у наступній версії"', () => {
+  it('"Склеїти зображення" — робоча кнопка без плейсхолдера (TASK B активовано)', () => {
     renderModal();
-    expect(screen.getByText(/наступній версії/i)).toBeInTheDocument();
+    // Після TASK B плейсхолдер "Доступно у наступній версії" знято.
+    expect(screen.queryByText(/наступній версії/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Склеїти зображення')).toBeInTheDocument();
   });
 
   it('на стартовому екрані немає полів форми', () => {

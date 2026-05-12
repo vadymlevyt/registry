@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Upload,
   Paperclip,
@@ -18,7 +18,9 @@ import { Modal, Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { driveRequest } from '../../services/driveAuth.js';
 import { toast } from '../../services/toast.js';
+import { ImageMergePanel } from './ImageMergePanel.jsx';
 import './AddDocumentModal.css';
+import './ImageMergePanel.css';
 
 const CATEGORY_OPTIONS = [
   { value: 'pleading', label: 'Заява по суті' },
@@ -123,8 +125,20 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
   }
 
   function handleStartMerge() {
-    // TASK B — склейка зображень з агентом сортування. Поки що — плейсхолдер.
-    toast.show('Склейка зображень буде доступна у наступній версії');
+    setMode(MODE_MERGE);
+    setMergeDrivePickerOpen(false);
+  }
+
+  // Drive picker для merge-режиму: окрема state-машина від single-mode picker'а.
+  // mergePanelRef.current — імперативний API ImageMergePanel'а ({addDriveFiles}).
+  const [mergeDrivePickerOpen, setMergeDrivePickerOpen] = useState(false);
+  const mergePanelRef = useRef(null);
+
+  function handleMergeDrivePickMulti(driveFiles) {
+    if (mergePanelRef.current?.addDriveFiles) {
+      mergePanelRef.current.addDriveFiles(driveFiles);
+    }
+    setMergeDrivePickerOpen(false);
   }
 
   function handleBackToStart() {
@@ -198,8 +212,40 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
             title="Склеїти зображення"
             description="Кілька фото в один PDF"
             onClick={handleStartMerge}
-            comingSoon
           />
+        </div>
+      </Modal>
+    );
+  }
+
+  // Merge mode — рендеримо ImageMergePanel + опційно DrivePickerSection
+  // у multi-images mode для додавання файлів з Drive.
+  if (mode === MODE_MERGE) {
+    return (
+      <Modal isOpen={isOpen} onClose={onClose} title="Склеїти зображення" size="lg">
+        <div className="add-document-modal__merge">
+          <ImageMergePanel
+            ref={mergePanelRef}
+            caseData={caseData}
+            apiKey={(typeof localStorage !== 'undefined' && localStorage.getItem('claude_api_key')) || ''}
+            onSubmit={async (payload) => {
+              await onSubmit(payload);
+              onClose();
+            }}
+            onCancel={handleBackToStart}
+            onOpenDrivePicker={driveFolderId ? () => setMergeDrivePickerOpen(true) : null}
+          />
+
+          {mergeDrivePickerOpen && driveFolderId && (
+            <DrivePickerSection
+              isOpen
+              initialFolderId={driveFolderId}
+              onToggle={() => setMergeDrivePickerOpen(false)}
+              onPick={() => { /* single not used у multi mode */ }}
+              onPickMulti={handleMergeDrivePickMulti}
+              selectionMode="multi-images"
+            />
+          )}
         </div>
       </Modal>
     );
