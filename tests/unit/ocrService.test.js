@@ -135,6 +135,11 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(result.hasLayout).toBe(true);
     expect(result.cacheWritten).toBe(true);
     expect(result.layoutWritten).toBe(true);
+    // TASK B fix round 2: extractText тепер повертає pageStructure щоб
+    // multiImageToPdf міг побудувати об'єднаний layout.json для merge сценарію.
+    expect(Array.isArray(result.pageStructure)).toBe(true);
+    expect(result.pageStructure).toHaveLength(2);
+    expect(result.pageStructure[0]._text).toBe('Сторінка 1');
 
     const names = driveState.uploads.map((u) => u.name);
     expect(names).toContain('scan_drive_file_1.txt');
@@ -146,6 +151,16 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(parsed.provider).toBe('documentAi');
     expect(parsed.pages).toHaveLength(2);
     expect(parsed.pages[0]._text).toBe('Сторінка 1');
+  });
+
+  it('searchable provider без pageStructure → pageStructure=null у результаті', async () => {
+    mockProviderState.pdfjsLocal.result = {
+      text: 'Це searchable PDF',
+      pageCount: 1,
+    };
+    const result = await extractText(fileFixture(), { skipCache: true });
+    expect(result.hasLayout).toBe(false);
+    expect(result.pageStructure).toBe(null);
   });
 
   it('зображення: documentAi напряму (pdfjsLocal не в ланцюжку) → .txt + .layout.json', async () => {

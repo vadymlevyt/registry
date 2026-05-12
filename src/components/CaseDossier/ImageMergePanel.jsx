@@ -34,6 +34,7 @@ import {
   GripVertical,
   Check,
   Copy as CopyIcon,
+  Crop as CropIcon,
 } from 'lucide-react';
 import { Modal, Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
@@ -74,11 +75,14 @@ function isImageFile(file) {
  *   onOpenDrivePicker — викликаємо коли адвокат натискає "Додати з Drive"
  */
 export const ImageMergePanel = forwardRef(function ImageMergePanel(
-  { caseData, apiKey, onSubmit, onCancel, onOpenDrivePicker },
+  { caseData, apiKey, onSubmit, onCancel, onOpenDrivePicker, onSingleFileRedirect },
   ref
 ) {
   const [phase, setPhase] = useState('selecting');
   const [files, setFiles] = useState([]);
+  // Модалка-попередження коли адвокат натиснув "Створити PDF" з 1 файлом.
+  // null = не показана, File = показана з посиланням на цей файл.
+  const [singleFileWarning, setSingleFileWarning] = useState(null);
   const [pipelineResult, setPipelineResult] = useState(null);
   const [orderedIndices, setOrderedIndices] = useState([]);
   const [removedIndices, setRemovedIndices] = useState(() => new Set());
@@ -88,6 +92,20 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   // ОКРЕМЕ ім'я бо це окремий намір (правило #11): автодетект — спроба системи,
   // userRotation — корекція адвоката. Не змішуємо в одне поле.
   const [userRotation, setUserRotation] = useState(() => new Map());
+  // userCrops[origIdx] = Blob — обрізаний варіант зображення замість оригіналу.
+  // Використовується замість realFiles[origIdx] при rebuild PDF і для thumbnail
+  // у preview. Окрема Map бо crop — окремий намір від rotation (правило #11):
+  // обертання змінює орієнтацію, crop вирізає область. Можуть співіснувати:
+  // адвокат спершу повертає, потім обрізає (або навпаки).
+  const [userCrops, setUserCrops] = useState(() => new Map());
+  // Debug toggle (TASK B fix 1 round 2) — увімкнення показує адвокату
+  // діагностичну інформацію orientation у toast info після склейки. Перський
+  // зберігається у localStorage щоб адвокат не вмикав щоразу.
+  const [debugMode, setDebugMode] = useState(() => {
+    try {
+      return localStorage.getItem('levytskyi_image_merge_debug') === '1';
+    } catch { return false; }
+  });
   const [progress, setProgress] = useState({ phase: '', done: 0, total: 0 });
   const [form, setForm] = useState({
     name: '',
@@ -138,6 +156,13 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   const handleStartProcessing = async () => {
     if (files.length === 0) {
       toast.error('Додайте хоча б одне зображення');
+      return;
+    }
+    // Захист від запуску повного pipeline (OCR + агент сортування + орієнтація
+    // + склейка) для одного файлу — нема що сортувати, нема що склеювати.
+    // Розумна економія: AI токени і час адвоката.
+    if (files.length === 1) {
+      setSingleFileWarning(files[0]);
       return;
     }
     if (files.length > MAX_IMAGES_WARN) {
@@ -215,11 +240,34 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setPipelineResult({ ...result, realFiles });
       setOrderedIndices(result.finalOrder);
       setUserRotation(new Map());
+      setUserCrops(new Map());
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
       }));
       setPhase('preview');
+
+      // Debug toast info якщо включений debugMode
+      if (debugMode && Array.isArray(result.orientationDebug)) {
+        const lines = result.orientationDebug
+          .map((d, i) => {
+            if (!d) return null;
+            const file = realFiles[i]?.name || `#${i}`;
+            const exif = d.exif
+              ? `EXIF=${d.exif.rawTag}(${d.exif.degrees}°)`
+              : 'EXIF=none';
+            const docAi = d.docAi
+              ? `docAi=${d.docAi.orientation ?? d.docAi.detectedOrientation ?? 0}`
+              : 'docAi=none';
+            const aspect = d.aspect ? `ratio=${d.aspect.ratio}` : 'aspect=none';
+            return `${file}: ${exif}, ${docAi}, ${aspect} → ${d.degrees}° (${d.source}${d.uncertain ? ', uncertain' : ''})`;
+          })
+          .filter(Boolean);
+        toast.show('Orientation діагностика', {
+          description: lines.join('\n'),
+          duration: 12000,
+        });
+      }
     } catch (e) {
       console.error('[merge] pipeline failed:', e);
       toast.error('Не вдалось обробити зображення', { description: e?.message });
@@ -244,6 +292,38 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       return next;
     });
   }, []);
+
+  // Застосовує crop до origIdx: створює новий Blob через cropHelper,
+  // оновлює thumbnail URL (revoke старий), зберігає у userCrops Map.
+  // Якщо croppedBlob === null — скидає crop до повного.
+  const handleApplyCrop = useCallback(async (origIdx, croppedBlob) => {
+    if (croppedBlob === null) {
+      // Скидання — повернутися до оригіналу
+      setUserCrops((prev) => {
+        const next = new Map(prev);
+        next.delete(origIdx);
+        return next;
+      });
+      // Оновлюємо thumb URL на оригінал
+      const realFile = pipelineResult?.realFiles?.[origIdx];
+      if (realFile) {
+        const oldUrl = thumbUrlsRef.current.get(origIdx);
+        if (oldUrl) try { URL.revokeObjectURL(oldUrl); } catch {}
+        thumbUrlsRef.current.set(origIdx, URL.createObjectURL(realFile));
+      }
+      return;
+    }
+    if (!(croppedBlob instanceof Blob)) return;
+    setUserCrops((prev) => {
+      const next = new Map(prev);
+      next.set(origIdx, croppedBlob);
+      return next;
+    });
+    // Оновлюємо thumb URL на обрізаний blob — revoke старий
+    const oldUrl = thumbUrlsRef.current.get(origIdx);
+    if (oldUrl) try { URL.revokeObjectURL(oldUrl); } catch {}
+    thumbUrlsRef.current.set(origIdx, URL.createObjectURL(croppedBlob));
+  }, [pipelineResult?.realFiles]);
 
   const handleRemoveAllSuspicious = () => {
     if (!pipelineResult?.sortResult?.warnings) return;
@@ -311,7 +391,9 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       let finalText;
       let finalLayout;
 
-      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation) {
+      const hasUserCrops = userCrops.size > 0;
+
+      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation && !hasUserCrops) {
         finalPdfBlob = pipelineResult.pdfBlob;
         finalText = pipelineResult.extractedText;
         finalLayout = pipelineResult.layoutJson;
@@ -322,6 +404,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
           ocrResults: pipelineResult.ocrResults,
           detectedOrientations: pipelineResult.detectedOrientations || [],
           userRotation,
+          userCrops,
         });
         finalPdfBlob = rebuilt.pdfBlob;
         finalText = rebuilt.extractedText;
@@ -376,11 +459,19 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         removedIndices={removedIndices}
         thumbUrls={thumbUrlsRef.current}
         userRotation={userRotation}
+        userCrops={userCrops}
+        realFiles={pipelineResult?.realFiles || []}
+        debugMode={debugMode}
+        setDebugMode={(v) => {
+          setDebugMode(v);
+          try { localStorage.setItem('levytskyi_image_merge_debug', v ? '1' : '0'); } catch {}
+        }}
         form={form}
         setForm={setForm}
         onReorder={setOrderedIndices}
         onRemove={handleRemoveIndex}
         onRotate={handleRotateIndex}
+        onApplyCrop={handleApplyCrop}
         onRemoveAllSuspicious={handleRemoveAllSuspicious}
         onKeepRecommendedDuplicate={handleKeepRecommendedDuplicates}
         onKeepAllRecommendedDuplicates={handleKeepAllRecommendedDuplicates}
@@ -468,6 +559,20 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
           Створити PDF з {files.length} зображень
         </Button>
       </div>
+
+      {singleFileWarning && (
+        <SingleFileWarning
+          file={singleFileWarning}
+          canRedirect={!!onSingleFileRedirect}
+          onRedirect={() => {
+            const f = singleFileWarning;
+            setSingleFileWarning(null);
+            if (onSingleFileRedirect) onSingleFileRedirect(f);
+          }}
+          onAddMore={() => setSingleFileWarning(null)}
+          onCancel={() => setSingleFileWarning(null)}
+        />
+      )}
     </div>
   );
 });
@@ -539,11 +644,16 @@ function PreviewView({
   removedIndices,
   thumbUrls,
   userRotation,
+  userCrops,
+  realFiles,
+  debugMode,
+  setDebugMode,
   form,
   setForm,
   onReorder,
   onRemove,
   onRotate,
+  onApplyCrop,
   onRemoveAllSuspicious,
   onKeepRecommendedDuplicate,
   onKeepAllRecommendedDuplicates,
@@ -581,6 +691,13 @@ function PreviewView({
   const hasSuspicious = (pipelineResult?.sortResult?.warnings || []).length > 0;
   const duplicateGroupsCount = (pipelineResult?.sortResult?.duplicates || []).length;
   const missing = pipelineResult?.sortResult?.missing;
+
+  // Індекси з невпевненою orientation (aspect heuristic) — показуємо warning
+  // адвокату щоб він перевірив візуально і обернув вручну якщо треба.
+  const uncertainIndices = useMemo(() => {
+    return pipelineResult?.uncertainOrientationIndices || [];
+  }, [pipelineResult?.uncertainOrientationIndices]);
+  const uncertainSet = useMemo(() => new Set(uncertainIndices), [uncertainIndices]);
 
   const proceedingOptions = (proceedings || []).map((p) => ({ value: p.id, label: p.title }));
 
@@ -672,6 +789,7 @@ function PreviewView({
         warningsByIndex={warningsByIndex}
         duplicateMembership={duplicateMembership}
         userRotation={userRotation}
+        uncertainSet={uncertainSet}
         onReorder={onReorder}
         onRemove={onRemove}
         onRotate={onRotate}
@@ -680,8 +798,16 @@ function PreviewView({
         onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
       />
 
-      {(missing || hasSuspicious || duplicateGroupsCount > 0) && (
+      {(missing || hasSuspicious || duplicateGroupsCount > 0 || uncertainIndices.length > 0) && (
         <div className="image-merge-panel__alerts">
+          {uncertainIndices.length > 0 && (
+            <div className="image-merge-panel__alert image-merge-panel__alert--orient">
+              <AlertTriangle size={ICON_SIZE.sm} />
+              <span>
+                Орієнтація {uncertainIndices.length} {uncertainIndices.length === 1 ? 'сторінки' : 'сторінок'} визначена за пропорціями (EXIF та Document AI не дали orientation). Перевір — кнопка ↻ виправить.
+              </span>
+            </div>
+          )}
           {missing && (
             <div className="image-merge-panel__alert image-merge-panel__alert--info">
               <AlertTriangle size={ICON_SIZE.sm} />
@@ -785,19 +911,32 @@ function PreviewView({
         </Button>
       </div>
 
+      <label className="image-merge-panel__debug-toggle">
+        <input
+          type="checkbox"
+          checked={debugMode}
+          onChange={(e) => setDebugMode(e.target.checked)}
+        />
+        <span>Показувати діагностику orientation після склейки</span>
+      </label>
+
       {popupOrigIdx != null && (
         <PreviewPopup
           origIdx={popupOrigIdx}
           url={thumbUrls.get(popupOrigIdx)}
+          sourceBlob={userCrops?.get?.(popupOrigIdx) || realFiles?.[popupOrigIdx] || null}
           rotation={userRotation.get(popupOrigIdx) || 0}
           position={orderedIndices.indexOf(popupOrigIdx)}
           total={orderedIndices.length}
           warning={warningsByIndex.get(popupOrigIdx) || null}
           duplicateInfo={duplicateMembership.get(popupOrigIdx) || null}
+          isUncertain={uncertainSet?.has?.(popupOrigIdx) || false}
+          hasCrop={userCrops?.has?.(popupOrigIdx) || false}
           onClose={handleClosePopup}
           onPrev={() => handlePopupNav(-1)}
           onNext={() => handlePopupNav(1)}
           onRotate={() => onRotate(popupOrigIdx)}
+          onApplyCrop={(blob) => onApplyCrop(popupOrigIdx, blob)}
           onRemove={() => {
             const cur = popupOrigIdx;
             const pos = orderedIndices.indexOf(cur);
@@ -832,6 +971,7 @@ function SortableGrid({
   warningsByIndex,
   duplicateMembership,
   userRotation,
+  uncertainSet,
   onReorder,
   onRemove,
   onRotate,
@@ -883,6 +1023,7 @@ function SortableGrid({
             warning={warningsByIndex.get(origIdx) || null}
             duplicateInfo={duplicateMembership.get(origIdx) || null}
             rotation={userRotation.get(origIdx) || 0}
+            isUncertain={uncertainSet?.has?.(origIdx) || false}
             onRemove={() => onRemove(origIdx)}
             onRotate={() => onRotate(origIdx)}
             onOpenPopup={() => onOpenPopup(origIdx)}
@@ -903,6 +1044,7 @@ function SortableGrid({
       warningsByIndex={warningsByIndex}
       duplicateMembership={duplicateMembership}
       userRotation={userRotation}
+      uncertainSet={uncertainSet}
       onReorder={onReorder}
       onRemove={onRemove}
       onRotate={onRotate}
@@ -914,7 +1056,7 @@ function SortableGrid({
 }
 
 function DndGrid({
-  dndReady, orderedIndices, thumbUrls, warningsByIndex, duplicateMembership, userRotation,
+  dndReady, orderedIndices, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
   onReorder, onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
 }) {
   const {
@@ -950,6 +1092,7 @@ function DndGrid({
               warning={warningsByIndex.get(origIdx) || null}
               duplicateInfo={duplicateMembership.get(origIdx) || null}
               rotation={userRotation.get(origIdx) || 0}
+              isUncertain={uncertainSet?.has?.(origIdx) || false}
               onRemove={() => onRemove(origIdx)}
               onRotate={() => onRotate(origIdx)}
               onOpenPopup={() => onOpenPopup(origIdx)}
@@ -964,7 +1107,7 @@ function DndGrid({
 }
 
 function SortableThumbnail({
-  dndReady, origIdx, position, url, warning, duplicateInfo, rotation,
+  dndReady, origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
   onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
 }) {
   const { useSortable, CSS } = dndReady;
@@ -982,6 +1125,7 @@ function SortableThumbnail({
         warning={warning}
         duplicateInfo={duplicateInfo}
         rotation={rotation}
+        isUncertain={isUncertain}
         onRemove={onRemove}
         onRotate={onRotate}
         onOpenPopup={onOpenPopup}
@@ -1009,6 +1153,7 @@ async function rebuildFromOcrResults({
   ocrResults,
   detectedOrientations,
   userRotation,
+  userCrops,
 }) {
   const extractedText = orderedIndices
     .map((idx) => ocrResults[idx]?.text || '')
@@ -1050,15 +1195,20 @@ async function rebuildFromOcrResults({
 
   for (let i = 0; i < orderedIndices.length; i++) {
     const origIdx = orderedIndices[i];
-    const file = realFiles[origIdx];
-    const autoDeg = Number.isFinite(detectedOrientations?.[origIdx])
-      ? detectedOrientations[origIdx]
-      : 0;
+    // Якщо адвокат обрізав — використовуємо обрізаний blob, інакше оригінал.
+    // На обрізаному autoDeg вже застосовано НЕ було (адвокат побачив повне
+    // зображення, повернув його тільки через userRotation), тому autoDeg для
+    // cropped = 0.
+    const cropBlob = userCrops?.get?.(origIdx);
+    const sourceFile = cropBlob || realFiles[origIdx];
+    const autoDeg = cropBlob
+      ? 0
+      : (Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0);
     const userDeg = userRotation?.get?.(origIdx) || 0;
     const totalDeg = (autoDeg + userDeg) % 360;
     // ВАЖЛИВО: автообертання вже зашите у pipeline pdf, але тут ми будуємо
     // НОВИЙ PDF з оригінальних realFiles. Тому застосовуємо ПОВНИЙ totalDeg.
-    const blob = totalDeg !== 0 ? await rotateImageBlob(file, totalDeg) : file;
+    const blob = totalDeg !== 0 ? await rotateImageBlob(sourceFile, totalDeg) : sourceFile;
 
     const url = URL.createObjectURL(blob);
     let img;
@@ -1101,7 +1251,7 @@ async function rebuildFromOcrResults({
 // ── Thumbnail ──────────────────────────────────────────────────────────────
 
 function Thumbnail({
-  origIdx, position, url, warning, duplicateInfo, rotation,
+  origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
   onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
 }) {
   const isDuplicateRecommended = duplicateInfo && duplicateInfo.recommended === origIdx;
@@ -1158,6 +1308,11 @@ function Thumbnail({
         {isDuplicateOther && (
           <span className="image-merge-panel__thumb-dup-badge">
             Дублікат
+          </span>
+        )}
+        {isUncertain && !duplicateInfo && (
+          <span className="image-merge-panel__thumb-orient-badge" title="Орієнтація визначена за пропорціями. Перевір кнопкою ↻.">
+            <AlertTriangle size={10} /> Перевір орієнтацію
           </span>
         )}
         <span
@@ -1224,11 +1379,15 @@ function Thumbnail({
 // ── Preview popup (lazy react-zoom-pan-pinch) ─────────────────────────────
 
 function PreviewPopup({
-  origIdx, url, rotation, position, total, warning, duplicateInfo,
-  onClose, onPrev, onNext, onRotate, onRemove,
+  origIdx, url, sourceBlob, rotation, position, total, warning, duplicateInfo,
+  isUncertain, hasCrop, onClose, onPrev, onNext, onRotate, onApplyCrop, onRemove,
 }) {
+  // 'view' = переглядаємо з zoom/pan; 'crop' = обрізаємо.
+  const [popupMode, setPopupMode] = useState('view');
   const [zoomReady, setZoomReady] = useState(null);
+  const [cropReady, setCropReady] = useState(null);
 
+  // Lazy-load обох бібліотек
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1246,11 +1405,85 @@ function PreviewPopup({
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    if (popupMode !== 'crop' || cropReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const mod = await import('react-easy-crop');
+        if (cancelled) return;
+        setCropReady({ Cropper: mod.default || mod.Cropper });
+      } catch (e) {
+        console.warn('[ImageMergePanel] react-easy-crop lazy load failed:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [popupMode, cropReady]);
+
   const TransformWrapper = zoomReady?.TransformWrapper;
   const TransformComponent = zoomReady?.TransformComponent;
+  const Cropper = cropReady?.Cropper;
 
   const isFirst = position === 0;
   const isLast = position === total - 1;
+
+  // Crop state — react-easy-crop потребує controlled crop/zoom і onCropComplete
+  // який передає piксельні координати. Зберігаємо у ref щоб handleCropApply
+  // мав останній знімок без зайвих re-renders.
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const cropAreaRef = useRef(null);
+
+  function handleCropChange(c) { setCrop(c); }
+  function handleZoomChange(z) { setZoom(z); }
+  function handleCropComplete(_area, areaPixels) {
+    cropAreaRef.current = areaPixels;
+  }
+
+  async function handleCropApply() {
+    if (!cropAreaRef.current || !sourceBlob) {
+      setPopupMode('view');
+      return;
+    }
+    try {
+      const { cropImageBlob } = await import('../../services/sortation/cropHelper.js');
+      const cropped = await cropImageBlob(sourceBlob, cropAreaRef.current);
+      onApplyCrop(cropped);
+      setPopupMode('view');
+      setCrop({ x: 0, y: 0 });
+      setZoom(1);
+    } catch (e) {
+      console.error('[ImageMergePanel] crop apply failed:', e);
+      toast.error('Не вдалось обрізати зображення', { description: e?.message });
+    }
+  }
+
+  function handleCropCancel() {
+    setPopupMode('view');
+    setCrop({ x: 0, y: 0 });
+    setZoom(1);
+  }
+
+  function handleCropReset() {
+    onApplyCrop(null); // скидаємо у parent
+    setPopupMode('view');
+    setCrop({ x: 0, y: 0 });
+    setZoom(1);
+  }
+
+  // Клавіатурні скорочення у режимі crop: Enter=apply, Esc=cancel
+  // (Esc-handler глобальний у PreviewView вже закриває попап, тому тут окремий
+  // case коли popupMode='crop' — Esc скасовує crop не закриваючи попап).
+  useEffect(() => {
+    if (popupMode !== 'crop') return;
+    function onKey(e) {
+      if (e.key === 'Enter') { e.preventDefault(); handleCropApply(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); handleCropCancel(); }
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popupMode, sourceBlob]);
 
   return (
     <div className="image-merge-panel__popup-overlay" role="dialog" aria-modal="true">
@@ -1269,6 +1502,21 @@ function PreviewPopup({
               <AlertTriangle size={14} /> Підозрілий
             </span>
           )}
+          {isUncertain && !warning && (
+            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--warn">
+              <AlertTriangle size={14} /> Перевір орієнтацію
+            </span>
+          )}
+          {hasCrop && popupMode === 'view' && (
+            <span className="image-merge-panel__popup-tag">
+              <CropIcon size={12} /> Обрізано
+            </span>
+          )}
+          {popupMode === 'crop' && (
+            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--dup">
+              <CropIcon size={12} /> Режим обрізки
+            </span>
+          )}
           <button
             type="button"
             className="image-merge-panel__popup-close"
@@ -1281,7 +1529,26 @@ function PreviewPopup({
         </div>
 
         <div className="image-merge-panel__popup-body">
-          {TransformWrapper ? (
+          {popupMode === 'crop' ? (
+            <div className="image-merge-panel__crop-host">
+              {Cropper ? (
+                <Cropper
+                  image={url}
+                  crop={crop}
+                  zoom={zoom}
+                  rotation={rotation}
+                  aspect={null}
+                  restrictPosition={false}
+                  showGrid={true}
+                  onCropChange={handleCropChange}
+                  onZoomChange={handleZoomChange}
+                  onCropComplete={handleCropComplete}
+                />
+              ) : (
+                <div style={{ color: '#fff', padding: 20 }}>Завантаження crop-модуля…</div>
+              )}
+            </div>
+          ) : TransformWrapper ? (
             <TransformWrapper
               initialScale={1}
               minScale={0.5}
@@ -1317,52 +1584,102 @@ function PreviewPopup({
           )}
         </div>
 
-        <div className="image-merge-panel__popup-toolbar">
-          <button
-            type="button"
-            className="image-merge-panel__popup-nav"
-            onClick={onPrev}
-            disabled={isFirst}
-            title="Попередня (←)"
-            aria-label="Попередня"
-          >
-            ‹ Попередня
-          </button>
-          <div className="image-merge-panel__popup-tools">
-            <button
-              type="button"
-              className="image-merge-panel__popup-tool"
-              onClick={onRotate}
-              title="Повернути на 90° (R)"
-            >
-              <RotateCw size={18} />
-              <span>Повернути</span>
-            </button>
-            <button
-              type="button"
-              className="image-merge-panel__popup-tool image-merge-panel__popup-tool--danger"
-              onClick={onRemove}
-              title="Видалити (Delete)"
-            >
-              <Trash2 size={18} />
-              <span>Видалити</span>
-            </button>
-          </div>
-          <button
-            type="button"
-            className="image-merge-panel__popup-nav"
-            onClick={onNext}
-            disabled={isLast}
-            title="Наступна (→)"
-            aria-label="Наступна"
-          >
-            Наступна ›
-          </button>
-        </div>
+        {popupMode === 'crop' ? (
+          <>
+            <div className="image-merge-panel__popup-toolbar">
+              <button
+                type="button"
+                className="image-merge-panel__popup-nav"
+                onClick={handleCropCancel}
+                title="Скасувати (Esc)"
+              >
+                Скасувати
+              </button>
+              <div className="image-merge-panel__popup-tools">
+                {hasCrop && (
+                  <button
+                    type="button"
+                    className="image-merge-panel__popup-tool"
+                    onClick={handleCropReset}
+                    title="Скинути до повного зображення"
+                  >
+                    <span>Скинути до повного</span>
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                className="image-merge-panel__popup-nav image-merge-panel__popup-nav--primary"
+                onClick={handleCropApply}
+                title="Застосувати (Enter)"
+              >
+                Застосувати ✓
+              </button>
+            </div>
+            <div className="image-merge-panel__popup-hint">
+              Тягни кути або сторони рамки. Pinch — zoom фото. Enter — застосувати, Esc — скасувати.
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="image-merge-panel__popup-toolbar">
+              <button
+                type="button"
+                className="image-merge-panel__popup-nav"
+                onClick={onPrev}
+                disabled={isFirst}
+                title="Попередня (←)"
+                aria-label="Попередня"
+              >
+                ‹ Попередня
+              </button>
+              <div className="image-merge-panel__popup-tools">
+                <button
+                  type="button"
+                  className="image-merge-panel__popup-tool"
+                  onClick={onRotate}
+                  title="Повернути на 90° (R)"
+                >
+                  <RotateCw size={18} />
+                  <span>Повернути</span>
+                </button>
+                <button
+                  type="button"
+                  className="image-merge-panel__popup-tool"
+                  onClick={() => setPopupMode('crop')}
+                  title="Обрізати"
+                  disabled={!sourceBlob}
+                >
+                  <CropIcon size={18} />
+                  <span>Обрізати</span>
+                </button>
+                <button
+                  type="button"
+                  className="image-merge-panel__popup-tool image-merge-panel__popup-tool--danger"
+                  onClick={onRemove}
+                  title="Видалити (Delete)"
+                >
+                  <Trash2 size={18} />
+                  <span>Видалити</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                className="image-merge-panel__popup-nav"
+                onClick={onNext}
+                disabled={isLast}
+                title="Наступна (→)"
+                aria-label="Наступна"
+              >
+                Наступна ›
+              </button>
+            </div>
 
-        <div className="image-merge-panel__popup-hint">
-          Pinch / Ctrl+scroll — zoom · Драг — pan · Подвійний тап / клік — скинути
-        </div>
+            <div className="image-merge-panel__popup-hint">
+              Pinch / Ctrl+scroll — zoom · Драг — pan · Подвійний тап / клік — скинути
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1397,6 +1714,43 @@ function ContextMenu({ x, y, onView, onRotate, onRemove }) {
       >
         <Trash2 size={ICON_SIZE.sm} /> Видалити
       </button>
+    </div>
+  );
+}
+
+// ── Single file warning (TASK B fix 4) ───────────────────────────────────
+
+function SingleFileWarning({ file, canRedirect, onRedirect, onAddMore, onCancel }) {
+  return (
+    <div className="image-merge-panel__sfw-overlay" role="dialog" aria-modal="true">
+      <div className="image-merge-panel__sfw">
+        <div className="image-merge-panel__sfw-icon">
+          <AlertTriangle size={32} />
+        </div>
+        <h3 className="image-merge-panel__sfw-title">Вибрано один файл</h3>
+        <p className="image-merge-panel__sfw-text">
+          Склейка має сенс для двох або більше зображень. Для додавання одного
+          документа використайте кнопку «Додати файл» — це швидше і не запускає
+          сортування.
+        </p>
+        <div className="image-merge-panel__sfw-file">
+          <ImageIcon size={ICON_SIZE.sm} />
+          <span>{file?.name || 'Без імені'}</span>
+        </div>
+        <div className="image-merge-panel__sfw-actions">
+          {canRedirect && (
+            <Button variant="primary" onClick={onRedirect}>
+              Перейти до «Додати файл»
+            </Button>
+          )}
+          <Button variant="secondary" onClick={onAddMore}>
+            Додати ще зображень
+          </Button>
+          <Button variant="ghost" onClick={onCancel}>
+            Скасувати
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

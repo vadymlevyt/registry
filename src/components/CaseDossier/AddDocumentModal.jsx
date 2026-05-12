@@ -250,6 +250,17 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
             }}
             onCancel={handleBackToStart}
             onOpenDrivePicker={driveConnected ? () => setMergeDrivePickerOpen(true) : null}
+            onSingleFileRedirect={(file) => {
+              // Переходимо у single mode і одразу прокидаємо вибраний файл
+              // (без необхідності повторно його вибирати).
+              setState((s) => ({
+                ...s,
+                file,
+                name: s.name || stripExtension(file?.name || ''),
+              }));
+              setMergeDrivePickerOpen(false);
+              setMode(MODE_SINGLE);
+            }}
           />
 
           {mergeDrivePickerOpen && driveConnected && (

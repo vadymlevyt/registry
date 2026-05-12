@@ -264,6 +264,84 @@ describe('orientationCorrector.resolveOrientation', () => {
     expect(r.source).toBe('none');
     expect(r.logs.length).toBeGreaterThan(0);
   });
+
+  // ── Aspect ratio heuristic (TASK B fix 2 round 2) ────────────────────
+  // Фото з месенджерів strip EXIF; Document AI часто не повертає orientation.
+  // Якщо image landscape (width > height) — пропонуємо 270° з uncertain=true.
+
+  it('EXIF strip + docAi=0 + image landscape → heuristic 270°, uncertain=true', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: { orientation: 0 },
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'photo.jpg',
+    });
+    expect(r.degrees).toBe(270);
+    expect(r.source).toBe('aspect');
+    expect(r.uncertain).toBe(true);
+    expect(r.debug.aspect.ratio).toBeCloseTo(1.33, 2);
+  });
+
+  it('image portrait → no rotation, source=none, uncertain=false', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: { orientation: 0 },
+      imageDimensions: { width: 1350, height: 1800 },
+      fileName: 'photo.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
+    expect(r.uncertain).toBe(false);
+  });
+
+  it('image майже квадрат (ratio <= 1.1) → no rotation', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: { orientation: 0 },
+      imageDimensions: { width: 1100, height: 1000 },
+      fileName: 'photo.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
+    expect(r.uncertain).toBe(false);
+  });
+
+  it('EXIF реальний → не торкаємо heuristic навіть для landscape', () => {
+    const r = resolveOrientation({
+      exifResult: { degrees: 90, rawTag: 8, mirrored: false },
+      docAiPage: { orientation: 0 },
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'photo.jpg',
+    });
+    expect(r.degrees).toBe(90);
+    expect(r.source).toBe('exif');
+    expect(r.uncertain).toBe(false);
+  });
+
+  it('docAi реальний → heuristic не запускається', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: { orientation: 1 }, // 90°
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'scan.jpg',
+    });
+    expect(r.degrees).toBe(90);
+    expect(r.source).toBe('docAi');
+    expect(r.uncertain).toBe(false);
+  });
+
+  it('debug містить exif/docAi/aspect для діагностики', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: { orientation: 0, dimension: { width: 1800, height: 1350 } },
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'IMG-test.jpg',
+    });
+    expect(r.debug).toBeTruthy();
+    expect(r.debug.fileName).toBe('IMG-test.jpg');
+    expect(r.debug.docAi).toBeTruthy();
+    expect(r.debug.aspect).toBeTruthy();
+  });
 });
 
 describe('orientationCorrector.rotateImageBlob', () => {

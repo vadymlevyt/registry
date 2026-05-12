@@ -39,11 +39,13 @@ const mockResolveOrientation = vi.fn(({ exifResult, docAiPage }) => {
     logs: [],
   };
 });
+const mockGetImageDimensions = vi.fn(async () => null);
 vi.mock('../../src/services/sortation/orientationCorrector.js', () => ({
   rotateImageBlob: (...args) => mockRotateImageBlob(...args),
   extractPageOrientation: (...args) => mockExtractPageOrientation(...args),
   readExifOrientation: (...args) => mockReadExifOrientation(...args),
   resolveOrientation: (...args) => mockResolveOrientation(...args),
+  getImageDimensions: (...args) => mockGetImageDimensions(...args),
 }));
 
 vi.mock('../../src/services/converter/heicToJpeg.js', () => ({
@@ -162,6 +164,77 @@ describe('multiImageToPdf — КРИТИЧНО: один OCR на зображе
     expect(mockExtractText).toHaveBeenCalledTimes(1);
     expect(mockSortImages).not.toHaveBeenCalled();
     expect(result.sortResult).toBeNull();
+  });
+});
+
+describe('multiImageToPdf — layoutJson (TASK B fix 3)', () => {
+  it('layoutJson збирається з pageStructure кожного зображення', async () => {
+    mockExtractText.mockImplementation(async (file) => ({
+      text: `OCR-${file.name}`,
+      pageStructure: [{ pageNumber: 1, _text: `${file.name}-text`, paragraphs: [] }],
+      warnings: [],
+    }));
+    mockSortImages.mockResolvedValue({
+      order: [0, 1],
+      warnings: [],
+      duplicates: [],
+      missing: null,
+      suggestedName: 'Документ',
+      model: 'sonnet',
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const files = [mockImage('p1.jpg'), mockImage('p2.jpg')];
+    const result = await convertImagesToPdf(files, { apiKey: 'test' });
+
+    expect(result.layoutJson).toBeTruthy();
+    const parsed = JSON.parse(result.layoutJson);
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.provider).toBeTruthy();
+    expect(parsed.pages).toHaveLength(2);
+    expect(parsed.pages[0].pageNumber).toBe(1);
+    expect(parsed.pages[1].pageNumber).toBe(2);
+  });
+
+  it('layoutJson відсутній якщо жоден pageStructure не повернувся', async () => {
+    mockExtractText.mockImplementation(async () => ({
+      text: 'OCR без layout',
+      pageStructure: null,
+      warnings: [],
+    }));
+    mockSortImages.mockResolvedValue({
+      order: [0, 1], warnings: [], duplicates: [], missing: null,
+      suggestedName: 'X', model: 's', usage: { inputTokens: 0, outputTokens: 0 },
+    });
+
+    const files = [mockImage('p1.jpg'), mockImage('p2.jpg')];
+    const result = await convertImagesToPdf(files, { apiKey: 'test' });
+
+    expect(result.layoutJson).toBe(null);
+  });
+
+  it('layoutJson зберігає порядок із sortResult.order', async () => {
+    mockExtractText.mockImplementation(async (file) => ({
+      text: `OCR-${file.name}`,
+      pageStructure: [{ pageNumber: 1, _text: file.name, _origin: file.name }],
+      warnings: [],
+    }));
+    mockSortImages.mockResolvedValue({
+      order: [2, 0, 1],
+      warnings: [], duplicates: [], missing: null,
+      suggestedName: 'X', model: 's', usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    const files = [mockImage('a.jpg'), mockImage('b.jpg'), mockImage('c.jpg')];
+    const result = await convertImagesToPdf(files, { apiKey: 'test' });
+
+    const parsed = JSON.parse(result.layoutJson);
+    // У фінальному порядку маємо c → a → b з номерами 1,2,3
+    expect(parsed.pages[0]._origin).toBe('c.jpg');
+    expect(parsed.pages[0].pageNumber).toBe(1);
+    expect(parsed.pages[1]._origin).toBe('a.jpg');
+    expect(parsed.pages[1].pageNumber).toBe(2);
+    expect(parsed.pages[2]._origin).toBe('b.jpg');
+    expect(parsed.pages[2].pageNumber).toBe(3);
   });
 });
 

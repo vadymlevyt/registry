@@ -145,44 +145,121 @@ export async function readExifOrientation(blob) {
 }
 
 /**
- * Об'єднує EXIF orientation і Document AI orientation у фінальний кут
- * обертання. Пріоритет:
- *   1. EXIF (фізична орієнтація сенсором — найнадійніше для фото з телефону)
- *   2. Document AI orientation (для відсканованих PDF/зображень де EXIF немає)
- *   3. 0 (no-op)
+ * Завантажує Image з Blob, повертає природні розміри. Використовується
+ * resolveOrientation для aspect-ratio heuristic.
+ */
+export async function getImageDimensions(blob) {
+  if (!(blob instanceof Blob)) return null;
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('image load fail'));
+      im.src = url;
+    });
+    return { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Об'єднує EXIF orientation, Document AI orientation і aspect-ratio heuristic
+ * у фінальний кут обертання.
  *
- * Логує своє рішення у консоль для діагностики (TASK B fix 2).
+ * Пріоритет:
+ *   1. EXIF (фізична орієнтація сенсором — найнадійніше для фото з телефону).
+ *      АЛЕ: фото пересилане через месенджери (Telegram/WhatsApp/Viber/Signal)
+ *      зазвичай має strip EXIF — тоді цей крок повертає null.
+ *   2. Document AI orientation (для відсканованих PDF/зображень де EXIF немає).
+ *      ТЕЖ не завжди працює — для деяких фото Document AI повертає
+ *      orientation=0 не дивлячись на повернуте зображення.
+ *   3. Aspect ratio heuristic (TASK B fix 2): якщо обидва вище повернули 0,
+ *      але image landscape (width > height) — підозра що адвокат фотографував
+ *      A4 портретний документ телефоном тримаючи landscape. Пропонуємо 270°
+ *      (rotate CW back to portrait) і ВИСТАВЛЯЄМО `uncertain: true` щоб UI
+ *      показав адвокату попередження «Перевірте — кнопка ↻ виправить».
+ *   4. 0 (no-op) — якщо image portrait або немає aspect info.
+ *
+ * Логує своє рішення детально (TASK B fix 1 round 2).
  *
  * @param {Object} opts
  * @param {Object|null} opts.exifResult — результат readExifOrientation
  * @param {Object|null} opts.docAiPage — перша сторінка Document AI pageStructure
+ * @param {{ width, height }|null} opts.imageDimensions — природні розміри зображення
  * @param {string} opts.fileName — для лог-повідомлень
- * @returns {{ degrees: 0|90|180|270, source: 'exif'|'docAi'|'none', logs: string[] }}
+ * @returns {{
+ *   degrees: 0|90|180|270,
+ *   source: 'exif'|'docAi'|'aspect'|'none',
+ *   uncertain: boolean,
+ *   debug: { exif, docAi, aspect, fileName },
+ *   logs: string[]
+ * }}
  */
-export function resolveOrientation({ exifResult, docAiPage, fileName }) {
+export function resolveOrientation({ exifResult, docAiPage, imageDimensions, fileName }) {
   const logs = [];
   const tag = `[orientation:${fileName || '?'}]`;
 
+  const debug = {
+    fileName: fileName || null,
+    exif: exifResult ? { rawTag: exifResult.rawTag, degrees: exifResult.degrees, mirrored: exifResult.mirrored } : null,
+    docAi: null,
+    aspect: null,
+  };
+
+  // 1. EXIF — найнадійніше джерело
   if (exifResult && Number.isFinite(exifResult.degrees) && exifResult.degrees !== 0) {
     logs.push(`${tag} EXIF tag=${exifResult.rawTag} → rotate ${exifResult.degrees}°`);
-    return { degrees: exifResult.degrees, source: 'exif', logs };
+    return { degrees: exifResult.degrees, source: 'exif', uncertain: false, debug, logs };
   }
 
+  // 2. Document AI orientation. Якщо degrees=0 — логуємо ключі page для діагностики.
   const docAiDeg = extractPageOrientation(docAiPage);
+  if (docAiPage && typeof docAiPage === 'object') {
+    debug.docAi = {
+      orientation: docAiPage.orientation ?? null,
+      detectedOrientation: docAiPage.detectedOrientation ?? null,
+      layoutOrientation: docAiPage.layout?.orientation ?? null,
+      dimension: docAiPage.dimension
+        ? { width: docAiPage.dimension.width, height: docAiPage.dimension.height }
+        : null,
+      keys: Object.keys(docAiPage).slice(0, 30),
+    };
+  }
   if (docAiDeg !== 0) {
     logs.push(`${tag} Document AI orientation → rotate ${docAiDeg}°`);
-    return { degrees: docAiDeg, source: 'docAi', logs };
+    return { degrees: docAiDeg, source: 'docAi', uncertain: false, debug, logs };
   }
 
-  // Обидва == 0
-  if (exifResult) {
-    logs.push(`${tag} EXIF tag=${exifResult.rawTag} (normal), Document AI=0 → no rotation`);
-  } else if (docAiPage) {
-    logs.push(`${tag} EXIF none, Document AI=0 → no rotation`);
-  } else {
-    logs.push(`${tag} no EXIF, no Document AI page → no rotation`);
+  // 3. Aspect ratio heuristic — обидва вище провалились, але image landscape.
+  // Юридичні документи зазвичай A4 portrait. Landscape фото — найімовірніше
+  // повернутий portrait документ. Пропонуємо 270° + marking uncertain=true.
+  if (imageDimensions && Number.isFinite(imageDimensions.width) && Number.isFinite(imageDimensions.height)) {
+    const { width, height } = imageDimensions;
+    const ratio = width / height;
+    debug.aspect = { width, height, ratio: Math.round(ratio * 100) / 100 };
+    // 1.1 поріг — заходимо тільки якщо явно landscape (трохи більше за квадрат теж може бути landscape)
+    if (ratio > 1.1) {
+      logs.push(
+        `${tag} EXIF none, Document AI=0, image landscape ${width}×${height} (ratio ${debug.aspect.ratio}) ` +
+        `→ heuristic rotate 270° (юридичний документ зазвичай A4 portrait). Адвокат може виправити вручну.`
+      );
+      return { degrees: 270, source: 'aspect', uncertain: true, debug, logs };
+    }
+    logs.push(`${tag} image portrait ${width}×${height} (ratio ${debug.aspect.ratio}) → no rotation needed`);
+    return { degrees: 0, source: 'none', uncertain: false, debug, logs };
   }
-  return { degrees: 0, source: 'none', logs };
+
+  // 4. Обидва == 0 і немає aspect — нічого не робимо
+  if (exifResult) {
+    logs.push(`${tag} EXIF tag=${exifResult.rawTag} (normal), Document AI=0, no aspect → no rotation`);
+  } else if (docAiPage) {
+    logs.push(`${tag} EXIF none, Document AI=0, no aspect → no rotation`);
+  } else {
+    logs.push(`${tag} no EXIF, no Document AI page, no aspect → no rotation`);
+  }
+  return { degrees: 0, source: 'none', uncertain: false, debug, logs };
 }
 
 /**

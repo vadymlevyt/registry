@@ -339,6 +339,12 @@ export async function extractText(file, options = {}) {
         text: finalText,
         pageCount: finalPageCount || result.pageCount || 0,
         hasLayout: hasPageStructure,
+        // pageStructure — необхідне для caller'ів які перепаковують layout у
+        // merge сценарії (multiImageToPdf.mergeLayouts). До TASK B fix round 2
+        // це поле не повертали — і у merge сценарії layout.json не створювався
+        // бо ocrResults[idx].pageStructure був undefined. Додано для
+        // single-source-of-truth: дані вже в пам'яті, додаткова робота нуль.
+        pageStructure: hasPageStructure ? finalPageStructure : null,
         provider: name,
         fromCache: false,
         cacheWritten,

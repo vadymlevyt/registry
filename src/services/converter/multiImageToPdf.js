@@ -53,6 +53,7 @@ import {
   rotateImageBlob,
   readExifOrientation,
   resolveOrientation,
+  getImageDimensions,
 } from '../sortation/orientationCorrector.js';
 
 const A4_WIDTH_MM = 210;
@@ -373,12 +374,24 @@ export async function convertImagesToPdf(files, options = {}) {
   const finalOrder = sortResult?.order || normalized.map((_, i) => i);
 
   // 4. Корекція orientation per image — тільки якщо != 0 (Розумна економія)
-  // Пріоритет: EXIF (фото з телефону) → Document AI orientation → 0.
+  // Пріоритет: EXIF (фото з телефону) → Document AI orientation → aspect heuristic → 0.
+  //
+  // КОРІНЬ ПРОБЛЕМИ TASK B fix round 1: фото надіслані через месенджер
+  // (Telegram/WhatsApp/Viber/Signal) — strip EXIF при пересилці. JFIF без
+  // APP1 marker. Тому EXIF parser коректно повертає null. Document AI
+  // часто теж не повертає orientation для таких фото. Залишається тільки
+  // aspect ratio як остання heuristic — якщо image landscape, а юридичний
+  // документ зазвичай A4 portrait, пропонуємо 270° з marker uncertain=true,
+  // який UI показує адвокату як warning "Перевірте — кнопка ↻ виправить".
+  //
   // detectedOrientations повертається наверх щоб ImageMergePanel міг скласти
   // фінальну rotation = (autoOrientation + userRotation) mod 360 у preview.
+  // orientationDebug повертається теж — для debug toggle у UI.
   onProgress('rotate', 0, normalized.length);
   const rotatedBlobs = new Array(normalized.length);
   const detectedOrientations = new Array(normalized.length).fill(0);
+  const orientationDebug = new Array(normalized.length).fill(null);
+  const uncertainOrientationIndices = [];
   for (let i = 0; i < normalized.length; i++) {
     const file = normalized[i];
     if (file._heicFailed) {
@@ -392,16 +405,31 @@ export async function convertImagesToPdf(files, options = {}) {
     } catch (e) {
       console.warn(`[multiImageToPdf] EXIF read fail для ${file.name}:`, e?.message || e);
     }
+    // Aspect ratio — потрібен для heuristic коли EXIF/docAi провалюються
+    let imageDimensions = null;
+    try {
+      imageDimensions = await getImageDimensions(file);
+    } catch (e) {
+      console.warn(`[multiImageToPdf] image dimensions fail для ${file.name}:`, e?.message || e);
+    }
     const firstPage = Array.isArray(ocrResults[i]?.pageStructure)
       ? ocrResults[i].pageStructure[0]
       : null;
     const resolved = resolveOrientation({
       exifResult,
       docAiPage: firstPage,
+      imageDimensions,
       fileName: file.name,
     });
     for (const line of resolved.logs) console.log(line);
     detectedOrientations[i] = resolved.degrees;
+    orientationDebug[i] = {
+      source: resolved.source,
+      degrees: resolved.degrees,
+      uncertain: resolved.uncertain,
+      ...resolved.debug,
+    };
+    if (resolved.uncertain) uncertainOrientationIndices.push(i);
     try {
       rotatedBlobs[i] = resolved.degrees !== 0
         ? await rotateImageBlob(file, resolved.degrees)
@@ -468,6 +496,8 @@ export async function convertImagesToPdf(files, options = {}) {
     sortResult,
     finalOrder,
     detectedOrientations,
+    orientationDebug,
+    uncertainOrientationIndices,
     warnings,
     converter: 'multiImageToPdf',
     durationMs: Date.now() - t0,

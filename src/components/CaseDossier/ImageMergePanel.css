@@ -792,3 +792,140 @@
 .image-merge-panel__ctxmenu-item--danger:hover {
   background: rgba(220, 38, 38, 0.08);
 }
+
+/* ── Single file warning (TASK B fix 4) ─────────────────────────────────── */
+
+.image-merge-panel__sfw-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+}
+
+.image-merge-panel__sfw {
+  background: var(--color-surface-1, #fff);
+  border-radius: var(--radius-md, 12px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  width: min(440px, 100%);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-2);
+}
+
+.image-merge-panel__sfw-icon {
+  color: var(--color-warning, #d97706);
+  margin-bottom: var(--space-1);
+}
+
+.image-merge-panel__sfw-title {
+  margin: 0;
+  font-size: var(--text-lg, 18px);
+  font-weight: var(--weight-medium);
+}
+
+.image-merge-panel__sfw-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted, #6b7280);
+  line-height: 1.5;
+}
+
+.image-merge-panel__sfw-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--color-surface-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  color: var(--color-text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-merge-panel__sfw-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.image-merge-panel__sfw-actions > * {
+  width: 100%;
+}
+
+/* ── Orientation warning у preview (TASK B fix 1 round 2) ──────────────── */
+
+.image-merge-panel__alert--orient {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--color-text);
+}
+
+.image-merge-panel__thumb-orient-badge {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(245, 158, 11, 0.92);
+  color: #78350f;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font-weight: var(--weight-medium);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* ── Debug toast info (TASK B fix 1 round 2) ───────────────────────────── */
+
+.image-merge-panel__debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted, #6b7280);
+  margin-top: var(--space-2);
+  cursor: pointer;
+}
+
+.image-merge-panel__debug-toggle input[type="checkbox"] {
+  cursor: pointer;
+}
+
+/* ── Crop режим (TASK B fix 2 round 2) ─────────────────────────────────── */
+
+.image-merge-panel__crop-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  background: #1f2937;
+}
+
+/* react-easy-crop генерує внутрішні div що позиціонуються absolute,
+   нам треба зайняти весь крос-host */
+.image-merge-panel__crop-host > div {
+  position: absolute !important;
+  inset: 0;
+}
+
+.image-merge-panel__popup-nav--primary {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}
+
+.image-merge-panel__popup-nav--primary:hover {
+  background: var(--color-accent);
+  filter: brightness(1.05);
+}
