@@ -261,15 +261,17 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       // іконки ✂️ зʼявляться по мірі готовності. На випадок помилки —
       // просто пропускаємо файл (proposal лишається відсутнім).
       (async () => {
+        console.log('[merge] edge detection START for', realFiles.length, 'files');
         const proposals = new Map();
         for (let i = 0; i < realFiles.length; i++) {
           try {
-            const rect = await detectDocumentEdges(realFiles[i]);
+            const rect = await detectDocumentEdges(realFiles[i], realFiles[i]?.name || `#${i}`);
             if (rect) proposals.set(i, rect);
           } catch (e) {
             console.warn('[merge] edge detection failed for idx', i, e);
           }
         }
+        console.log('[merge] edge detection DONE: proposals=', proposals.size, 'of', realFiles.length);
         setCropProposals(proposals);
       })();
 
