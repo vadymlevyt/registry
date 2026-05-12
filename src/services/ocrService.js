@@ -128,14 +128,38 @@ async function writeArtifact(file, fileName, content, mimeType) {
   }
 }
 
+// Поля сторінки Document AI які роздувають layout.json без користі для майбутніх
+// операцій (AI Очищення тексту, semantic split тощо). Викидаємо ТІЛЬКИ при
+// серіалізації — pageStructure у пам'яті залишається повним для caller'ів.
+//
+//   image  — base64 PNG-рендер сторінки. Дублює оригінал у 01_ОРИГІНАЛИ.
+//            ~5-7 МБ на сторінку для типового скана судового документа.
+//   tokens — координати кожної окремої літери. Майбутні модулі працюють
+//            на рівні paragraphs/blocks, окремі літери не потрібні.
+const STRIPPED_LAYOUT_FIELDS = ['image', 'tokens'];
+
+function stripHeavyFields(pageStructure) {
+  if (!Array.isArray(pageStructure)) return pageStructure;
+  return pageStructure.map((page) => {
+    if (!page || typeof page !== 'object') return page;
+    const copy = { ...page };
+    for (const f of STRIPPED_LAYOUT_FIELDS) {
+      delete copy[f];
+    }
+    return copy;
+  });
+}
+
 // Серіалізує pageStructure у layout.json формат. Обгортка дозволяє у майбутньому
 // додати поля без зміни схеми (schemaVersion, provider, generatedAt).
+// Викидає важкі поля (image, tokens) — економить ~7 МБ на сторінку Drive
+// quota без втрати корисної інформації для AI Очищення.
 function serializeLayout({ provider, pageStructure }) {
   return JSON.stringify({
     schemaVersion: 1,
     provider,
     generatedAt: new Date().toISOString(),
-    pages: pageStructure,
+    pages: stripHeavyFields(pageStructure),
   });
 }
 

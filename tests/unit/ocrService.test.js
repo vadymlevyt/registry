@@ -196,6 +196,63 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(names).not.toContain('scan_drive_file_1.layout.json');
   });
 
+  it('layout.json фільтрує важкі поля image і tokens (TASK A.6 optimization)', async () => {
+    // pdfjsLocal не дав текст → documentAi
+    mockProviderState.pdfjsLocal.error = Object.assign(new Error('no text'), { code: 'UNSUPPORTED' });
+    // Повний об'єкт сторінки Document AI як у проді: image (base64 PNG),
+    // tokens (координати літер), paragraphs, blocks, layout, dimension.
+    const fakeImage = 'data:image/png;base64,' + 'A'.repeat(5000); // імітація 5KB рендер
+    const fakeTokens = Array.from({ length: 500 }, (_, i) => ({
+      detectedBreak: null,
+      layout: { textAnchor: { textSegments: [{ startIndex: i, endIndex: i + 1 }] } },
+    }));
+    mockProviderState.documentAi.result = {
+      text: 'Стор 1',
+      pageCount: 1,
+      pageStructure: [{
+        pageNumber: 1,
+        image: fakeImage,
+        tokens: fakeTokens,
+        paragraphs: [{ layout: { textAnchor: { textSegments: [{ startIndex: 0, endIndex: 5 }] } } }],
+        blocks: [{ confidence: 0.99 }],
+        tables: [],
+        headers: [],
+        footers: [],
+        layout: { textAnchor: { textSegments: [] } },
+        dimension: { width: 1240, height: 1754 },
+        detectedLanguages: [{ languageCode: 'uk' }],
+        _text: 'Стор 1',
+      }],
+    };
+
+    await extractText(fileFixture(), { skipCache: true });
+
+    const layoutUpload = driveState.uploads.find((u) => u.name === 'scan_drive_file_1.layout.json');
+    expect(layoutUpload).toBeDefined();
+    const parsed = JSON.parse(layoutUpload.content);
+    expect(parsed.pages).toHaveLength(1);
+
+    const page = parsed.pages[0];
+    // ВИКЛЮЧЕНО (важкі поля)
+    expect(page.image).toBeUndefined();
+    expect(page.tokens).toBeUndefined();
+    // ЗАЛИШЕНО (легкі корисні поля)
+    expect(page.pageNumber).toBe(1);
+    expect(page.paragraphs).toBeDefined();
+    expect(page.blocks).toBeDefined();
+    expect(page.tables).toBeDefined();
+    expect(page.headers).toBeDefined();
+    expect(page.footers).toBeDefined();
+    expect(page.layout).toBeDefined();
+    expect(page.dimension).toBeDefined();
+    expect(page.detectedLanguages).toBeDefined();
+    expect(page._text).toBe('Стор 1');
+
+    // Грубий контроль розміру — без image/tokens файл під 5KB-сурогатом
+    // image base64 рендера + tokens списку має бути сильно меншим за оригінал.
+    expect(layoutUpload.content.length).toBeLessThan(fakeImage.length);
+  });
+
   it('порожній pageStructure (масив [] від провайдера) → не пишемо .layout.json', async () => {
     mockProviderState.pdfjsLocal.error = Object.assign(new Error('no text'), { code: 'UNSUPPORTED' });
     mockProviderState.documentAi.result = {
