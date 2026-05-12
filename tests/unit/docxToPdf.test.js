@@ -1,27 +1,31 @@
 // @vitest-environment jsdom
 //
-// Юніт-тести docxToPdf — DOCX → PDF через mammoth.extractRawText + pdf-lib.
-// pdfLibRenderer.textToPdf мокаємо щоб не fetch'ити шрифт у тестах.
+// Юніт-тести docxToPdf — DOCX → PDF через mammoth.convertToHtml + pdfLibHtmlRenderer.
+// pdfLibHtmlRenderer.htmlToPdfViaPdfLib мокаємо щоб не fetch'ити шрифти у тестах.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mock mammoth ───────────────────────────────────────────────────────────
-const mockMammothExtractRawText = vi.fn();
+const mockConvertToHtml = vi.fn();
+const mockExtractRawText = vi.fn();
+const mockImgElement = (fn) => ({ __img: fn });
 
-vi.mock('mammoth', () => ({
+vi.mock('mammoth/mammoth.browser.js', () => ({
   default: {
-    extractRawText: (opts) => mockMammothExtractRawText(opts),
+    convertToHtml: (opts, conf) => mockConvertToHtml(opts, conf),
+    extractRawText: (opts) => mockExtractRawText(opts),
+    images: { imgElement: mockImgElement },
   },
-  extractRawText: (opts) => mockMammothExtractRawText(opts),
+  convertToHtml: (opts, conf) => mockConvertToHtml(opts, conf),
+  extractRawText: (opts) => mockExtractRawText(opts),
+  images: { imgElement: mockImgElement },
 }));
 
-// ── Mock pdfLibRenderer ────────────────────────────────────────────────────
-// textToPdf повертає Blob — у тестах перевіряємо що його викликали з текстом,
-// не сам зміст PDF (це окремий unit на pdfLibRenderer).
+// ── Mock pdfLibHtmlRenderer ────────────────────────────────────────────────
 let mockPdfBlob = new Blob(['%PDF-1.4 fake-pdf-from-pdflib'], { type: 'application/pdf' });
-const mockTextToPdf = vi.fn(async () => mockPdfBlob);
+const mockHtmlToPdf = vi.fn(async () => mockPdfBlob);
 
-vi.mock('../../src/services/converter/pdfLibRenderer.js', () => ({
-  textToPdf: (text, opts) => mockTextToPdf(text, opts),
+vi.mock('../../src/services/converter/pdfLibHtmlRenderer.js', () => ({
+  htmlToPdfViaPdfLib: (html, opts) => mockHtmlToPdf(html, opts),
 }));
 
 import { docxToPdf } from '../../src/services/converter/docxToPdf.js';
@@ -44,15 +48,14 @@ function nonZipFile(name = 'fake.docx') {
 
 // Текст довший за MIN_TEXT_LENGTH (50). Це типовий заголовок позовної заяви.
 const LONG_TEXT = 'Позовна заява про стягнення коштів за договором про надання правової допомоги №42';
+const LONG_HTML = `<h1>Позовна заява</h1><p class="align-justify">${LONG_TEXT}</p>`;
 
-describe('docxToPdf — DOCX → PDF через mammoth + pdf-lib', () => {
+describe('docxToPdf — DOCX → PDF через mammoth.convertToHtml + pdfLibHtmlRenderer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPdfBlob = new Blob(['%PDF-1.4 fake-pdf-from-pdflib'], { type: 'application/pdf' });
-    mockMammothExtractRawText.mockResolvedValue({
-      value: LONG_TEXT,
-      messages: [],
-    });
+    mockConvertToHtml.mockResolvedValue({ value: LONG_HTML, messages: [] });
+    mockExtractRawText.mockResolvedValue({ value: LONG_TEXT, messages: [] });
   });
 
   it('повертає pdfBlob, extractedText і warnings контракт', async () => {
@@ -65,29 +68,41 @@ describe('docxToPdf — DOCX → PDF через mammoth + pdf-lib', () => {
     expect(result.extractedText).toBe(LONG_TEXT);
   });
 
-  it('викликає mammoth.extractRawText з arrayBuffer', async () => {
+  it('викликає convertToHtml зі styleMap і convertImage опціями', async () => {
     await docxToPdf(docxFile(), {});
-    expect(mockMammothExtractRawText).toHaveBeenCalledWith(
-      expect.objectContaining({ arrayBuffer: expect.any(ArrayBuffer) })
-    );
+    expect(mockConvertToHtml).toHaveBeenCalledOnce();
+    const [opts, conf] = mockConvertToHtml.mock.calls[0];
+    expect(opts).toEqual(expect.objectContaining({ arrayBuffer: expect.any(ArrayBuffer) }));
+    expect(conf).toHaveProperty('styleMap');
+    expect(Array.isArray(conf.styleMap)).toBe(true);
+    expect(conf.styleMap.some((s) => s.includes('align-justify'))).toBe(true);
+    expect(conf).toHaveProperty('convertImage');
   });
 
-  it('передає extracted text у textToPdf для PDF generation', async () => {
+  it('викликає extractRawText паралельно для .txt кеша', async () => {
     await docxToPdf(docxFile(), {});
-    expect(mockTextToPdf).toHaveBeenCalledOnce();
-    expect(mockTextToPdf.mock.calls[0][0]).toBe(LONG_TEXT);
+    expect(mockExtractRawText).toHaveBeenCalledOnce();
   });
 
-  it('передає mammoth warnings у результат', async () => {
-    mockMammothExtractRawText.mockResolvedValueOnce({
-      value: LONG_TEXT,
+  it('передає згенерований HTML у htmlToPdfViaPdfLib', async () => {
+    await docxToPdf(docxFile(), {});
+    expect(mockHtmlToPdf).toHaveBeenCalledOnce();
+    const [html] = mockHtmlToPdf.mock.calls[0];
+    expect(html).toBe(LONG_HTML);
+  });
+
+  it('передає mammoth warnings (унікальні) у результат', async () => {
+    mockConvertToHtml.mockResolvedValueOnce({
+      value: LONG_HTML,
       messages: [
         { type: 'warning', message: 'Unrecognised numbering style: 1' },
         { type: 'info', message: 'Style applied' }, // не warning — ігноруємо
+        { type: 'warning', message: 'Unrecognised numbering style: 1' }, // дубль — фільтрується
       ],
     });
     const result = await docxToPdf(docxFile(), {});
-    expect(result.warnings.some((w) => w.includes('Unrecognised numbering'))).toBe(true);
+    const numberingWarnings = result.warnings.filter((w) => w.includes('Unrecognised numbering'));
+    expect(numberingWarnings.length).toBe(1); // дубль відфільтровано
   });
 
   // ── Валідація вхідного файлу ─────────────────────────────────────────────
@@ -95,34 +110,40 @@ describe('docxToPdf — DOCX → PDF через mammoth + pdf-lib', () => {
   it('кидає чесну помилку коли файл не має ZIP-сигнатури', async () => {
     await expect(docxToPdf(nonZipFile(), {})).rejects.toThrow(/не є валідним DOCX/);
     // mammoth НЕ викликаний — провалидовано до завантаження бібліотеки
-    expect(mockMammothExtractRawText).not.toHaveBeenCalled();
-    expect(mockTextToPdf).not.toHaveBeenCalled();
+    expect(mockConvertToHtml).not.toHaveBeenCalled();
+    expect(mockExtractRawText).not.toHaveBeenCalled();
+    expect(mockHtmlToPdf).not.toHaveBeenCalled();
   });
 
   it('кидає чесну помилку коли mammoth падає на пошкодженому DOCX', async () => {
-    mockMammothExtractRawText.mockRejectedValueOnce(new Error('zip parse error'));
+    mockConvertToHtml.mockRejectedValueOnce(new Error('zip parse error'));
     await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/може бути пошкоджений/);
-    expect(mockTextToPdf).not.toHaveBeenCalled();
+    expect(mockHtmlToPdf).not.toHaveBeenCalled();
   });
 
   it('кидає чесну помилку коли DOCX містить менше MIN_TEXT_LENGTH символів', async () => {
-    mockMammothExtractRawText.mockResolvedValueOnce({ value: 'Привіт', messages: [] });
+    mockExtractRawText.mockResolvedValueOnce({ value: 'Привіт', messages: [] });
     await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/не містить тексту/);
-    expect(mockTextToPdf).not.toHaveBeenCalled();
+    expect(mockHtmlToPdf).not.toHaveBeenCalled();
   });
 
   it('кидає помилку коли DOCX взагалі порожній', async () => {
-    mockMammothExtractRawText.mockResolvedValueOnce({ value: '', messages: [] });
+    mockExtractRawText.mockResolvedValueOnce({ value: '', messages: [] });
     await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/не містить тексту/);
   });
 
-  it('кидає помилку якщо pdf-lib повернув порожній blob', async () => {
+  it('кидає помилку коли HTML рендерер повернув порожній blob', async () => {
     mockPdfBlob = new Blob([], { type: 'application/pdf' });
     await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/порожній/);
   });
 
-  it('кидає помилку якщо pdf-lib падає (наприклад шрифт не завантажився)', async () => {
-    mockTextToPdf.mockRejectedValueOnce(new Error('Font fetch failed'));
+  it('кидає помилку якщо pdfLibHtmlRenderer падає (наприклад шрифт не завантажився)', async () => {
+    mockHtmlToPdf.mockRejectedValueOnce(new Error('Font fetch failed'));
     await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/Не вдалось згенерувати PDF/);
+  });
+
+  it('кидає помилку коли mammoth повернув порожній HTML', async () => {
+    mockConvertToHtml.mockResolvedValueOnce({ value: '', messages: [] });
+    await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/порожній результат mammoth/);
   });
 });

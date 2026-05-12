@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 //
-// Юніт-тести htmlToPdf — HTML → PDF через innerText + pdf-lib.
-// pdfLibRenderer.textToPdf мокаємо щоб не fetch'ити шрифт у тестах.
+// Юніт-тести htmlToPdf — HTML → PDF через pdfLibHtmlRenderer.
+// pdfLibHtmlRenderer.htmlToPdfViaPdfLib мокаємо щоб не fetch'ити шрифти у тестах.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ── Mock pdfLibRenderer ────────────────────────────────────────────────────
+// ── Mock pdfLibHtmlRenderer ────────────────────────────────────────────────
 let mockPdfBlob = new Blob(['%PDF-1.4 fake-pdf-from-pdflib'], { type: 'application/pdf' });
-const mockTextToPdf = vi.fn(async () => mockPdfBlob);
+const mockHtmlToPdf = vi.fn(async () => mockPdfBlob);
 
-vi.mock('../../src/services/converter/pdfLibRenderer.js', () => ({
-  textToPdf: (text, opts) => mockTextToPdf(text, opts),
+vi.mock('../../src/services/converter/pdfLibHtmlRenderer.js', () => ({
+  htmlToPdfViaPdfLib: (html, opts) => mockHtmlToPdf(html, opts),
 }));
 
 import { htmlToPdf } from '../../src/services/converter/htmlToPdf.js';
@@ -36,7 +36,7 @@ function patchInnerText() {
 // Текст довший за MIN_TEXT_LENGTH (30). Заголовок ухвали або позовної заяви.
 const LONG_TEXT = 'Ухвала про відкриття провадження у справі №910/2024';
 
-describe('htmlToPdf — HTML → PDF через innerText + pdf-lib', () => {
+describe('htmlToPdf — HTML → PDF через pdfLibHtmlRenderer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPdfBlob = new Blob(['%PDF-1.4 fake-pdf-from-pdflib'], { type: 'application/pdf' });
@@ -55,12 +55,15 @@ describe('htmlToPdf — HTML → PDF через innerText + pdf-lib', () => {
     expect(Array.isArray(result.warnings)).toBe(true);
   });
 
-  it('передає innerText у textToPdf', async () => {
-    const file = htmlFile(`<html><body><p>${LONG_TEXT}</p></body></html>`);
+  it('передає body innerHTML (з тегами!) у htmlToPdfViaPdfLib', async () => {
+    const file = htmlFile(`<html><body><h1>Заголовок</h1><p>${LONG_TEXT}</p></body></html>`);
     await htmlToPdf(file, {});
-    expect(mockTextToPdf).toHaveBeenCalledOnce();
-    const [text] = mockTextToPdf.mock.calls[0];
-    expect(text).toContain('Ухвала');
+    expect(mockHtmlToPdf).toHaveBeenCalledOnce();
+    const [html] = mockHtmlToPdf.mock.calls[0];
+    // ВАЖЛИВО: передаємо HTML з тегами, не plain-текст
+    expect(html).toContain('<h1>');
+    expect(html).toContain('<p>');
+    expect(html).toContain('Заголовок');
   });
 
   it('видаляє тимчасовий контейнер з DOM після конвертації (cleanup)', async () => {
@@ -81,6 +84,9 @@ describe('htmlToPdf — HTML → PDF через innerText + pdf-lib', () => {
     const result = await htmlToPdf(file, {});
     expect(result.pdfBlob).toBeInstanceOf(Blob);
     expect(result.extractedText).toContain('Ухвала');
+    // <head> не передається в рендерер — тільки body
+    const [html] = mockHtmlToPdf.mock.calls[0];
+    expect(html).not.toContain('<title>');
   });
 
   it('використовує fragment HTML як є (без body тегу)', async () => {
@@ -94,7 +100,7 @@ describe('htmlToPdf — HTML → PDF через innerText + pdf-lib', () => {
   it('кидає чесну помилку для PNG з .html розширенням', async () => {
     const file = binaryFile([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
     await expect(htmlToPdf(file, {})).rejects.toThrow(/не є валідним HTML.*PNG/);
-    expect(mockTextToPdf).not.toHaveBeenCalled();
+    expect(mockHtmlToPdf).not.toHaveBeenCalled();
   });
 
   it('кидає чесну помилку для PDF з .html розширенням', async () => {
