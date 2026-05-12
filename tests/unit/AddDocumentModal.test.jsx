@@ -124,6 +124,14 @@ describe('AddDocumentModal — форма', () => {
     expect(screen.getByText('Додати файл')).toBeInTheDocument();
   });
 
+  it('має плейсхолдер "+ Нове" біля селекту провадження (TASK A.7)', () => {
+    renderModal();
+    enterSingleMode();
+    // Кнопка зʼявляється тільки якщо є хоч одне існуюче провадження
+    // (інакше Select взагалі не рендериться)
+    expect(screen.getByText('+ Нове')).toBeInTheDocument();
+  });
+
   it('submit в режимі form показує "Конвертація і завантаження..." під час submit', async () => {
     let resolveSubmit;
     const onSubmit = vi.fn(() => new Promise(r => { resolveSubmit = r; }));

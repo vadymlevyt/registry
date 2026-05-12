@@ -43,13 +43,19 @@ registry/
 │   │   ├── Notebook/index.jsx  — нотатки і записи
 │   │   └── DocumentProcessor/  — пакетна обробка документів
 │   ├── schemas/
-│   │   └── documentSchema.js   — канонічна схема документа (18 + 6 полів) v5
+│   │   └── documentSchema.js   — канонічна схема документа (23 + 6 полів) v5
 │   └── services/
 │       ├── driveAuth.js, driveService.js — Google Drive API
 │       ├── ocrService.js + ocr/ — OCR провайдер-патерн (planka Picatinny)
 │       │   ├── documentAi.js  — Document AI (основний)
 │       │   ├── claudeVision.js — fallback
 │       │   └── pdfjsLocal.js  — локальний для малих файлів
+│       ├── converter/         — конвертація форматів у PDF (TASK A)
+│       │   ├── converterService.js — фасад (HTML/DOCX/image → PDF)
+│       │   ├── htmlToPdf.js   — HTML → PDF через html2pdf.js
+│       │   ├── docxToPdf.js   — DOCX → PDF (mammoth + html2pdf)
+│       │   ├── imageToPdf.js  — JPG/PNG/HEIC/WEBP → PDF (jsPDF)
+│       │   └── heicToJpeg.js  — HEIC → JPEG (heic2any pre-step)
 │       ├── documentFactory.js — createDocument(), validateDocument(), needsReview()
 │       ├── documentsExtended.js — lazy-load для .metadata/documents_extended.json
 │       ├── migrations/
@@ -789,6 +795,73 @@ Read-only розвідка кабінету ЄСІТС через офіційн
 - **Аналіз** — артефакти розпаковуються в окремому Claude-чаті адвоката; ця сторінка лише запускає і реєструє recon, не парсить результат.
 
 Recon не публікує події в eventBus і не списує AI-токени з нашої сторони (виконується через підписку Claude for Chrome адвоката).
+
+## TASK A — КОНВЕРТАЦІЯ ФОРМАТІВ У PDF В AddDocumentModal
+
+**Дата:** 2026-05-12
+**Без bump schemaVersion** — додано nullable поля (за прецедентом `source`)
+
+### Принцип
+
+PDF — єдиний формат для відображення в системі. DOCX/HTML/зображення конвертуються у PDF при додаванні через AddDocumentModal. Pipeline: device file → converterService.convertToPdf → PDF Blob → upload у 01_ОРИГІНАЛИ.
+
+### Канонічна схема — нові поля (23 загалом)
+
+- `originalDriveId` — Drive ID оригіналу (DOCX) поряд з PDF. null для PDF/HTML/image.
+- `originalMime` — MIME-тип оригіналу до конвертації.
+
+Обидва nullable, default null. Старі документи отримують null автоматично.
+
+### Provider Pattern для конвертації
+
+`src/services/converter/` — фасад `converterService.convertToPdf(file, context)` маршрутизує за MIME-типом:
+
+| Тип | Конвертер | Збереження |
+|-----|-----------|------------|
+| PDF | passthrough | як є у 01_ОРИГІНАЛИ |
+| HTML | `htmlToPdf.js` (html2pdf.js + charset detection) | тільки PDF |
+| DOCX | `docxToPdf.js` (mammoth → html2pdf.js) | PDF + DOCX як originalDriveId |
+| image | `imageToPdf.js` (Canvas + jsPDF) | тільки PDF |
+| HEIC | `heicToJpeg.js` → imageToPdf.js | тільки PDF |
+
+Контракт результату: `{ pdfBlob, originalBlob, pdfName, originalName, originalMime, warnings, converter, durationMs }`.
+
+### Feature flag CONVERT_DOCX_TO_PDF
+
+У `src/services/converter/converterService.js`. Default `true`. Якщо `false` — DOCX залишається як є (Viewer через DocxRenderer + mammoth). Відкат при проблемах якості html2pdf.js без переписування коду.
+
+### UI flow AddDocumentModal (TASK A.5)
+
+Двостадійний:
+1. **Стартовий екран** — дві кнопки: «📄 Додати файл» (single) і «🖼 Склеїти зображення» (плейсхолдер TASK B з повідомленням «Доступно у наступній версії»).
+2. **Форма** — після кліку «Додати файл». Назва автозаповнюється з імені файлу без розширення. Кнопка «Назад» повертає на стартовий екран.
+
+### Оптимізація layout.json (TASK A.6)
+
+`ocrService.serializeLayout` фільтрує два поля з кожної сторінки Document AI перед записом у `.layout.json`:
+- `image` (base64 PNG-рендер, ~5-7 МБ) — дублює оригінал у 01_ОРИГІНАЛИ
+- `tokens` (координати окремих літер) — майбутні модулі працюють на рівні paragraphs/blocks
+
+pageStructure у пам'яті залишається повним. Очікуване зменшення: ~7 МБ → ~100-500 КБ на сторінку.
+
+### resolveModel для майбутнього TASK B
+
+`modelResolver.SYSTEM_DEFAULTS.imageSorter = 'claude-sonnet-4-20250514'` — точка для імеджесортера у TASK B (склейка кількох зображень у один PDF з виявленням підмінених сторінок).
+
+### Залежності додано
+
+- `html2pdf.js` (~286 KB gzip, lazy-loaded chunk)
+- `jspdf` (~ всередині html2pdf.js, тепер прямий dep)
+- `heic2any` (~341 KB gzip, lazy-loaded — тільки при HEIC)
+
+Усі через `import()` — bundle не тягне їх при старті аппки.
+
+### Заборонено
+
+- НЕ створювати документ обходом `converterService.convertToPdf` коли є можливість конвертації.
+- НЕ зберігати HTML і зображення-оригінали поряд з PDF — тільки PDF (HTML/image оригінал «всередині» PDF).
+- НЕ повертати TASK B логіку (склейка зображень) — це окремий TASK з агентом сортування.
+- НЕ змінювати `CONVERT_DOCX_TO_PDF` через UI — це константа коду, зміна потребує деплою.
 
 ## АРХІТЕКТУРНЕ ПРАВИЛО — СПІЛЬНИЙ СТАН
 

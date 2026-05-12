@@ -250,13 +250,28 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
         </div>
 
         {proceedingOptions.length > 0 && (
-          <Select
-            label="Провадження"
-            value={state.procId}
-            onChange={(v) => setState((s) => ({ ...s, procId: v }))}
-            options={proceedingOptions}
-            placeholder="Оберіть провадження"
-          />
+          <div className="add-document-modal__proceeding-row">
+            <div className="add-document-modal__proceeding-select">
+              <Select
+                label="Провадження"
+                value={state.procId}
+                onChange={(v) => setState((s) => ({ ...s, procId: v }))}
+                options={proceedingOptions}
+                placeholder="Оберіть провадження"
+              />
+            </div>
+            {/* TASK A.7: плейсхолдер для майбутньої модалки "Структура справи".
+                Точка інтеграції готова — реальне створення провадження зʼявиться
+                окремим TASK без перебудови UI. */}
+            <button
+              type="button"
+              className="add-document-modal__new-proceeding"
+              onClick={() => toast.show('Створення провадження буде доступним у наступних версіях')}
+              title="Створити нове провадження"
+            >
+              + Нове
+            </button>
+          </div>
         )}
 
         <Input

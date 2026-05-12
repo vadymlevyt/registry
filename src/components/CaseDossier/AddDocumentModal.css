@@ -359,3 +359,35 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── + Нове провадження плейсхолдер (TASK A.7) ──────────────────────────── */
+
+.add-document-modal__proceeding-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.add-document-modal__proceeding-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.add-document-modal__new-proceeding {
+  background: var(--color-surface-2);
+  border: 1px dashed var(--color-border);
+  color: var(--color-text-2);
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  height: 36px;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.add-document-modal__new-proceeding:hover {
+  background: var(--color-surface-3, var(--color-surface-2));
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}

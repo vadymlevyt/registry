@@ -19,6 +19,11 @@ export const SYSTEM_DEFAULTS = {
   documentParserVision: 'claude-sonnet-4-20250514',
   caseContextGenerator: 'claude-sonnet-4-20250514',
   deepAnalysis: 'claude-opus-4-7',
+
+  // imageSorter — семантичне сортування кількох зображень в один документ
+  // (TASK B: склейка фото у PDF з виявленням підмінених сторінок).
+  // Готова точка ієрархії user → tenant → system. Поки не використовується.
+  imageSorter: 'claude-sonnet-4-20250514',
 };
 
 const FALLBACK_MODEL = 'claude-sonnet-4-20250514';
