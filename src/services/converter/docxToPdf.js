@@ -1,38 +1,56 @@
 // ── DOCX → PDF ───────────────────────────────────────────────────────────────
-// Конвертує DOCX файл у PDF Blob через mammoth.extractRawText + pdf-lib.
+// Конвертує DOCX файл у PDF Blob з ЗБЕРЕЖЕННЯМ ФОРМАТУВАННЯ через
+// mammoth.convertToHtml + pdfLibHtmlRenderer.
 //
 // Pipeline:
 //   1. Прочитати file як ArrayBuffer
 //   2. validateDocxSignature — перші байти ZIP (PK\x03\x04). DOCX — це ZIP.
 //      Якщо ні — THROW «не є валідним DOCX».
-//   3. mammoth.extractRawText({ arrayBuffer }) → plain text.
-//      Якщо помилка mammoth (битий ZIP, не-DOCX вміст) — THROW з чесним
-//      повідомленням адвокату.
-//      Якщо текст коротший за MIN_TEXT_LENGTH — THROW «порожній або без тексту».
-//   4. pdfLibRenderer.textToPdf(text) → PDF Blob з selectable text і
-//      embed'нутим LiberationSans (Cyrillic support).
+//   3. Паралельно:
+//      - mammoth.convertToHtml({ arrayBuffer }, { styleMap, convertImage })
+//        → HTML з заголовками, абзацами, вирівнюванням, жирним/курсивом,
+//          таблицями, списками і embed'нутими base64 зображеннями.
+//      - mammoth.extractRawText → plain-текст для .txt кеша у 02_ОБРОБЛЕНІ
+//        (швидкий пошук, передача в AI агенти, копіювання у клієнтський чат).
+//      Запускаємо одночасно бо обидві операції незалежні і йдуть по тому ж
+//      ArrayBuffer'у.
+//   4. pdfLibHtmlRenderer.htmlToPdfViaPdfLib(html) → PDF Blob з selectable
+//      text і збереженим форматуванням.
 //   5. Повернути { pdfBlob, extractedText, warnings }
 //
-// Чому pdf-lib замість html2pdf.js: html2pdf.js на планшеті/мобільному viewport
-// видавав порожні PDF — html2canvas не міг рендерити off-screen контейнер з
-// mm-одиницями ширини. pdf-lib — pure JS PDF generation, не залежить від
-// DOM/canvas, повністю контрольовано. Текст у PDF — selectable у Viewer.
+// Чому convertToHtml а не extractRawText: extractRawText втрачає ВСЕ
+// форматування (тільки текст). convertToHtml зберігає структуру:
+// h1-h6, p з вирівнюванням, b/i/u, ul/ol, table, img (як data: URI з base64).
+// pdfLibHtmlRenderer розпізнає це і відображає у PDF з відповідним стилем.
 //
-// Trade-off: pdf-lib не відтворює форматування Word (жирний, italic, заголовки,
-// таблиці, списки з нумерацією). Адвокат бачить весь текст без декорацій.
-// Для точного формату оригінал DOCX лежить поряд як originalDriveId — можна
-// завантажити з Drive і відкрити у Word.
+// Trade-off: підмножина HTML/CSS — складні таблиці у таблицях, плавання,
+// складна типографія можуть втратитись частково. ~80-90% точності для
+// типових адвокатських документів. Для точного формату оригінал DOCX
+// лежить поряд як originalDriveId — можна завантажити з Drive і відкрити у Word.
 //
 // Feature flag CONVERT_DOCX_TO_PDF керується у converterService.js. Якщо false —
 // converterService повертає passthrough і ця функція не викликається.
 
-import { textToPdf } from './pdfLibRenderer.js';
+import { htmlToPdfViaPdfLib } from './pdfLibHtmlRenderer.js';
 
 // Мінімальна довжина значущого тексту. 50 символів — це приблизно одне коротке
 // речення. Менше — або порожній шаблон, або документ без текстового вмісту
-// (тільки зображення/таблиці без OCR-а). У таких випадках адвокат має додавати
+// (тільки зображення без OCR'а). У таких випадках адвокат має додавати
 // файл як зображення, а не як DOCX.
 const MIN_TEXT_LENGTH = 50;
+
+// mammoth styleMap — переносить Word paragraph.alignment у HTML class.
+// Без цього mammoth втрачає alignment у конвертації (позовна заява з
+// text-align: justify рендерилась би як left). Класи розпізнає
+// pdfLibHtmlRenderer через styleForElement → align-* мапінг.
+const MAMMOTH_STYLE_MAP = [
+  "p[alignment='justify'] => p.align-justify:fresh",
+  "p[alignment='center']  => p.align-center:fresh",
+  "p[alignment='right']   => p.align-right:fresh",
+  "p[alignment='left']    => p.align-left:fresh",
+  // Перенесення runs з Word: r[bold] / r[italic] mammoth уже мапить у <strong>/<em>
+  // за дефолтом, додатково не потрібно.
+];
 
 export async function docxToPdf(file, _context = {}) {
   const warnings = [];
@@ -47,13 +65,30 @@ export async function docxToPdf(file, _context = {}) {
     throw new Error('Файл не є валідним DOCX. Можливо це старий .doc формат або файл пошкоджений.');
   }
 
-  // 3. mammoth.extractRawText — повний текст документа з абзацами через \n\n.
-  const mammothModule = await import('mammoth');
+  // 3. Lazy-load mammoth (browser bundle) і паралельно конвертуємо HTML + raw text.
+  const mammothModule = await import('mammoth/mammoth.browser.js');
   const mammoth = mammothModule.default || mammothModule;
 
-  let rawTextResult;
+  let htmlResult, rawTextResult;
   try {
-    rawTextResult = await mammoth.extractRawText({ arrayBuffer });
+    // convertImage повертає base64 data URI — pdfLibHtmlRenderer embed'ить
+    // зображення у PDF через pdfDoc.embedPng/embedJpg.
+    const convertImageOpts = mammoth.images && mammoth.images.imgElement
+      ? {
+          convertImage: mammoth.images.imgElement((image) =>
+            image.read('base64').then((b64) => ({
+              src: `data:${image.contentType};base64,${b64}`,
+            }))
+          ),
+        }
+      : {};
+    [htmlResult, rawTextResult] = await Promise.all([
+      mammoth.convertToHtml(
+        { arrayBuffer },
+        { styleMap: MAMMOTH_STYLE_MAP, ...convertImageOpts }
+      ),
+      mammoth.extractRawText({ arrayBuffer }),
+    ]);
   } catch (e) {
     // Mammoth кидає при пошкодженому ZIP, не-DOCX вмісті, нечитабельних
     // потоках. Не показуємо адвокату технічну ZIP-помилку — даємо чесне
@@ -61,8 +96,12 @@ export async function docxToPdf(file, _context = {}) {
     throw new Error(`Не вдалось прочитати DOCX. Файл може бути пошкоджений: ${e?.message || e}`);
   }
 
+  const html = htmlResult?.value || '';
   const extractedText = (rawTextResult?.value || '').trim();
-  const mammothMessages = rawTextResult?.messages || [];
+  const mammothMessages = [
+    ...(htmlResult?.messages || []),
+    ...(rawTextResult?.messages || []),
+  ];
 
   if (extractedText.length < MIN_TEXT_LENGTH) {
     throw new Error(
@@ -70,18 +109,26 @@ export async function docxToPdf(file, _context = {}) {
     );
   }
 
-  // mammoth warnings (numbering, styles) — переносимо у наш результат
+  if (!html) {
+    throw new Error('DOCX не вдалось конвертувати у HTML для рендеру (порожній результат mammoth).');
+  }
+
+  // mammoth warnings (numbering, unrecognized styles, missing image content
+  // types) — переносимо у наш результат щоб caller міг залогувати.
+  const seen = new Set();
   for (const msg of mammothMessages) {
-    if (msg?.type === 'warning' && msg?.message) {
+    if (msg?.type === 'warning' && msg?.message && !seen.has(msg.message)) {
+      seen.add(msg.message);
       warnings.push(`mammoth: ${msg.message}`);
     }
   }
 
-  // 4. PDF generation через pdf-lib. Завантажує LiberationSans (~140 КБ) один
-  // раз за сесію — потім bytes у in-memory cache.
+  // 4. PDF generation через pdfLibHtmlRenderer. Завантажує 4 шрифти
+  // (Regular, Bold, Italic, BoldItalic) один раз за сесію — потім bytes у
+  // in-memory cache.
   let pdfBlob;
   try {
-    pdfBlob = await textToPdf(extractedText);
+    pdfBlob = await htmlToPdfViaPdfLib(html);
   } catch (e) {
     throw new Error(`Не вдалось згенерувати PDF: ${e?.message || e}`);
   }
