@@ -5467,12 +5467,27 @@ function App() {
         };
       }
 
-      // mode === 'full' — видалити файл з Drive і OCR-кеш.
+      // mode === 'full' — видалити ВСЕ що повʼязане з документом:
+      //   • driveId (PDF з 01_ОРИГІНАЛИ — для конвертованих DOCX/HTML/image,
+      //     або сам файл для PDF/інших)
+      //   • originalDriveId (DOCX/HTML/інший оригінал поряд з PDF після TASK A
+      //     конвертації — null для звичайних PDF/image)
+      //   • OCR-кеш (.txt і .layout.json у 02_ОБРОБЛЕНІ)
+      // Кожне видалення в окремий try/catch — падіння одного не блокує інші.
+      // Реєстр уже почищено вище, навіть якщо Drive-операції впадуть, документ
+      // у UI вже зник.
       if (doc.driveId) {
         try {
           await deleteDriveFile(doc.driveId);
         } catch (err) {
           console.warn(`[delete_document] Drive file delete failed: ${err?.message || err}`);
+        }
+      }
+      if (doc.originalDriveId) {
+        try {
+          await deleteDriveFile(doc.originalDriveId);
+        } catch (err) {
+          console.warn(`[delete_document] Original file delete failed: ${err?.message || err}`);
         }
       }
       try {

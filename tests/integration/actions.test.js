@@ -131,6 +131,43 @@ describe('executeAction integration', () => {
       expect(result.mode).toBe('archive');
       expect(h.getCases()[0].documents[0].status).toBe('archived');
     });
+
+    it('mode=full каскадно видаляє і driveId, і originalDriveId з Drive', async () => {
+      // Конвертований DOCX: driveId → PDF, originalDriveId → DOCX поряд.
+      // Раніше при видаленні видалявся тільки driveId, originalDriveId
+      // лишався сиротою на Drive.
+      const convertedDoc = createDocument({
+        name: 'Позов Кісельової',
+        driveId: 'drive_pdf_42',
+        originalDriveId: 'drive_docx_orig',
+        originalMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size: 25000,
+      });
+      await h.executeAction('dossier_agent', 'add_document', {
+        caseId: 'case_001', document: convertedDoc,
+      });
+
+      const result = await h.executeAction('dossier_agent', 'delete_document', {
+        caseId: 'case_001', documentId: convertedDoc.id, mode: 'full', _fromUI: true,
+      });
+
+      expect(result.success).toBe(true);
+      const deleted = h.getDeletedDriveIds();
+      expect(deleted).toContain('drive_pdf_42');
+      expect(deleted).toContain('drive_docx_orig');
+    });
+
+    it('mode=full без originalDriveId видаляє тільки driveId (нормальний PDF)', async () => {
+      // PDF passthrough — originalDriveId null. Перевіряємо що каскад не
+      // кидає помилку на null і видаляє лише основний файл.
+      const result = await h.executeAction('dossier_agent', 'delete_document', {
+        caseId: 'case_001', documentId: doc.id, mode: 'full', _fromUI: true,
+      });
+      expect(result.success).toBe(true);
+      const deleted = h.getDeletedDriveIds();
+      expect(deleted).toContain('d');
+      expect(deleted).toHaveLength(1); // тільки driveId, не дублюється null
+    });
   });
 
   describe('add_hearing', () => {

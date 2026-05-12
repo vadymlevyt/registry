@@ -57,6 +57,10 @@ function isProceedingDescendant(proceedings, candidateId, ancestorId) {
 export function createHarness({ initialCases = [] } = {}) {
   let cases = JSON.parse(JSON.stringify(initialCases));
   const auditLog = [];
+  // Реєстр видалених driveId — harness не робить HTTP виклики, але треба
+  // тестувати що delete_document з mode='full' каскадно видаляє driveId і
+  // originalDriveId. Тести читають через getDeletedDriveIds.
+  const deletedDriveIds = [];
 
   const setCases = (updater) => {
     cases = typeof updater === 'function' ? updater(cases) : updater;
@@ -265,6 +269,13 @@ export function createHarness({ initialCases = [] } = {}) {
           ? { ...c, documents: c.documents.filter(d => d.id !== documentId) }
           : c
       ));
+      // mode === 'full' — каскадне видалення з Drive. Harness не робить
+      // реальних HTTP викликів — реєструє які driveId були видалені, тест
+      // перевіряє цей список через getDeletedDriveIds.
+      if (mode === 'full') {
+        if (doc.driveId) deletedDriveIds.push(doc.driveId);
+        if (doc.originalDriveId) deletedDriveIds.push(doc.originalDriveId);
+      }
       return { success: true, mode, documentId };
     },
 
@@ -328,6 +339,7 @@ export function createHarness({ initialCases = [] } = {}) {
     executeAction,
     getCases: () => cases,
     getAuditLog: () => auditLog,
+    getDeletedDriveIds: () => [...deletedDriveIds],
     PERMISSIONS,
     UI_ONLY_ACTIONS,
   };
