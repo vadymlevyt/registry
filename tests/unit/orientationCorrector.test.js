@@ -5,6 +5,8 @@ import {
   rotateImageBlob,
   normalizeDegrees,
   extractPageOrientation,
+  readExifOrientation,
+  resolveOrientation,
 } from '../../src/services/sortation/orientationCorrector.js';
 
 describe('orientationCorrector.normalizeDegrees', () => {
@@ -85,6 +87,182 @@ describe('orientationCorrector.extractPageOrientation', () => {
     expect(extractPageOrientation({ orientation: 4 })).toBe(0);
     expect(extractPageOrientation({ orientation: -1 })).toBe(0);
     expect(extractPageOrientation({ orientation: 'PAGE_UNKNOWN' })).toBe(0);
+  });
+});
+
+// ── EXIF orientation reader (TASK B fix 2) ─────────────────────────────────
+//
+// Конструюємо мінімальний JPEG з APP1 EXIF segment що містить Orientation tag.
+// Структура:
+//   0xFFD8 (SOI)
+//   0xFFE1 (APP1) + length + "Exif\0\0" + TIFF header + IFD з Orientation entry
+//   0xFFD9 (EOI)
+
+function buildJpegWithExifOrientation(orientationVal, { littleEndian = true } = {}) {
+  // Computed sizes:
+  //   APP1 segment = "Exif\0\0" (6) + TIFF header (8) + IFD count (2) + 1 entry (12) + next IFD ptr (4) = 32
+  //   APP1 length field includes itself = 32 + 2 = 34 bytes
+  const buf = new ArrayBuffer(2 + 2 + 2 + 32 + 2);
+  const v = new DataView(buf);
+  let p = 0;
+  v.setUint16(p, 0xFFD8, false); p += 2; // SOI
+  v.setUint16(p, 0xFFE1, false); p += 2; // APP1 marker
+  v.setUint16(p, 34, false); p += 2;     // segment length (incl. length field)
+
+  // "Exif\0\0"
+  v.setUint8(p, 0x45); p += 1; // E
+  v.setUint8(p, 0x78); p += 1; // x
+  v.setUint8(p, 0x69); p += 1; // i
+  v.setUint8(p, 0x66); p += 1; // f
+  v.setUint8(p, 0x00); p += 1;
+  v.setUint8(p, 0x00); p += 1;
+
+  const tiffStart = p;
+  // Byte order
+  v.setUint16(p, littleEndian ? 0x4949 : 0x4D4D, false); p += 2;
+  // TIFF magic 0x002A
+  v.setUint16(p, 0x002A, littleEndian); p += 2;
+  // Offset to first IFD = 8 (right after TIFF header)
+  v.setUint32(p, 8, littleEndian); p += 4;
+  // IFD count = 1
+  v.setUint16(p, 1, littleEndian); p += 2;
+  // Entry: tag=0x0112 (Orientation), type=3 (SHORT), count=1, value=orientationVal
+  v.setUint16(p, 0x0112, littleEndian); p += 2;
+  v.setUint16(p, 3, littleEndian); p += 2;
+  v.setUint32(p, 1, littleEndian); p += 4;
+  v.setUint16(p, orientationVal, littleEndian); p += 2;
+  v.setUint16(p, 0, littleEndian); p += 2; // padding to 4 bytes
+  // Next IFD offset = 0
+  v.setUint32(p, 0, littleEndian); p += 4;
+
+  // EOI
+  v.setUint16(p, 0xFFD9, false); p += 2;
+
+  return new Blob([buf], { type: 'image/jpeg' });
+}
+
+describe('orientationCorrector.readExifOrientation', () => {
+  it('повертає null для не-Blob', async () => {
+    expect(await readExifOrientation(null)).toBeNull();
+    expect(await readExifOrientation('not a blob')).toBeNull();
+  });
+
+  it('повертає null для PNG (mime не jpeg/heic)', async () => {
+    const pngBlob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' });
+    expect(await readExifOrientation(pngBlob)).toBeNull();
+  });
+
+  it('JPEG без EXIF → null', async () => {
+    // Просто SOI + EOI без APP1
+    const buf = new ArrayBuffer(4);
+    const v = new DataView(buf);
+    v.setUint16(0, 0xFFD8, false);
+    v.setUint16(2, 0xFFD9, false);
+    const blob = new Blob([buf], { type: 'image/jpeg' });
+    expect(await readExifOrientation(blob)).toBeNull();
+  });
+
+  it('EXIF orientation=1 (Normal) → degrees=0', async () => {
+    const blob = buildJpegWithExifOrientation(1);
+    const result = await readExifOrientation(blob);
+    expect(result).toEqual({ degrees: 0, rawTag: 1, mirrored: false });
+  });
+
+  it('EXIF orientation=3 (Rotated 180°) → degrees=180', async () => {
+    const blob = buildJpegWithExifOrientation(3);
+    const result = await readExifOrientation(blob);
+    expect(result.degrees).toBe(180);
+    expect(result.rawTag).toBe(3);
+  });
+
+  it('EXIF orientation=6 (90° CW) → degrees=270 (correction CW)', async () => {
+    const blob = buildJpegWithExifOrientation(6);
+    const result = await readExifOrientation(blob);
+    expect(result.degrees).toBe(270);
+    expect(result.rawTag).toBe(6);
+  });
+
+  it('EXIF orientation=8 (90° CCW) → degrees=90', async () => {
+    const blob = buildJpegWithExifOrientation(8);
+    const result = await readExifOrientation(blob);
+    expect(result.degrees).toBe(90);
+    expect(result.rawTag).toBe(8);
+  });
+
+  it('EXIF orientation=2 (mirrored) → degrees=0, mirrored=true', async () => {
+    const blob = buildJpegWithExifOrientation(2);
+    const result = await readExifOrientation(blob);
+    expect(result.degrees).toBe(0);
+    expect(result.mirrored).toBe(true);
+  });
+
+  it('big-endian EXIF читається правильно', async () => {
+    const blob = buildJpegWithExifOrientation(6, { littleEndian: false });
+    const result = await readExifOrientation(blob);
+    expect(result.rawTag).toBe(6);
+    expect(result.degrees).toBe(270);
+  });
+
+  it('значення поза 1-8 → null', async () => {
+    const blob = buildJpegWithExifOrientation(15);
+    const result = await readExifOrientation(blob);
+    expect(result).toBeNull();
+  });
+});
+
+// ── resolveOrientation ───────────────────────────────────────────────────
+
+describe('orientationCorrector.resolveOrientation', () => {
+  it('EXIF != 0 — priority over docAi', () => {
+    const r = resolveOrientation({
+      exifResult: { degrees: 90, rawTag: 8, mirrored: false },
+      docAiPage: { orientation: 2 }, // Document AI каже 180
+      fileName: 'photo.jpg',
+    });
+    expect(r.degrees).toBe(90);
+    expect(r.source).toBe('exif');
+    expect(r.logs.some((l) => l.includes('EXIF tag=8'))).toBe(true);
+  });
+
+  it('EXIF = 0, docAi != 0 → docAi', () => {
+    const r = resolveOrientation({
+      exifResult: { degrees: 0, rawTag: 1, mirrored: false },
+      docAiPage: { orientation: 1 }, // 90°
+      fileName: 'scan.pdf',
+    });
+    expect(r.degrees).toBe(90);
+    expect(r.source).toBe('docAi');
+  });
+
+  it('обидва = 0 → none', () => {
+    const r = resolveOrientation({
+      exifResult: { degrees: 0, rawTag: 1, mirrored: false },
+      docAiPage: { orientation: 0 },
+      fileName: 'doc.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
+  });
+
+  it('EXIF відсутній, docAi != 0 → docAi', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: { detectedOrientation: 90 },
+      fileName: 'scan.jpg',
+    });
+    expect(r.degrees).toBe(90);
+    expect(r.source).toBe('docAi');
+  });
+
+  it('EXIF і docAi обидва відсутні → none', () => {
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: null,
+      fileName: 'mystery.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
+    expect(r.logs.length).toBeGreaterThan(0);
   });
 });
 

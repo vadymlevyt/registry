@@ -27,9 +27,23 @@ vi.mock('../../src/services/sortation/imageSortingAgent.js', () => ({
 
 const mockRotateImageBlob = vi.fn(async (blob) => blob);
 const mockExtractPageOrientation = vi.fn(() => 0);
+const mockReadExifOrientation = vi.fn(async () => null);
+const mockResolveOrientation = vi.fn(({ exifResult, docAiPage }) => {
+  if (exifResult && exifResult.degrees) {
+    return { degrees: exifResult.degrees, source: 'exif', logs: [] };
+  }
+  const docAiDeg = mockExtractPageOrientation(docAiPage);
+  return {
+    degrees: docAiDeg,
+    source: docAiDeg ? 'docAi' : 'none',
+    logs: [],
+  };
+});
 vi.mock('../../src/services/sortation/orientationCorrector.js', () => ({
   rotateImageBlob: (...args) => mockRotateImageBlob(...args),
   extractPageOrientation: (...args) => mockExtractPageOrientation(...args),
+  readExifOrientation: (...args) => mockReadExifOrientation(...args),
+  resolveOrientation: (...args) => mockResolveOrientation(...args),
 }));
 
 vi.mock('../../src/services/converter/heicToJpeg.js', () => ({

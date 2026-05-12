@@ -48,7 +48,12 @@
 import { heicToJpeg } from './heicToJpeg.js';
 import * as ocrService from '../ocrService.js';
 import { sortImages, ensureUniqueName } from '../sortation/imageSortingAgent.js';
-import { extractPageOrientation, rotateImageBlob } from '../sortation/orientationCorrector.js';
+import {
+  extractPageOrientation,
+  rotateImageBlob,
+  readExifOrientation,
+  resolveOrientation,
+} from '../sortation/orientationCorrector.js';
 
 const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
@@ -368,8 +373,12 @@ export async function convertImagesToPdf(files, options = {}) {
   const finalOrder = sortResult?.order || normalized.map((_, i) => i);
 
   // 4. Корекція orientation per image — тільки якщо != 0 (Розумна економія)
+  // Пріоритет: EXIF (фото з телефону) → Document AI orientation → 0.
+  // detectedOrientations повертається наверх щоб ImageMergePanel міг скласти
+  // фінальну rotation = (autoOrientation + userRotation) mod 360 у preview.
   onProgress('rotate', 0, normalized.length);
   const rotatedBlobs = new Array(normalized.length);
+  const detectedOrientations = new Array(normalized.length).fill(0);
   for (let i = 0; i < normalized.length; i++) {
     const file = normalized[i];
     if (file._heicFailed) {
@@ -377,13 +386,25 @@ export async function convertImagesToPdf(files, options = {}) {
       onProgress('rotate', i + 1, normalized.length);
       continue;
     }
+    let exifResult = null;
+    try {
+      exifResult = await readExifOrientation(file);
+    } catch (e) {
+      console.warn(`[multiImageToPdf] EXIF read fail для ${file.name}:`, e?.message || e);
+    }
     const firstPage = Array.isArray(ocrResults[i]?.pageStructure)
       ? ocrResults[i].pageStructure[0]
       : null;
-    const degrees = extractPageOrientation(firstPage);
+    const resolved = resolveOrientation({
+      exifResult,
+      docAiPage: firstPage,
+      fileName: file.name,
+    });
+    for (const line of resolved.logs) console.log(line);
+    detectedOrientations[i] = resolved.degrees;
     try {
-      rotatedBlobs[i] = degrees !== 0
-        ? await rotateImageBlob(file, degrees)
+      rotatedBlobs[i] = resolved.degrees !== 0
+        ? await rotateImageBlob(file, resolved.degrees)
         : file;
     } catch (e) {
       warnings.push(`Rotation fail для ${file.name}: ${e?.message || e}. Залишаємо без обертання.`);
@@ -446,6 +467,7 @@ export async function convertImagesToPdf(files, options = {}) {
     ocrResults,
     sortResult,
     finalOrder,
+    detectedOrientations,
     warnings,
     converter: 'multiImageToPdf',
     durationMs: Date.now() - t0,

@@ -29,6 +29,162 @@
 
 const ALLOWED_DEGREES = new Set([0, 90, 180, 270]);
 
+// ── EXIF orientation reader ─────────────────────────────────────────────────
+// Фото з телефону (iPhone, Android camera) зберігають EXIF orientation tag
+// 0x0112 (decimal 274) у TIFF marker всередині JPEG. Document AI часто
+// НЕ повертає orientation для таких фото — текст детектується нормально,
+// але самих метаданих orientation у відповіді немає. EXIF — єдине надійне
+// джерело правди про фізичну орієнтацію сенсором.
+//
+// EXIF orientation values (стандарт):
+//   1 = Normal (0°)
+//   2 = Mirrored horizontally
+//   3 = Rotated 180°
+//   4 = Mirrored vertically
+//   5 = Mirrored + 90° CCW
+//   6 = Rotated 90° CW (телефон тримали вертикально під landscape сцену)
+//   7 = Mirrored + 90° CW
+//   8 = Rotated 90° CCW
+//
+// Ми мапимо у необхідний кут ОБЕРТАННЯ для виправлення (CW degrees):
+//   1 → 0     (нормально)
+//   3 → 180
+//   6 → 270   (треба обернути CCW = +270 CW щоб виправити)
+//   8 → 90    (треба обернути CW)
+//   2/4/5/7 → 0 (mirroring ігноруємо — рідкісне для фото документів)
+//
+// Читання — мінімальний binary parser перших 64 KB JPEG. Без сторонніх
+// бібліотек (екзотика на 5-10 KB не виправдана для одного 16-bit поля).
+
+const EXIF_TO_CORRECTION_DEG = {
+  1: 0,
+  3: 180,
+  6: 270,
+  8: 90,
+};
+
+/**
+ * Читає EXIF orientation tag з JPEG/HEIC Blob. Повертає кут обертання у
+ * градусах (CW) необхідний для виправлення, або null якщо EXIF не знайдено
+ * чи формат не JPEG.
+ *
+ * @param {Blob|File} blob — вхідне зображення
+ * @returns {Promise<{ degrees: 0|90|180|270, rawTag: number, mirrored: boolean } | null>}
+ */
+export async function readExifOrientation(blob) {
+  if (!(blob instanceof Blob)) return null;
+  // Не-JPEG (PNG, WEBP) — EXIF немає або у іншому форматі. PNG ігноруємо
+  // (стандартно PNG не має orientation метаданих).
+  const type = (blob.type || '').toLowerCase();
+  // HEIC має свій формат EXIF. heic2any зазвичай вже виправляє orientation
+  // при конвертації — для HEIC після конверсії у JPEG він буде в EXIF.
+  if (type && !type.includes('jpeg') && !type.includes('jpg') && !type.includes('heic') && !type.includes('heif')) {
+    return null;
+  }
+
+  // Зчитуємо перші 64 KB — EXIF знаходиться у APP1 marker (0xFFE1) одразу
+  // після SOI (0xFFD8). У реальних JPEG-файлах вкладається у перші 1-10 KB.
+  const head = await blob.slice(0, 65536).arrayBuffer();
+  const view = new DataView(head);
+
+  // SOI marker = 0xFFD8
+  if (view.byteLength < 4) return null;
+  if (view.getUint16(0, false) !== 0xFFD8) return null;
+
+  let offset = 2;
+  while (offset < view.byteLength - 1) {
+    if (view.getUint8(offset) !== 0xFF) return null;
+    const marker = view.getUint8(offset + 1);
+    // APP1 = 0xE1 — починається EXIF блок
+    if (marker === 0xE1) {
+      const segmentLength = view.getUint16(offset + 2, false);
+      const exifStart = offset + 4;
+      // "Exif\0\0" header
+      if (
+        view.byteLength < exifStart + 6 ||
+        view.getUint32(exifStart, false) !== 0x45786966 || // "Exif"
+        view.getUint16(exifStart + 4, false) !== 0x0000
+      ) {
+        return null;
+      }
+      const tiffStart = exifStart + 6;
+      // Byte order: II = little-endian (0x4949), MM = big-endian (0x4D4D)
+      const endian = view.getUint16(tiffStart, false);
+      const littleEndian = endian === 0x4949;
+      if (!littleEndian && endian !== 0x4D4D) return null;
+      // TIFF magic = 0x002A
+      if (view.getUint16(tiffStart + 2, littleEndian) !== 0x002A) return null;
+      // Offset до першого IFD (від tiffStart)
+      const ifdOffset = view.getUint32(tiffStart + 4, littleEndian);
+      const ifdStart = tiffStart + ifdOffset;
+      if (view.byteLength < ifdStart + 2) return null;
+      const entriesCount = view.getUint16(ifdStart, littleEndian);
+      for (let i = 0; i < entriesCount; i++) {
+        const entryOffset = ifdStart + 2 + i * 12;
+        if (view.byteLength < entryOffset + 12) break;
+        const tag = view.getUint16(entryOffset, littleEndian);
+        if (tag === 0x0112) {
+          // Orientation: SHORT type, value у перших 2 байтах value field
+          const orientationVal = view.getUint16(entryOffset + 8, littleEndian);
+          if (orientationVal >= 1 && orientationVal <= 8) {
+            const mirrored = [2, 4, 5, 7].includes(orientationVal);
+            const degrees = EXIF_TO_CORRECTION_DEG[orientationVal] ?? 0;
+            return { degrees, rawTag: orientationVal, mirrored };
+          }
+        }
+      }
+      return null;
+    }
+    // Інакше — пропускаємо segment довжини segmentLength
+    if (marker === 0xD8 || marker === 0xD9) return null; // SOI/EOI
+    const len = view.getUint16(offset + 2, false);
+    if (len < 2) return null;
+    offset += 2 + len;
+  }
+  return null;
+}
+
+/**
+ * Об'єднує EXIF orientation і Document AI orientation у фінальний кут
+ * обертання. Пріоритет:
+ *   1. EXIF (фізична орієнтація сенсором — найнадійніше для фото з телефону)
+ *   2. Document AI orientation (для відсканованих PDF/зображень де EXIF немає)
+ *   3. 0 (no-op)
+ *
+ * Логує своє рішення у консоль для діагностики (TASK B fix 2).
+ *
+ * @param {Object} opts
+ * @param {Object|null} opts.exifResult — результат readExifOrientation
+ * @param {Object|null} opts.docAiPage — перша сторінка Document AI pageStructure
+ * @param {string} opts.fileName — для лог-повідомлень
+ * @returns {{ degrees: 0|90|180|270, source: 'exif'|'docAi'|'none', logs: string[] }}
+ */
+export function resolveOrientation({ exifResult, docAiPage, fileName }) {
+  const logs = [];
+  const tag = `[orientation:${fileName || '?'}]`;
+
+  if (exifResult && Number.isFinite(exifResult.degrees) && exifResult.degrees !== 0) {
+    logs.push(`${tag} EXIF tag=${exifResult.rawTag} → rotate ${exifResult.degrees}°`);
+    return { degrees: exifResult.degrees, source: 'exif', logs };
+  }
+
+  const docAiDeg = extractPageOrientation(docAiPage);
+  if (docAiDeg !== 0) {
+    logs.push(`${tag} Document AI orientation → rotate ${docAiDeg}°`);
+    return { degrees: docAiDeg, source: 'docAi', logs };
+  }
+
+  // Обидва == 0
+  if (exifResult) {
+    logs.push(`${tag} EXIF tag=${exifResult.rawTag} (normal), Document AI=0 → no rotation`);
+  } else if (docAiPage) {
+    logs.push(`${tag} EXIF none, Document AI=0 → no rotation`);
+  } else {
+    logs.push(`${tag} no EXIF, no Document AI page → no rotation`);
+  }
+  return { degrees: 0, source: 'none', logs };
+}
+
 /**
  * Нормалізує довільний кут у градусах до одного з 0/90/180/270.
  * Виправляє: -90 → 270, 360 → 0, 450 → 90, 17 → 0 (closest), 75 → 90.

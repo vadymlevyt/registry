@@ -345,6 +345,137 @@ describe('imageSortingAgent.sortImages — fallback', () => {
   });
 });
 
+// ── sortImages: duplicates (TASK B fix 1) ──────────────────────────────────
+
+describe('imageSortingAgent.sortImages — duplicates', () => {
+  it('агент повертає duplicates з валідною групою — приходить у результат', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1, 2, 3, 4],
+      duplicates: [
+        { group: [3, 5], recommended: 3, reason: 'Фото 3 чіткіше' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'Ухвала',
+    });
+    const items = [0, 1, 2, 3, 4, 5].map((i) => imageItem(i, `text ${i}`));
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].group).toEqual([3, 5]);
+    expect(result.duplicates[0].recommended).toBe(3);
+    expect(result.duplicates[0].reason).toBe('Фото 3 чіткіше');
+  });
+
+  it('duplicates відсутні → пустий масив у результаті', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1],
+      warnings: [],
+      missing: null,
+      suggestedName: 'Документ',
+    });
+    const items = [imageItem(0, 't'), imageItem(1, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toEqual([]);
+  });
+
+  it('група з менш ніж 2 елементами — відфільтрована', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1, 2],
+      duplicates: [
+        { group: [0], recommended: 0, reason: 'тільки один' },
+        { group: [1, 2], recommended: 1, reason: 'OK' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [imageItem(0, 't'), imageItem(1, 't'), imageItem(2, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].group).toEqual([1, 2]);
+  });
+
+  it('recommended поза групою — нормалізується на перший з group', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1, 2],
+      duplicates: [
+        { group: [0, 1], recommended: 99, reason: 'invalid recommended' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [imageItem(0, 't'), imageItem(1, 't'), imageItem(2, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].recommended).toBe(0);
+  });
+
+  it('index поза allowed → пропущений', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1],
+      duplicates: [
+        { group: [0, 99, 1], recommended: 0, reason: 'мікс валід/невалід' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [imageItem(0, 't'), imageItem(1, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].group).toEqual([0, 1]);
+  });
+
+  it('перетин між групами — index у першій залишається, у другій випадає', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1, 2, 3],
+      duplicates: [
+        { group: [0, 1], recommended: 0, reason: 'перша група' },
+        { group: [1, 2], recommended: 1, reason: 'друга група використовує 1' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [imageItem(0, 't'), imageItem(1, 't'), imageItem(2, 't'), imageItem(3, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    // Друга група після виключення 1 має тільки [2] → < 2, тому випадає
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].group).toEqual([0, 1]);
+  });
+
+  it('reason відсутній → дефолтний', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1],
+      duplicates: [{ group: [0, 1], recommended: 0 }],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [imageItem(0, 't'), imageItem(1, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates[0].reason).toBeTruthy();
+    expect(typeof result.duplicates[0].reason).toBe('string');
+  });
+
+  it('1 зображення — duplicates всегда пустий', async () => {
+    const result = await sortImages([imageItem(0, 't')], { apiKey: 'x', callApi: vi.fn() });
+    expect(result.duplicates).toEqual([]);
+  });
+
+  it('fallback при невалідному JSON — duplicates пустий', async () => {
+    const callApi = vi.fn(async () => ({
+      content: [{ text: 'not json' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    }));
+    const items = [imageItem(0, 't'), imageItem(1, 't')];
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.fallback).toBe(true);
+    expect(result.duplicates).toEqual([]);
+  });
+});
+
 // ── sortImages: API errors ────────────────────────────────────────────────
 
 describe('imageSortingAgent.sortImages — API errors', () => {

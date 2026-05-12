@@ -3,22 +3,24 @@
 //
 // 3 фази:
 //   selecting — вибір файлів (device input multiple + Drive multi-select picker)
-//   processing — OCR + sortImages (з прогрес-баром у наступному коміті B.6)
-//   preview — grid з drag-and-drop, warnings, видалити, форма метаданих
+//   processing — OCR + sortImages + orientation detection + PDF assembly
+//   preview — grid з drag-and-drop, warnings, duplicates, manual rotation,
+//             попап перегляду з pinch-zoom, форма метаданих
 //
-// Інтеграція з CaseDossier:
-//   onSubmit({ name, category, author, procId, date, isKey,
-//              file: pdfFileFromMerge,
-//              mergeArtifacts: { extractedText, layoutJson, sortResult } })
-//   CaseDossier бачить mergeArtifacts і:
-//     - file (PDF Blob) — passthrough через convertToPdf
-//     - НЕ запускає повторний OCR (extractedText уже є)
-//     - Пише .txt + .layout.json у 02_ОБРОБЛЕНІ напряму
+// Інтеграція з CaseDossier — як і раніше: onSubmit передає файл + mergeArtifacts.
 //
 // Drag-and-drop через @dnd-kit/core + @dnd-kit/sortable (touch + a11y).
-// Lazy-loaded чанк при першому відкритті preview.
+// Попап перегляду через react-zoom-pan-pinch (lazy chunk).
 
-import { useState, useCallback, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import {
   Image as ImageIcon,
   Upload,
@@ -27,6 +29,11 @@ import {
   ArrowLeft,
   AlertTriangle,
   Trash2,
+  RotateCw,
+  Eye,
+  GripVertical,
+  Check,
+  Copy as CopyIcon,
 } from 'lucide-react';
 import { Modal, Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
@@ -65,26 +72,23 @@ function isImageFile(file) {
 /**
  * @param {{caseData, onSubmit, onCancel, onOpenDrivePicker}} props
  *   onOpenDrivePicker — викликаємо коли адвокат натискає "Додати з Drive"
- *                       (parent відкриває DrivePickerSection у selectionMode='multi-images'
- *                        і повертає вибрані файли через addDriveFiles())
  */
 export const ImageMergePanel = forwardRef(function ImageMergePanel(
   { caseData, apiKey, onSubmit, onCancel, onOpenDrivePicker },
   ref
 ) {
-  // Phase: 'selecting' | 'processing' | 'preview'
   const [phase, setPhase] = useState('selecting');
-  // Список зібраних файлів (device + Drive). File або Drive-marker object.
   const [files, setFiles] = useState([]);
-  // Метаданих pipeline-результат після OCR + sort
   const [pipelineResult, setPipelineResult] = useState(null);
-  // Поточний порядок індексів у preview (можна перетягувати)
   const [orderedIndices, setOrderedIndices] = useState([]);
-  // Видалені індекси (адвокат натиснув X на thumbnail)
   const [removedIndices, setRemovedIndices] = useState(() => new Set());
-  // Прогрес фази
+  // userRotation[origIdx] = 0|90|180|270 — додатковий кут CW який накладається
+  // ПОВЕРХ автодетектованої orientation (EXIF/Document AI). Стартує з 0 для
+  // усіх. Кнопка ↻ збільшує на 90° (mod 360). Застосовується у submit-rebuild.
+  // ОКРЕМЕ ім'я бо це окремий намір (правило #11): автодетект — спроба системи,
+  // userRotation — корекція адвоката. Не змішуємо в одне поле.
+  const [userRotation, setUserRotation] = useState(() => new Map());
   const [progress, setProgress] = useState({ phase: '', done: 0, total: 0 });
-  // Form
   const [form, setForm] = useState({
     name: '',
     category: '',
@@ -94,13 +98,10 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     isKey: false,
   });
   const [submitting, setSubmitting] = useState(false);
-  // Тумбнейли (URL.createObjectURL) — створюємо у processing, очищуємо на unmount
-  const thumbUrlsRef = useRef(new Map()); // index → blobUrl
+  const thumbUrlsRef = useRef(new Map());
 
-  // Reset state коли компонент монтуєтсья
   useEffect(() => {
     return () => {
-      // Cleanup blob URLs
       for (const url of thumbUrlsRef.current.values()) {
         try { URL.revokeObjectURL(url); } catch {}
       }
@@ -116,13 +117,10 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       toast.show(`Пропущено ${skipped} не-зображень`);
     }
     setFiles((prev) => [...prev, ...validImages]);
-    e.target.value = ''; // дозволяємо повторно вибрати ті ж файли
+    e.target.value = '';
   };
 
   const addDriveFiles = useCallback((driveFiles) => {
-    // Drive-файли треба завантажити як Blob і обернути у File. Робимо це
-    // лінь-завантаження у processing фазі (тут — тільки додаємо до списку
-    // зі маркером _isDriveSource + _driveId).
     const mapped = driveFiles.map((df) => ({
       _isDriveSource: true,
       _driveId: df.id,
@@ -133,9 +131,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     setFiles((prev) => [...prev, ...mapped]);
   }, []);
 
-  // Expose addDriveFiles для parent через ref не потрібно — parent сам тримає
-  // collback через onOpenDrivePicker.
-
   const removeFile = (idx) => {
     setFiles((prev) => prev.filter((_, i) => i !== idx));
   };
@@ -145,9 +140,8 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       toast.error('Додайте хоча б одне зображення');
       return;
     }
-    // А1=A: при 50+ зображеннях — confirmation з оцінкою часу.
     if (files.length > MAX_IMAGES_WARN) {
-      const minutes = Math.ceil(files.length / 25); // ~25 фото/хв для OCR + agent
+      const minutes = Math.ceil(files.length / 25);
       const ok = window.confirm(
         `Великий обсяг: ${files.length} зображень.\n` +
         `Обробка займе приблизно ${minutes} хв.\n\n` +
@@ -156,7 +150,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       if (!ok) return;
     }
 
-    // Завантажуємо Drive файли як Blob → File перед pipeline
     setPhase('processing');
     setProgress({ phase: 'preparing', done: 0, total: files.length });
 
@@ -201,12 +194,11 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         finalOrderLen: result?.finalOrder?.length,
         suggestedName: result?.suggestedName,
         warningsCount: result?.warnings?.length,
+        duplicatesCount: result?.sortResult?.duplicates?.length || 0,
+        detectedOrientations: result?.detectedOrientations,
         durationMs: result?.durationMs,
       });
 
-      // Захист від невалідного результату pipeline. Якщо pdfBlob відсутній —
-      // дальше неможливо ні preview, ні submit. Кидаємо явну помилку щоб
-      // адвокат побачив toast замість заглухлого 'processing'.
       if (!(result?.pdfBlob instanceof Blob) || result.pdfBlob.size === 0) {
         throw new Error('Pipeline повернув порожній PDF');
       }
@@ -214,7 +206,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         throw new Error('Pipeline повернув порожній finalOrder');
       }
 
-      // Створюємо blob URLs для thumbnails
       for (let i = 0; i < realFiles.length; i++) {
         if (!thumbUrlsRef.current.has(i)) {
           thumbUrlsRef.current.set(i, URL.createObjectURL(realFiles[i]));
@@ -223,6 +214,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
 
       setPipelineResult({ ...result, realFiles });
       setOrderedIndices(result.finalOrder);
+      setUserRotation(new Map());
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
@@ -235,14 +227,23 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     }
   };
 
-  const handleRemoveIndex = (origIdx) => {
+  const handleRemoveIndex = useCallback((origIdx) => {
     setRemovedIndices((prev) => {
       const next = new Set(prev);
       next.add(origIdx);
       return next;
     });
     setOrderedIndices((prev) => prev.filter((i) => i !== origIdx));
-  };
+  }, []);
+
+  const handleRotateIndex = useCallback((origIdx) => {
+    setUserRotation((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(origIdx) || 0;
+      next.set(origIdx, (cur + 90) % 360);
+      return next;
+    });
+  }, []);
 
   const handleRemoveAllSuspicious = () => {
     if (!pipelineResult?.sortResult?.warnings) return;
@@ -254,6 +255,37 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     });
     setOrderedIndices((prev) => prev.filter((i) => !suspicious.has(i)));
   };
+
+  // Видалити всі дублікати залишаючи тільки recommended кожної групи.
+  const handleKeepRecommendedDuplicates = useCallback((groupIndices, recommended) => {
+    const toRemove = groupIndices.filter((i) => i !== recommended);
+    if (toRemove.length === 0) return;
+    setRemovedIndices((prev) => {
+      const next = new Set(prev);
+      for (const i of toRemove) next.add(i);
+      return next;
+    });
+    setOrderedIndices((prev) => prev.filter((i) => !toRemove.includes(i)));
+  }, []);
+
+  const handleKeepAllRecommendedDuplicates = useCallback(() => {
+    const groups = pipelineResult?.sortResult?.duplicates || [];
+    if (groups.length === 0) return;
+    const toRemove = [];
+    for (const g of groups) {
+      for (const i of g.group) {
+        if (i !== g.recommended) toRemove.push(i);
+      }
+    }
+    if (toRemove.length === 0) return;
+    const removeSet = new Set(toRemove);
+    setRemovedIndices((prev) => {
+      const next = new Set(prev);
+      for (const i of removeSet) next.add(i);
+      return next;
+    });
+    setOrderedIndices((prev) => prev.filter((i) => !removeSet.has(i)));
+  }, [pipelineResult?.sortResult?.duplicates]);
 
   const handleSubmit = async () => {
     if (submitting) return;
@@ -269,39 +301,36 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
 
     setSubmitting(true);
     try {
-      // Якщо адвокат залишив тільки частину зображень — перебудовуємо PDF
-      // у новому порядку. Якщо все як було і порядок не мінявся — re-use готовий.
       const orderUnchanged =
         orderedIndices.length === pipelineResult.finalOrder.length &&
         orderedIndices.every((v, i) => v === pipelineResult.finalOrder[i]);
+
+      const hasUserRotation = Array.from(userRotation.values()).some((d) => d !== 0);
 
       let finalPdfBlob;
       let finalText;
       let finalLayout;
 
-      if (orderUnchanged && removedIndices.size === 0) {
+      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation) {
         finalPdfBlob = pipelineResult.pdfBlob;
         finalText = pipelineResult.extractedText;
         finalLayout = pipelineResult.layoutJson;
       } else {
-        // Адвокат перепорядкував/видалив. Перебудовуємо PDF + .txt + .layout
-        // ТІЛЬКИ з тих індексів що залишились, у новому порядку.
-        // OCR НЕ запускаємо — використовуємо вже отримані ocrResults з пам'яті.
         const rebuilt = await rebuildFromOcrResults({
           orderedIndices,
           realFiles: pipelineResult.realFiles,
           ocrResults: pipelineResult.ocrResults,
+          detectedOrientations: pipelineResult.detectedOrientations || [],
+          userRotation,
         });
         finalPdfBlob = rebuilt.pdfBlob;
         finalText = rebuilt.extractedText;
         finalLayout = rebuilt.layoutJson;
       }
 
-      // Унікалізуємо назву серед документів справи (адвокат міг змінити)
       const existingNames = (caseData?.documents || []).map((d) => d.name).filter(Boolean);
       const uniqueName = ensureUniqueName(form.name.trim(), existingNames);
 
-      // Конвертуємо PDF blob у File для передачі через onSubmit
       const pdfFile = new File(
         [finalPdfBlob],
         `${uniqueName}.pdf`,
@@ -331,16 +360,12 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     }
   };
 
-  // Imperative API для parent: addDriveFiles(driveFiles[]) додає файли у чергу.
-  // Parent викликає її коли Drive picker (multi-images mode) повертає selection.
   useImperativeHandle(ref, () => ({
     addDriveFiles,
   }), [addDriveFiles]);
 
   if (phase === 'processing') {
-    return (
-      <ProcessingView progress={progress} />
-    );
+    return <ProcessingView progress={progress} />;
   }
 
   if (phase === 'preview') {
@@ -350,11 +375,15 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         orderedIndices={orderedIndices}
         removedIndices={removedIndices}
         thumbUrls={thumbUrlsRef.current}
+        userRotation={userRotation}
         form={form}
         setForm={setForm}
         onReorder={setOrderedIndices}
         onRemove={handleRemoveIndex}
+        onRotate={handleRotateIndex}
         onRemoveAllSuspicious={handleRemoveAllSuspicious}
+        onKeepRecommendedDuplicate={handleKeepRecommendedDuplicates}
+        onKeepAllRecommendedDuplicates={handleKeepAllRecommendedDuplicates}
         proceedings={caseData?.proceedings || []}
         onSubmit={handleSubmit}
         onCancel={onCancel}
@@ -363,7 +392,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     );
   }
 
-  // phase === 'selecting'
   return (
     <div className="image-merge-panel__selecting">
       <p className="image-merge-panel__hint">
@@ -445,13 +473,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
 });
 
 // ── Processing view (OCR + sort progress) ─────────────────────────────────
-//
-// Stepper показує ВСІ фази у послідовності. Поточна фаза підсвічена
-// (icon active), завершені — чекмарк, наступні — приглушені. Адвокат бачить
-// що було і що залишилось.
-//
-// Особлива поведінка: фаза 'preparing' (завантаження Drive blobs)
-// показується тільки коли всі файли підготовлено, інакше pre-phase.
 
 const PHASES = [
   { key: 'preparing', label: 'Підготовка' },
@@ -487,7 +508,6 @@ function ProcessingView({ progress }) {
         />
       </div>
 
-      {/* Stepper з усіма фазами — адвокат бачить що залишилось */}
       <div className="image-merge-panel__phase-stepper">
         {PHASES.map((phase, idx) => {
           const state =
@@ -511,18 +531,22 @@ function ProcessingView({ progress }) {
   );
 }
 
-// ── Preview view (drag-and-drop + form) ──────────────────────────────────
+// ── Preview view (drag-and-drop + form + duplicates + popup) ──────────────
 
 function PreviewView({
   pipelineResult,
   orderedIndices,
   removedIndices,
   thumbUrls,
+  userRotation,
   form,
   setForm,
   onReorder,
   onRemove,
+  onRotate,
   onRemoveAllSuspicious,
+  onKeepRecommendedDuplicate,
+  onKeepAllRecommendedDuplicates,
   proceedings,
   onSubmit,
   onCancel,
@@ -536,10 +560,109 @@ function PreviewView({
     return map;
   }, [pipelineResult?.sortResult?.warnings]);
 
+  // Мапа origIdx → { groupId, recommended, reason }. groupId це порядковий
+  // номер групи дублікатів (для UI — кольори/підписи).
+  const duplicateMembership = useMemo(() => {
+    const map = new Map();
+    const groups = pipelineResult?.sortResult?.duplicates || [];
+    groups.forEach((g, groupId) => {
+      for (const idx of g.group) {
+        map.set(idx, {
+          groupId,
+          recommended: g.recommended,
+          reason: g.reason,
+          groupIndices: g.group,
+        });
+      }
+    });
+    return map;
+  }, [pipelineResult?.sortResult?.duplicates]);
+
   const hasSuspicious = (pipelineResult?.sortResult?.warnings || []).length > 0;
+  const duplicateGroupsCount = (pipelineResult?.sortResult?.duplicates || []).length;
   const missing = pipelineResult?.sortResult?.missing;
 
   const proceedingOptions = (proceedings || []).map((p) => ({ value: p.id, label: p.title }));
+
+  // Попап перегляду
+  const [popupOrigIdx, setPopupOrigIdx] = useState(null);
+  // Контекстне меню (desktop right-click)
+  const [contextMenu, setContextMenu] = useState(null);
+
+  const handleOpenPopup = useCallback((origIdx) => {
+    setPopupOrigIdx(origIdx);
+    setContextMenu(null);
+  }, []);
+
+  const handleClosePopup = useCallback(() => {
+    setPopupOrigIdx(null);
+  }, []);
+
+  const handlePopupNav = useCallback((direction) => {
+    if (popupOrigIdx == null) return;
+    const pos = orderedIndices.indexOf(popupOrigIdx);
+    if (pos < 0) return;
+    const nextPos = pos + direction;
+    if (nextPos < 0 || nextPos >= orderedIndices.length) return;
+    setPopupOrigIdx(orderedIndices[nextPos]);
+  }, [popupOrigIdx, orderedIndices]);
+
+  // Клавіатурні скорочення (десктоп). Працюють лише коли модалка активна.
+  // R — повернути ТЕКУЩИЙ open-popup thumbnail АБО перший виділений (для grid).
+  // Delete — видалити open-popup thumbnail.
+  // ←/→ у popup — навігація.
+  // Esc — закрити popup.
+  useEffect(() => {
+    function onKey(e) {
+      if (popupOrigIdx != null) {
+        if (e.key === 'Escape') { e.preventDefault(); handleClosePopup(); return; }
+        if (e.key === 'ArrowLeft') { e.preventDefault(); handlePopupNav(-1); return; }
+        if (e.key === 'ArrowRight') { e.preventDefault(); handlePopupNav(1); return; }
+        if (e.key === 'r' || e.key === 'R') { e.preventDefault(); onRotate(popupOrigIdx); return; }
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault();
+          const cur = popupOrigIdx;
+          const pos = orderedIndices.indexOf(cur);
+          const nextIdx = pos >= 0 && pos < orderedIndices.length - 1
+            ? orderedIndices[pos + 1]
+            : (pos > 0 ? orderedIndices[pos - 1] : null);
+          onRemove(cur);
+          setPopupOrigIdx(nextIdx);
+          return;
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [popupOrigIdx, orderedIndices, handleClosePopup, handlePopupNav, onRotate, onRemove]);
+
+  // Закриття контекстного меню по кліку поза ним або Esc
+  useEffect(() => {
+    if (!contextMenu) return;
+    function onDoc(e) {
+      // Якщо клік всередині меню — не закриваємо
+      if (e.target.closest('.image-merge-panel__ctxmenu')) return;
+      setContextMenu(null);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') setContextMenu(null);
+    }
+    window.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
+
+  const handleContextMenu = useCallback((e, origIdx) => {
+    e.preventDefault();
+    setContextMenu({
+      origIdx,
+      x: e.clientX,
+      y: e.clientY,
+    });
+  }, []);
 
   return (
     <div className="image-merge-panel__preview">
@@ -547,16 +670,38 @@ function PreviewView({
         orderedIndices={orderedIndices}
         thumbUrls={thumbUrls}
         warningsByIndex={warningsByIndex}
+        duplicateMembership={duplicateMembership}
+        userRotation={userRotation}
         onReorder={onReorder}
         onRemove={onRemove}
+        onRotate={onRotate}
+        onOpenPopup={handleOpenPopup}
+        onContextMenu={handleContextMenu}
+        onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
       />
 
-      {(missing || hasSuspicious) && (
+      {(missing || hasSuspicious || duplicateGroupsCount > 0) && (
         <div className="image-merge-panel__alerts">
           {missing && (
             <div className="image-merge-panel__alert image-merge-panel__alert--info">
               <AlertTriangle size={ICON_SIZE.sm} />
               <span>{missing}</span>
+            </div>
+          )}
+          {duplicateGroupsCount > 0 && (
+            <div className="image-merge-panel__alert image-merge-panel__alert--dup">
+              <CopyIcon size={ICON_SIZE.sm} />
+              <span>
+                Знайдено {duplicateGroupsCount} групи дублікатів (жовта рамка). Рекомендовані варіанти позначені зеленим.
+              </span>
+              <button
+                type="button"
+                className="image-merge-panel__remove-suspicious image-merge-panel__remove-suspicious--dup"
+                onClick={onKeepAllRecommendedDuplicates}
+              >
+                <Check size={14} />
+                Залишити рекомендовані
+              </button>
             </div>
           )}
           {hasSuspicious && (
@@ -639,15 +784,61 @@ function PreviewView({
           {submitting ? 'Збереження...' : `Створити PDF з ${orderedIndices.length} стор.`}
         </Button>
       </div>
+
+      {popupOrigIdx != null && (
+        <PreviewPopup
+          origIdx={popupOrigIdx}
+          url={thumbUrls.get(popupOrigIdx)}
+          rotation={userRotation.get(popupOrigIdx) || 0}
+          position={orderedIndices.indexOf(popupOrigIdx)}
+          total={orderedIndices.length}
+          warning={warningsByIndex.get(popupOrigIdx) || null}
+          duplicateInfo={duplicateMembership.get(popupOrigIdx) || null}
+          onClose={handleClosePopup}
+          onPrev={() => handlePopupNav(-1)}
+          onNext={() => handlePopupNav(1)}
+          onRotate={() => onRotate(popupOrigIdx)}
+          onRemove={() => {
+            const cur = popupOrigIdx;
+            const pos = orderedIndices.indexOf(cur);
+            const nextIdx = pos >= 0 && pos < orderedIndices.length - 1
+              ? orderedIndices[pos + 1]
+              : (pos > 0 ? orderedIndices[pos - 1] : null);
+            onRemove(cur);
+            setPopupOrigIdx(nextIdx);
+          }}
+        />
+      )}
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onView={() => { handleOpenPopup(contextMenu.origIdx); setContextMenu(null); }}
+          onRotate={() => { onRotate(contextMenu.origIdx); setContextMenu(null); }}
+          onRemove={() => { onRemove(contextMenu.origIdx); setContextMenu(null); }}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ── SortableGrid: @dnd-kit drag-and-drop ──────────────────────────────────
-// Lazy-import @dnd-kit щоб main bundle не тягнув ~15 KB. Завантажується
-// тільки при першому показі preview.
 
-function SortableGrid({ orderedIndices, thumbUrls, warningsByIndex, onReorder, onRemove }) {
+function SortableGrid({
+  orderedIndices,
+  thumbUrls,
+  warningsByIndex,
+  duplicateMembership,
+  userRotation,
+  onReorder,
+  onRemove,
+  onRotate,
+  onOpenPopup,
+  onContextMenu,
+  onKeepRecommendedDuplicate,
+}) {
   const [dndReady, setDndReady] = useState(null);
 
   useEffect(() => {
@@ -681,7 +872,6 @@ function SortableGrid({ orderedIndices, thumbUrls, warningsByIndex, onReorder, o
   }, []);
 
   if (!dndReady) {
-    // Fallback — статичний grid без drag-and-drop поки модуль завантажується
     return (
       <div className="image-merge-panel__grid image-merge-panel__grid--loading">
         {orderedIndices.map((origIdx, position) => (
@@ -691,7 +881,13 @@ function SortableGrid({ orderedIndices, thumbUrls, warningsByIndex, onReorder, o
             position={position}
             url={thumbUrls.get(origIdx)}
             warning={warningsByIndex.get(origIdx) || null}
+            duplicateInfo={duplicateMembership.get(origIdx) || null}
+            rotation={userRotation.get(origIdx) || 0}
             onRemove={() => onRemove(origIdx)}
+            onRotate={() => onRotate(origIdx)}
+            onOpenPopup={() => onOpenPopup(origIdx)}
+            onContextMenu={(e) => onContextMenu(e, origIdx)}
+            onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
             sortable={null}
           />
         ))}
@@ -705,13 +901,22 @@ function SortableGrid({ orderedIndices, thumbUrls, warningsByIndex, onReorder, o
       orderedIndices={orderedIndices}
       thumbUrls={thumbUrls}
       warningsByIndex={warningsByIndex}
+      duplicateMembership={duplicateMembership}
+      userRotation={userRotation}
       onReorder={onReorder}
       onRemove={onRemove}
+      onRotate={onRotate}
+      onOpenPopup={onOpenPopup}
+      onContextMenu={onContextMenu}
+      onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
     />
   );
 }
 
-function DndGrid({ dndReady, orderedIndices, thumbUrls, warningsByIndex, onReorder, onRemove }) {
+function DndGrid({
+  dndReady, orderedIndices, thumbUrls, warningsByIndex, duplicateMembership, userRotation,
+  onReorder, onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
+}) {
   const {
     DndContext, PointerSensor, TouchSensor, useSensor, useSensors, closestCenter,
     SortableContext, rectSortingStrategy, arrayMove,
@@ -743,7 +948,13 @@ function DndGrid({ dndReady, orderedIndices, thumbUrls, warningsByIndex, onReord
               position={position}
               url={thumbUrls.get(origIdx)}
               warning={warningsByIndex.get(origIdx) || null}
+              duplicateInfo={duplicateMembership.get(origIdx) || null}
+              rotation={userRotation.get(origIdx) || 0}
               onRemove={() => onRemove(origIdx)}
+              onRotate={() => onRotate(origIdx)}
+              onOpenPopup={() => onOpenPopup(origIdx)}
+              onContextMenu={(e) => onContextMenu(e, origIdx)}
+              onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
             />
           ))}
         </div>
@@ -752,7 +963,10 @@ function DndGrid({ dndReady, orderedIndices, thumbUrls, warningsByIndex, onReord
   );
 }
 
-function SortableThumbnail({ dndReady, origIdx, position, url, warning, onRemove }) {
+function SortableThumbnail({
+  dndReady, origIdx, position, url, warning, duplicateInfo, rotation,
+  onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
+}) {
   const { useSortable, CSS } = dndReady;
   const sortable = useSortable({ id: origIdx });
   const style = {
@@ -766,7 +980,13 @@ function SortableThumbnail({ dndReady, origIdx, position, url, warning, onRemove
         position={position}
         url={url}
         warning={warning}
+        duplicateInfo={duplicateInfo}
+        rotation={rotation}
         onRemove={onRemove}
+        onRotate={onRotate}
+        onOpenPopup={onOpenPopup}
+        onContextMenu={onContextMenu}
+        onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
         sortable={{
           listeners: sortable.listeners,
           attributes: sortable.attributes,
@@ -777,25 +997,24 @@ function SortableThumbnail({ dndReady, origIdx, position, url, warning, onRemove
   );
 }
 
-// ── Rebuild PDF після перепорядкування/видалення (БЕЗ повторного OCR) ─────
+// ── Rebuild PDF (з urotation + autoOrientation композицією) ──────────────
 //
-// Адвокат у preview може:
-//   - перетягнути сторінку у інше місце (orderedIndices змінився)
-//   - видалити сторінку (orderedIndices коротший, removedIndices містить її)
-//
-// У цій ситуації перебудовуємо тільки PDF + об'єднаний text + layout у
-// новому порядку. OCR НЕ викликаємо повторно — використовуємо ocrResults
-// з пам'яті (КРИТИЧНА вимога TASK B: один OCR на зображення).
-//
-// Артефакти будуються відповідно до фінального порядку orderedIndices.
-async function rebuildFromOcrResults({ orderedIndices, realFiles, ocrResults }) {
-  // Об'єднаний text у новому порядку
+// Фінальний кут обертання = (autoOrientation + userRotation) mod 360. Тобто
+// сума того що визначила система автоматично і того що адвокат докрутив рукою.
+// Це коректно бо обидва кути — у CW напрямку (rotateImageBlob уніфікований).
+
+async function rebuildFromOcrResults({
+  orderedIndices,
+  realFiles,
+  ocrResults,
+  detectedOrientations,
+  userRotation,
+}) {
   const extractedText = orderedIndices
     .map((idx) => ocrResults[idx]?.text || '')
     .filter((t) => t && t.trim())
     .join('\n\n--- Page break ---\n\n');
 
-  // Layout merge з оновленими pageNumber (1..N у новому порядку)
   const mergedPages = [];
   let pageNum = 1;
   for (const idx of orderedIndices) {
@@ -821,8 +1040,7 @@ async function rebuildFromOcrResults({ orderedIndices, realFiles, ocrResults }) 
       })
     : null;
 
-  // PDF rebuild — Rotation з пам'яті pageStructure, jsPDF склейка.
-  const { extractPageOrientation, rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
+  const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
   const jspdfMod = await import('jspdf');
   const JsPDF = jspdfMod.jsPDF || jspdfMod.default;
 
@@ -833,11 +1051,14 @@ async function rebuildFromOcrResults({ orderedIndices, realFiles, ocrResults }) 
   for (let i = 0; i < orderedIndices.length; i++) {
     const origIdx = orderedIndices[i];
     const file = realFiles[origIdx];
-    const firstPage = Array.isArray(ocrResults[origIdx]?.pageStructure)
-      ? ocrResults[origIdx].pageStructure[0]
-      : null;
-    const degrees = extractPageOrientation(firstPage);
-    const blob = degrees !== 0 ? await rotateImageBlob(file, degrees) : file;
+    const autoDeg = Number.isFinite(detectedOrientations?.[origIdx])
+      ? detectedOrientations[origIdx]
+      : 0;
+    const userDeg = userRotation?.get?.(origIdx) || 0;
+    const totalDeg = (autoDeg + userDeg) % 360;
+    // ВАЖЛИВО: автообертання вже зашите у pipeline pdf, але тут ми будуємо
+    // НОВИЙ PDF з оригінальних realFiles. Тому застосовуємо ПОВНИЙ totalDeg.
+    const blob = totalDeg !== 0 ? await rotateImageBlob(file, totalDeg) : file;
 
     const url = URL.createObjectURL(blob);
     let img;
@@ -877,41 +1098,305 @@ async function rebuildFromOcrResults({ orderedIndices, realFiles, ocrResults }) 
   return { pdfBlob, extractedText, layoutJson };
 }
 
-function Thumbnail({ origIdx, position, url, warning, onRemove, sortable }) {
+// ── Thumbnail ──────────────────────────────────────────────────────────────
+
+function Thumbnail({
+  origIdx, position, url, warning, duplicateInfo, rotation,
+  onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
+}) {
+  const isDuplicateRecommended = duplicateInfo && duplicateInfo.recommended === origIdx;
+  const isDuplicateOther = duplicateInfo && duplicateInfo.recommended !== origIdx;
+
   const cls =
     'image-merge-panel__thumb' +
     (warning ? ' image-merge-panel__thumb--warn' : '') +
+    (duplicateInfo ? ' image-merge-panel__thumb--dup' : '') +
+    (isDuplicateRecommended ? ' image-merge-panel__thumb--dup-recommended' : '') +
+    (isDuplicateOther ? ' image-merge-panel__thumb--dup-other' : '') +
     (sortable?.isDragging ? ' image-merge-panel__thumb--dragging' : '');
+
+  const handleClick = (e) => {
+    // Простий клік по картинці — теж відкриває попап (touch UX:
+    // адвокат тапнув по картинці = хоче розглянути).
+    // Drag-and-drop спрацьовує тільки якщо рух > activationConstraint distance.
+    if (e.target.closest('button')) return; // клік по кнопці — окремий handler
+    onOpenPopup();
+  };
+
   return (
-    <div className={cls}>
-      <div className="image-merge-panel__thumb-drag-handle"
+    <div
+      className={cls}
+      onContextMenu={onContextMenu}
+    >
+      <div className="image-merge-panel__thumb-image-wrap"
            {...(sortable?.listeners || {})}
            {...(sortable?.attributes || {})}
-           aria-label="Перетягнути для зміни порядку"
+           role="button"
+           tabIndex={0}
+           onClick={handleClick}
+           aria-label={`Сторінка ${position + 1}. Тап — переглянути, утримуйте для перетягування.`}
       >
         {url ? (
-          <img src={url} alt={`Сторінка ${position + 1}`} className="image-merge-panel__thumb-img" />
+          <img
+            src={url}
+            alt={`Сторінка ${position + 1}`}
+            className="image-merge-panel__thumb-img"
+            style={rotation ? { transform: `rotate(${rotation}deg)` } : undefined}
+          />
         ) : (
           <div className="image-merge-panel__thumb-placeholder">
             <ImageIcon size={32} />
           </div>
         )}
         <span className="image-merge-panel__thumb-pos">#{position + 1}</span>
+        {isDuplicateRecommended && (
+          <span className="image-merge-panel__thumb-dup-badge image-merge-panel__thumb-dup-badge--recommended">
+            <Check size={12} />
+            Рекомендую залишити
+          </span>
+        )}
+        {isDuplicateOther && (
+          <span className="image-merge-panel__thumb-dup-badge">
+            Дублікат
+          </span>
+        )}
+        <span
+          className="image-merge-panel__thumb-handle"
+          aria-hidden="true"
+          title="Перетягніть для зміни порядку"
+        >
+          <GripVertical size={16} />
+        </span>
       </div>
-      <button
-        type="button"
-        className="image-merge-panel__thumb-remove"
-        onClick={onRemove}
-        aria-label="Видалити"
-      >
-        <X size={ICON_SIZE.sm} />
-      </button>
+
+      {/* Кнопки під картинкою — окремий рядок */}
+      <div className="image-merge-panel__thumb-actions">
+        <button
+          type="button"
+          className="image-merge-panel__thumb-action"
+          onClick={onOpenPopup}
+          title="Переглянути збільшено"
+          aria-label="Переглянути"
+        >
+          <Eye size={ICON_SIZE.sm} />
+        </button>
+        <button
+          type="button"
+          className="image-merge-panel__thumb-action"
+          onClick={onRotate}
+          title="Повернути на 90°"
+          aria-label="Повернути"
+        >
+          <RotateCw size={ICON_SIZE.sm} />
+        </button>
+        <button
+          type="button"
+          className="image-merge-panel__thumb-action image-merge-panel__thumb-action--danger"
+          onClick={onRemove}
+          title="Видалити"
+          aria-label="Видалити"
+        >
+          <X size={ICON_SIZE.sm} />
+        </button>
+      </div>
+
+      {duplicateInfo && isDuplicateRecommended && (
+        <button
+          type="button"
+          className="image-merge-panel__thumb-keep-dup"
+          onClick={() => onKeepRecommendedDuplicate(duplicateInfo.groupIndices, duplicateInfo.recommended)}
+          title={duplicateInfo.reason}
+        >
+          Залишити цей, видалити інші
+        </button>
+      )}
+
       {warning && (
         <div className="image-merge-panel__thumb-warning" title={warning}>
           <AlertTriangle size={12} />
           <span>{warning}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Preview popup (lazy react-zoom-pan-pinch) ─────────────────────────────
+
+function PreviewPopup({
+  origIdx, url, rotation, position, total, warning, duplicateInfo,
+  onClose, onPrev, onNext, onRotate, onRemove,
+}) {
+  const [zoomReady, setZoomReady] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mod = await import('react-zoom-pan-pinch');
+        if (cancelled) return;
+        setZoomReady({
+          TransformWrapper: mod.TransformWrapper,
+          TransformComponent: mod.TransformComponent,
+        });
+      } catch (e) {
+        console.warn('[ImageMergePanel] react-zoom-pan-pinch lazy load failed:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const TransformWrapper = zoomReady?.TransformWrapper;
+  const TransformComponent = zoomReady?.TransformComponent;
+
+  const isFirst = position === 0;
+  const isLast = position === total - 1;
+
+  return (
+    <div className="image-merge-panel__popup-overlay" role="dialog" aria-modal="true">
+      <div className="image-merge-panel__popup">
+        <div className="image-merge-panel__popup-header">
+          <span className="image-merge-panel__popup-position">
+            Сторінка {position + 1} з {total}
+          </span>
+          {duplicateInfo && (
+            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--dup">
+              {duplicateInfo.recommended === origIdx ? 'Рекомендований варіант' : 'Дублікат'}
+            </span>
+          )}
+          {warning && (
+            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--warn">
+              <AlertTriangle size={14} /> Підозрілий
+            </span>
+          )}
+          <button
+            type="button"
+            className="image-merge-panel__popup-close"
+            onClick={onClose}
+            aria-label="Закрити"
+            title="Закрити (Esc)"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="image-merge-panel__popup-body">
+          {TransformWrapper ? (
+            <TransformWrapper
+              initialScale={1}
+              minScale={0.5}
+              maxScale={6}
+              doubleClick={{ mode: 'reset' }}
+              wheel={{ activationKeys: ['Control'] }}
+              pinch={{ step: 5 }}
+              panning={{ velocityDisabled: true }}
+            >
+              <TransformComponent
+                wrapperClass="image-merge-panel__popup-zoom-wrap"
+                contentClass="image-merge-panel__popup-zoom-content"
+              >
+                <img
+                  src={url}
+                  alt={`Сторінка ${position + 1}`}
+                  className="image-merge-panel__popup-img"
+                  style={rotation ? { transform: `rotate(${rotation}deg)` } : undefined}
+                  draggable={false}
+                />
+              </TransformComponent>
+            </TransformWrapper>
+          ) : (
+            <div className="image-merge-panel__popup-zoom-wrap image-merge-panel__popup-zoom-wrap--loading">
+              <img
+                src={url}
+                alt={`Сторінка ${position + 1}`}
+                className="image-merge-panel__popup-img"
+                style={rotation ? { transform: `rotate(${rotation}deg)` } : undefined}
+                draggable={false}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="image-merge-panel__popup-toolbar">
+          <button
+            type="button"
+            className="image-merge-panel__popup-nav"
+            onClick={onPrev}
+            disabled={isFirst}
+            title="Попередня (←)"
+            aria-label="Попередня"
+          >
+            ‹ Попередня
+          </button>
+          <div className="image-merge-panel__popup-tools">
+            <button
+              type="button"
+              className="image-merge-panel__popup-tool"
+              onClick={onRotate}
+              title="Повернути на 90° (R)"
+            >
+              <RotateCw size={18} />
+              <span>Повернути</span>
+            </button>
+            <button
+              type="button"
+              className="image-merge-panel__popup-tool image-merge-panel__popup-tool--danger"
+              onClick={onRemove}
+              title="Видалити (Delete)"
+            >
+              <Trash2 size={18} />
+              <span>Видалити</span>
+            </button>
+          </div>
+          <button
+            type="button"
+            className="image-merge-panel__popup-nav"
+            onClick={onNext}
+            disabled={isLast}
+            title="Наступна (→)"
+            aria-label="Наступна"
+          >
+            Наступна ›
+          </button>
+        </div>
+
+        <div className="image-merge-panel__popup-hint">
+          Pinch / Ctrl+scroll — zoom · Драг — pan · Подвійний тап / клік — скинути
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Context menu (desktop right-click) ───────────────────────────────────
+
+function ContextMenu({ x, y, onView, onRotate, onRemove }) {
+  // Корекція позиції щоб меню не вилазило за межі екрану.
+  const adjX = typeof window !== 'undefined'
+    ? Math.min(x, window.innerWidth - 220)
+    : x;
+  const adjY = typeof window !== 'undefined'
+    ? Math.min(y, window.innerHeight - 200)
+    : y;
+  return (
+    <div
+      className="image-merge-panel__ctxmenu"
+      style={{ left: adjX, top: adjY }}
+      role="menu"
+    >
+      <button type="button" className="image-merge-panel__ctxmenu-item" onClick={onView}>
+        <Eye size={ICON_SIZE.sm} /> Переглянути
+      </button>
+      <button type="button" className="image-merge-panel__ctxmenu-item" onClick={onRotate}>
+        <RotateCw size={ICON_SIZE.sm} /> Повернути на 90°
+      </button>
+      <button
+        type="button"
+        className="image-merge-panel__ctxmenu-item image-merge-panel__ctxmenu-item--danger"
+        onClick={onRemove}
+      >
+        <Trash2 size={ICON_SIZE.sm} /> Видалити
+      </button>
     </div>
   );
 }
