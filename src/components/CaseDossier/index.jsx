@@ -2933,6 +2933,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         isOpen={docModalOpen}
         onClose={() => setDocModalOpen(false)}
         caseData={{ ...caseData, proceedings }}
+        driveConnected={driveConnected}
         onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts }) => {
           let driveId = null;
           let originalDriveId = null;

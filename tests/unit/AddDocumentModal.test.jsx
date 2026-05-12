@@ -149,3 +149,43 @@ describe('AddDocumentModal — форма', () => {
     resolveSubmit();
   });
 });
+
+// ── Drive picker visibility ───────────────────────────────────────────────
+// Регресія: Drive picker зник у single mode коли case ще не має 01_ОРИГІНАЛИ
+// підпапки. Гейт — driveConnected, не subFolders.
+describe('AddDocumentModal — Drive picker visibility', () => {
+  it('Drive picker section показано в single mode коли driveConnected=true і немає subFolders', () => {
+    renderModal({ driveConnected: true });
+    enterSingleMode();
+    // Toggle-кнопка з текстом "Або вибрати файл вже на Drive" має бути,
+    // навіть якщо case ще не має subFolders['01_ОРИГІНАЛИ'].
+    expect(screen.getByText(/вибрати файл вже на Drive/i)).toBeInTheDocument();
+  });
+
+  it('Drive picker section ПРИХОВАНО в single mode коли driveConnected=false', () => {
+    renderModal({ driveConnected: false });
+    enterSingleMode();
+    expect(screen.queryByText(/вибрати файл вже на Drive/i)).toBeNull();
+  });
+
+  it('Drive picker section показано коли case має subFolders 01_ОРИГІНАЛИ', () => {
+    renderModal({
+      driveConnected: true,
+      caseData: { ...CASE, storage: { subFolders: { '01_ОРИГІНАЛИ': 'folder_abc' } } },
+    });
+    enterSingleMode();
+    expect(screen.getByText(/вибрати файл вже на Drive/i)).toBeInTheDocument();
+  });
+
+  it('кнопка "Додати з Drive" у merge mode показана коли driveConnected=true', () => {
+    renderModal({ driveConnected: true });
+    fireEvent.click(screen.getByText('Склеїти зображення'));
+    expect(screen.getByText('Додати з Drive')).toBeInTheDocument();
+  });
+
+  it('кнопка "Додати з Drive" у merge mode ПРИХОВАНА коли driveConnected=false', () => {
+    renderModal({ driveConnected: false });
+    fireEvent.click(screen.getByText('Склеїти зображення'));
+    expect(screen.queryByText('Додати з Drive')).toBeNull();
+  });
+});

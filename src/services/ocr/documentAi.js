@@ -247,15 +247,29 @@ export default {
   },
 
   async extract(file, options = {}) {
-    // 1. Завантажити байти
-    const dl = await driveRequest(
-      `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
-    );
-    if (dl.status === 401 || dl.status === 403) {
-      throw makeError('AUTH', `Drive download auth ${dl.status}`);
+    // 1. Завантажити байти.
+    //
+    // file.localBlob — Blob/File у пам'яті (multi-image merge pipeline:
+    // адвокат щойно вибрав з пристрою, файл ще не на Drive). Читаємо з нього
+    // напряму, без виклику Drive API. Без цієї гілки OCR падав би 404 на
+    // фейковому id 'local_<rand>' і pipeline продовжував з порожнім text.
+    let arrayBuffer;
+    if (file.localBlob instanceof Blob) {
+      try {
+        arrayBuffer = await file.localBlob.arrayBuffer();
+      } catch (e) {
+        throw makeError('NETWORK', `localBlob.arrayBuffer: ${e?.message || e}`);
+      }
+    } else {
+      const dl = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
+      );
+      if (dl.status === 401 || dl.status === 403) {
+        throw makeError('AUTH', `Drive download auth ${dl.status}`);
+      }
+      if (!dl.ok) throw makeError('NETWORK', `Drive download ${dl.status}`);
+      arrayBuffer = await dl.arrayBuffer();
     }
-    if (!dl.ok) throw makeError('NETWORK', `Drive download ${dl.status}`);
-    const arrayBuffer = await dl.arrayBuffer();
 
     const isPdf =
       file.mimeType === 'application/pdf' ||

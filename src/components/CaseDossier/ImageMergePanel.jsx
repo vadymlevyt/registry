@@ -185,6 +185,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     }
 
     try {
+      console.log('[merge] pipeline start, files=', realFiles.length);
       const result = await convertImagesToPdf(realFiles, {
         apiKey,
         caseId: caseData?.id,
@@ -194,6 +195,24 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         categoryHint: null,
         onProgress: (phase, done, total) => setProgress({ phase, done, total }),
       });
+      console.log('[merge] pipeline returned:', {
+        hasPdfBlob: result?.pdfBlob instanceof Blob,
+        pdfBytes: result?.pdfBlob?.size,
+        finalOrderLen: result?.finalOrder?.length,
+        suggestedName: result?.suggestedName,
+        warningsCount: result?.warnings?.length,
+        durationMs: result?.durationMs,
+      });
+
+      // Захист від невалідного результату pipeline. Якщо pdfBlob відсутній —
+      // дальше неможливо ні preview, ні submit. Кидаємо явну помилку щоб
+      // адвокат побачив toast замість заглухлого 'processing'.
+      if (!(result?.pdfBlob instanceof Blob) || result.pdfBlob.size === 0) {
+        throw new Error('Pipeline повернув порожній PDF');
+      }
+      if (!Array.isArray(result.finalOrder) || result.finalOrder.length === 0) {
+        throw new Error('Pipeline повернув порожній finalOrder');
+      }
 
       // Створюємо blob URLs для thumbnails
       for (let i = 0; i < realFiles.length; i++) {

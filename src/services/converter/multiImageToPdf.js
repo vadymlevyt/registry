@@ -340,15 +340,25 @@ export async function convertImagesToPdf(files, options = {}) {
       ),
     }));
     try {
-      sortResult = await sortImages(items, {
-        apiKey: options.apiKey,
-        callApi: options.callApi, // для тестів
-        caseContext: {
-          existingDocumentNames: options.context?.existingDocumentNames || [],
-          categoryHint: options.context?.categoryHint || null,
-        },
-      });
+      // Hard timeout щоб stale Anthropic call не зависив pipeline. 90 сек
+      // вистачає для 50 зображень (~1.5 KB ocrText кожне × 50 ≈ 75 KB вхід).
+      // Якщо агент не відповів — fallback identity order, pipeline продовжує.
+      const SORT_TIMEOUT_MS = 90_000;
+      sortResult = await Promise.race([
+        sortImages(items, {
+          apiKey: options.apiKey,
+          callApi: options.callApi, // для тестів
+          caseContext: {
+            existingDocumentNames: options.context?.existingDocumentNames || [],
+            categoryHint: options.context?.categoryHint || null,
+          },
+        }),
+        new Promise((_, rej) =>
+          setTimeout(() => rej(new Error(`sortImages timeout after ${SORT_TIMEOUT_MS}ms`)), SORT_TIMEOUT_MS)
+        ),
+      ]);
     } catch (e) {
+      console.warn('[multiImageToPdf] sort agent failed, falling back to identity order:', e?.message);
       warnings.push(`Sorting agent fail: ${e?.message || e}`);
       sortResult = null;
     }
@@ -387,10 +397,21 @@ export async function convertImagesToPdf(files, options = {}) {
   const orderedBlobs = finalOrder
     .map((idx) => rotatedBlobs[idx])
     .filter((b) => b instanceof Blob);
+  console.log('[multiImageToPdf] pdf assembly: orderedBlobs=', orderedBlobs.length);
   if (orderedBlobs.length === 0) {
     throw new Error('Жодне зображення не вдалось підготувати для склейки');
   }
-  const pdfBlob = await buildPdfFromImages(orderedBlobs);
+  let pdfBlob;
+  try {
+    pdfBlob = await buildPdfFromImages(orderedBlobs);
+  } catch (e) {
+    console.error('[multiImageToPdf] buildPdfFromImages failed:', e);
+    throw new Error(`PDF assembly failed: ${e?.message || e}`);
+  }
+  if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
+    throw new Error('buildPdfFromImages повернув порожній blob');
+  }
+  console.log('[multiImageToPdf] pdf assembled:', pdfBlob.size, 'bytes');
   onProgress('pdf', 1, 1);
 
   // 6. Об'єднаний text + layout у фінальному порядку
@@ -399,14 +420,21 @@ export async function convertImagesToPdf(files, options = {}) {
     .filter((t) => t && t.trim())
     .join('\n\n--- Page break ---\n\n');
 
-  const mergedLayout = mergeLayouts(ocrResults, finalOrder);
-  const layoutJson = mergedLayout.length > 0
-    ? serializeMergedLayout(mergedLayout, ocrResults[finalOrder[0]]?.provider || 'documentAi')
-    : null;
+  let layoutJson = null;
+  try {
+    const mergedLayout = mergeLayouts(ocrResults, finalOrder);
+    if (mergedLayout.length > 0) {
+      layoutJson = serializeMergedLayout(mergedLayout, ocrResults[finalOrder[0]]?.provider || 'documentAi');
+    }
+  } catch (e) {
+    console.warn('[multiImageToPdf] layout serialization failed (non-fatal):', e?.message);
+    warnings.push(`Layout serialize fail: ${e?.message || e}`);
+  }
 
   const suggestedName = sortResult?.suggestedName || '';
-  const finalName = options.context?.existingDocumentNames
-    ? ensureUniqueName(suggestedName, options.context.existingDocumentNames)
+  const existingNames = options.context?.existingDocumentNames;
+  const finalName = Array.isArray(existingNames) && existingNames.length > 0
+    ? ensureUniqueName(suggestedName, existingNames)
     : suggestedName;
 
   return {

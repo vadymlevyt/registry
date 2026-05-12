@@ -60,15 +60,25 @@ export default {
     const apiKey = options.apiKey || (typeof localStorage !== 'undefined' ? localStorage.getItem('claude_api_key') : null);
     if (!apiKey) throw makeError('AUTH', 'Немає API ключа Claude');
 
-    // 1. Завантажити байти з Drive
-    const dl = await driveRequest(
-      `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
-    );
-    if (dl.status === 401 || dl.status === 403) {
-      throw makeError('AUTH', `Drive download auth ${dl.status}`);
+    // 1. Завантажити байти. localBlob — Blob у пам'яті (multi-image merge для
+    // device файлів). Інакше — завантаження з Drive за id.
+    let arrayBuffer;
+    if (file.localBlob instanceof Blob) {
+      try {
+        arrayBuffer = await file.localBlob.arrayBuffer();
+      } catch (e) {
+        throw makeError('UNKNOWN', `localBlob.arrayBuffer: ${e?.message || e}`);
+      }
+    } else {
+      const dl = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
+      );
+      if (dl.status === 401 || dl.status === 403) {
+        throw makeError('AUTH', `Drive download auth ${dl.status}`);
+      }
+      if (!dl.ok) throw makeError('UNKNOWN', `Drive download ${dl.status}`);
+      arrayBuffer = await dl.arrayBuffer();
     }
-    if (!dl.ok) throw makeError('UNKNOWN', `Drive download ${dl.status}`);
-    const arrayBuffer = await dl.arrayBuffer();
 
     const warnings = [];
     const images = [];

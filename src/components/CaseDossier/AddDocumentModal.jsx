@@ -76,7 +76,7 @@ const initialState = (caseData) => ({
  *   onSubmit({ name, category, author, procId, date, isKey, file }) — callback
  *      викликається коли адвокат натискає "Додати документ"
  */
-export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
+export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveConnected = true }) {
   const [state, setState] = useState(() => initialState(caseData));
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -85,10 +85,12 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
   // одного документа; 'merge' (TASK B) = склейка кількох зображень.
   const [mode, setMode] = useState(null);
 
-  // Drive picker — окрема гілка від device file picker. Render-гейт зберігається:
-  // секція з'являється тільки коли в каси є папка 01_ОРИГІНАЛИ (точка дефолту).
-  // Сам файломенеджер всередині дозволяє вільно навігувати по всьому Drive.
-  const driveFolderId = caseData?.storage?.subFolders?.['01_ОРИГІНАЛИ'];
+  // Drive picker — окрема гілка від device file picker. Render-гейт: Drive
+  // підключений (driveConnected). Папка справи може бути ще не створена — в такому
+  // разі picker стартує з кореня (initialFolderId='root'). Файл з Drive
+  // приймається з будь-якого місця, не лише з 01_ОРИГІНАЛИ справи.
+  const caseDriveFolderId = caseData?.storage?.subFolders?.['01_ОРИГІНАЛИ'];
+  const drivePickerStart = caseDriveFolderId || 'root';
   const [drivePickerOpen, setDrivePickerOpen] = useState(false);
 
   useEffect(() => {
@@ -233,13 +235,13 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
               onClose();
             }}
             onCancel={handleBackToStart}
-            onOpenDrivePicker={driveFolderId ? () => setMergeDrivePickerOpen(true) : null}
+            onOpenDrivePicker={driveConnected ? () => setMergeDrivePickerOpen(true) : null}
           />
 
-          {mergeDrivePickerOpen && driveFolderId && (
+          {mergeDrivePickerOpen && driveConnected && (
             <DrivePickerSection
               isOpen
-              initialFolderId={driveFolderId}
+              initialFolderId={drivePickerStart}
               onToggle={() => setMergeDrivePickerOpen(false)}
               onPick={() => { /* single not used у multi mode */ }}
               onPickMulti={handleMergeDrivePickMulti}
@@ -342,10 +344,10 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
           onChange={handleFile}
         />
 
-        {driveFolderId && !state.file && (
+        {driveConnected && !state.file && (
           <DrivePickerSection
             isOpen={drivePickerOpen}
-            initialFolderId={driveFolderId}
+            initialFolderId={drivePickerStart}
             onToggle={() => setDrivePickerOpen((v) => !v)}
             onPick={handleDrivePick}
           />

@@ -107,6 +107,32 @@ async function runWithAdvancedTimers(factory) {
   throw result.err;
 }
 
+describe('localBlob source (multi-image merge: device files без Drive ID)', () => {
+  it('читає байти з file.localBlob і НЕ викликає driveRequest для download', async () => {
+    fakePageCount = 0; // image flow
+    pushResponse({ body: { document: { text: 'extracted from local blob', pages: [{ pageNumber: 1 }] } } });
+
+    const driveAuth = await import('../../src/services/driveAuth.js');
+    const driveRequestMock = driveAuth.driveRequest;
+    driveRequestMock.mockClear();
+
+    const blob = new Blob([new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0])], { type: 'image/jpeg' });
+    const file = {
+      id: 'local_fake_123',
+      name: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      localBlob: blob,
+    };
+
+    const result = await runWithAdvancedTimers(() => documentAi.extract(file, {}));
+
+    expect(result.text).toBe('extracted from local blob');
+    // Тільки POST :process має бути викликаний, без GET ?alt=media
+    const downloadCalls = driveRequestMock.mock.calls.filter(([url]) => url.includes('?alt=media'));
+    expect(downloadCalls.length).toBe(0);
+  });
+});
+
 describe('classifyError', () => {
   it('AUTH для 401/403', () => {
     expect(classifyError(new Error('x'), 401)).toBe('AUTH');
