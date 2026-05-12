@@ -1,27 +1,16 @@
 // @vitest-environment jsdom
 //
-// Юніт-тести htmlToPdf — конвертація HTML файла у PDF Blob з валідацією
-// бінарних сигнатур і екстракцією plain-тексту через container.innerText.
-// html2pdf.js мокаємо: jsdom не має canvas/PDF — тільки контракт перевіряємо.
+// Юніт-тести htmlToPdf — HTML → PDF через innerText + pdf-lib.
+// pdfLibRenderer.textToPdf мокаємо щоб не fetch'ити шрифт у тестах.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ── Mock html2pdf.js ──────────────────────────────────────────────────────
-// Контракт chain: html2pdf().from(el).set(opts).outputPdf('blob') → Promise<Blob>
-// Mock PDF >= 5 КБ (MIN_PDF_SIZE_BYTES). Менше — html2pdf-output порожній,
-// див. docxToPdf.test.js MIN_PDF_SIZE_BYTES коментар.
-function makeFakePdfBlob(sizeBytes = 8 * 1024) {
-  return new Blob(['%PDF-1.4\n' + 'X'.repeat(sizeBytes)], { type: 'application/pdf' });
-}
-let mockOutputResult = makeFakePdfBlob();
+// ── Mock pdfLibRenderer ────────────────────────────────────────────────────
+let mockPdfBlob = new Blob(['%PDF-1.4 fake-pdf-from-pdflib'], { type: 'application/pdf' });
+const mockTextToPdf = vi.fn(async () => mockPdfBlob);
 
-vi.mock('html2pdf.js', () => {
-  const chain = {
-    from: vi.fn(() => chain),
-    set: vi.fn(() => chain),
-    outputPdf: vi.fn(() => Promise.resolve(mockOutputResult)),
-  };
-  return { default: () => chain };
-});
+vi.mock('../../src/services/converter/pdfLibRenderer.js', () => ({
+  textToPdf: (text, opts) => mockTextToPdf(text, opts),
+}));
 
 import { htmlToPdf } from '../../src/services/converter/htmlToPdf.js';
 
@@ -34,15 +23,11 @@ function binaryFile(bytes, name = 'doc.html') {
   return new File([new Uint8Array(bytes)], name, { type: 'text/html' });
 }
 
-// jsdom innerText може повертати порожнє — підмінюємо на textContent fallback,
-// але для надійних тестів напряму встановлюємо innerText на елементі через
-// Object.defineProperty у beforeEach (jsdom default — undefined).
+// jsdom innerText може повертати порожнє — підмінюємо на textContent fallback.
 function patchInnerText() {
   if (!Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'innerText')) {
     Object.defineProperty(HTMLElement.prototype, 'innerText', {
-      get() {
-        return this.textContent;
-      },
+      get() { return this.textContent; },
       configurable: true,
     });
   }
@@ -51,10 +36,10 @@ function patchInnerText() {
 // Текст довший за MIN_TEXT_LENGTH (30). Заголовок ухвали або позовної заяви.
 const LONG_TEXT = 'Ухвала про відкриття провадження у справі №910/2024';
 
-describe('htmlToPdf — конвертація HTML → PDF', () => {
+describe('htmlToPdf — HTML → PDF через innerText + pdf-lib', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockOutputResult = makeFakePdfBlob();
+    mockPdfBlob = new Blob(['%PDF-1.4 fake-pdf-from-pdflib'], { type: 'application/pdf' });
     patchInnerText();
   });
 
@@ -70,6 +55,14 @@ describe('htmlToPdf — конвертація HTML → PDF', () => {
     expect(Array.isArray(result.warnings)).toBe(true);
   });
 
+  it('передає innerText у textToPdf', async () => {
+    const file = htmlFile(`<html><body><p>${LONG_TEXT}</p></body></html>`);
+    await htmlToPdf(file, {});
+    expect(mockTextToPdf).toHaveBeenCalledOnce();
+    const [text] = mockTextToPdf.mock.calls[0];
+    expect(text).toContain('Ухвала');
+  });
+
   it('видаляє тимчасовий контейнер з DOM після конвертації (cleanup)', async () => {
     const beforeCount = document.body.children.length;
     const file = htmlFile(`<html><body>${LONG_TEXT}</body></html>`);
@@ -77,8 +70,8 @@ describe('htmlToPdf — конвертація HTML → PDF', () => {
     expect(document.body.children.length).toBe(beforeCount);
   });
 
-  it('кидає помилку коли html2pdf повернув порожній Blob', async () => {
-    mockOutputResult = new Blob([], { type: 'application/pdf' });
+  it('кидає помилку коли pdf-lib повернув порожній Blob', async () => {
+    mockPdfBlob = new Blob([], { type: 'application/pdf' });
     const file = htmlFile(`<html><body>${LONG_TEXT}</body></html>`);
     await expect(htmlToPdf(file, {})).rejects.toThrow(/порожній/);
   });
@@ -96,32 +89,20 @@ describe('htmlToPdf — конвертація HTML → PDF', () => {
     expect(result.pdfBlob).toBeInstanceOf(Blob);
   });
 
-  it('викликає html2pdf chain через .from().set().outputPdf("blob")', async () => {
-    const html2pdfModule = await import('html2pdf.js');
-    const chain = html2pdfModule.default();
-    const file = htmlFile(`<p>${LONG_TEXT}</p>`);
-    await htmlToPdf(file, {});
-    expect(chain.from).toHaveBeenCalled();
-    expect(chain.set).toHaveBeenCalled();
-    expect(chain.outputPdf).toHaveBeenCalledWith('blob');
-  });
-
   // ── Валідація вхідного файлу ─────────────────────────────────────────────
 
   it('кидає чесну помилку для PNG з .html розширенням', async () => {
-    // PNG signature: 89 50 4E 47
     const file = binaryFile([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
     await expect(htmlToPdf(file, {})).rejects.toThrow(/не є валідним HTML.*PNG/);
+    expect(mockTextToPdf).not.toHaveBeenCalled();
   });
 
   it('кидає чесну помилку для PDF з .html розширенням', async () => {
-    // PDF signature: 25 50 44 46 ("%PDF")
     const file = binaryFile([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
     await expect(htmlToPdf(file, {})).rejects.toThrow(/не є валідним HTML.*PDF/);
   });
 
   it('кидає чесну помилку для DOCX/ZIP з .html розширенням', async () => {
-    // ZIP signature: 50 4B 03 04
     const file = binaryFile([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]);
     await expect(htmlToPdf(file, {})).rejects.toThrow(/не є валідним HTML.*ZIP/);
   });
@@ -129,12 +110,6 @@ describe('htmlToPdf — конвертація HTML → PDF', () => {
   it('кидає помилку коли HTML порожній (нуль символів)', async () => {
     const file = htmlFile('');
     await expect(htmlToPdf(file, {})).rejects.toThrow(/порожній/);
-  });
-
-  it('кидає помилку коли PDF замалий (< 5 КБ — opacity:0 bug захист)', async () => {
-    mockOutputResult = new Blob(['%PDF-1.4\nfake-small'], { type: 'application/pdf' });
-    const file = htmlFile(`<html><body><p>${LONG_TEXT}</p></body></html>`);
-    await expect(htmlToPdf(file, {})).rejects.toThrow(/занадто малий/);
   });
 
   it('кидає помилку коли HTML містить менше MIN_TEXT_LENGTH символів тексту', async () => {
