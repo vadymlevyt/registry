@@ -1,64 +1,67 @@
 // ── PDF-LIB HTML RENDERER ────────────────────────────────────────────────────
 // Конвертує HTML (від mammoth.convertToHtml або декодованого HTML-файлу) у PDF
-// Blob через pdf-lib. На відміну від pdfLibRenderer.textToPdf — зберігає
-// форматування з HTML: заголовки, жирний/курсив/підкреслення, вирівнювання,
-// списки, таблиці, зображення, гіперпосилання.
+// Blob через pdf-lib. Зберігає форматування з HTML: заголовки, жирний/курсив/
+// підкреслення, вирівнювання, списки, таблиці, зображення, гіперпосилання,
+// font-family (serif/sans) routing.
 //
 // Принцип: PDF — це наш єдиний формат відображення. Mozilla pdfjs у Viewer
 // підтримує highlight/нотатки тільки на searchable PDF. pdf-lib генерує саме
-// searchable PDF з виділюваним текстом, тому конвертовані DOCX/HTML отримають
-// ті самі інструменти анотацій що звичайні PDF.
-//
-// ── ЧОМУ НЕ html2pdf.js ─────────────────────────────────────────────────────
-// html2pdf.js на планшеті/мобільному viewport видавав порожній PDF (html2canvas
-// + mm-юніти + off-screen). pdf-lib працює без DOM/canvas і повністю
-// контрольовано. До того ж html2pdf робить raster — текст НЕ виділяється у
-// pdfjs анотаціях; pdf-lib робить selectable text.
+// searchable PDF з виділюваним текстом.
 //
 // ── ЩО ВРАХОВАНО ────────────────────────────────────────────────────────────
 // Блок-рівень:
 //   h1-h6  → крупніший шрифт + bold + відступи зверху/знизу
-//   p      → абзац з вирівнюванням (left/right/center/justify), text-indent,
+//   p, div → абзац з вирівнюванням (left/right/center/justify), text-indent,
 //            margin-left/right
 //   ul/ol  → списки з маркерами/нумерацією, вкладені списки з відступом
-//   table  → проста таблиця з рівними або заданими ширинами колонок,
-//            page-break коли рядок не влазить
+//   table  → проста таблиця, colspan/rowspan, page-break per row
 //   img    → embed (PNG/JPG/base64 data: URI), fit у ширину контенту
 //   hr     → горизонтальна лінія
-//   br     → перенос рядка всередині абзацу
 //   blockquote → відступ зліва + курсив
-//   pre    → монопростір (опускаємось до Regular але зберігаємо переноси)
-//   div    → прозорий контейнер (стилі успадковуються вниз)
+//   pre    → переноси збережені рядок-у-рядок
 //
 // Inline-рівень:
-//   b/strong   → жирний
-//   i/em       → курсив
-//   u          → підкреслення
-//   sub/sup    → зменшений шрифт + baseline shift
-//   a[href]    → синій + підкреслення + клік-анотація у PDF
-//   span       → носій inline-стилів (font-weight, font-style, text-decoration,
-//                color, background-color, font-size)
+//   b/strong, i/em, u/ins, s/strike/del → жирний/курсив/підкреслення/strike
+//   sub/sup → зменшений шрифт + baseline shift
+//   a[href] → синій + підкреслення + клік-анотація у PDF
+//   span    → носій inline-стилів
+//   font[face|size|color] → legacy HTML4 (часто у ЄСІТС-документах)
 //
-// CSS inline (з style="..."):
+// Legacy теги (Word "save as HTML"):
+//   <center>      → блок з align=center
+//   <font>        → inline runs з face/size/color
+//   <p align="…"> → атрибут align (legacy) застосовується до h*/div/p/td
+//
+// CSS:
+//   - inline style="..." (повний набір властивостей нижче)
+//   - <style> блоки у <head> або по тілу — мінімальний CSS-парсер, селектори:
+//     tag, .class, tag.class, * (всі), кома-розділені списки
+//   - mso-* властивості ігноруємо (Word-internal)
+//
+// Властивості що парсимо:
 //   text-align, font-weight, font-style, text-decoration, font-size, color,
-//   background-color, margin-left, margin-right, text-indent, line-height,
-//   width (для таблиць і колонок).
+//   background-color, margin-left, margin-right, padding-left, text-indent,
+//   line-height, font-family, width, vertical-align, display (none — пропускаємо).
 //
-// ── ЧОГО НЕМАЄ ──────────────────────────────────────────────────────────────
-// Складний CSS (зовнішні таблиці стилів, media queries, flex/grid), вкладені
-// таблиці більше 1 рівня, плавання (float), розширений типографічний контроль,
-// колоночна верстка. Для адвокатських документів — це не потрібно. Складна
-// верстка тяжіє до PDF/Print від Word — а оригінал DOCX лежить поряд як
-// originalDriveId і завжди доступний для завантаження.
+// font-family routing:
+//   "Times New Roman", "Times", "Serif", "Cambria", "Georgia" → LiberationSerif
+//   "Arial", "Helvetica", "Verdana", "Tahoma", "Sans-Serif", "Calibri" → LiberationSans
+//   default для DOCX/HTML — LiberationSerif (Word default = Times-like).
+//
+// ── ЧОГО НЕ ВИРІШУЄМО ──────────────────────────────────────────────────────
+// SVG/GIF/WEBP зображення (pdf-lib embed'ить тільки PNG/JPG), складні layout
+// (float/flex/grid), <font face> з рідкісними родинами (fallback на serif),
+// зовнішні таблиці стилів (link rel=stylesheet — ЄСІТС не використовує).
+// Складна верстка тяжіє до PDF/Print від Word — оригінал DOCX лежить поряд
+// як originalDriveId.
 
-import { PDFDocument, rgb, PDFName, PDFString, PDFArray, PDFDict } from 'pdf-lib';
+import { PDFDocument, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
 
 // ── A4 + одиниці ───────────────────────────────────────────────────────────
 const A4_WIDTH = 595.28;
 const A4_HEIGHT = 841.89;
 const MM_TO_PT = 72 / 25.4;
 
-// Поля сторінки за ДСТУ для ділових документів.
 const DEFAULT_MARGINS = {
   top: 20 * MM_TO_PT,
   bottom: 20 * MM_TO_PT,
@@ -66,26 +69,31 @@ const DEFAULT_MARGINS = {
   right: 20 * MM_TO_PT,
 };
 
-// Базовий шрифт. 12pt — стандарт для ділового документа.
 const BASE_FONT_SIZE = 12;
 const BASE_LINE_HEIGHT = 1.4;
 
-// Розміри заголовків (наближено до Word default). Розрахунок: pt = BASE * scale.
 const HEADING_SCALE = { h1: 1.8, h2: 1.5, h3: 1.3, h4: 1.15, h5: 1.05, h6: 1.0 };
-const HEADING_SPACING_BEFORE = 8; // pt
-const HEADING_SPACING_AFTER = 4;  // pt
-const PARAGRAPH_SPACING = 4;      // pt між абзацами
-const LIST_INDENT = 18;           // pt відступ кожного рівня списку
-const LIST_BULLET_GAP = 6;        // pt між маркером і текстом
-const BLOCKQUOTE_INDENT = 24;     // pt відступ цитати
+const HEADING_SPACING_BEFORE = 8;
+const HEADING_SPACING_AFTER = 4;
+const PARAGRAPH_SPACING = 4;
+const LIST_INDENT = 18;
+const LIST_BULLET_GAP = 6;
+const BLOCKQUOTE_INDENT = 24;
 
-// Колір гіперпосилання (Word-style hyperlink blue).
 const LINK_COLOR = { r: 0.0, g: 0.36, b: 0.65 };
 
+// HTML4 <font size="1..7"> → pt. Карта орієнтовно за Word.
+const FONT_SIZE_LEGACY = { '1': 8, '2': 10, '3': 12, '4': 14, '5': 18, '6': 24, '7': 36 };
+
+// font-family → family routing. Перший match — переможець. Ключі lowercase.
+const FONT_FAMILY_MAP = [
+  { match: ['times new roman', 'times', 'serif', 'cambria', 'georgia', 'liberation serif', 'pt serif'], family: 'serif' },
+  { match: ['arial', 'helvetica', 'verdana', 'tahoma', 'sans-serif', 'sans', 'calibri', 'liberation sans', 'segoe ui', 'roboto', 'open sans'], family: 'sans' },
+];
+
 // ── Шрифти ─────────────────────────────────────────────────────────────────
-// 4 варіанти LiberationSans з повною підтримкою кирилиці. Lazy-fetch у
-// in-memory cache. Bundle головного chunk'у не тягне ці байти — Vite копіює
-// public/fonts/* у dist і браузер тягне at-runtime один раз за сесію.
+// 8 варіантів: serif/sans × Regular/Bold/Italic/BoldItalic. Lazy-fetch у
+// in-memory cache. Bundle головного chunk'у не тягне ці байти.
 
 let fontBytesCachePromise = null;
 
@@ -106,24 +114,28 @@ async function fetchFontBytes(filename) {
 async function loadAllFontBytes() {
   if (fontBytesCachePromise) return fontBytesCachePromise;
   fontBytesCachePromise = (async () => {
-    const [regular, bold, italic, boldItalic] = await Promise.all([
+    const [sansR, sansB, sansI, sansBI, serifR, serifB, serifI, serifBI] = await Promise.all([
       fetchFontBytes('LiberationSans-Regular.ttf'),
       fetchFontBytes('LiberationSans-Bold.ttf'),
       fetchFontBytes('LiberationSans-Italic.ttf'),
       fetchFontBytes('LiberationSans-BoldItalic.ttf'),
+      fetchFontBytes('LiberationSerif-Regular.ttf'),
+      fetchFontBytes('LiberationSerif-Bold.ttf'),
+      fetchFontBytes('LiberationSerif-Italic.ttf'),
+      fetchFontBytes('LiberationSerif-BoldItalic.ttf'),
     ]);
-    return { regular, bold, italic, boldItalic };
+    return {
+      sans: { regular: sansR, bold: sansB, italic: sansI, boldItalic: sansBI },
+      serif: { regular: serifR, bold: serifB, italic: serifI, boldItalic: serifBI },
+    };
   })().catch((e) => {
-    fontBytesCachePromise = null; // дозволити повторну спробу
+    fontBytesCachePromise = null;
     throw e;
   });
   return fontBytesCachePromise;
 }
 
 // ── Стилі ──────────────────────────────────────────────────────────────────
-// "style" — нормалізована структура яка тримає тільки те що ми вміємо рендерити.
-// Прохід по DOM каскадно успадковує stale значення; нові атрибути перекривають.
-
 function defaultStyle() {
   return {
     fontSize: BASE_FONT_SIZE,
@@ -134,14 +146,15 @@ function defaultStyle() {
     strike: false,
     color: { r: 0, g: 0, b: 0 },
     bgColor: null,
-    align: 'left',            // left | right | center | justify
-    marginLeft: 0,            // pt додатковий лівий зсув
-    marginRight: 0,           // pt додатковий правий зсув
-    textIndent: 0,            // pt відступ першого рядка
+    align: null,             // null означає "не задано" — успадковуємо з parent
+    marginLeft: 0,
+    marginRight: 0,
+    textIndent: 0,
     subscript: false,
     superscript: false,
     linkHref: null,
-    listLevel: 0,             // для вкладених списків
+    listLevel: 0,
+    fontFamily: 'serif',     // дефолт для адвокатських документів (Word default)
   };
 }
 
@@ -149,7 +162,7 @@ function cloneStyle(s) {
   return { ...s, color: { ...s.color }, bgColor: s.bgColor ? { ...s.bgColor } : null };
 }
 
-// Парсинг inline CSS у словник {prop: value}. Простий і толерантний до помилок.
+// Парсинг inline CSS у словник {prop: value}.
 function parseInlineStyle(text) {
   if (!text) return {};
   const out = {};
@@ -163,7 +176,6 @@ function parseInlineStyle(text) {
   return out;
 }
 
-// Парсинг розмірів у pt. Підтримує px, pt, em, %, mm, cm — найрозповсюдженіші.
 function parseLength(value, fallback = 0, base = BASE_FONT_SIZE) {
   if (value == null) return fallback;
   if (typeof value === 'number') return value;
@@ -176,7 +188,7 @@ function parseLength(value, fallback = 0, base = BASE_FONT_SIZE) {
   switch (unit) {
     case '':
     case 'pt': return n;
-    case 'px': return n * 0.75;                  // 96 dpi -> 72 pt: px*0.75
+    case 'px': return n * 0.75;
     case 'pc': return n * 12;
     case 'em':
     case 'rem': return n * base;
@@ -188,7 +200,6 @@ function parseLength(value, fallback = 0, base = BASE_FONT_SIZE) {
   }
 }
 
-// Парсинг кольору (hex, rgb(), rgba(), keyword). Повертає {r,g,b} у [0,1] або null.
 const COLOR_KEYWORDS = {
   black: [0, 0, 0], white: [1, 1, 1], red: [1, 0, 0], green: [0, 0.5, 0],
   blue: [0, 0, 1], yellow: [1, 1, 0], gray: [0.5, 0.5, 0.5], grey: [0.5, 0.5, 0.5],
@@ -200,12 +211,11 @@ const COLOR_KEYWORDS = {
 function parseColor(value) {
   if (!value || typeof value !== 'string') return null;
   const v = value.trim().toLowerCase();
-  if (!v || v === 'transparent' || v === 'inherit' || v === 'currentcolor') return null;
+  if (!v || v === 'transparent' || v === 'inherit' || v === 'currentcolor' || v === 'auto' || v === 'windowtext') return null;
   if (COLOR_KEYWORDS[v]) {
     const [r, g, b] = COLOR_KEYWORDS[v];
     return { r, g, b };
   }
-  // #rgb / #rrggbb
   let m = v.match(/^#([0-9a-f]{3})$/i);
   if (m) {
     const c = m[1];
@@ -238,12 +248,179 @@ function parseColor(value) {
   return null;
 }
 
-// Перенесення стилів елемента у клон поточного стилю. Обчислюється з:
-// 1) дефолтів тегу (h1 → fontSize+bold, b/strong → bold і т.д.)
-// 2) class-маркерів від mammoth styleMap (.align-justify, .align-center, ...)
-// 3) inline style="..." атрибута
-// Кожен наступний крок перекриває попередній.
-function styleForElement(el, parentStyle) {
+function mapFontFamily(value) {
+  if (!value) return null;
+  // CSS font-family може мати кілька варіантів через кому. Беремо перший.
+  const list = value.split(',').map((s) => s.trim().replace(/^["']|["']$/g, '').toLowerCase()).filter(Boolean);
+  for (const name of list) {
+    for (const entry of FONT_FAMILY_MAP) {
+      for (const match of entry.match) {
+        if (name === match) return entry.family;
+      }
+    }
+  }
+  // Невідома родина — повертаємо null щоб успадкувати з parent.
+  return null;
+}
+
+// ── CSS блок-парсер ────────────────────────────────────────────────────────
+// Мінімальний CSS-парсер що читає `<style>` блоки. Підтримує:
+//   - tag-селектори: p { ... }
+//   - class-селектори: .MsoNormal { ... }
+//   - tag.class: p.MsoNormal { ... }
+//   - * { ... } (всі елементи)
+//   - кома-розділені списки: p, td { ... }
+// Не підтримує: descendant combinators, pseudo-classes, attribute selectors.
+// При застосуванні: правила .class перекривають правила tag; inline style
+// перекриває все. Для адвокатських Word-HTML цього достатньо.
+
+function parseStyleBlock(cssText) {
+  // Видаляємо CSS-коментарі /* ... */
+  const clean = cssText.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [];
+  // Простий regex: селектор { декларації }
+  const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+  let m;
+  while ((m = ruleRe.exec(clean)) !== null) {
+    const selectors = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+    const decls = parseInlineStyle(m[2]);
+    if (Object.keys(decls).length === 0) continue;
+    for (const selector of selectors) {
+      // Селектор може бути "p", ".MsoNormal", "p.MsoNormal", "*"
+      const sel = selector.trim().toLowerCase();
+      // Пропускаємо складні селектори (з пробілами, [], :, >, +, ~)
+      if (/[\s\[\]:>+~]/.test(sel)) continue;
+      let tag = null, cls = null;
+      if (sel === '*') {
+        tag = '*';
+      } else if (sel.startsWith('.')) {
+        cls = sel.slice(1);
+      } else if (sel.includes('.')) {
+        const parts = sel.split('.');
+        tag = parts[0] || null;
+        cls = parts[1] || null;
+      } else {
+        tag = sel;
+      }
+      rules.push({ tag, cls, decls });
+    }
+  }
+  return rules;
+}
+
+// Знайти і об'єднати всі правила з усіх <style> блоків в документі.
+function collectStyleSheet(doc) {
+  const rules = [];
+  if (!doc) return rules;
+  const styles = doc.getElementsByTagName ? doc.getElementsByTagName('style') : [];
+  for (let i = 0; i < styles.length; i++) {
+    const text = styles[i].textContent || '';
+    if (!text) continue;
+    rules.push(...parseStyleBlock(text));
+  }
+  return rules;
+}
+
+// Знаходить правила що матчаться для елемента: за tag, за class, або *.
+// Повертає об'єднаний словник декларацій (у порядку специфічності).
+function getStylesheetDeclsForElement(el, stylesheet) {
+  if (!stylesheet || stylesheet.length === 0) return {};
+  const tag = (el.tagName || '').toLowerCase();
+  const classAttr = el.getAttribute ? (el.getAttribute('class') || '') : '';
+  const classes = classAttr.split(/\s+/).map((s) => s.toLowerCase()).filter(Boolean);
+
+  const universal = {};
+  const byTag = {};
+  const byClass = {};
+  const byTagClass = {};
+
+  for (const rule of stylesheet) {
+    if (rule.tag === '*' && !rule.cls) {
+      Object.assign(universal, rule.decls);
+    } else if (rule.tag && !rule.cls) {
+      if (rule.tag === tag) Object.assign(byTag, rule.decls);
+    } else if (!rule.tag && rule.cls) {
+      if (classes.includes(rule.cls)) Object.assign(byClass, rule.decls);
+    } else if (rule.tag && rule.cls) {
+      if (rule.tag === tag && classes.includes(rule.cls)) Object.assign(byTagClass, rule.decls);
+    }
+  }
+
+  // Порядок специфічності: universal < tag < class < tag.class < inline (inline застосовуємо окремо).
+  return { ...universal, ...byTag, ...byClass, ...byTagClass };
+}
+
+// Застосувати словник декларацій до style-об'єкта (mutator). Спільний код
+// для inline style="..." і stylesheet declarations.
+function applyDeclsToStyle(s, decls, parentStyle) {
+  if (!decls || typeof decls !== 'object') return;
+
+  if (decls['display'] === 'none') {
+    s._hidden = true;
+  }
+  if (decls['text-align']) {
+    const a = decls['text-align'].toLowerCase();
+    if (['left', 'right', 'center', 'justify'].includes(a)) s.align = a;
+  }
+  if (decls['font-weight']) {
+    const w = decls['font-weight'].toLowerCase();
+    const wn = parseInt(w, 10);
+    if (w === 'bold' || w === 'bolder' || (!isNaN(wn) && wn >= 600)) s.bold = true;
+    else if (w === 'normal' || w === 'lighter' || (!isNaN(wn) && wn < 600 && wn > 0)) s.bold = false;
+  }
+  if (decls['font-style']) {
+    const fs = decls['font-style'].toLowerCase();
+    if (fs === 'italic' || fs === 'oblique') s.italic = true;
+    else if (fs === 'normal') s.italic = false;
+  }
+  if (decls['text-decoration'] || decls['text-decoration-line']) {
+    const td = (decls['text-decoration'] || decls['text-decoration-line']).toLowerCase();
+    if (td.includes('underline')) s.underline = true;
+    if (td.includes('line-through')) s.strike = true;
+    if (td.includes('none')) { s.underline = false; s.strike = false; }
+  }
+  if (decls['font-size']) {
+    const fontSize = parseLength(decls['font-size'], s.fontSize, parentStyle ? parentStyle.fontSize : s.fontSize);
+    if (fontSize > 0) s.fontSize = fontSize;
+  }
+  if (decls['line-height']) {
+    const lh = decls['line-height'];
+    const num = parseFloat(lh);
+    if (!isNaN(num)) {
+      if (/^[\d.]+$/.test(lh.trim())) s.lineHeight = num;
+      else {
+        const abs = parseLength(lh, 0, s.fontSize);
+        if (abs > 0) s.lineHeight = abs / s.fontSize;
+      }
+    }
+  }
+  const color = parseColor(decls['color']);
+  if (color) s.color = color;
+  const bg = parseColor(decls['background-color'] || decls['background']);
+  if (bg) s.bgColor = bg;
+  if (decls['margin-left']) {
+    const ml = parseLength(decls['margin-left'], 0, s.fontSize);
+    s.marginLeft = (parentStyle?.marginLeft || 0) + ml;
+  }
+  if (decls['margin-right']) {
+    const mr = parseLength(decls['margin-right'], 0, s.fontSize);
+    s.marginRight = (parentStyle?.marginRight || 0) + mr;
+  }
+  if (decls['padding-left']) {
+    const pl = parseLength(decls['padding-left'], 0, s.fontSize);
+    s.marginLeft = (s.marginLeft || 0) + pl;
+  }
+  if (decls['text-indent']) {
+    s.textIndent = parseLength(decls['text-indent'], 0, s.fontSize);
+  }
+  if (decls['font-family']) {
+    const family = mapFontFamily(decls['font-family']);
+    if (family) s.fontFamily = family;
+  }
+}
+
+// Перенесення стилів елемента у клон поточного стилю.
+function styleForElement(el, parentStyle, stylesheet = null) {
   const s = cloneStyle(parentStyle);
   const tag = el.tagName ? el.tagName.toLowerCase() : '';
 
@@ -256,7 +433,7 @@ function styleForElement(el, parentStyle) {
     case 'b': case 'strong':
       s.bold = true;
       break;
-    case 'i': case 'em':
+    case 'i': case 'em': case 'cite': case 'var':
       s.italic = true;
       break;
     case 'u': case 'ins':
@@ -273,6 +450,9 @@ function styleForElement(el, parentStyle) {
       s.superscript = true;
       s.fontSize = parentStyle.fontSize * 0.75;
       break;
+    case 'center':
+      s.align = 'center';
+      break;
     case 'a': {
       const href = el.getAttribute && el.getAttribute('href');
       if (href) {
@@ -286,123 +466,91 @@ function styleForElement(el, parentStyle) {
       s.italic = true;
       s.marginLeft = (parentStyle.marginLeft || 0) + BLOCKQUOTE_INDENT;
       break;
+    case 'th':
+      s.bold = true;
+      break;
+    case 'code': case 'tt': case 'kbd': case 'samp':
+      // Моно-простір нема, але це рідко зустрічається — лишаємо як serif.
+      break;
+    case 'font': {
+      // HTML4 legacy
+      const face = el.getAttribute && el.getAttribute('face');
+      if (face) {
+        const family = mapFontFamily(face);
+        if (family) s.fontFamily = family;
+      }
+      const size = el.getAttribute && el.getAttribute('size');
+      if (size) {
+        // size може бути "1"-"7" або "+1"/"-1"
+        if (size.startsWith('+') || size.startsWith('-')) {
+          const delta = parseInt(size, 10);
+          if (!isNaN(delta)) s.fontSize = Math.max(6, s.fontSize + delta * 2);
+        } else if (FONT_SIZE_LEGACY[size]) {
+          s.fontSize = FONT_SIZE_LEGACY[size];
+        }
+      }
+      const color = el.getAttribute && parseColor(el.getAttribute('color'));
+      if (color) s.color = color;
+      break;
+    }
     default:
       break;
   }
 
-  // 2. Class-маркери від mammoth styleMap
+  // 2. CSS зі <style> блоку (tag, class, tag.class, *)
+  if (stylesheet) {
+    const decls = getStylesheetDeclsForElement(el, stylesheet);
+    applyDeclsToStyle(s, decls, parentStyle);
+  }
+
+  // 3. Class-маркери від mammoth styleMap (.align-*, .font-*)
   const cls = el.className && typeof el.className === 'string' ? el.className : '';
   if (cls) {
     if (cls.includes('align-justify')) s.align = 'justify';
     else if (cls.includes('align-center')) s.align = 'center';
     else if (cls.includes('align-right')) s.align = 'right';
     else if (cls.includes('align-left')) s.align = 'left';
+    if (cls.includes('font-sans')) s.fontFamily = 'sans';
+    else if (cls.includes('font-serif')) s.fontFamily = 'serif';
   }
 
-  // 3. Атрибут align (legacy HTML — використовується у деяких ЄСІТС ухвалах)
+  // 4. Legacy HTML атрибут align="..." на p/h*/div/td/table/tr/th
   const alignAttr = el.getAttribute && el.getAttribute('align');
   if (alignAttr) {
     const a = alignAttr.toLowerCase();
     if (['left', 'right', 'center', 'justify'].includes(a)) s.align = a;
   }
 
-  // 4. inline style="..." — перекриває попереднє
-  const inline = el.getAttribute && parseInlineStyle(el.getAttribute('style'));
-  if (inline) {
-    if (inline['text-align']) {
-      const a = inline['text-align'].toLowerCase();
-      if (['left', 'right', 'center', 'justify'].includes(a)) s.align = a;
-    }
-    if (inline['font-weight']) {
-      const w = inline['font-weight'].toLowerCase();
-      const wn = parseInt(w, 10);
-      if (w === 'bold' || w === 'bolder' || (!isNaN(wn) && wn >= 600)) s.bold = true;
-      else if (w === 'normal' || w === 'lighter' || (!isNaN(wn) && wn < 600)) s.bold = false;
-    }
-    if (inline['font-style']) {
-      const fs = inline['font-style'].toLowerCase();
-      if (fs === 'italic' || fs === 'oblique') s.italic = true;
-      else if (fs === 'normal') s.italic = false;
-    }
-    if (inline['text-decoration'] || inline['text-decoration-line']) {
-      const td = (inline['text-decoration'] || inline['text-decoration-line']).toLowerCase();
-      if (td.includes('underline')) s.underline = true;
-      if (td.includes('line-through')) s.strike = true;
-      if (td.includes('none')) { s.underline = false; s.strike = false; }
-    }
-    if (inline['font-size']) {
-      const fontSize = parseLength(inline['font-size'], s.fontSize, parentStyle.fontSize);
-      if (fontSize > 0) s.fontSize = fontSize;
-    }
-    if (inline['line-height']) {
-      const lh = inline['line-height'];
-      const num = parseFloat(lh);
-      if (!isNaN(num)) {
-        // Числове значення без юніту — multiplier; з юнітом — абсолютне.
-        if (/^[\d.]+$/.test(lh.trim())) s.lineHeight = num;
-        else {
-          const abs = parseLength(lh, 0, s.fontSize);
-          if (abs > 0) s.lineHeight = abs / s.fontSize;
-        }
-      }
-    }
-    const color = parseColor(inline['color']);
-    if (color) s.color = color;
-    const bg = parseColor(inline['background-color'] || inline['background']);
-    if (bg) s.bgColor = bg;
-    if (inline['margin-left']) {
-      const ml = parseLength(inline['margin-left'], 0, s.fontSize);
-      s.marginLeft = (parentStyle.marginLeft || 0) + ml;
-    }
-    if (inline['margin-right']) {
-      const mr = parseLength(inline['margin-right'], 0, s.fontSize);
-      s.marginRight = (parentStyle.marginRight || 0) + mr;
-    }
-    if (inline['padding-left']) {
-      const pl = parseLength(inline['padding-left'], 0, s.fontSize);
-      s.marginLeft = (s.marginLeft || 0) + pl;
-    }
-    if (inline['text-indent']) {
-      s.textIndent = parseLength(inline['text-indent'], 0, s.fontSize);
-    }
+  // 5. Inline style="..." — найвища специфічність
+  const inlineDecls = el.getAttribute && parseInlineStyle(el.getAttribute('style'));
+  if (inlineDecls && Object.keys(inlineDecls).length > 0) {
+    applyDeclsToStyle(s, inlineDecls, parentStyle);
   }
 
   return s;
 }
 
 // ── DOM walker → blocks ────────────────────────────────────────────────────
-// Прохід дерева у плоский список блоків.
-// Block types:
-//   { type: 'paragraph', runs, style }
-//   { type: 'heading',   runs, style, level }
-//   { type: 'list',      ordered, items: [{ runs, style, sublist?, marker? }] }
-//   { type: 'table',     rows, columns, style }
-//   { type: 'image',     src, width, height, align }
-//   { type: 'hr' }
-//   { type: 'spacer',    height }
-//
-// Run: { text, style }
-
 const BLOCK_TAGS = new Set([
   'p', 'div', 'section', 'article', 'header', 'footer', 'main', 'aside',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th',
-  'img', 'hr', 'blockquote', 'pre', 'figure', 'figcaption',
+  'img', 'hr', 'blockquote', 'pre', 'figure', 'figcaption', 'center',
 ]);
 
 function isBlock(node) {
   return node && node.nodeType === 1 && BLOCK_TAGS.has(node.tagName.toLowerCase());
 }
 
-function collectInlineRuns(node, style, runs) {
+const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'meta', 'link', 'head', 'title', 'xml', 'o:p', 'w:wordDocument']);
+
+function collectInlineRuns(node, style, runs, stylesheet) {
   if (!node) return;
   if (node.nodeType === 3) {
-    // Текстовий вузол. Колапс послідовних пробілів — як у HTML за замовчуванням.
     const raw = node.nodeValue || '';
     const collapsed = raw.replace(/\s+/g, ' ');
     if (collapsed === '' || collapsed === ' ') {
-      // Зберігаємо одинарний пробіл як run щоб не злити слова з різних inline
-      if (runs.length > 0 && !runs[runs.length - 1].text.endsWith(' ')) {
+      if (runs.length > 0 && !runs[runs.length - 1].forceBreak && !runs[runs.length - 1].text?.endsWith(' ')) {
         runs.push({ text: ' ', style: cloneStyle(style) });
       }
       return;
@@ -413,34 +561,39 @@ function collectInlineRuns(node, style, runs) {
   if (node.nodeType !== 1) return;
   const tag = node.tagName.toLowerCase();
 
-  // <br> — явний перенос рядка
+  if (SKIP_TAGS.has(tag)) return;
+
   if (tag === 'br') {
-    runs.push({ text: '\n', style: cloneStyle(style), forceBreak: true });
+    runs.push({ forceBreak: true, style: cloneStyle(style) });
     return;
   }
 
-  // <img> inline — менш типово для адвокатських документів. Якщо така inline-картинка,
-  // обробляємо як окремий "img-inline" run; рендерер вирівнює baseline.
   if (tag === 'img') {
     const src = node.getAttribute('src');
     if (src) {
-      runs.push({ type: 'image', src, style: cloneStyle(style), width: parseLength(node.getAttribute('width'), null), height: parseLength(node.getAttribute('height'), null) });
+      runs.push({
+        type: 'image',
+        src,
+        style: cloneStyle(style),
+        width: parseLength(node.getAttribute('width'), null),
+        height: parseLength(node.getAttribute('height'), null),
+      });
     }
     return;
   }
 
-  // Inline блок з власними стилями. Рекурсивно у дітей.
-  const childStyle = styleForElement(node, style);
+  const childStyle = styleForElement(node, style, stylesheet);
+  if (childStyle._hidden) return;
+
   const children = node.childNodes;
   for (let i = 0; i < children.length; i++) {
-    collectInlineRuns(children[i], childStyle, runs);
+    collectInlineRuns(children[i], childStyle, runs, stylesheet);
   }
 }
 
-function walkDom(node, parentStyle, blocks, ctx = {}) {
+function walkDom(node, parentStyle, blocks, stylesheet = null) {
   if (!node) return;
   if (node.nodeType !== 1) {
-    // Текст на верхньому рівні — обернути у paragraph
     if (node.nodeType === 3) {
       const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
       if (text) {
@@ -455,11 +608,10 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
   }
 
   const tag = node.tagName.toLowerCase();
-  const style = styleForElement(node, parentStyle);
+  if (SKIP_TAGS.has(tag)) return;
 
-  if (tag === 'script' || tag === 'style' || tag === 'noscript' || tag === 'meta' || tag === 'link' || tag === 'head') {
-    return;
-  }
+  const style = styleForElement(node, parentStyle, stylesheet);
+  if (style._hidden) return;
 
   if (tag === 'hr') {
     blocks.push({ type: 'hr', style });
@@ -479,20 +631,19 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
 
   if (/^h[1-6]$/.test(tag)) {
     const runs = [];
-    collectInlineRuns(node, style, runs);
+    collectInlineRuns(node, style, runs, stylesheet);
     if (runs.length > 0) {
       blocks.push({ type: 'heading', level: parseInt(tag[1], 10), runs, style });
     }
     return;
   }
 
-  if (tag === 'p') {
+  if (tag === 'p' || tag === 'center') {
     const runs = [];
-    collectInlineRuns(node, style, runs);
+    collectInlineRuns(node, style, runs, stylesheet);
     if (runs.length > 0) {
       blocks.push({ type: 'paragraph', runs, style });
     } else {
-      // Порожній абзац — невеликий пропуск (Word робить такі для розділювача).
       blocks.push({ type: 'spacer', height: style.fontSize * style.lineHeight, style });
     }
     return;
@@ -504,16 +655,15 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
     let n = 1;
     for (const child of node.children) {
       if (child.tagName.toLowerCase() !== 'li') continue;
-      const itemStyle = styleForElement(child, style);
+      const itemStyle = styleForElement(child, style, stylesheet);
       itemStyle.listLevel = (parentStyle.listLevel || 0) + 1;
-      // Розділяємо li на inline-runs і nested-списки.
       const runs = [];
       const sublistBlocks = [];
       for (const grand of child.childNodes) {
         if (grand.nodeType === 1 && (grand.tagName.toLowerCase() === 'ul' || grand.tagName.toLowerCase() === 'ol')) {
-          walkDom(grand, itemStyle, sublistBlocks);
+          walkDom(grand, itemStyle, sublistBlocks, stylesheet);
         } else {
-          collectInlineRuns(grand, itemStyle, runs);
+          collectInlineRuns(grand, itemStyle, runs, stylesheet);
         }
       }
       const marker = ordered ? `${n}.` : '•';
@@ -528,7 +678,6 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
 
   if (tag === 'table') {
     const rows = [];
-    // Збираємо всі <tr> з thead/tbody/tfoot/самої таблиці.
     function collectRows(parent) {
       for (const child of parent.children) {
         const t = child.tagName.toLowerCase();
@@ -537,22 +686,19 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
           for (const cell of child.children) {
             const ct = cell.tagName.toLowerCase();
             if (ct !== 'td' && ct !== 'th') continue;
-            const cellStyle = styleForElement(cell, style);
-            if (ct === 'th') cellStyle.bold = true;
+            const cellStyle = styleForElement(cell, style, stylesheet);
             const cellBlocks = [];
-            // Комірка може містити параграфи, списки, навіть вкладені таблиці.
-            // Якщо містить лише текст — рендеримо як один абзац.
             let hasBlockChild = false;
             for (const grand of cell.childNodes) {
               if (isBlock(grand)) { hasBlockChild = true; break; }
             }
             if (hasBlockChild) {
               for (const grand of cell.childNodes) {
-                walkDom(grand, cellStyle, cellBlocks);
+                walkDom(grand, cellStyle, cellBlocks, stylesheet);
               }
             } else {
               const runs = [];
-              collectInlineRuns(cell, cellStyle, runs);
+              collectInlineRuns(cell, cellStyle, runs, stylesheet);
               if (runs.length > 0) {
                 cellBlocks.push({ type: 'paragraph', runs, style: cellStyle });
               }
@@ -576,7 +722,6 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
     }
     collectRows(node);
     if (rows.length > 0) {
-      // Кількість колонок — максимум серед рядків (з урахуванням colspan).
       let columns = 0;
       for (const row of rows) {
         let count = 0;
@@ -589,15 +734,13 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
   }
 
   if (tag === 'blockquote') {
-    // Внутрішні блоки з успадкованими стилями (italic + indent).
     for (const child of node.childNodes) {
-      walkDom(child, style, blocks);
+      walkDom(child, style, blocks, stylesheet);
     }
     return;
   }
 
   if (tag === 'pre') {
-    // Зберігаємо переноси як є — кожен рядок як окремий paragraph без wrap.
     const text = node.textContent || '';
     const lines = text.split(/\r?\n/);
     for (const line of lines) {
@@ -618,19 +761,17 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
   if (tag === 'figure' || tag === 'figcaption' || tag === 'section' || tag === 'article'
       || tag === 'header' || tag === 'footer' || tag === 'main' || tag === 'aside'
       || tag === 'div') {
-    // Контейнер — спускаємось у дітей. Якщо немає блокових нащадків і є text —
-    // обертаємо в paragraph.
     let hasBlockChild = false;
     for (const child of node.childNodes) {
       if (isBlock(child)) { hasBlockChild = true; break; }
     }
     if (hasBlockChild) {
       for (const child of node.childNodes) {
-        walkDom(child, style, blocks);
+        walkDom(child, style, blocks, stylesheet);
       }
     } else {
       const runs = [];
-      collectInlineRuns(node, style, runs);
+      collectInlineRuns(node, style, runs, stylesheet);
       if (runs.length > 0) {
         blocks.push({ type: 'paragraph', runs, style });
       }
@@ -638,26 +779,20 @@ function walkDom(node, parentStyle, blocks, ctx = {}) {
     return;
   }
 
-  // Інші теги (html, body…) — глибше.
   for (const child of node.childNodes) {
-    walkDom(child, style, blocks);
+    walkDom(child, style, blocks, stylesheet);
   }
 }
 
-// ── Текстовий layout: розбиття runs на рядки з word-wrap ────────────────────
-//
-// Алгоритм: послідовно йдемо по runs, всередині runs по словах (split на
-// whitespace зі збереженням пробілів). Накопичуємо у поточному рядку. Коли
-// додаткове слово/run-сегмент не влазить — закриваємо рядок, починаємо новий.
-//
-// Кожен rendered line — масив "сегментів" {text, style, isSpace, width}. Width
-// рахується через відповідний font.widthOfTextAtSize.
+// ── Текстовий layout ──────────────────────────────────────────────────────
 
 function pickFont(style, fonts) {
-  if (style.bold && style.italic) return fonts.boldItalic;
-  if (style.bold) return fonts.bold;
-  if (style.italic) return fonts.italic;
-  return fonts.regular;
+  const family = (style.fontFamily === 'sans') ? 'sans' : 'serif';
+  const set = fonts[family] || fonts.serif;
+  if (style.bold && style.italic) return set.boldItalic;
+  if (style.bold) return set.bold;
+  if (style.italic) return set.italic;
+  return set.regular;
 }
 
 function measureRun(text, style, fonts) {
@@ -666,11 +801,7 @@ function measureRun(text, style, fonts) {
   return font.widthOfTextAtSize(text, style.fontSize);
 }
 
-// Тонші пробіли при justify не використовуємо — у pdf-lib drawText розпорядки
-// слів виконуємо вручну (малюємо кожне слово окремо). Так зберігаємо тип-якість.
-
 function flattenRunsToSegments(runs, fonts, maxWidth) {
-  // Сегмент = одне слово АБО пробіл АБО форсований break. Кожен сегмент має style.
   const segments = [];
   for (const run of runs) {
     if (run.forceBreak) {
@@ -682,16 +813,12 @@ function flattenRunsToSegments(runs, fonts, maxWidth) {
       continue;
     }
     if (!run.text) continue;
-    // Розбиваємо на токени: збагачено-нормалізований текст:
-    //   - послідовності пробілів збираємо в один пробіл-сегмент
-    //   - між пробілами — слова, які можемо переносити
     const parts = run.text.split(/(\s+)/);
     for (const part of parts) {
       if (part === '') continue;
       if (/^\s+$/.test(part)) {
         segments.push({ type: 'space', text: ' ', style: run.style, width: measureRun(' ', run.style, fonts) });
       } else {
-        // Слово може бути довшим за рядок — розіб'ємо посимвольно у layout.
         segments.push({ type: 'word', text: part, style: run.style, width: measureRun(part, run.style, fonts) });
       }
     }
@@ -699,8 +826,6 @@ function flattenRunsToSegments(runs, fonts, maxWidth) {
   return segments;
 }
 
-// Бере сегменти і розкладає у lines, кожен line — масив сегментів які
-// помістились. Розриває довге слово посимвольно при потребі.
 function layoutLines(segments, fonts, maxWidth) {
   const lines = [];
   let cur = [];
@@ -718,7 +843,6 @@ function layoutLines(segments, fonts, maxWidth) {
   }
 
   function trySplitLongWord(seg) {
-    // Слово ширше за maxWidth — розбити посимвольно.
     const { text, style } = seg;
     let chunk = '';
     for (const ch of text) {
@@ -746,9 +870,7 @@ function layoutLines(segments, fonts, maxWidth) {
       continue;
     }
     if (seg.type === 'space') {
-      // Пробіл на початку рядка — пропускаємо.
       if (cur.length === 0) continue;
-      // Пробіл у кінці допустимий; зайве урізаємо при рендері.
       if (curWidth + seg.width > maxWidth) {
         pushLine();
       } else {
@@ -757,20 +879,16 @@ function layoutLines(segments, fonts, maxWidth) {
       continue;
     }
     if (seg.type === 'image') {
-      // Inline image — для рідкісного випадку рахуємо як вузький елемент.
-      // У TODO: масштабувати по style.fontSize. Поки лишаємо як break + block рендер.
       pushLine();
       cur = [seg];
       curWidth = seg.width || 0;
       pushLine();
       continue;
     }
-    // word
     if (seg.width <= maxWidth) {
       if (curWidth + seg.width > maxWidth) pushLine();
       appendSeg(seg);
     } else {
-      // Перевищує — розбити.
       if (cur.length > 0) pushLine();
       trySplitLongWord(seg);
     }
@@ -781,7 +899,6 @@ function layoutLines(segments, fonts, maxWidth) {
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
-// Контекст рендеру — pdfDoc + поточна сторінка + yCursor + fonts + опції.
 
 function createRenderContext(pdfDoc, fonts, opts) {
   const pageWidth = opts.pageWidth || A4_WIDTH;
@@ -798,7 +915,7 @@ function createRenderContext(pdfDoc, fonts, opts) {
     contentLeft: margins.left,
     contentRight: pageWidth - margins.right,
     minY: margins.bottom,
-    embeddedImages: new Map(), // src → embedded ref
+    embeddedImages: new Map(),
   };
   newPage(ctx);
   return ctx;
@@ -809,15 +926,6 @@ function newPage(ctx) {
   ctx.yCursor = ctx.pageHeight - ctx.margins.top;
 }
 
-function ensureSpace(ctx, needed) {
-  if (ctx.yCursor - needed < ctx.minY) {
-    newPage(ctx);
-    return true;
-  }
-  return false;
-}
-
-// Малюємо рядок з сегментами на сторінці. Повертає висоту яку зайняв рядок.
 function drawLine(ctx, line, opts) {
   const { contentLeft, contentRight, page, fonts } = ctx;
   const { align, isLastLine, marginLeft, marginRight, textIndent, lineHeight, baseFontSize } = opts;
@@ -826,7 +934,6 @@ function drawLine(ctx, line, opts) {
   const usableRight = contentRight - (marginRight || 0);
   const usableWidth = usableRight - usableLeft;
 
-  // Визначаємо фактичну ширину рядка (без trailing space сегментів).
   const segs = [...line.segments];
   while (segs.length > 0 && segs[segs.length - 1].type === 'space') segs.pop();
   if (segs.length === 0) return baseFontSize * lineHeight;
@@ -848,8 +955,6 @@ function drawLine(ctx, line, opts) {
   }
   if (x < usableLeft) x = usableLeft;
 
-  // baseline для drawText — y координата нижньої межі шрифту. У pdf-lib y =
-  // baseline (не top-edge). Зміщуємо вниз на висоту шрифту щоб top-edge був на yCursor.
   const baselineY = ctx.yCursor - baseFontSize;
 
   let lineHeightActual = baseFontSize * lineHeight;
@@ -862,15 +967,12 @@ function drawLine(ctx, line, opts) {
     if (seg.type === 'word') {
       const font = pickFont(seg.style, fonts);
       const size = seg.style.fontSize;
-      // Baseline shift для sub/sup
       let segBaseline = baselineY;
       if (seg.style.superscript) segBaseline += size * 0.4;
       else if (seg.style.subscript) segBaseline -= size * 0.2;
 
-      // Tracking найбільшого fontSize у рядку для динамічної висоти
       if (size * lineHeight > lineHeightActual) lineHeightActual = size * lineHeight;
 
-      // Background color
       if (seg.style.bgColor) {
         const bg = seg.style.bgColor;
         page.drawRectangle({
@@ -890,7 +992,6 @@ function drawLine(ctx, line, opts) {
         color: rgb(seg.style.color.r, seg.style.color.g, seg.style.color.b),
       });
 
-      // Underline
       if (seg.style.underline) {
         const uy = segBaseline - size * 0.12;
         page.drawLine({
@@ -900,7 +1001,6 @@ function drawLine(ctx, line, opts) {
           color: rgb(seg.style.color.r, seg.style.color.g, seg.style.color.b),
         });
       }
-      // Strikethrough
       if (seg.style.strike) {
         const sy = segBaseline + size * 0.3;
         page.drawLine({
@@ -911,7 +1011,6 @@ function drawLine(ctx, line, opts) {
         });
       }
 
-      // Link annotation
       if (seg.style.linkHref) {
         try {
           addLinkAnnotation(ctx, seg.style.linkHref, {
@@ -921,7 +1020,7 @@ function drawLine(ctx, line, opts) {
             height: size * 1.15,
           });
         } catch {
-          /* annotation помилка не має блокувати рендер тексту */
+          /* annotation помилка не блокує рендер */
         }
       }
 
@@ -933,7 +1032,6 @@ function drawLine(ctx, line, opts) {
 }
 
 function addLinkAnnotation(ctx, href, rect) {
-  // pdf-lib не має прямого API для link annotations; будуємо PDFDict вручну.
   const { pdfDoc, page } = ctx;
   const linkDict = pdfDoc.context.obj({
     Type: 'Annot',
@@ -955,14 +1053,17 @@ function addLinkAnnotation(ctx, href, rect) {
   }
 }
 
-// ── Image helpers ──────────────────────────────────────────────────────────
+// ── Image embed ────────────────────────────────────────────────────────────
 
 async function embedDataUrlImage(ctx, src) {
   if (!src || typeof src !== 'string') return null;
   if (ctx.embeddedImages.has(src)) return ctx.embeddedImages.get(src);
 
   const m = src.match(/^data:(image\/[a-z+\-]+);base64,(.+)$/i);
-  if (!m) return null;
+  if (!m) {
+    ctx.embeddedImages.set(src, null);
+    return null;
+  }
   const mime = m[1].toLowerCase();
   const base64 = m[2];
   let bytes;
@@ -971,16 +1072,20 @@ async function embedDataUrlImage(ctx, src) {
     bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   } catch {
+    ctx.embeddedImages.set(src, null);
     return null;
   }
-  let embedded;
+  let embedded = null;
   try {
     if (mime.includes('png')) embedded = await ctx.pdfDoc.embedPng(bytes);
     else if (mime.includes('jpeg') || mime.includes('jpg')) embedded = await ctx.pdfDoc.embedJpg(bytes);
     else {
-      // pdf-lib не embed'ить SVG/GIF/WEBP напряму. Пробуємо PNG як fallback.
+      // Невідомий формат — пробуємо PNG (часто base64 з невірним MIME)
       try { embedded = await ctx.pdfDoc.embedPng(bytes); }
-      catch { embedded = null; }
+      catch {
+        try { embedded = await ctx.pdfDoc.embedJpg(bytes); }
+        catch { embedded = null; }
+      }
     }
   } catch {
     embedded = null;
@@ -992,9 +1097,8 @@ async function embedDataUrlImage(ctx, src) {
 async function renderImageBlock(ctx, block) {
   const { src, align, style } = block;
   const embedded = await embedDataUrlImage(ctx, src);
-  if (!embedded) return; // тихо пропускаємо непідтримуване зображення
+  if (!embedded) return;
 
-  // Розмір: hint з атрибутів width/height у px, або власні розміри картинки.
   let drawW = block.width ? parseLength(block.width, 0, style.fontSize) : embedded.width * 0.75;
   let drawH = block.height ? parseLength(block.height, 0, style.fontSize) : embedded.height * 0.75;
   if (!drawW || !drawH) {
@@ -1006,18 +1110,15 @@ async function renderImageBlock(ctx, block) {
   const usableRight = ctx.contentRight - (style.marginRight || 0);
   const usableWidth = usableRight - usableLeft;
 
-  // Якщо ширше за content — масштабуємо щоб помістилось
   if (drawW > usableWidth) {
     const k = usableWidth / drawW;
     drawW *= k;
     drawH *= k;
   }
 
-  // Page break якщо не вміщається повністю на поточній сторінці
   if (drawH > ctx.yCursor - ctx.minY) {
     newPage(ctx);
     if (drawH > ctx.yCursor - ctx.minY) {
-      // навіть на пустій сторінці не вміщається — масштабуємо
       const k = (ctx.yCursor - ctx.minY) / drawH;
       drawW *= k;
       drawH *= k;
@@ -1046,22 +1147,13 @@ function renderParagraph(ctx, block) {
   const usableWidth = Math.max(0, usableRight - usableLeft);
 
   const segments = flattenRunsToSegments(runs, ctx.fonts, usableWidth);
-  // Текстова частина без textIndent — wrap до usableWidth.
-  // textIndent застосовуємо лише до першого рядка, тому віднімаємо від ширини
-  // першого рядка вручну.
   const lines = layoutLines(segments, ctx.fonts, usableWidth - (style.textIndent || 0));
-  // ВАЖЛИВО: layoutLines повертає лінії під ширину з врахуванням індента.
-  // Першу лінію відсуваємо на textIndent; решта без індента — але це означає
-  // що далі їх ширина може бути не максимальною. У типових документах textIndent
-  // = 0 або невеликий — обмеження прийнятне. Для точнішого результату передаємо
-  // повну ширину і інденд застосовуємо у drawLine для першої лінії — це і є
-  // поточна поведінка.
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const isLast = i === lines.length - 1;
     const lineHeightUsed = drawLine(ctx, line, {
-      align: style.align,
+      align: style.align || 'left',
       isLastLine: isLast,
       marginLeft: style.marginLeft,
       marginRight: style.marginRight,
@@ -1077,7 +1169,6 @@ function renderParagraph(ctx, block) {
 }
 
 function renderHeading(ctx, block) {
-  // Trailing space перед заголовком
   ctx.yCursor -= HEADING_SPACING_BEFORE;
   if (ctx.yCursor - block.style.fontSize * block.style.lineHeight < ctx.minY) {
     newPage(ctx);
@@ -1093,17 +1184,14 @@ function renderList(ctx, block) {
   let counter = 1;
 
   for (const item of items) {
-    // Маркер
     const marker = ordered ? `${counter}.` : '•';
     const markerStyle = cloneStyle(item.style);
     const markerWidth = measureRun(marker, markerStyle, ctx.fonts);
 
-    // Перевірка page break
     if (ctx.yCursor - item.style.fontSize * item.style.lineHeight < ctx.minY) {
       newPage(ctx);
     }
 
-    // Малюємо маркер на baseline першого рядка тексту, плюс рендеримо runs з відступом
     const startY = ctx.yCursor;
     const markerX = ctx.contentLeft + (style.marginLeft || 0) + indent - markerWidth - LIST_BULLET_GAP;
     if (markerX >= ctx.contentLeft) {
@@ -1116,7 +1204,6 @@ function renderList(ctx, block) {
       });
     }
 
-    // Текст пункту: тимчасово зсуваємо contentLeft на indent
     const itemBlock = {
       type: 'paragraph',
       runs: item.runs,
@@ -1124,19 +1211,17 @@ function renderList(ctx, block) {
     };
     renderParagraph(ctx, itemBlock);
 
-    // Вкладений список (sublist)
     if (item.sublist && item.sublist.length > 0) {
       for (const sub of item.sublist) {
-        // Підняти listLevel у style блоку — переробляємо стилі
         if (sub.style) sub.style = { ...sub.style, listLevel: level };
-        renderBlock(ctx, sub);
+        renderBlockSync(ctx, sub);
       }
     }
     counter++;
   }
 }
 
-function renderHr(ctx, block) {
+function renderHr(ctx, _block) {
   const y = ctx.yCursor - 2;
   ctx.page.drawLine({
     start: { x: ctx.contentLeft, y },
@@ -1151,10 +1236,6 @@ function renderSpacer(ctx, block) {
   ctx.yCursor -= block.height || (BASE_FONT_SIZE * BASE_LINE_HEIGHT);
 }
 
-// ── Table rendering ────────────────────────────────────────────────────────
-// Прості таблиці: рівні колонки якщо немає width hint; row-by-row рендер з
-// page-break коли рядок не влазить.
-
 function parseWidthHint(hint, totalWidth) {
   if (!hint) return null;
   const s = String(hint).trim();
@@ -1166,7 +1247,6 @@ function parseWidthHint(hint, totalWidth) {
 }
 
 function computeColumnWidths(rows, columns, totalWidth) {
-  // Шукаємо явні width у першому рядку (typical Word-style).
   const hints = new Array(columns).fill(null);
   for (const row of rows) {
     let colIdx = 0;
@@ -1178,7 +1258,6 @@ function computeColumnWidths(rows, columns, totalWidth) {
       colIdx += cell.colspan || 1;
     }
   }
-  // Розподіляємо: відомі ширини беремо, невідомі — порівну ділять залишок.
   const knownTotal = hints.reduce((a, b) => a + (b || 0), 0);
   const unknown = hints.filter((h) => h == null).length;
   const remainder = Math.max(0, totalWidth - knownTotal);
@@ -1187,8 +1266,7 @@ function computeColumnWidths(rows, columns, totalWidth) {
 }
 
 function measureCellHeight(ctx, cell, width) {
-  // Спрощено: для текстових блоків рахуємо як сума висот рядків.
-  let h = 4; // padding top
+  let h = 4;
   for (const blk of cell.blocks) {
     if (blk.type === 'paragraph' || blk.type === 'heading') {
       const segs = flattenRunsToSegments(blk.runs, ctx.fonts, width - 8);
@@ -1208,7 +1286,7 @@ function measureCellHeight(ctx, cell, width) {
       h += blk.height || BASE_FONT_SIZE * BASE_LINE_HEIGHT;
     }
   }
-  return h + 4; // padding bottom
+  return h + 4;
 }
 
 function renderTable(ctx, block) {
@@ -1223,7 +1301,6 @@ function renderTable(ctx, block) {
   const borderColor = rgb(0.7, 0.7, 0.7);
 
   for (const row of rows) {
-    // Розрахунок висоти рядка
     let rowH = 0;
     let colIdx = 0;
     const cellMeta = [];
@@ -1241,7 +1318,6 @@ function renderTable(ctx, block) {
     }
     rowH = Math.max(rowH, 18);
 
-    // Page break якщо рядок не влазить
     if (ctx.yCursor - rowH < ctx.minY) {
       newPage(ctx);
     }
@@ -1249,9 +1325,7 @@ function renderTable(ctx, block) {
     const rowTopY = ctx.yCursor;
     const rowBottomY = rowTopY - rowH;
 
-    // Малюємо комірки
     for (const meta of cellMeta) {
-      // Border
       ctx.page.drawRectangle({
         x: meta.x,
         y: rowBottomY,
@@ -1263,7 +1337,6 @@ function renderTable(ctx, block) {
           ? rgb(meta.cell.style.bgColor.r, meta.cell.style.bgColor.g, meta.cell.style.bgColor.b)
           : undefined,
       });
-      // Вміст комірки — окремий sub-context з обмеженою шириною
       const subCtx = {
         ...ctx,
         contentLeft: meta.x + cellPaddingX,
@@ -1287,8 +1360,6 @@ function sumUpTo(arr, n) {
   return s;
 }
 
-// Sync-варіант renderBlock без async (для cells — там не embed'имо нові
-// зображення з data URLs у комірках для простоти; підтримуємо paragraph/heading/list/hr/spacer).
 function renderBlockSync(ctx, block) {
   switch (block.type) {
     case 'paragraph':   renderParagraph(ctx, block); break;
@@ -1296,7 +1367,6 @@ function renderBlockSync(ctx, block) {
     case 'list':        renderList(ctx, block); break;
     case 'hr':          renderHr(ctx, block); break;
     case 'spacer':      renderSpacer(ctx, block); break;
-    // image, table — не рендеримо всередині комірок (нечасто потрібно)
     default: break;
   }
 }
@@ -1312,7 +1382,6 @@ async function renderBlock(ctx, block) {
     case 'spacer':      renderSpacer(ctx, block); break;
     default: break;
   }
-  // Невеликий paragraph-spacing між блоками
   if (block.type === 'paragraph') ctx.yCursor -= PARAGRAPH_SPACING;
 }
 
@@ -1322,7 +1391,8 @@ async function renderBlock(ctx, block) {
  * Конвертує HTML рядок у PDF Blob з збереженням форматування.
  *
  * @param {string} html — HTML вміст (від mammoth.convertToHtml або декодований HTML-файл)
- * @param {object} options — { pageWidth, pageHeight, margins }
+ * @param {object} options — { pageWidth, pageHeight, margins, defaultFontFamily }
+ *   defaultFontFamily: 'serif' (default) | 'sans'
  * @returns {Promise<Blob>} PDF Blob (application/pdf, selectable text)
  */
 export async function htmlToPdfViaPdfLib(html, options = {}) {
@@ -1332,18 +1402,25 @@ export async function htmlToPdfViaPdfLib(html, options = {}) {
 
   // 1. Парсинг HTML
   const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
+  // Якщо передали тільки body content без <html>, обертаємо щоб DOMParser
+  // коректно парсив + щоб <style> блоки потрапили у doc.
+  const wrappedHtml = /<html[\s>]/i.test(html) ? html : `<!doctype html><html><body>${html}</body></html>`;
+  const doc = parser.parseFromString(wrappedHtml, 'text/html');
   const root = doc.body || doc.documentElement;
   if (!root) throw new Error('htmlToPdfViaPdfLib: не вдалось розпарсити HTML');
 
-  // 2. Збір блоків
+  // 2. Збір CSS правил з усіх <style> блоків (head + body)
+  const stylesheet = collectStyleSheet(doc);
+
+  // 3. Збір блоків
   const blocks = [];
   const initStyle = defaultStyle();
+  if (options.defaultFontFamily === 'sans') initStyle.fontFamily = 'sans';
   for (const child of root.childNodes) {
-    walkDom(child, initStyle, blocks);
+    walkDom(child, initStyle, blocks, stylesheet);
   }
 
-  // 3. Підготовка pdf-lib документа з усіма шрифтами
+  // 4. Підготовка pdf-lib документа з усіма 8 шрифтами
   const [fontkitModule, fontBytes] = await Promise.all([
     import('@pdf-lib/fontkit'),
     loadAllFontBytes(),
@@ -1353,13 +1430,21 @@ export async function htmlToPdfViaPdfLib(html, options = {}) {
   pdfDoc.registerFontkit(fontkit);
 
   const fonts = {
-    regular: await pdfDoc.embedFont(fontBytes.regular, { subset: true }),
-    bold: await pdfDoc.embedFont(fontBytes.bold, { subset: true }),
-    italic: await pdfDoc.embedFont(fontBytes.italic, { subset: true }),
-    boldItalic: await pdfDoc.embedFont(fontBytes.boldItalic, { subset: true }),
+    sans: {
+      regular: await pdfDoc.embedFont(fontBytes.sans.regular, { subset: true }),
+      bold: await pdfDoc.embedFont(fontBytes.sans.bold, { subset: true }),
+      italic: await pdfDoc.embedFont(fontBytes.sans.italic, { subset: true }),
+      boldItalic: await pdfDoc.embedFont(fontBytes.sans.boldItalic, { subset: true }),
+    },
+    serif: {
+      regular: await pdfDoc.embedFont(fontBytes.serif.regular, { subset: true }),
+      bold: await pdfDoc.embedFont(fontBytes.serif.bold, { subset: true }),
+      italic: await pdfDoc.embedFont(fontBytes.serif.italic, { subset: true }),
+      boldItalic: await pdfDoc.embedFont(fontBytes.serif.boldItalic, { subset: true }),
+    },
   };
 
-  // 4. Рендер блоків
+  // 5. Рендер
   const ctx = createRenderContext(pdfDoc, fonts, options);
   for (const block of blocks) {
     await renderBlock(ctx, block);
@@ -1378,9 +1463,13 @@ export const __test__ = {
   parseInlineStyle,
   parseLength,
   parseColor,
+  parseStyleBlock,
+  mapFontFamily,
   styleForElement,
   walkDom,
   layoutLines,
   flattenRunsToSegments,
   defaultStyle,
+  collectStyleSheet,
+  getStylesheetDeclsForElement,
 };

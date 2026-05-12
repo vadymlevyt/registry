@@ -4,75 +4,127 @@
 //
 // Pipeline:
 //   1. Прочитати file як ArrayBuffer
-//   2. validateDocxSignature — перші байти ZIP (PK\x03\x04). DOCX — це ZIP.
-//      Якщо ні — THROW «не є валідним DOCX».
+//   2. validateDocxSignature (ZIP PK\\x03\\x04)
 //   3. Паралельно:
-//      - mammoth.convertToHtml({ arrayBuffer }, { styleMap, convertImage })
-//        → HTML з заголовками, абзацами, вирівнюванням, жирним/курсивом,
-//          таблицями, списками і embed'нутими base64 зображеннями.
-//      - mammoth.extractRawText → plain-текст для .txt кеша у 02_ОБРОБЛЕНІ
-//        (швидкий пошук, передача в AI агенти, копіювання у клієнтський чат).
-//      Запускаємо одночасно бо обидві операції незалежні і йдуть по тому ж
-//      ArrayBuffer'у.
-//   4. pdfLibHtmlRenderer.htmlToPdfViaPdfLib(html) → PDF Blob з selectable
-//      text і збереженим форматуванням.
-//   5. Повернути { pdfBlob, extractedText, warnings }
+//      - mammoth.convertToHtml({ arrayBuffer }, {
+//          styleMap, convertImage, transformDocument
+//        })
+//        — transformDocument проставляє styleName на абзацах і run'ах за
+//          alignment / font, щоб styleMap зміг вибрати потрібний клас CSS.
+//        — styleMap прописує p.align-* (вирівнювання) і span.font-*
+//          (родина шрифту). pdfLibHtmlRenderer розпізнає ці класи у DOM.
+//        — convertImage embed'ить картинки як data: URI з base64.
+//      - mammoth.extractRawText → plain-текст для .txt кешу
+//   4. pdfLibHtmlRenderer.htmlToPdfViaPdfLib(html) → searchable PDF
 //
-// Чому convertToHtml а не extractRawText: extractRawText втрачає ВСЕ
-// форматування (тільки текст). convertToHtml зберігає структуру:
-// h1-h6, p з вирівнюванням, b/i/u, ul/ol, table, img (як data: URI з base64).
-// pdfLibHtmlRenderer розпізнає це і відображає у PDF з відповідним стилем.
-//
-// Trade-off: підмножина HTML/CSS — складні таблиці у таблицях, плавання,
-// складна типографія можуть втратитись частково. ~80-90% точності для
-// типових адвокатських документів. Для точного формату оригінал DOCX
-// лежить поряд як originalDriveId — можна завантажити з Drive і відкрити у Word.
-//
-// Feature flag CONVERT_DOCX_TO_PDF керується у converterService.js. Якщо false —
-// converterService повертає passthrough і ця функція не викликається.
+// ── Чому transformDocument ──────────────────────────────────────────────────
+// За замовчуванням mammoth НЕ виводить alignment у HTML. Документація styleMap
+// підтримує тільки p[style-name=...] / p.styleId / r matchers — НЕ
+// p[alignment=...] (це наш помилковий синтаксис попередньо ламав justify).
+// Правильний шлях — transformDocument: змінюємо документ перед HTML-конвертацією,
+// додаючи синтетичні styleName 'AlignJustify' / 'FontSans' / 'FontSerif'.
+// Далі styleMap їх легально матчить як p[style-name='...'].
 
 import { htmlToPdfViaPdfLib } from './pdfLibHtmlRenderer.js';
 
-// Мінімальна довжина значущого тексту. 50 символів — це приблизно одне коротке
-// речення. Менше — або порожній шаблон, або документ без текстового вмісту
-// (тільки зображення без OCR'а). У таких випадках адвокат має додавати
-// файл як зображення, а не як DOCX.
 const MIN_TEXT_LENGTH = 50;
 
-// mammoth styleMap — переносить Word paragraph.alignment у HTML class.
-// Без цього mammoth втрачає alignment у конвертації (позовна заява з
-// text-align: justify рендерилась би як left). Класи розпізнає
-// pdfLibHtmlRenderer через styleForElement → align-* мапінг.
+// styleMap — пишеться як ПЛАСКИЙ масив рядків. Порядок важливий: специфічніше
+// раніше. align-* на абзацах, font-* як inline <span> навколо runs.
 const MAMMOTH_STYLE_MAP = [
-  "p[alignment='justify'] => p.align-justify:fresh",
-  "p[alignment='center']  => p.align-center:fresh",
-  "p[alignment='right']   => p.align-right:fresh",
-  "p[alignment='left']    => p.align-left:fresh",
-  // Перенесення runs з Word: r[bold] / r[italic] mammoth уже мапить у <strong>/<em>
-  // за дефолтом, додатково не потрібно.
+  // Word alignment → клас на <p>
+  "p[style-name='AlignJustify'] => p.align-justify:fresh",
+  "p[style-name='AlignCenter']  => p.align-center:fresh",
+  "p[style-name='AlignRight']   => p.align-right:fresh",
+  "p[style-name='AlignLeft']    => p.align-left:fresh",
+  // Word font-family → клас на <span> (inline)
+  "r[style-name='FontSans']  => span.font-sans",
+  "r[style-name='FontSerif'] => span.font-serif",
 ];
+
+// Map font name → 'serif' | 'sans' | null (невідомі залишаємо як null —
+// pdfLibHtmlRenderer успадкує default 'serif').
+function mapDocxFontFamily(fontName) {
+  if (!fontName || typeof fontName !== 'string') return null;
+  const name = fontName.toLowerCase();
+  const serif = ['times new roman', 'times', 'cambria', 'georgia', 'palatino', 'liberation serif', 'serif'];
+  const sans = ['arial', 'helvetica', 'verdana', 'tahoma', 'calibri', 'liberation sans', 'segoe ui', 'roboto', 'open sans', 'sans-serif'];
+  if (serif.some((s) => name === s || name.startsWith(s))) return 'serif';
+  if (sans.some((s) => name === s || name.startsWith(s))) return 'sans';
+  return null;
+}
+
+// Map mammoth alignment value → styleName for styleMap matching.
+// Word alignment values з OOXML: 'left'|'right'|'center'|'both' (justify) і
+// рідкісніше 'start'|'end'|'distribute'. 'both' — це justify у Word XML.
+function alignmentToStyleName(alignment) {
+  switch ((alignment || '').toLowerCase()) {
+    case 'left':
+    case 'start':
+      return 'AlignLeft';
+    case 'right':
+    case 'end':
+      return 'AlignRight';
+    case 'center':
+    case 'centre':
+      return 'AlignCenter';
+    case 'both':
+    case 'justify':
+    case 'distribute':
+      return 'AlignJustify';
+    default:
+      return null;
+  }
+}
+
+// transformDocument: рекурсивно обходить mammoth document model.
+// Для абзаців з alignment — встановлює styleName (якщо ще не задано).
+// Для runs з font — встановлює styleName 'FontSans'/'FontSerif'.
+// Не перетирає styleName що вже існує (наприклад 'Heading 1' з Word styles).
+function makeTransformDocument() {
+  function transformElement(element) {
+    if (!element) return element;
+
+    if (element.children) {
+      const children = element.children.map(transformElement);
+      element = { ...element, children };
+    }
+
+    if (element.type === 'paragraph') {
+      // Не торкаємось paragraphs з вже встановленим styleName (Heading 1 тощо).
+      if (!element.styleName) {
+        const styleName = alignmentToStyleName(element.alignment);
+        if (styleName) {
+          element = { ...element, styleName };
+        }
+      }
+    } else if (element.type === 'run') {
+      if (!element.styleName && element.font) {
+        const family = mapDocxFontFamily(element.font);
+        if (family === 'sans') element = { ...element, styleName: 'FontSans' };
+        else if (family === 'serif') element = { ...element, styleName: 'FontSerif' };
+      }
+    }
+
+    return element;
+  }
+  return transformElement;
+}
 
 export async function docxToPdf(file, _context = {}) {
   const warnings = [];
 
-  // 1. ArrayBuffer
   const arrayBuffer = await readAsArrayBuffer(file);
 
-  // 2. ZIP-сигнатура. DOCX — це zip-архів з [Content_Types].xml + word/*.xml.
-  // Якщо перші 4 байти не PK\x03\x04 — це точно не DOCX (можливо .doc, txt
-  // з .docx розширенням, або пошкоджений файл).
   if (!hasDocxSignature(arrayBuffer)) {
     throw new Error('Файл не є валідним DOCX. Можливо це старий .doc формат або файл пошкоджений.');
   }
 
-  // 3. Lazy-load mammoth (browser bundle) і паралельно конвертуємо HTML + raw text.
   const mammothModule = await import('mammoth/mammoth.browser.js');
   const mammoth = mammothModule.default || mammothModule;
 
   let htmlResult, rawTextResult;
   try {
-    // convertImage повертає base64 data URI — pdfLibHtmlRenderer embed'ить
-    // зображення у PDF через pdfDoc.embedPng/embedJpg.
     const convertImageOpts = mammoth.images && mammoth.images.imgElement
       ? {
           convertImage: mammoth.images.imgElement((image) =>
@@ -85,14 +137,15 @@ export async function docxToPdf(file, _context = {}) {
     [htmlResult, rawTextResult] = await Promise.all([
       mammoth.convertToHtml(
         { arrayBuffer },
-        { styleMap: MAMMOTH_STYLE_MAP, ...convertImageOpts }
+        {
+          styleMap: MAMMOTH_STYLE_MAP,
+          transformDocument: makeTransformDocument(),
+          ...convertImageOpts,
+        }
       ),
       mammoth.extractRawText({ arrayBuffer }),
     ]);
   } catch (e) {
-    // Mammoth кидає при пошкодженому ZIP, не-DOCX вмісті, нечитабельних
-    // потоках. Не показуємо адвокату технічну ZIP-помилку — даємо чесне
-    // повідомлення про файл.
     throw new Error(`Не вдалось прочитати DOCX. Файл може бути пошкоджений: ${e?.message || e}`);
   }
 
@@ -113,8 +166,6 @@ export async function docxToPdf(file, _context = {}) {
     throw new Error('DOCX не вдалось конвертувати у HTML для рендеру (порожній результат mammoth).');
   }
 
-  // mammoth warnings (numbering, unrecognized styles, missing image content
-  // types) — переносимо у наш результат щоб caller міг залогувати.
   const seen = new Set();
   for (const msg of mammothMessages) {
     if (msg?.type === 'warning' && msg?.message && !seen.has(msg.message)) {
@@ -123,12 +174,11 @@ export async function docxToPdf(file, _context = {}) {
     }
   }
 
-  // 4. PDF generation через pdfLibHtmlRenderer. Завантажує 4 шрифти
-  // (Regular, Bold, Italic, BoldItalic) один раз за сесію — потім bytes у
-  // in-memory cache.
   let pdfBlob;
   try {
-    pdfBlob = await htmlToPdfViaPdfLib(html);
+    // DOCX за замовчуванням — Times-like (Word default). Передаємо serif як
+    // дефолт, але run-level font-* класи перекривають.
+    pdfBlob = await htmlToPdfViaPdfLib(html, { defaultFontFamily: 'serif' });
   } catch (e) {
     throw new Error(`Не вдалось згенерувати PDF: ${e?.message || e}`);
   }
@@ -142,9 +192,6 @@ export async function docxToPdf(file, _context = {}) {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-// ZIP local file header signature: 0x50 0x4B 0x03 0x04 ("PK\x03\x04").
-// Усі DOCX починаються з цієї сигнатури. Інші ZIP-варіанти (порожній архів
-// 0x50 0x4B 0x05 0x06, або spanning 0x50 0x4B 0x07 0x08) для DOCX не зустрічаються.
 function hasDocxSignature(arrayBuffer) {
   if (!arrayBuffer || arrayBuffer.byteLength < 4) return false;
   const view = new Uint8Array(arrayBuffer, 0, 4);
@@ -161,3 +208,11 @@ function readAsArrayBuffer(file) {
     reader.readAsArrayBuffer(file);
   });
 }
+
+// Експорт для тестів
+export const __test__ = {
+  alignmentToStyleName,
+  mapDocxFontFamily,
+  makeTransformDocument,
+  MAMMOTH_STYLE_MAP,
+};

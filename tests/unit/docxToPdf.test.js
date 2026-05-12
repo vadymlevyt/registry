@@ -28,7 +28,7 @@ vi.mock('../../src/services/converter/pdfLibHtmlRenderer.js', () => ({
   htmlToPdfViaPdfLib: (html, opts) => mockHtmlToPdf(html, opts),
 }));
 
-import { docxToPdf } from '../../src/services/converter/docxToPdf.js';
+import { docxToPdf, __test__ as docxTest } from '../../src/services/converter/docxToPdf.js';
 
 function docxFile(name = 'document.docx') {
   return new File(
@@ -68,7 +68,7 @@ describe('docxToPdf — DOCX → PDF через mammoth.convertToHtml + pdfLibHt
     expect(result.extractedText).toBe(LONG_TEXT);
   });
 
-  it('викликає convertToHtml зі styleMap і convertImage опціями', async () => {
+  it('викликає convertToHtml зі styleMap, convertImage, transformDocument', async () => {
     await docxToPdf(docxFile(), {});
     expect(mockConvertToHtml).toHaveBeenCalledOnce();
     const [opts, conf] = mockConvertToHtml.mock.calls[0];
@@ -76,7 +76,18 @@ describe('docxToPdf — DOCX → PDF через mammoth.convertToHtml + pdfLibHt
     expect(conf).toHaveProperty('styleMap');
     expect(Array.isArray(conf.styleMap)).toBe(true);
     expect(conf.styleMap.some((s) => s.includes('align-justify'))).toBe(true);
+    expect(conf.styleMap.some((s) => s.includes('font-sans'))).toBe(true);
+    expect(conf.styleMap.some((s) => s.includes('font-serif'))).toBe(true);
     expect(conf).toHaveProperty('convertImage');
+    expect(conf).toHaveProperty('transformDocument');
+    expect(typeof conf.transformDocument).toBe('function');
+  });
+
+  it('передає defaultFontFamily:serif у pdfLibHtmlRenderer (Word default = Times-like)', async () => {
+    await docxToPdf(docxFile(), {});
+    expect(mockHtmlToPdf).toHaveBeenCalledOnce();
+    const [, opts] = mockHtmlToPdf.mock.calls[0];
+    expect(opts).toEqual(expect.objectContaining({ defaultFontFamily: 'serif' }));
   });
 
   it('викликає extractRawText паралельно для .txt кеша', async () => {
@@ -147,3 +158,96 @@ describe('docxToPdf — DOCX → PDF через mammoth.convertToHtml + pdfLibHt
     await expect(docxToPdf(docxFile(), {})).rejects.toThrow(/порожній результат mammoth/);
   });
 });
+
+describe('docxToPdf.__test__ — transformDocument', () => {
+  const { alignmentToStyleName, mapDocxFontFamily, makeTransformDocument } = docxTest;
+
+  it('alignmentToStyleName: both/justify → AlignJustify', () => {
+    expect(alignmentToStyleName('both')).toBe('AlignJustify');
+    expect(alignmentToStyleName('justify')).toBe('AlignJustify');
+    expect(alignmentToStyleName('distribute')).toBe('AlignJustify');
+  });
+  it('alignmentToStyleName: center → AlignCenter, right → AlignRight, left → AlignLeft', () => {
+    expect(alignmentToStyleName('center')).toBe('AlignCenter');
+    expect(alignmentToStyleName('right')).toBe('AlignRight');
+    expect(alignmentToStyleName('end')).toBe('AlignRight');
+    expect(alignmentToStyleName('left')).toBe('AlignLeft');
+    expect(alignmentToStyleName('start')).toBe('AlignLeft');
+  });
+  it('alignmentToStyleName: невідоме → null', () => {
+    expect(alignmentToStyleName('')).toBeNull();
+    expect(alignmentToStyleName(null)).toBeNull();
+    expect(alignmentToStyleName('unknown')).toBeNull();
+  });
+
+  it('mapDocxFontFamily: Times New Roman → serif', () => {
+    expect(mapDocxFontFamily('Times New Roman')).toBe('serif');
+    expect(mapDocxFontFamily('Cambria')).toBe('serif');
+    expect(mapDocxFontFamily('Georgia')).toBe('serif');
+  });
+  it('mapDocxFontFamily: Arial/Calibri/Verdana → sans', () => {
+    expect(mapDocxFontFamily('Arial')).toBe('sans');
+    expect(mapDocxFontFamily('Calibri')).toBe('sans');
+    expect(mapDocxFontFamily('Verdana')).toBe('sans');
+  });
+  it('mapDocxFontFamily: невідомий → null', () => {
+    expect(mapDocxFontFamily(null)).toBeNull();
+    expect(mapDocxFontFamily('')).toBeNull();
+    expect(mapDocxFontFamily('Comic Sans')).toBeNull(); // у нас немає mapping
+  });
+
+  it('transformDocument: paragraph з alignment=both → styleName=AlignJustify', () => {
+    const transform = makeTransformDocument();
+    const doc = {
+      type: 'document',
+      children: [
+        { type: 'paragraph', alignment: 'both', styleName: null, children: [] },
+        { type: 'paragraph', alignment: 'center', styleName: null, children: [] },
+        { type: 'paragraph', alignment: 'right', styleName: null, children: [] },
+        { type: 'paragraph', alignment: null, styleName: null, children: [] },
+      ],
+    };
+    const transformed = transform(doc);
+    expect(transformed.children[0].styleName).toBe('AlignJustify');
+    expect(transformed.children[1].styleName).toBe('AlignCenter');
+    expect(transformed.children[2].styleName).toBe('AlignRight');
+    expect(transformed.children[3].styleName).toBeNull();
+  });
+
+  it('transformDocument: НЕ перезаписує існуючий styleName (Heading тощо)', () => {
+    const transform = makeTransformDocument();
+    const doc = {
+      type: 'document',
+      children: [
+        { type: 'paragraph', alignment: 'both', styleName: 'Heading 1', children: [] },
+      ],
+    };
+    const transformed = transform(doc);
+    expect(transformed.children[0].styleName).toBe('Heading 1'); // не перезаписане
+  });
+
+  it('transformDocument: run з font="Times New Roman" → styleName=FontSerif', () => {
+    const transform = makeTransformDocument();
+    const doc = {
+      type: 'document',
+      children: [
+        {
+          type: 'paragraph',
+          alignment: null,
+          styleName: null,
+          children: [
+            { type: 'run', font: 'Times New Roman', styleName: null, children: [] },
+            { type: 'run', font: 'Arial', styleName: null, children: [] },
+            { type: 'run', font: null, styleName: null, children: [] },
+          ],
+        },
+      ],
+    };
+    const transformed = transform(doc);
+    const runs = transformed.children[0].children;
+    expect(runs[0].styleName).toBe('FontSerif');
+    expect(runs[1].styleName).toBe('FontSans');
+    expect(runs[2].styleName).toBeNull();
+  });
+});
+

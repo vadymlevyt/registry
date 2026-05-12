@@ -96,7 +96,10 @@ export async function htmlToPdf(file, _context = {}) {
   // selectable text.
   let pdfBlob;
   try {
-    pdfBlob = await htmlToPdfViaPdfLib(innerHtml);
+    // ЄСІТС-HTML і будь-який інший Word-style HTML за замовчуванням Times-like
+    // (serif). font-family у документі може це перекрити через CSS або
+    // <font face="..."> — renderer обробить.
+    pdfBlob = await htmlToPdfViaPdfLib(innerHtml, { defaultFontFamily: 'serif' });
   } catch (e) {
     throw new Error(`Не вдалось згенерувати PDF: ${e?.message || e}`);
   }
