@@ -166,6 +166,72 @@
   transition: width 0.3s ease;
 }
 
+.image-merge-panel__processing-counter {
+  color: var(--color-text-muted, #6b7280);
+  font-weight: normal;
+  font-size: var(--text-sm);
+}
+
+/* Stepper з фазами */
+.image-merge-panel__phase-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  max-width: 480px;
+}
+
+.image-merge-panel__phase-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.image-merge-panel__phase-step--done {
+  color: var(--color-success, #059669);
+  background: rgba(5, 150, 105, 0.08);
+}
+
+.image-merge-panel__phase-step--active {
+  color: var(--color-accent);
+  background: var(--color-accent-subtle, rgba(59, 130, 246, 0.12));
+  font-weight: var(--weight-medium);
+}
+
+.image-merge-panel__phase-step--pending {
+  color: var(--color-text-muted, #9ca3af);
+}
+
+.image-merge-panel__phase-step-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+}
+
+.image-merge-panel__phase-step--done .image-merge-panel__phase-step-dot {
+  background: var(--color-success, #059669);
+  color: #fff;
+}
+
+.image-merge-panel__phase-step--active .image-merge-panel__phase-step-dot {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.image-merge-panel__phase-step--pending .image-merge-panel__phase-step-dot {
+  background: var(--color-surface-3, #e5e7eb);
+}
+
 /* Preview phase */
 .image-merge-panel__preview {
   display: flex;
