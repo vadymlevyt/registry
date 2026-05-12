@@ -296,3 +296,66 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Стартовий екран з двома кнопками ───────────────────────────────────── */
+
+.add-document-modal__start {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.add-document-modal__start-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  color: var(--color-text);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  text-align: center;
+  position: relative;
+  min-height: 140px;
+}
+
+.add-document-modal__start-button:hover {
+  background: var(--color-surface-3, var(--color-surface-2));
+  border-color: var(--color-accent);
+}
+
+.add-document-modal__start-button--soon {
+  opacity: 0.7;
+}
+
+.add-document-modal__start-icon {
+  color: var(--color-accent);
+}
+
+.add-document-modal__start-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+
+.add-document-modal__start-desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+}
+
+.add-document-modal__start-soon {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  font-style: italic;
+  margin-top: var(--space-1);
+}
+
+@media (max-width: 768px) {
+  .add-document-modal__start {
+    grid-template-columns: 1fr;
+  }
+}

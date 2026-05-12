@@ -10,10 +10,13 @@ import {
   FileText,
   HardDrive,
   Users,
+  Image as ImageIcon,
+  ArrowLeft,
 } from 'lucide-react';
 import { Modal, Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { driveRequest } from '../../services/driveAuth.js';
+import { toast } from '../../services/toast.js';
 import './AddDocumentModal.css';
 
 const CATEGORY_OPTIONS = [
@@ -34,10 +37,19 @@ const AUTHOR_OPTIONS = [
   { value: 'third_party', label: 'Третя сторона' },
 ];
 
-const ACCEPT_FILE_TYPES = '.pdf,.jpeg,.jpg,.png,.heic,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm';
+// Підтримувані типи для кнопки "Додати файл" (single). Збігається з MIME-чеками
+// у converterService — PDF / HTML / DOCX / image (HEIC iPhone). Інші формати
+// (XLSX, ZIP, MD, TXT) залишаються у списку для passthrough — Drive iframe
+// покаже preview, OCR pipeline пропустить їх.
+const ACCEPT_FILE_TYPES = '.pdf,.jpeg,.jpg,.png,.heic,.webp,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const PAGE_LIMIT = 100;
+
+// Дві операційні гілки: одиничний документ vs склейка кількох зображень.
+// Mode 'merge' у TASK A — лише плейсхолдер з повідомленням; реалізація у TASK B.
+const MODE_SINGLE = 'single';
+const MODE_MERGE = 'merge';
 
 const initialState = (caseData) => ({
   name: '',
@@ -66,6 +78,9 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // mode: null = стартовий екран з двома кнопками; 'single' = форма для
+  // одного документа; 'merge' (TASK B) = склейка кількох зображень.
+  const [mode, setMode] = useState(null);
 
   // Drive picker — окрема гілка від device file picker. Render-гейт зберігається:
   // секція з'являється тільки коли в каси є папка 01_ОРИГІНАЛИ (точка дефолту).
@@ -80,6 +95,7 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
       setSubmitting(false);
       setDragOver(false);
       setDrivePickerOpen(false);
+      setMode(null);
     }
   }, [isOpen, caseData]);
 
@@ -88,6 +104,8 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
     // перевіряє _isDriveSource і пропускає uploadFileLocal — driveId уже відомий.
     setState((s) => ({
       ...s,
+      // Назва документа — імʼя файлу без розширення, якщо адвокат ще не ввів
+      name: s.name || stripExtension(driveFile.name),
       file: {
         _isDriveSource: true,
         _driveId: driveFile.id,
@@ -96,6 +114,22 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
         type: driveFile.mimeType || 'application/octet-stream',
       },
     }));
+    setDrivePickerOpen(false);
+  }
+
+  function handleStartSingle() {
+    setMode(MODE_SINGLE);
+  }
+
+  function handleStartMerge() {
+    // TASK B — склейка зображень з агентом сортування. Поки що — плейсхолдер.
+    toast.show('Склейка зображень буде доступна у наступній версії');
+  }
+
+  function handleBackToStart() {
+    setMode(null);
+    setState(initialState(caseData));
+    setTouched(false);
     setDrivePickerOpen(false);
   }
 
@@ -129,8 +163,46 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
   };
 
   const handleFile = (file) => {
-    setState((s) => ({ ...s, file }));
+    setState((s) => ({
+      ...s,
+      // Якщо адвокат ще не ввів назву — дефолт з імені файлу без розширення.
+      name: s.name || (file ? stripExtension(file.name) : ''),
+      file,
+    }));
   };
+
+  // Стартовий екран — дві кнопки. Без кнопки "Додати документ" у footer'і.
+  if (mode === null) {
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Додати документ"
+        size="md"
+        actions={
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>
+            Скасувати
+          </Button>
+        }
+      >
+        <div className="add-document-modal__start">
+          <StartButton
+            icon={<FileText size={28} />}
+            title="Додати файл"
+            description="PDF, DOCX, HTML, JPG, PNG, HEIC"
+            onClick={handleStartSingle}
+          />
+          <StartButton
+            icon={<ImageIcon size={28} />}
+            title="Склеїти зображення"
+            description="Кілька фото в один PDF"
+            onClick={handleStartMerge}
+            comingSoon
+          />
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -140,11 +212,12 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
       size="md"
       actions={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={submitting}>
-            Скасувати
+          <Button variant="secondary" onClick={handleBackToStart} disabled={submitting}>
+            <ArrowLeft size={ICON_SIZE.sm} />
+            Назад
           </Button>
           <Button variant="primary" onClick={handleSubmit} disabled={submitting}>
-            {submitting ? 'Додаємо...' : 'Додати документ'}
+            {submitting ? 'Конвертація і завантаження...' : 'Додати документ'}
           </Button>
         </>
       }
@@ -684,6 +757,37 @@ function DriveListItem({ item, onClick }) {
       </div>
     </button>
   );
+}
+
+// ── START SCREEN ─────────────────────────────────────────────────────────────
+
+function StartButton({ icon, title, description, onClick, comingSoon }) {
+  return (
+    <button
+      type="button"
+      className={
+        'add-document-modal__start-button' +
+        (comingSoon ? ' add-document-modal__start-button--soon' : '')
+      }
+      onClick={onClick}
+    >
+      <div className="add-document-modal__start-icon">{icon}</div>
+      <div className="add-document-modal__start-title">{title}</div>
+      <div className="add-document-modal__start-desc">{description}</div>
+      {comingSoon && (
+        <div className="add-document-modal__start-soon">
+          Доступно у наступній версії
+        </div>
+      )}
+    </button>
+  );
+}
+
+// stripExtension — імʼя файлу без останнього розширення.
+// Використовується як дефолт для поля "Назва документа".
+function stripExtension(name) {
+  if (!name) return '';
+  return name.replace(/\.[^.]+$/, '');
 }
 
 function FileUploadZone({ file, dragOver, onDragOver, onChange }) {

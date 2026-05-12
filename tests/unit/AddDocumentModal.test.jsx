@@ -23,9 +23,41 @@ function renderModal(props = {}) {
   );
 }
 
-describe('AddDocumentModal', () => {
-  it('рендерить заголовок і всі основні поля', () => {
+// Helper — клікнути "Додати файл" на стартовому екрані, щоб дістатись форми.
+function enterSingleMode() {
+  fireEvent.click(screen.getByText('Додати файл'));
+}
+
+describe('AddDocumentModal — стартовий екран', () => {
+  it('показує дві кнопки на старті: Додати файл і Склеїти зображення', () => {
     renderModal();
+    expect(screen.getByText('Додати файл')).toBeInTheDocument();
+    expect(screen.getByText('Склеїти зображення')).toBeInTheDocument();
+  });
+
+  it('"Склеїти зображення" має позначку "Доступно у наступній версії"', () => {
+    renderModal();
+    expect(screen.getByText(/наступній версії/i)).toBeInTheDocument();
+  });
+
+  it('на стартовому екрані немає полів форми', () => {
+    renderModal();
+    expect(screen.queryByText('Назва документа')).toBeNull();
+    expect(screen.queryByText('Тип документа')).toBeNull();
+  });
+
+  it('клік на "Додати файл" показує форму', () => {
+    renderModal();
+    enterSingleMode();
+    expect(screen.getByText('Назва документа')).toBeInTheDocument();
+    expect(screen.getByText('Тип документа')).toBeInTheDocument();
+  });
+});
+
+describe('AddDocumentModal — форма', () => {
+  it('рендерить заголовок і всі основні поля після кліку "Додати файл"', () => {
+    renderModal();
+    enterSingleMode();
     // Заголовок модалки + submit-кнопка обидва містять "Додати документ"
     expect(screen.getAllByText('Додати документ').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Назва документа')).toBeInTheDocument();
@@ -38,12 +70,14 @@ describe('AddDocumentModal', () => {
 
   it('не використовує native <select> (інакше Android picker)', () => {
     renderModal();
+    enterSingleMode();
     expect(document.querySelector('select')).toBeNull();
   });
 
   it('submit без назви — onSubmit не викликається, з\'являється помилка', async () => {
     const onSubmit = vi.fn();
     renderModal({ onSubmit });
+    enterSingleMode();
     fireEvent.click(screen.getByRole('button', { name: 'Додати документ' }));
     await waitFor(() => {
       expect(screen.getByText(/Назва обов/i)).toBeInTheDocument();
@@ -55,6 +89,7 @@ describe('AddDocumentModal', () => {
     const onSubmit = vi.fn().mockResolvedValue();
     const onClose = vi.fn();
     renderModal({ onSubmit, onClose });
+    enterSingleMode();
 
     fireEvent.change(screen.getByPlaceholderText(/Позов про стягнення/), {
       target: { value: 'Тестовий документ' },
@@ -72,7 +107,35 @@ describe('AddDocumentModal', () => {
   it('закриття через Скасувати викликає onClose', () => {
     const onClose = vi.fn();
     renderModal({ onClose });
+    // Скасувати працює і на стартовому екрані, і у формі
     fireEvent.click(screen.getByText('Скасувати'));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('кнопка Назад повертає на стартовий екран і чистить форму', () => {
+    renderModal();
+    enterSingleMode();
+    fireEvent.change(screen.getByPlaceholderText(/Позов про стягнення/), {
+      target: { value: 'X' },
+    });
+    fireEvent.click(screen.getByText('Назад'));
+    // Знов стартовий екран — нема полів форми
+    expect(screen.queryByText('Назва документа')).toBeNull();
+    expect(screen.getByText('Додати файл')).toBeInTheDocument();
+  });
+
+  it('submit в режимі form показує "Конвертація і завантаження..." під час submit', async () => {
+    let resolveSubmit;
+    const onSubmit = vi.fn(() => new Promise(r => { resolveSubmit = r; }));
+    renderModal({ onSubmit });
+    enterSingleMode();
+    fireEvent.change(screen.getByPlaceholderText(/Позов про стягнення/), {
+      target: { value: 'Test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Додати документ' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Конвертація/i)).toBeInTheDocument();
+    });
+    resolveSubmit();
   });
 });
