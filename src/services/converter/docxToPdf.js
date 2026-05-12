@@ -31,6 +31,11 @@
 // файл як зображення, а не як DOCX.
 const MIN_TEXT_LENGTH = 50;
 
+// Мінімальний розмір валідного PDF після html2pdf.js. Empty PDF (header +
+// trailer без вмісту) ~ 3-4 КБ. Реальна сторінка тексту 30+ КБ. 5 КБ —
+// надійний поріг що відрізняє "render не вдався" від "є хоч щось".
+const MIN_PDF_SIZE_BYTES = 5 * 1024;
+
 const A4_CSS = `
   font-family: 'Times New Roman', Times, serif;
   font-size: 12pt;
@@ -106,20 +111,31 @@ export async function docxToPdf(file, _context = {}) {
     }
   }
 
-  // 4. Контейнер у DOM
+  // 4. Контейнер у DOM. Off-screen через position:absolute + left:-10000px.
+  //
+  // ВАЖЛИВО: НЕ використовуємо opacity:0, visibility:hidden, display:none.
+  // html2canvas (всередині html2pdf.js) клонує елемент зі стилями і рендерить
+  // у canvas. opacity:0 робить ВЕСЬ canvas прозорим → JPEG порожній → PDF
+  // 3-4 КБ без вмісту (саме цей баг ловив фікс docx-render-empty).
+  // visibility:hidden пропускає рендер взагалі. display:none виключає з layout.
+  // Off-screen за лівим краєм — стандартна техніка "видимий браузеру, не видний
+  // адвокату". Z-index і pointer-events не потрібні бо клік не доходить.
   const container = document.createElement('div');
   container.setAttribute('style', `
     position: absolute;
     top: 0;
     left: -10000px;
-    opacity: 0;
-    pointer-events: none;
     ${A4_CSS}
   `);
   container.innerHTML = html;
   document.body.appendChild(container);
 
   try {
+    // 4.1 Чекаємо один frame щоб browser порахував layout і застосував шрифти.
+    // html2canvas вимагає що елемент має реальні розміри в момент рендеру —
+    // без requestAnimationFrame він може спіймати CSS до того як layout завершився.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
     // 5. html2pdf — динамічний імпорт
     const html2pdfModule = await import('html2pdf.js');
     const html2pdf = html2pdfModule.default || html2pdfModule;
@@ -131,6 +147,15 @@ export async function docxToPdf(file, _context = {}) {
 
     if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
       throw new Error('html2pdf повернув порожній PDF');
+    }
+
+    // 5.1 Валідація розміру. Empty PDF з html2pdf.js ~3-4 КБ — це симптом
+    // що container.innerHTML не дійшов до canvas (opacity:0, нульові розміри,
+    // або інша проблема рендеру). Краще кинути ніж зберегти білу сторінку.
+    if (pdfBlob.size < MIN_PDF_SIZE_BYTES) {
+      throw new Error(
+        `Конвертація DOCX не вдалась — PDF занадто малий (${Math.round(pdfBlob.size / 1024)} КБ). Можливо файл містить тільки зображення або складне форматування. Спробуйте конвертувати у PDF вручну.`
+      );
     }
 
     return { pdfBlob, extractedText, warnings };

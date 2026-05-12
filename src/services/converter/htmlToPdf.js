@@ -30,6 +30,9 @@ import { decodeHtmlBuffer } from '../../utils/htmlCharsetDetection.js';
 // (наприклад одна короткА ухвала з ЄСІТС).
 const MIN_TEXT_LENGTH = 30;
 
+// Поріг розміру PDF — див. docxToPdf.js MIN_PDF_SIZE_BYTES.
+const MIN_PDF_SIZE_BYTES = 5 * 1024;
+
 // Бінарні сигнатури які ТОЧНО не HTML (перші 4-8 байти). Якщо файл починається
 // з однієї з них — адвокат випадково перейменував не-HTML файл або вибрав не
 // той файл. Кидаємо чесну помилку до того як html2pdf вичерпає 30 секунд на
@@ -85,15 +88,14 @@ export async function htmlToPdf(file, _context = {}) {
     throw new Error('HTML файл порожній.');
   }
 
-  // 4. Створити контейнер. Прихований через position absolute + opacity 0
-  // (display:none ламає html2canvas — він не може зміряти розміри).
+  // 4. Створити контейнер off-screen через position:absolute + left:-10000px.
+  // Без opacity/visibility/display:none — html2canvas з opacity:0 рендерить
+  // прозорий canvas і PDF виходить порожнім (див. docxToPdf.js коментар).
   const container = document.createElement('div');
   container.setAttribute('style', `
     position: absolute;
     top: 0;
     left: -10000px;
-    opacity: 0;
-    pointer-events: none;
     ${A4_CSS}
   `);
 
@@ -116,6 +118,9 @@ export async function htmlToPdf(file, _context = {}) {
       );
     }
 
+    // 4.1 Дати browser порахувати layout перед html2canvas (див. docxToPdf.js).
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
     // 5. html2pdf конвертація. Динамічний імпорт — щоб бандл не тягнув
     // html2pdf при старті аппки, тільки при першій конвертації.
     const html2pdfModule = await import('html2pdf.js');
@@ -128,6 +133,12 @@ export async function htmlToPdf(file, _context = {}) {
 
     if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
       throw new Error('html2pdf повернув порожній PDF');
+    }
+
+    if (pdfBlob.size < MIN_PDF_SIZE_BYTES) {
+      throw new Error(
+        `Конвертація HTML не вдалась — PDF занадто малий (${Math.round(pdfBlob.size / 1024)} КБ). Можливо вміст порожній або має нерендериться браузером.`
+      );
     }
 
     return { pdfBlob, extractedText, warnings };

@@ -7,7 +7,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Mock html2pdf.js ──────────────────────────────────────────────────────
 // Контракт chain: html2pdf().from(el).set(opts).outputPdf('blob') → Promise<Blob>
-let mockOutputResult = new Blob(['%PDF-1.4 fake'], { type: 'application/pdf' });
+// Mock PDF >= 5 КБ (MIN_PDF_SIZE_BYTES). Менше — html2pdf-output порожній,
+// див. docxToPdf.test.js MIN_PDF_SIZE_BYTES коментар.
+function makeFakePdfBlob(sizeBytes = 8 * 1024) {
+  return new Blob(['%PDF-1.4\n' + 'X'.repeat(sizeBytes)], { type: 'application/pdf' });
+}
+let mockOutputResult = makeFakePdfBlob();
 
 vi.mock('html2pdf.js', () => {
   const chain = {
@@ -49,7 +54,7 @@ const LONG_TEXT = 'Ухвала про відкриття провадження
 describe('htmlToPdf — конвертація HTML → PDF', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockOutputResult = new Blob(['%PDF-1.4 fake'], { type: 'application/pdf' });
+    mockOutputResult = makeFakePdfBlob();
     patchInnerText();
   });
 
@@ -124,6 +129,12 @@ describe('htmlToPdf — конвертація HTML → PDF', () => {
   it('кидає помилку коли HTML порожній (нуль символів)', async () => {
     const file = htmlFile('');
     await expect(htmlToPdf(file, {})).rejects.toThrow(/порожній/);
+  });
+
+  it('кидає помилку коли PDF замалий (< 5 КБ — opacity:0 bug захист)', async () => {
+    mockOutputResult = new Blob(['%PDF-1.4\nfake-small'], { type: 'application/pdf' });
+    const file = htmlFile(`<html><body><p>${LONG_TEXT}</p></body></html>`);
+    await expect(htmlToPdf(file, {})).rejects.toThrow(/занадто малий/);
   });
 
   it('кидає помилку коли HTML містить менше MIN_TEXT_LENGTH символів тексту', async () => {
