@@ -41,6 +41,7 @@ import { ICON_SIZE } from '../UI/icons.js';
 import { toast } from '../../services/toast.js';
 import { convertImagesToPdf } from '../../services/converter/converterService.js';
 import { ensureUniqueName } from '../../services/sortation/imageSortingAgent.js';
+import { detectDocumentEdges } from '../../services/sortation/edgeDetection.js';
 
 const CATEGORY_OPTIONS = [
   { value: 'pleading', label: 'Заява по суті' },
@@ -92,12 +93,18 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   // ОКРЕМЕ ім'я бо це окремий намір (правило #11): автодетект — спроба системи,
   // userRotation — корекція адвоката. Не змішуємо в одне поле.
   const [userRotation, setUserRotation] = useState(() => new Map());
-  // userCrops[origIdx] = Blob — обрізаний варіант зображення замість оригіналу.
-  // Використовується замість realFiles[origIdx] при rebuild PDF і для thumbnail
-  // у preview. Окрема Map бо crop — окремий намір від rotation (правило #11):
-  // обертання змінює орієнтацію, crop вирізає область. Можуть співіснувати:
-  // адвокат спершу повертає, потім обрізає (або навпаки).
-  const [userCrops, setUserCrops] = useState(() => new Map());
+  // Passive crop UX (правило #11 — кожна Map має один сенс):
+  // cropProposals: AI результат edge detection. Set ОДИН раз після pipeline,
+  //   далі immutable. Pixel rect у natural image space. null/відсутність
+  //   запису = AI не зміг визначити межі надійно.
+  // cropOverrides: ручне коригування адвоката (потягнув рукоятки у попапі).
+  //   Якщо є — wins над proposal. Pixel rect у тих самих coords.
+  // cropDisabled: адвокат натиснув "Скасувати обрізку" (на іконці thumb або
+  //   у попапі). Index у цьому Set'і означає що жоден crop НЕ застосовується
+  //   для цієї сторінки, навіть якщо є proposal/override.
+  const [cropProposals, setCropProposals] = useState(() => new Map());
+  const [cropOverrides, setCropOverrides] = useState(() => new Map());
+  const [cropDisabled, setCropDisabled] = useState(() => new Set());
   // Debug toggle (TASK B fix 1 round 2) — увімкнення показує адвокату
   // діагностичну інформацію orientation у toast info після склейки. Перський
   // зберігається у localStorage щоб адвокат не вмикав щоразу.
@@ -240,12 +247,31 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setPipelineResult({ ...result, realFiles });
       setOrderedIndices(result.finalOrder);
       setUserRotation(new Map());
-      setUserCrops(new Map());
+      setCropProposals(new Map());
+      setCropOverrides(new Map());
+      setCropDisabled(new Set());
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
       }));
       setPhase('preview');
+
+      // Edge detection — пасивна пропозиція AI. Запускаємо у фоні після
+      // preview бо це не блокує адвоката: він уже бачить thumbnails, а
+      // іконки ✂️ зʼявляться по мірі готовності. На випадок помилки —
+      // просто пропускаємо файл (proposal лишається відсутнім).
+      (async () => {
+        const proposals = new Map();
+        for (let i = 0; i < realFiles.length; i++) {
+          try {
+            const rect = await detectDocumentEdges(realFiles[i]);
+            if (rect) proposals.set(i, rect);
+          } catch (e) {
+            console.warn('[merge] edge detection failed for idx', i, e);
+          }
+        }
+        setCropProposals(proposals);
+      })();
 
       // Debug toast info якщо включений debugMode
       if (debugMode && Array.isArray(result.orientationDebug)) {
@@ -293,37 +319,51 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     });
   }, []);
 
-  // Застосовує crop до origIdx: створює новий Blob через cropHelper,
-  // оновлює thumbnail URL (revoke старий), зберігає у userCrops Map.
-  // Якщо croppedBlob === null — скидає crop до повного.
-  const handleApplyCrop = useCallback(async (origIdx, croppedBlob) => {
-    if (croppedBlob === null) {
-      // Скидання — повернутися до оригіналу
-      setUserCrops((prev) => {
-        const next = new Map(prev);
+  // Адвокат тапнув по іконці ✂️ на thumbnail АБО натиснув "Скасувати обрізку"
+  // у попапі. Перемикає disabled-стан: якщо був enabled — стає disabled, і
+  // навпаки. Працює тільки коли є що перемикати (proposal або override існує).
+  const handleToggleCropDisabled = useCallback((origIdx) => {
+    setCropDisabled((prev) => {
+      const next = new Set(prev);
+      if (next.has(origIdx)) next.delete(origIdx);
+      else next.add(origIdx);
+      return next;
+    });
+  }, []);
+
+  // Адвокат потягнув рукоятки у попапі — зберігаємо нову rect. Якщо rect
+  // null — скидаємо override (повертаємо до proposal якщо є). Якщо адвокат
+  // обрізав через ручний crop без proposal — override стає єдиним джерелом.
+  const handleCropOverride = useCallback((origIdx, rect) => {
+    setCropOverrides((prev) => {
+      const next = new Map(prev);
+      if (rect === null) next.delete(origIdx);
+      else next.set(origIdx, rect);
+      return next;
+    });
+    // Якщо адвокат вручну редагує — це сигнал що він ХОЧЕ обрізку. Знімаємо
+    // disabled (якщо був). Цей шлях: ручний crop у попапі без proposal, або
+    // ре-енейбл після disable з подальшим коригуванням.
+    if (rect !== null) {
+      setCropDisabled((prev) => {
+        if (!prev.has(origIdx)) return prev;
+        const next = new Set(prev);
         next.delete(origIdx);
         return next;
       });
-      // Оновлюємо thumb URL на оригінал
-      const realFile = pipelineResult?.realFiles?.[origIdx];
-      if (realFile) {
-        const oldUrl = thumbUrlsRef.current.get(origIdx);
-        if (oldUrl) try { URL.revokeObjectURL(oldUrl); } catch {}
-        thumbUrlsRef.current.set(origIdx, URL.createObjectURL(realFile));
-      }
-      return;
     }
-    if (!(croppedBlob instanceof Blob)) return;
-    setUserCrops((prev) => {
-      const next = new Map(prev);
-      next.set(origIdx, croppedBlob);
+  }, []);
+
+  // Кнопка "Не обрізати жодну" у header preview. Вимикає всі AI пропозиції.
+  // Адвокат може повернути окремі через тап на іконку ✂️.
+  const handleDisableAllCrops = useCallback(() => {
+    setCropDisabled((prev) => {
+      const next = new Set(prev);
+      for (const idx of cropProposals.keys()) next.add(idx);
+      for (const idx of cropOverrides.keys()) next.add(idx);
       return next;
     });
-    // Оновлюємо thumb URL на обрізаний blob — revoke старий
-    const oldUrl = thumbUrlsRef.current.get(origIdx);
-    if (oldUrl) try { URL.revokeObjectURL(oldUrl); } catch {}
-    thumbUrlsRef.current.set(origIdx, URL.createObjectURL(croppedBlob));
-  }, [pipelineResult?.realFiles]);
+  }, [cropProposals, cropOverrides]);
 
   const handleRemoveAllSuspicious = () => {
     if (!pipelineResult?.sortResult?.warnings) return;
@@ -391,9 +431,17 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       let finalText;
       let finalLayout;
 
-      const hasUserCrops = userCrops.size > 0;
+      // Карта effective crop rect для кожної сторінки. null = без обрізки.
+      // override перебиває proposal, disabled скасовує обидва.
+      const effectiveCrops = new Map();
+      for (const idx of orderedIndices) {
+        if (cropDisabled.has(idx)) continue;
+        const rect = cropOverrides.get(idx) || cropProposals.get(idx);
+        if (rect) effectiveCrops.set(idx, rect);
+      }
+      const hasCrops = effectiveCrops.size > 0;
 
-      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation && !hasUserCrops) {
+      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation && !hasCrops) {
         finalPdfBlob = pipelineResult.pdfBlob;
         finalText = pipelineResult.extractedText;
         finalLayout = pipelineResult.layoutJson;
@@ -404,7 +452,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
           ocrResults: pipelineResult.ocrResults,
           detectedOrientations: pipelineResult.detectedOrientations || [],
           userRotation,
-          userCrops,
+          effectiveCrops,
         });
         finalPdfBlob = rebuilt.pdfBlob;
         finalText = rebuilt.extractedText;
@@ -459,7 +507,9 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         removedIndices={removedIndices}
         thumbUrls={thumbUrlsRef.current}
         userRotation={userRotation}
-        userCrops={userCrops}
+        cropProposals={cropProposals}
+        cropOverrides={cropOverrides}
+        cropDisabled={cropDisabled}
         realFiles={pipelineResult?.realFiles || []}
         debugMode={debugMode}
         setDebugMode={(v) => {
@@ -471,7 +521,9 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         onReorder={setOrderedIndices}
         onRemove={handleRemoveIndex}
         onRotate={handleRotateIndex}
-        onApplyCrop={handleApplyCrop}
+        onToggleCropDisabled={handleToggleCropDisabled}
+        onCropOverride={handleCropOverride}
+        onDisableAllCrops={handleDisableAllCrops}
         onRemoveAllSuspicious={handleRemoveAllSuspicious}
         onKeepRecommendedDuplicate={handleKeepRecommendedDuplicates}
         onKeepAllRecommendedDuplicates={handleKeepAllRecommendedDuplicates}
@@ -644,7 +696,9 @@ function PreviewView({
   removedIndices,
   thumbUrls,
   userRotation,
-  userCrops,
+  cropProposals,
+  cropOverrides,
+  cropDisabled,
   realFiles,
   debugMode,
   setDebugMode,
@@ -653,7 +707,9 @@ function PreviewView({
   onReorder,
   onRemove,
   onRotate,
-  onApplyCrop,
+  onToggleCropDisabled,
+  onCropOverride,
+  onDisableAllCrops,
   onRemoveAllSuspicious,
   onKeepRecommendedDuplicate,
   onKeepAllRecommendedDuplicates,
@@ -662,6 +718,29 @@ function PreviewView({
   onCancel,
   submitting,
 }) {
+  // Маппінг origIdx → crop state ('none' | 'active' | 'disabled') для UI.
+  // 'none' = немає proposal/override → іконка не показується.
+  // 'active' = є rect і не disabled → іконка яскрава, обрізка буде застосована.
+  // 'disabled' = адвокат вимкнув → іконка тьмяна, обрізка НЕ застосовується.
+  const cropStateByIndex = useMemo(() => {
+    const map = new Map();
+    const allIds = new Set([
+      ...(cropProposals?.keys?.() || []),
+      ...(cropOverrides?.keys?.() || []),
+    ]);
+    for (const idx of allIds) {
+      map.set(idx, cropDisabled?.has?.(idx) ? 'disabled' : 'active');
+    }
+    return map;
+  }, [cropProposals, cropOverrides, cropDisabled]);
+
+  const activeCropCount = useMemo(() => {
+    let n = 0;
+    for (const state of cropStateByIndex.values()) {
+      if (state === 'active') n++;
+    }
+    return n;
+  }, [cropStateByIndex]);
   const warningsByIndex = useMemo(() => {
     const map = new Map();
     for (const w of pipelineResult?.sortResult?.warnings || []) {
@@ -790,16 +869,34 @@ function PreviewView({
         duplicateMembership={duplicateMembership}
         userRotation={userRotation}
         uncertainSet={uncertainSet}
+        cropStateByIndex={cropStateByIndex}
         onReorder={onReorder}
         onRemove={onRemove}
         onRotate={onRotate}
+        onToggleCropDisabled={onToggleCropDisabled}
         onOpenPopup={handleOpenPopup}
         onContextMenu={handleContextMenu}
         onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
       />
 
-      {(missing || hasSuspicious || duplicateGroupsCount > 0 || uncertainIndices.length > 0) && (
+      {(missing || hasSuspicious || duplicateGroupsCount > 0 || uncertainIndices.length > 0 || activeCropCount > 0) && (
         <div className="image-merge-panel__alerts">
+          {activeCropCount > 0 && (
+            <div className="image-merge-panel__alert image-merge-panel__alert--crop">
+              <CropIcon size={ICON_SIZE.sm} />
+              <span>
+                Обрізку буде застосовано до {activeCropCount} {activeCropCount === 1 ? 'сторінки' : 'сторінок'} (іконка ✂️ на thumbnail). Тапни на іконку щоб вимкнути для окремої.
+              </span>
+              <button
+                type="button"
+                className="image-merge-panel__remove-suspicious image-merge-panel__remove-suspicious--crop"
+                onClick={onDisableAllCrops}
+              >
+                <X size={14} />
+                Не обрізати жодну
+              </button>
+            </div>
+          )}
           {uncertainIndices.length > 0 && (
             <div className="image-merge-panel__alert image-merge-panel__alert--orient">
               <AlertTriangle size={ICON_SIZE.sm} />
@@ -922,21 +1019,25 @@ function PreviewView({
 
       {popupOrigIdx != null && (
         <PreviewPopup
+          key={popupOrigIdx}
           origIdx={popupOrigIdx}
           url={thumbUrls.get(popupOrigIdx)}
-          sourceBlob={userCrops?.get?.(popupOrigIdx) || realFiles?.[popupOrigIdx] || null}
+          sourceBlob={realFiles?.[popupOrigIdx] || null}
           rotation={userRotation.get(popupOrigIdx) || 0}
           position={orderedIndices.indexOf(popupOrigIdx)}
           total={orderedIndices.length}
           warning={warningsByIndex.get(popupOrigIdx) || null}
           duplicateInfo={duplicateMembership.get(popupOrigIdx) || null}
           isUncertain={uncertainSet?.has?.(popupOrigIdx) || false}
-          hasCrop={userCrops?.has?.(popupOrigIdx) || false}
+          cropProposal={cropProposals?.get?.(popupOrigIdx) || null}
+          cropOverride={cropOverrides?.get?.(popupOrigIdx) || null}
+          cropDisabled={cropDisabled?.has?.(popupOrigIdx) || false}
           onClose={handleClosePopup}
           onPrev={() => handlePopupNav(-1)}
           onNext={() => handlePopupNav(1)}
           onRotate={() => onRotate(popupOrigIdx)}
-          onApplyCrop={(blob) => onApplyCrop(popupOrigIdx, blob)}
+          onCropOverride={(rect) => onCropOverride(popupOrigIdx, rect)}
+          onToggleCropDisabled={() => onToggleCropDisabled(popupOrigIdx)}
           onRemove={() => {
             const cur = popupOrigIdx;
             const pos = orderedIndices.indexOf(cur);
@@ -972,9 +1073,11 @@ function SortableGrid({
   duplicateMembership,
   userRotation,
   uncertainSet,
+  cropStateByIndex,
   onReorder,
   onRemove,
   onRotate,
+  onToggleCropDisabled,
   onOpenPopup,
   onContextMenu,
   onKeepRecommendedDuplicate,
@@ -1024,8 +1127,10 @@ function SortableGrid({
             duplicateInfo={duplicateMembership.get(origIdx) || null}
             rotation={userRotation.get(origIdx) || 0}
             isUncertain={uncertainSet?.has?.(origIdx) || false}
+            cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
             onRemove={() => onRemove(origIdx)}
             onRotate={() => onRotate(origIdx)}
+            onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
             onOpenPopup={() => onOpenPopup(origIdx)}
             onContextMenu={(e) => onContextMenu(e, origIdx)}
             onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
@@ -1045,9 +1150,11 @@ function SortableGrid({
       duplicateMembership={duplicateMembership}
       userRotation={userRotation}
       uncertainSet={uncertainSet}
+      cropStateByIndex={cropStateByIndex}
       onReorder={onReorder}
       onRemove={onRemove}
       onRotate={onRotate}
+      onToggleCropDisabled={onToggleCropDisabled}
       onOpenPopup={onOpenPopup}
       onContextMenu={onContextMenu}
       onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
@@ -1057,7 +1164,8 @@ function SortableGrid({
 
 function DndGrid({
   dndReady, orderedIndices, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
-  onReorder, onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
+  cropStateByIndex,
+  onReorder, onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
 }) {
   const {
     DndContext, PointerSensor, TouchSensor, useSensor, useSensors, closestCenter,
@@ -1093,8 +1201,10 @@ function DndGrid({
               duplicateInfo={duplicateMembership.get(origIdx) || null}
               rotation={userRotation.get(origIdx) || 0}
               isUncertain={uncertainSet?.has?.(origIdx) || false}
+              cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
               onRemove={() => onRemove(origIdx)}
               onRotate={() => onRotate(origIdx)}
+              onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
               onOpenPopup={() => onOpenPopup(origIdx)}
               onContextMenu={(e) => onContextMenu(e, origIdx)}
               onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
@@ -1108,7 +1218,8 @@ function DndGrid({
 
 function SortableThumbnail({
   dndReady, origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
-  onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
+  cropState,
+  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
 }) {
   const { useSortable, CSS } = dndReady;
   const sortable = useSortable({ id: origIdx });
@@ -1126,8 +1237,10 @@ function SortableThumbnail({
         duplicateInfo={duplicateInfo}
         rotation={rotation}
         isUncertain={isUncertain}
+        cropState={cropState}
         onRemove={onRemove}
         onRotate={onRotate}
+        onToggleCropDisabled={onToggleCropDisabled}
         onOpenPopup={onOpenPopup}
         onContextMenu={onContextMenu}
         onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
@@ -1153,7 +1266,7 @@ async function rebuildFromOcrResults({
   ocrResults,
   detectedOrientations,
   userRotation,
-  userCrops,
+  effectiveCrops,
 }) {
   const extractedText = orderedIndices
     .map((idx) => ocrResults[idx]?.text || '')
@@ -1186,6 +1299,7 @@ async function rebuildFromOcrResults({
     : null;
 
   const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
+  const { cropImageBlob } = await import('./../../services/sortation/cropHelper.js');
   const jspdfMod = await import('jspdf');
   const JsPDF = jspdfMod.jsPDF || jspdfMod.default;
 
@@ -1195,13 +1309,15 @@ async function rebuildFromOcrResults({
 
   for (let i = 0; i < orderedIndices.length; i++) {
     const origIdx = orderedIndices[i];
-    // Якщо адвокат обрізав — використовуємо обрізаний blob, інакше оригінал.
-    // На обрізаному autoDeg вже застосовано НЕ було (адвокат побачив повне
-    // зображення, повернув його тільки через userRotation), тому autoDeg для
-    // cropped = 0.
-    const cropBlob = userCrops?.get?.(origIdx);
-    const sourceFile = cropBlob || realFiles[origIdx];
-    const autoDeg = cropBlob
+    // Якщо є effective crop rect — обрізаємо raw blob тут (rect у raw natural
+    // coords). На cropped autoDeg НЕ застосовуємо: адвокат бачив raw image у
+    // попапі з userRotation на ньому, тому crop rect від react-easy-crop вже
+    // вирівняний з userRotation, а autoDeg був би подвоєнням. AI proposal
+    // теж у raw coords без autoDeg.
+    const cropRect = effectiveCrops?.get?.(origIdx) || null;
+    const rawFile = realFiles[origIdx];
+    const sourceFile = cropRect ? await cropImageBlob(rawFile, cropRect) : rawFile;
+    const autoDeg = cropRect
       ? 0
       : (Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0);
     const userDeg = userRotation?.get?.(origIdx) || 0;
@@ -1252,7 +1368,8 @@ async function rebuildFromOcrResults({
 
 function Thumbnail({
   origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
-  onRemove, onRotate, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
+  cropState,
+  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
 }) {
   const isDuplicateRecommended = duplicateInfo && duplicateInfo.recommended === origIdx;
   const isDuplicateOther = duplicateInfo && duplicateInfo.recommended !== origIdx;
@@ -1314,6 +1431,27 @@ function Thumbnail({
           <span className="image-merge-panel__thumb-orient-badge" title="Орієнтація визначена за пропорціями. Перевір кнопкою ↻.">
             <AlertTriangle size={10} /> Перевір орієнтацію
           </span>
+        )}
+        {cropState && cropState !== 'none' && (
+          <button
+            type="button"
+            className={
+              'image-merge-panel__thumb-crop-badge' +
+              (cropState === 'disabled' ? ' image-merge-panel__thumb-crop-badge--disabled' : '')
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCropDisabled && onToggleCropDisabled();
+            }}
+            title={
+              cropState === 'active'
+                ? 'AI пропонує обрізку. Тап — вимкнути для цього фото.'
+                : 'Обрізку вимкнено. Тап — увімкнути назад.'
+            }
+            aria-label="Перемкнути обрізку"
+          >
+            <CropIcon size={12} />
+          </button>
         )}
         <span
           className="image-merge-panel__thumb-handle"
@@ -1380,10 +1518,16 @@ function Thumbnail({
 
 function PreviewPopup({
   origIdx, url, sourceBlob, rotation, position, total, warning, duplicateInfo,
-  isUncertain, hasCrop, onClose, onPrev, onNext, onRotate, onApplyCrop, onRemove,
+  isUncertain, cropProposal, cropOverride, cropDisabled,
+  onClose, onPrev, onNext, onRotate, onCropOverride, onToggleCropDisabled, onRemove,
 }) {
-  // 'view' = переглядаємо з zoom/pan; 'crop' = обрізаємо.
-  const [popupMode, setPopupMode] = useState('view');
+  // Effective rect для cropper. override > proposal > null. Не змінюється
+  // протягом життя попапа (бо key={popupOrigIdx} ремонтує при переході).
+  const effectiveRect = cropOverride || cropProposal || null;
+  // Початковий режим: 'crop' якщо є активна пропозиція/override і не disabled;
+  // 'view' інакше. Адвокат може зайти у crop вручну через ✂️ у view-режимі.
+  const initialMode = (effectiveRect && !cropDisabled) ? 'crop' : 'view';
+  const [popupMode, setPopupMode] = useState(initialMode);
   const [zoomReady, setZoomReady] = useState(null);
   const [cropReady, setCropReady] = useState(null);
 
@@ -1427,63 +1571,50 @@ function PreviewPopup({
   const isFirst = position === 0;
   const isLast = position === total - 1;
 
-  // Crop state — react-easy-crop потребує controlled crop/zoom і onCropComplete
-  // який передає piксельні координати. Зберігаємо у ref щоб handleCropApply
-  // мав останній знімок без зайвих re-renders.
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
-  const cropAreaRef = useRef(null);
 
   function handleCropChange(c) { setCrop(c); }
   function handleZoomChange(z) { setZoom(z); }
+  // onCropComplete стріляє після кожного руху адвоката. Відразу пишемо
+  // override у parent state — закриття попапа = застосування поточного.
   function handleCropComplete(_area, areaPixels) {
-    cropAreaRef.current = areaPixels;
+    if (!areaPixels) return;
+    // react-easy-crop інколи стріляє з нульовою area при ініціалізації
+    if (!areaPixels.width || !areaPixels.height) return;
+    onCropOverride(areaPixels);
   }
 
-  async function handleCropApply() {
-    if (!cropAreaRef.current || !sourceBlob) {
-      setPopupMode('view');
-      return;
-    }
-    try {
-      const { cropImageBlob } = await import('../../services/sortation/cropHelper.js');
-      const cropped = await cropImageBlob(sourceBlob, cropAreaRef.current);
-      onApplyCrop(cropped);
-      setPopupMode('view');
-      setCrop({ x: 0, y: 0 });
-      setZoom(1);
-    } catch (e) {
-      console.error('[ImageMergePanel] crop apply failed:', e);
-      toast.error('Не вдалось обрізати зображення', { description: e?.message });
-    }
-  }
-
-  function handleCropCancel() {
+  // Кнопка "Скасувати обрізку для цього фото" у crop-режимі.
+  // Еквівалент тапу по іконці на thumbnail (стан c, disabled). Не закриваємо
+  // попап — адвокат лишається у view-режимі, може передивитися фото без рамки.
+  function handleDisableCropForThis() {
+    onToggleCropDisabled();
     setPopupMode('view');
-    setCrop({ x: 0, y: 0 });
-    setZoom(1);
   }
 
-  function handleCropReset() {
-    onApplyCrop(null); // скидаємо у parent
-    setPopupMode('view');
-    setCrop({ x: 0, y: 0 });
-    setZoom(1);
+  // Вхід у ручний crop з view-режиму (немає proposal). Стартує з повної рамки —
+  // адвокат сам тягне рукоятки. Перший onCropComplete запише override у parent.
+  function handleEnterManualCrop() {
+    setPopupMode('crop');
   }
 
-  // Клавіатурні скорочення у режимі crop: Enter=apply, Esc=cancel
-  // (Esc-handler глобальний у PreviewView вже закриває попап, тому тут окремий
-  // case коли popupMode='crop' — Esc скасовує crop не закриваючи попап).
+  // Esc у crop-режимі — повертає у view (не закриває попап). Esc глобальний
+  // у PreviewView закриває попап у view-режимі. Тут перехоплюємо crop case.
   useEffect(() => {
     if (popupMode !== 'crop') return;
     function onKey(e) {
-      if (e.key === 'Enter') { e.preventDefault(); handleCropApply(); }
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); handleCropCancel(); }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setPopupMode('view');
+      }
     }
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popupMode, sourceBlob]);
+  }, [popupMode]);
+
+  const showCropTag = effectiveRect && !cropDisabled && popupMode === 'view';
 
   return (
     <div className="image-merge-panel__popup-overlay" role="dialog" aria-modal="true">
@@ -1507,9 +1638,9 @@ function PreviewPopup({
               <AlertTriangle size={14} /> Перевір орієнтацію
             </span>
           )}
-          {hasCrop && popupMode === 'view' && (
+          {showCropTag && (
             <span className="image-merge-panel__popup-tag">
-              <CropIcon size={12} /> Обрізано
+              <CropIcon size={12} /> Буде обрізано
             </span>
           )}
           {popupMode === 'crop' && (
@@ -1540,6 +1671,7 @@ function PreviewPopup({
                   aspect={null}
                   restrictPosition={false}
                   showGrid={true}
+                  initialCroppedAreaPixels={effectiveRect || undefined}
                   onCropChange={handleCropChange}
                   onZoomChange={handleZoomChange}
                   onCropComplete={handleCropComplete}
@@ -1590,34 +1722,33 @@ function PreviewPopup({
               <button
                 type="button"
                 className="image-merge-panel__popup-nav"
-                onClick={handleCropCancel}
-                title="Скасувати (Esc)"
+                onClick={() => setPopupMode('view')}
+                title="Назад до перегляду (Esc)"
               >
-                Скасувати
+                ‹ Перегляд
               </button>
               <div className="image-merge-panel__popup-tools">
-                {hasCrop && (
-                  <button
-                    type="button"
-                    className="image-merge-panel__popup-tool"
-                    onClick={handleCropReset}
-                    title="Скинути до повного зображення"
-                  >
-                    <span>Скинути до повного</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="image-merge-panel__popup-tool image-merge-panel__popup-tool--danger"
+                  onClick={handleDisableCropForThis}
+                  title="Скасувати обрізку для цього фото"
+                >
+                  <X size={18} />
+                  <span>Скасувати обрізку</span>
+                </button>
               </div>
               <button
                 type="button"
                 className="image-merge-panel__popup-nav image-merge-panel__popup-nav--primary"
-                onClick={handleCropApply}
-                title="Застосувати (Enter)"
+                onClick={onClose}
+                title="Закрити (зміни збережено)"
               >
-                Застосувати ✓
+                Готово ✓
               </button>
             </div>
             <div className="image-merge-panel__popup-hint">
-              Тягни кути або сторони рамки. Pinch — zoom фото. Enter — застосувати, Esc — скасувати.
+              Тягни рукоятки рамки. Закриття попапа = застосування поточної рамки.
             </div>
           </>
         ) : (
@@ -1646,13 +1777,24 @@ function PreviewPopup({
                 <button
                   type="button"
                   className="image-merge-panel__popup-tool"
-                  onClick={() => setPopupMode('crop')}
+                  onClick={handleEnterManualCrop}
                   title="Обрізати"
                   disabled={!sourceBlob}
                 >
                   <CropIcon size={18} />
-                  <span>Обрізати</span>
+                  <span>{effectiveRect && !cropDisabled ? 'Редагувати рамку' : 'Обрізати'}</span>
                 </button>
+                {effectiveRect && cropDisabled && (
+                  <button
+                    type="button"
+                    className="image-merge-panel__popup-tool"
+                    onClick={() => { onToggleCropDisabled(); setPopupMode('crop'); }}
+                    title="Увімкнути обрізку для цього фото"
+                  >
+                    <CropIcon size={18} />
+                    <span>Увімкнути обрізку</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="image-merge-panel__popup-tool image-merge-panel__popup-tool--danger"

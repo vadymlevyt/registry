@@ -269,6 +269,11 @@
   color: var(--color-text);
 }
 
+.image-merge-panel__alert--crop {
+  background: var(--color-accent-subtle, rgba(59,130,246,.08));
+  color: var(--color-text);
+}
+
 .image-merge-panel__remove-suspicious {
   margin-left: auto;
   display: inline-flex;
@@ -295,6 +300,15 @@
 
 .image-merge-panel__remove-suspicious--dup:hover {
   background: rgba(234, 179, 8, 0.18);
+}
+
+.image-merge-panel__remove-suspicious--crop {
+  border-color: var(--color-accent, #2563eb);
+  color: var(--color-accent, #2563eb);
+}
+
+.image-merge-panel__remove-suspicious--crop:hover {
+  background: var(--color-accent-subtle, rgba(59,130,246,.10));
 }
 
 /* Grid з thumbnails — за замовчуванням планшет/мобайл */
@@ -884,6 +898,49 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
+}
+
+/* ── Crop badge на thumbnail (passive crop UX) ──────────────────────────── */
+
+.image-merge-panel__thumb-crop-badge {
+  position: absolute;
+  top: 4px;
+  right: 30px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: var(--color-accent, #2563eb);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.image-merge-panel__thumb-crop-badge:hover {
+  filter: brightness(1.1);
+}
+
+.image-merge-panel__thumb-crop-badge--disabled {
+  background: rgba(120, 120, 120, 0.55);
+  color: #f3f4f6;
+  opacity: 0.7;
+}
+
+.image-merge-panel__thumb-crop-badge--disabled:hover {
+  opacity: 0.95;
+  filter: none;
+}
+
+/* На десктопі drag-handle займає top-right — зсуваємо crop-badge лівіше */
+@media (min-width: 1024px) {
+  .image-merge-panel__thumb-crop-badge {
+    right: 32px;
+  }
 }
 
 /* ── Debug toast info (TASK B fix 1 round 2) ───────────────────────────── */
