@@ -216,6 +216,57 @@ export async function convertToPdf(file, context = {}) {
 }
 
 /**
+ * TASK B — склейка кількох зображень у один PDF з семантичним сортуванням.
+ *
+ * Делегує всю логіку у multiImageToPdf.js. Тут — фасадна підпись + інструментація
+ * activityTracker (одна точка для всього merge сеансу).
+ *
+ * @param {File[]} files — масив зображень (мін 1, рекомендовано до 50)
+ * @param {object} context — { caseId, module, operation, apiKey,
+ *                            existingDocumentNames, onProgress, callApi }
+ */
+export async function convertImagesToPdf(files, context = {}) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error('convertImagesToPdf: files має бути непорожнім масивом');
+  }
+  const t0 = Date.now();
+  const { convertImagesToPdf: pipeline } = await import('./multiImageToPdf.js');
+  const result = await pipeline(files, {
+    apiKey: context.apiKey,
+    callApi: context.callApi,
+    onProgress: context.onProgress,
+    context: {
+      caseId: context.caseId,
+      existingDocumentNames: context.existingDocumentNames || [],
+      categoryHint: context.categoryHint,
+    },
+  });
+
+  // Інструментація — одна точка у фасаді (та сама модель що document_converted)
+  try {
+    reportActivity('images_merged', {
+      module: context?.module || MODULES.ADD_FORM,
+      caseId: context?.caseId || null,
+      category: context?.caseId ? 'case_work' : 'admin',
+      billable: !!context?.caseId,
+      subCategory: 'document_merge',
+      duration: Math.round(result.durationMs / 1000),
+      metadata: {
+        imageCount: files.length,
+        finalPageCount: result.finalOrder.length,
+        hasSortAgent: !!result.sortResult && !result.sortResult.skipped,
+        agentFallback: result.sortResult?.fallback || false,
+        durationMs: result.durationMs,
+      },
+    });
+  } catch (e) {
+    console.warn('[converterService.convertImagesToPdf] activityTracker.report failed:', e?.message);
+  }
+
+  return result;
+}
+
+/**
  * Перевірити чи файл підтримується для конвертації у PDF.
  * Не запускає реальну конвертацію — лише класифікує тип.
  */
