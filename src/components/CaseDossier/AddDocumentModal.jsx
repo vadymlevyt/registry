@@ -93,6 +93,19 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
   const drivePickerStart = caseDriveFolderId || 'root';
   const [drivePickerOpen, setDrivePickerOpen] = useState(false);
 
+  // Reset стану модалки — ТІЛЬКИ при переході isOpen false→true (відкритті).
+  //
+  // КРИТИЧНО: caseData свідомо виключено з deps. CaseDossier передає
+  // `caseData={{ ...caseData, proceedings }}` — spread створює новий обʼєкт
+  // на КОЖНОМУ рендері. Будь-яке оновлення в App.jsx (зокрема sink
+  // activityTracker.report → setTimeEntries наприкінці успішного pipeline'у
+  // convertImagesToPdf) каскадить як новий caseData референс сюди, і якщо
+  // включити його у deps — useEffect скидає mode на null, mid-merge.
+  // Адвокат бачить як preview-екран зникає і повертається стартовий
+  // екран з двома кнопками.
+  //
+  // Reset потрібен лише при відкритті модалки, не на парентські ре-рендери.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (isOpen) {
       setState(initialState(caseData));
@@ -102,7 +115,8 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
       setDrivePickerOpen(false);
       setMode(null);
     }
-  }, [isOpen, caseData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   function handleDrivePick(driveFile) {
     // Маркер-обʼєкт який відрізняється від реального File. CaseDossier:onSubmit

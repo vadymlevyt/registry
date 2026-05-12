@@ -153,6 +153,81 @@ describe('AddDocumentModal — форма', () => {
 // ── Drive picker visibility ───────────────────────────────────────────────
 // Регресія: Drive picker зник у single mode коли case ще не має 01_ОРИГІНАЛИ
 // підпапки. Гейт — driveConnected, не subFolders.
+// ── Regression: AddDocumentModal не повертається на стартовий екран ────────
+// коли parent пере-рендерить з новим caseData референсом (spread).
+//
+// CaseDossier передає `caseData={{ ...caseData, proceedings }}` — фрешним
+// обʼєктом щоразу. activityTracker.report → setTimeEntries в App.jsx
+// каскадить нову reference сюди наприкінці pipeline'у convertImagesToPdf,
+// і mid-merge модалка скидалась на стартовий екран. Адвокат бачив це
+// як "модалка зникає" — насправді merge view замінювався на стартові кнопки.
+//
+// Fix: useEffect reset тільки на isOpen false→true, не на caseData identity.
+describe('AddDocumentModal — state preservation при caseData re-reference', () => {
+  it('mode НЕ скидається коли parent пере-рендерить з новим caseData object', () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(
+      <AddDocumentModal
+        isOpen={true}
+        onClose={() => {}}
+        caseData={{ ...CASE }}
+        onSubmit={onSubmit}
+      />
+    );
+    // Перейшли у merge mode
+    fireEvent.click(screen.getByText('Склеїти зображення'));
+    expect(screen.getByText(/Виберіть кілька зображень/i)).toBeInTheDocument();
+
+    // Parent ре-рендерить з фрешним caseData object (як robos CaseDossier
+    // робить через `{...caseData, proceedings}`). Mode має лишитись MERGE.
+    rerender(
+      <AddDocumentModal
+        isOpen={true}
+        onClose={() => {}}
+        caseData={{ ...CASE }}
+        onSubmit={onSubmit}
+      />
+    );
+    expect(screen.getByText(/Виберіть кілька зображень/i)).toBeInTheDocument();
+    // Стартові кнопки НЕ повернулись
+    expect(screen.queryByText('Додати файл')).toBeNull();
+  });
+
+  it('mode скидається на стартовий екран коли isOpen false → true', () => {
+    const { rerender } = render(
+      <AddDocumentModal
+        isOpen={true}
+        onClose={() => {}}
+        caseData={CASE}
+        onSubmit={() => {}}
+      />
+    );
+    fireEvent.click(screen.getByText('Склеїти зображення'));
+    expect(screen.getByText(/Виберіть кілька зображень/i)).toBeInTheDocument();
+
+    // Закриваємо модалку
+    rerender(
+      <AddDocumentModal
+        isOpen={false}
+        onClose={() => {}}
+        caseData={CASE}
+        onSubmit={() => {}}
+      />
+    );
+    // Знову відкриваємо — має бути стартовий екран
+    rerender(
+      <AddDocumentModal
+        isOpen={true}
+        onClose={() => {}}
+        caseData={CASE}
+        onSubmit={() => {}}
+      />
+    );
+    expect(screen.getByText('Додати файл')).toBeInTheDocument();
+    expect(screen.getByText('Склеїти зображення')).toBeInTheDocument();
+  });
+});
+
 describe('AddDocumentModal — Drive picker visibility', () => {
   it('Drive picker section показано в single mode коли driveConnected=true і немає subFolders', () => {
     renderModal({ driveConnected: true });
