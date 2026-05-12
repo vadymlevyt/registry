@@ -47,13 +47,33 @@ function getExtension(name) {
   return m ? m[1] : '';
 }
 
+// wasConvertedToPdf — driveId вказує на конвертований PDF, а не на оригінальний
+// файл за originalName. Після TASK A converterService приводить DOCX/HTML/image
+// у PDF і вантажить на Drive, оригінальний MIME записує у doc.originalMime
+// (passthrough PDF теж записує 'application/pdf' — тому виключаємо його явно).
+//
+// Один сенс: «файл за driveId — це конвертований PDF, рендеримо як PDF».
+// Без цього прапора Viewer розпізнавав конвертовані DOCX як DOCX за originalName
+// і кидав mammoth у render PDF-блоба — «Can't find end of central directory».
+//
+// Legacy документи (до TASK A) мають originalMime === null → false → каскад
+// isPdf/isDocx/isHtml працює як раніше.
+function wasConvertedToPdf(doc) {
+  const originalMime = (doc.originalMime || '').toLowerCase();
+  if (!originalMime) return false;
+  if (originalMime === 'application/pdf') return false; // passthrough — не конвертували
+  return true;
+}
+
 function isPdf(doc) {
+  if (wasConvertedToPdf(doc)) return true; // driveId — render PDF з DOCX/HTML/image
   const mime = (doc.mimeType || '').toLowerCase();
   const ext = getExtension(doc.originalName || doc.name);
   return mime === 'application/pdf' || ext === 'pdf';
 }
 
 function isDocx(doc) {
+  if (wasConvertedToPdf(doc)) return false; // оригінал DOCX у originalDriveId — не render path
   const mime = (doc.mimeType || '').toLowerCase();
   const ext = getExtension(doc.originalName || doc.name);
   return (
@@ -63,6 +83,7 @@ function isDocx(doc) {
 }
 
 function isHtml(doc) {
+  if (wasConvertedToPdf(doc)) return false; // HTML оригіналу немає, driveId — PDF
   const mime = (doc.mimeType || '').toLowerCase();
   const ext = getExtension(doc.originalName || doc.name);
   return (
@@ -88,7 +109,10 @@ function ScanContent({ document }) {
     );
   }
 
-  const isImage = (document.mimeType || '').startsWith('image/');
+  // isImage — нативне зображення (документ доданий без TASK A конвертації в PDF).
+  // Після TASK A зображення конвертуються у PDF, тому wasConvertedToPdf
+  // запобігає <img> гілці для тих документів — рендеримо їх як PDF.
+  const isImage = !wasConvertedToPdf(document) && (document.mimeType || '').startsWith('image/');
   if (isImage) {
     return (
       <div className="document-viewer__content document-viewer__content--scan">
