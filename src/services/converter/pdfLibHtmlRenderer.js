@@ -623,6 +623,102 @@ function collectInlineRuns(node, style, runs, stylesheet) {
   }
 }
 
+// HTML4 `<img width=54 height=73>` — integer без юніту = px. Окремий від
+// parseLength (який трактує '' як pt бо CSS так робить).
+function parseImgLength(value, fallback = null) {
+  if (value == null) return fallback;
+  const s = String(value).trim();
+  if (!s) return fallback;
+  if (/^\d+$/.test(s)) return parseInt(s, 10) * 0.75; // px → pt
+  return parseLength(s, fallback);
+}
+
+// Розбити параграф на блоки нарізкою по <img>. Inline-img у paragraph рендер
+// не обробляє (drawLine ігнорує image segments). Натомість виносимо img у
+// окремий image block, текст до/після стає окремим paragraph.
+//
+// Особливість: для ЄСІТС-ухвал параграф з гербом часто містить тільки img
+// + порожні span'и. Не створюємо paragraph для порожнього/whitespace-only text.
+function splitParagraphByImages(node, style, blocks, stylesheet, seenImageSrcs) {
+  let accumRuns = [];
+
+  function hasNonEmptyContent(runs) {
+    for (const r of runs) {
+      if (r.forceBreak) continue;
+      if (typeof r.text === 'string' && r.text.trim().length > 0) return true;
+    }
+    return false;
+  }
+
+  function flushText() {
+    if (accumRuns.length === 0) return;
+    if (hasNonEmptyContent(accumRuns)) {
+      blocks.push({ type: 'paragraph', runs: accumRuns, style });
+    }
+    accumRuns = [];
+  }
+
+  function visit(n, currentStyle) {
+    if (!n) return;
+    if (n.nodeType === 3) {
+      const raw = n.nodeValue || '';
+      const collapsed = raw.replace(/\s+/g, ' ');
+      if (collapsed === '' || collapsed === ' ') {
+        if (accumRuns.length > 0) {
+          const last = accumRuns[accumRuns.length - 1];
+          if (!last.forceBreak && (!last.text || !last.text.endsWith(' '))) {
+            accumRuns.push({ text: ' ', style: cloneStyle(currentStyle) });
+          }
+        }
+        return;
+      }
+      accumRuns.push({ text: collapsed, style: cloneStyle(currentStyle) });
+      return;
+    }
+    if (n.nodeType !== 1) return;
+    const t = n.tagName.toLowerCase();
+    if (isOfficeSkipTag(t)) return;
+
+    if (t === 'br') {
+      accumRuns.push({ forceBreak: true, style: cloneStyle(currentStyle) });
+      return;
+    }
+    if (t === 'img') {
+      const src = n.getAttribute('src');
+      if (src && !seenImageSrcs.has(src)) {
+        seenImageSrcs.add(src);
+        flushText();
+        const w = parseImgLength(n.getAttribute('width'), null);
+        const h = parseImgLength(n.getAttribute('height'), null);
+        const align = style.align || 'left';
+        blocks.push({ type: 'image', src, width: w, height: h, align, style });
+      }
+      return;
+    }
+    if (t.startsWith('v:') || t === 'shape' || t === 'imagedata' || t === 'rect') {
+      const src = findVmlImagedataSrc(n);
+      if (src && !seenImageSrcs.has(src)) {
+        seenImageSrcs.add(src);
+        flushText();
+        const align = style.align || 'left';
+        blocks.push({ type: 'image', src, width: null, height: null, align, style });
+      }
+      return;
+    }
+
+    const childStyle = styleForElement(n, currentStyle, stylesheet);
+    if (childStyle._hidden) return;
+    for (const child of n.childNodes) {
+      visit(child, childStyle);
+    }
+  }
+
+  for (const child of node.childNodes) {
+    visit(child, style);
+  }
+  flushText();
+}
+
 function walkDom(node, parentStyle, blocks, stylesheet = null, seenImageSrcs = null) {
   if (!seenImageSrcs) seenImageSrcs = new Set();
   if (!node) return;
@@ -656,8 +752,8 @@ function walkDom(node, parentStyle, blocks, stylesheet = null, seenImageSrcs = n
     if (src && !seenImageSrcs.has(src)) {
       seenImageSrcs.add(src);
       const align = style.align || 'left';
-      const w = parseLength(node.getAttribute('width'), null);
-      const h = parseLength(node.getAttribute('height'), null);
+      const w = parseImgLength(node.getAttribute('width'), null);
+      const h = parseImgLength(node.getAttribute('height'), null);
       blocks.push({ type: 'image', src, width: w, height: h, align, style });
     }
     return;
@@ -686,13 +782,12 @@ function walkDom(node, parentStyle, blocks, stylesheet = null, seenImageSrcs = n
   }
 
   if (tag === 'p' || tag === 'center') {
-    const runs = [];
-    collectInlineRuns(node, style, runs, stylesheet);
-    if (runs.length > 0) {
-      blocks.push({ type: 'paragraph', runs, style });
-    } else {
-      blocks.push({ type: 'spacer', height: style.fontSize * style.lineHeight, style });
-    }
+    // ВАЖЛИВО: параграф може містити <img> (герб у ЄСІТС-ухвалах: <p class=rvps3>
+    // <img src="data:image/png;base64,..."></p>). Якщо просто збирати runs —
+    // image потрапить як inline-run, який drawLine ігнорує (малює тільки
+    // word/space). Тому розбиваємо параграф на послідовність блоків:
+    // [текст до img] [image block] [текст після img] ...
+    splitParagraphByImages(node, style, blocks, stylesheet, seenImageSrcs);
     return;
   }
 
@@ -1521,14 +1616,17 @@ export async function htmlToPdfViaPdfLib(html, options = {}) {
 export const __test__ = {
   parseInlineStyle,
   parseLength,
+  parseImgLength,
   parseColor,
   parseStyleBlock,
   mapFontFamily,
   styleForElement,
   walkDom,
+  splitParagraphByImages,
   layoutLines,
   flattenRunsToSegments,
   defaultStyle,
   collectStyleSheet,
   getStylesheetDeclsForElement,
+  findVmlImagedataSrc,
 };
