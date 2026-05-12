@@ -4,6 +4,7 @@ import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToD
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
+import { convertToPdf } from "../../services/converter/converterService.js";
 import { inferNatureFromFile, defaultNatureForUI } from "../../services/detectDocumentNature.js";
 import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
 import { toast } from "../../services/toast.js";
@@ -2934,22 +2935,67 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         caseData={{ ...caseData, proceedings }}
         onSubmit={async ({ name, category, author, procId, date, isKey, file }) => {
           let driveId = null;
-          let prepared = null;
+          let originalDriveId = null;
+          let originalMime = null;
+          // uploadedFile — File який реально пішов у Drive як основний (driveId).
+          // Для PDF це сам файл. Для DOCX/HTML/image — конвертований PDF.
+          // Для Drive picker — null (вже на Drive, конвертації не робимо).
+          let uploadedFile = null;
           // Дві гілки джерела файла:
           //   А) Drive picker — файл вже на Drive, маркер _isDriveSource + _driveId.
-          //      Пропускаємо upload (дублікат не створюємо), беремо driveId одразу.
-          //   Б) Device file picker — реальний File, прогоняємо через prepareFile
-          //      (HEIC→JPEG) і uploadFileLocal у 01_ОРИГІНАЛИ.
-          // Далі обидві гілки сходяться: createDocument → add_document → OCR pipeline.
+          //      Конвертацію не робимо (passthrough), беремо driveId одразу.
+          //      originalMime беремо з MIME який зберіг Drive.
+          //   Б) Device file picker — реальний File. converterService.convertToPdf
+          //      приводить до PDF (DOCX/HTML/image → PDF, PDF passthrough).
+          //      Для DOCX додатково зберігаємо оригінал як originalDriveId.
           if (file?._isDriveSource && file?._driveId) {
             driveId = file._driveId;
+            originalMime = file.type || null;
           } else if (file && driveConnected) {
             try {
-              prepared = await prepareFile(file);
-              driveId = await uploadFileLocal(prepared, caseData);
+              // 1. Конвертація у PDF через фасад. Для PDF — passthrough.
+              const conversion = await convertToPdf(file, {
+                caseId: caseData.id,
+                module: MODULES.CASE_DOSSIER,
+                operation: 'add_document',
+              });
+              originalMime = conversion.originalMime;
+
+              // 2. Підготувати File для upload (з правильним іменем і MIME).
+              // Якщо converter passthrough і це не PDF — це невідомий тип,
+              // лишаємо файл як є (Drive iframe покаже preview якщо може).
+              const isPdfBlob = conversion.converter !== 'passthrough'
+                || conversion.originalMime === 'application/pdf';
+              uploadedFile = isPdfBlob
+                ? new File([conversion.pdfBlob], `${conversion.pdfName}.pdf`, { type: 'application/pdf' })
+                : file;
+
+              // 3. Завантажити основний файл (PDF або оригінал якщо passthrough)
+              driveId = await uploadFileLocal(uploadedFile, caseData);
+
+              // 4. Якщо є originalBlob (DOCX) — завантажити поряд.
+              if (conversion.originalBlob) {
+                try {
+                  const origFile = new File(
+                    [conversion.originalBlob],
+                    file.name,
+                    { type: originalMime || file.type }
+                  );
+                  originalDriveId = await uploadFileLocal(origFile, caseData);
+                } catch (origErr) {
+                  // Не критично — PDF вже завантажено. Адвокат побачить warning.
+                  console.warn('Original (DOCX) upload failed:', origErr?.message);
+                  toast.show('PDF створено, але оригінал DOCX не зберігся на Drive');
+                }
+              }
+
+              // 5. Попередження конвертації — показуємо у toast якщо є
+              if (conversion.warnings && conversion.warnings.length > 0) {
+                console.info('[convertToPdf] warnings:', conversion.warnings);
+              }
             } catch (err) {
-              console.error('Drive upload error:', err);
-              toast.error('Не вдалось завантажити на Drive', { description: err?.message });
+              console.error('Conversion/upload error:', err);
+              toast.error('Не вдалось обробити файл', { description: err?.message });
             }
           }
           const ICONS = {
@@ -2963,7 +3009,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // → 'scanned' (defaultNatureForUI: безпечно бо Drive iframe однаково
           // покаже PDF). Після OCR коригуємо за тим який провайдер реально витяг
           // текст: pdfjsLocal → 'searchable', documentAi/claudeVision → 'scanned'.
-          const fileForInfer = prepared || file;
+          // Для конвертованих файлів (DOCX/HTML→PDF) використовуємо PDF MIME —
+          // 'searchable' бо текстовий шар у конвертованому PDF присутній.
+          const fileForInfer = uploadedFile || file;
           const initialNature = fileForInfer
             ? (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
                 || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name }))
@@ -2979,12 +3027,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             isKey,
             driveId,
             driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-            size: file?.size || 0,
+            size: uploadedFile?.size || file?.size || 0,
             originalName: file?.name || null,
+            originalDriveId,
+            originalMime,
             folder: '01_ОРИГІНАЛИ',
             addedBy: 'lawyer_manual',
             namingStatus: 'manual',
             documentNature: initialNature,
+            source: 'manual_upload',
           });
           if (onExecuteAction) {
             const r = await onExecuteAction('dossier_agent', 'add_document', {

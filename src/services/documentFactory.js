@@ -55,6 +55,11 @@ export function createDocument(metadata = {}) {
     // source — канал надходження. null означає "невідомо" (старі документи
     // або точки створення які ще не передають source).
     source: metadata.source ?? null,
+
+    // originalDriveId / originalMime — оригінал поряд з PDF (DOCX→PDF
+    // конвертація). Для PDF/HTML/images null (оригінал не зберігається).
+    originalDriveId: metadata.originalDriveId ?? null,
+    originalMime: metadata.originalMime ?? null,
   };
 }
 

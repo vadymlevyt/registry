@@ -76,6 +76,29 @@ describe('documentFactory', () => {
       expect(createDocument({ name: 'X', addedBy: 'migration' }).addedBy).toBe('migration');
       expect(createDocument({ name: 'X', addedBy: 'lawyer_via_dp' }).addedBy).toBe('lawyer_via_dp');
     });
+
+    it('originalDriveId / originalMime — null за замовчуванням', () => {
+      const doc = createDocument({ name: 'X' });
+      expect(doc.originalDriveId).toBeNull();
+      expect(doc.originalMime).toBeNull();
+    });
+
+    it('зберігає originalDriveId і originalMime коли передано (кейс DOCX→PDF)', () => {
+      const doc = createDocument({
+        name: 'Позовна заява',
+        driveId: 'pdf_123',
+        originalDriveId: 'docx_456',
+        originalMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      });
+      expect(doc.driveId).toBe('pdf_123');
+      expect(doc.originalDriveId).toBe('docx_456');
+      expect(doc.originalMime).toContain('wordprocessingml');
+    });
+
+    it('source приймає manual_upload (з AddDocumentModal)', () => {
+      const doc = createDocument({ name: 'X', source: 'manual_upload' });
+      expect(doc.source).toBe('manual_upload');
+    });
   });
 
   describe('validateDocument', () => {

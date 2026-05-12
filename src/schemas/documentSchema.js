@@ -111,6 +111,25 @@ export const CANONICAL_DOCUMENT_FIELDS = {
     nullable: true,
     enum: ['manual_upload', 'ecits', 'telegram', 'email', null],
     description: 'Канал надходження. null = старі документи до TASK 0.2'
+  },
+
+  // ── Оригінал поряд з PDF ──────────────────────────────────────────────────
+  // Коли документ потрапляє у систему у форматі, який конвертується у PDF для
+  // відображення (DOCX), оригінал зберігається на Drive окремо. driveId завжди
+  // вказує на PDF (для Viewer), originalDriveId — на оригінал (для завантаження
+  // адвокатом). HTML і зображення оригінали не зберігаються — originalDriveId null.
+  // Nullable, default null — додано без schema bump (за прецедентом source).
+  originalDriveId: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    description: 'Google Drive ID оригіналу (DOCX) поряд з PDF. null коли оригінал не зберігається.'
+  },
+  originalMime: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    description: 'MIME-тип оригіналу до конвертації. Для PDF без конвертації — application/pdf.'
   }
 };
 

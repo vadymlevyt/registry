@@ -10,13 +10,22 @@ import {
 
 describe('documentSchema', () => {
   describe('CANONICAL_DOCUMENT_FIELDS', () => {
-    it('містить 21 поле (TASK 0.2 додав source як 21-ше)', () => {
-      // 21 = id, name, originalName, category, author, documentNature, namingStatus, isKey,
+    it('містить 23 поля (TASK A додав originalDriveId / originalMime)', () => {
+      // 23 = id, name, originalName, category, author, documentNature, namingStatus, isKey,
       //      procId, driveId, driveUrl, folder, pageCount, size, icon, date,
-      //      addedAt, updatedAt, addedBy, status, source
-      // source — канал надходження (manual_upload / ecits / telegram / email / null),
-      // nullable, default null. Старі документи отримують null без schema bump.
-      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(21);
+      //      addedAt, updatedAt, addedBy, status, source, originalDriveId, originalMime
+      // originalDriveId / originalMime — оригінал поряд з PDF (DOCX→PDF).
+      // Nullable, default null. Додано без schema bump (за прецедентом source).
+      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(23);
+    });
+
+    it('має поля originalDriveId / originalMime (TASK A)', () => {
+      expect(CANONICAL_DOCUMENT_FIELDS.originalDriveId).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.originalDriveId.nullable).toBe(true);
+      expect(CANONICAL_DOCUMENT_FIELDS.originalDriveId.required).toBe(false);
+      expect(CANONICAL_DOCUMENT_FIELDS.originalMime).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.originalMime.nullable).toBe(true);
+      expect(CANONICAL_DOCUMENT_FIELDS.originalMime.required).toBe(false);
     });
 
     it('має ідентифікаційні поля: id, name, originalName', () => {
