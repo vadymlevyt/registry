@@ -96,5 +96,11 @@ describe('converterService — маршрутизація за типом фай
     it('експортується як константа', () => {
       expect(typeof CONVERT_DOCX_TO_PDF).toBe('boolean');
     });
+
+    it('за замовчуванням true (DOCX конвертується)', () => {
+      // Відкат до false має бути свідомим рішенням адвоката після
+      // тестування — не може мовчазно зʼявитись через випадковий мерж.
+      expect(CONVERT_DOCX_TO_PDF).toBe(true);
+    });
   });
 });
