@@ -10,8 +10,8 @@
 // TASK B (склейка зображень) використовують той самий сервіс.
 //
 // ── Контракт результату ─────────────────────────────────────────────────────
-//   { pdfBlob, originalBlob, pdfName, originalName, originalMime, warnings,
-//     converter, durationMs }
+//   { pdfBlob, originalBlob, pdfName, originalName, originalMime, extractedText,
+//     warnings, converter, durationMs }
 //
 //   pdfBlob       — Blob PDF (application/pdf). Завжди заповнений при успіху.
 //   originalBlob  — Blob оригіналу (DOCX). null якщо оригінал не зберігається
@@ -19,10 +19,21 @@
 //   pdfName       — імʼя для PDF файлу (без розширення додасться .pdf).
 //   originalName  — оригінальне імʼя файлу (з розширенням).
 //   originalMime  — MIME оригіналу (для запису у doc.originalMime).
+//   extractedText — plain-текст витягнутий конвертером БЕЗ Document AI. Заповнений
+//                   для docxToPdf (mammoth.extractRawText) і htmlToPdf
+//                   (container.innerText). null для passthrough/image — для них
+//                   текст витягується через OCR pipeline.
 //   warnings      — попередження конвертації (масив рядків).
 //   converter     — назва конвертера ('htmlToPdf' | 'docxToPdf' | 'imageToPdf'
 //                                     | 'passthrough').
 //   durationMs    — час конвертації у мс.
+//
+// ── Що з extractedText робить caller ────────────────────────────────────────
+// Якщо `extractedText` непорожній — caller (AddDocumentModal onSubmit у
+// CaseDossier) записує його у 02_ОБРОБЛЕНІ як .txt напряму через
+// ocrService.writeExtractedTextArtifact і ПРОПУСКАЄ runOcrWithRetryUI. Document AI
+// для DOCX/HTML не викликається — текст уже витягнуто з джерела, render-PDF
+// дав би гірший OCR. Це економить токени Document AI і прискорює додавання.
 //
 // ── SAAS і Multi-user готовність ────────────────────────────────────────────
 // Конвертація — pure utility, не торкається даних реєстру. Але приймає context
@@ -112,6 +123,7 @@ export async function convertToPdf(file, context = {}) {
       pdfName: baseName(name),
       originalName: name,
       originalMime: 'application/pdf',
+      extractedText: null,
       warnings: [],
       converter: 'passthrough',
       durationMs: Date.now() - t0,
@@ -129,6 +141,7 @@ export async function convertToPdf(file, context = {}) {
       pdfName: baseName(name),
       originalName: name,
       originalMime: 'text/html',
+      extractedText: result.extractedText || null,
       warnings: result.warnings || [],
       converter: 'htmlToPdf',
       durationMs: Date.now() - t0,
@@ -146,6 +159,7 @@ export async function convertToPdf(file, context = {}) {
         pdfName: baseName(name),
         originalName: name,
         originalMime: mime || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        extractedText: null,
         warnings: ['CONVERT_DOCX_TO_PDF вимкнено — DOCX залишається як є'],
         converter: 'passthrough',
         durationMs: Date.now() - t0,
@@ -160,6 +174,7 @@ export async function convertToPdf(file, context = {}) {
       pdfName: baseName(name),
       originalName: name,
       originalMime: mime || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      extractedText: result.extractedText || null,
       warnings: result.warnings || [],
       converter: 'docxToPdf',
       durationMs: Date.now() - t0,
@@ -177,6 +192,7 @@ export async function convertToPdf(file, context = {}) {
       pdfName: baseName(name),
       originalName: name,
       originalMime: mime || 'image/jpeg',
+      extractedText: null, // OCR pipeline витягне текст пізніше
       warnings: result.warnings || [],
       converter: 'imageToPdf',
       durationMs: Date.now() - t0,
@@ -191,6 +207,7 @@ export async function convertToPdf(file, context = {}) {
     pdfName: baseName(name),
     originalName: name,
     originalMime: mime || 'application/octet-stream',
+    extractedText: null,
     warnings: [`Тип ${mime || 'невідомий'} не конвертується — залишаємо як є`],
     converter: 'passthrough',
     durationMs: Date.now() - t0,

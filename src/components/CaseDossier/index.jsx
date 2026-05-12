@@ -2941,6 +2941,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // Для PDF це сам файл. Для DOCX/HTML/image — конвертований PDF.
           // Для Drive picker — null (вже на Drive, конвертації не робимо).
           let uploadedFile = null;
+          // extractedText — plain-текст витягнутий конвертером БЕЗ Document AI.
+          // Заповнений для docxToPdf/htmlToPdf, null для PDF/image/passthrough.
+          // Якщо непорожній — пишемо .txt у 02_ОБРОБЛЕНІ напряму і пропускаємо
+          // runOcrWithRetryUI. converterType фіксує гілку — для імплицитного
+          // вибору natureOverride і skip-OCR логіки нижче.
+          let extractedText = null;
+          let converterType = null;
           // Дві гілки джерела файла:
           //   А) Drive picker — файл вже на Drive, маркер _isDriveSource + _driveId.
           //      Конвертацію не робимо (passthrough), беремо driveId одразу.
@@ -2952,50 +2959,62 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             driveId = file._driveId;
             originalMime = file.type || null;
           } else if (file && driveConnected) {
+            // Конвертація + upload. Помилки кидаємо наверх — модалка лишається
+            // відкритою, документ у реєстрі НЕ створюється, файли на Drive
+            // НЕ пишуться. Це краще ніж створити "пустий" документ з невалідним
+            // вмістом і ховати помилку у toast.
+            let conversion;
             try {
-              // 1. Конвертація у PDF через фасад. Для PDF — passthrough.
-              const conversion = await convertToPdf(file, {
+              conversion = await convertToPdf(file, {
                 caseId: caseData.id,
                 module: MODULES.CASE_DOSSIER,
                 operation: 'add_document',
               });
-              originalMime = conversion.originalMime;
-
-              // 2. Підготувати File для upload (з правильним іменем і MIME).
-              // Якщо converter passthrough і це не PDF — це невідомий тип,
-              // лишаємо файл як є (Drive iframe покаже preview якщо може).
-              const isPdfBlob = conversion.converter !== 'passthrough'
-                || conversion.originalMime === 'application/pdf';
-              uploadedFile = isPdfBlob
-                ? new File([conversion.pdfBlob], `${conversion.pdfName}.pdf`, { type: 'application/pdf' })
-                : file;
-
-              // 3. Завантажити основний файл (PDF або оригінал якщо passthrough)
-              driveId = await uploadFileLocal(uploadedFile, caseData);
-
-              // 4. Якщо є originalBlob (DOCX) — завантажити поряд.
-              if (conversion.originalBlob) {
-                try {
-                  const origFile = new File(
-                    [conversion.originalBlob],
-                    file.name,
-                    { type: originalMime || file.type }
-                  );
-                  originalDriveId = await uploadFileLocal(origFile, caseData);
-                } catch (origErr) {
-                  // Не критично — PDF вже завантажено. Адвокат побачить warning.
-                  console.warn('Original (DOCX) upload failed:', origErr?.message);
-                  toast.show('PDF створено, але оригінал DOCX не зберігся на Drive');
-                }
-              }
-
-              // 5. Попередження конвертації — показуємо у toast якщо є
-              if (conversion.warnings && conversion.warnings.length > 0) {
-                console.info('[convertToPdf] warnings:', conversion.warnings);
-              }
             } catch (err) {
-              console.error('Conversion/upload error:', err);
+              console.error('Conversion error:', err);
               toast.error('Не вдалось обробити файл', { description: err?.message });
+              throw err; // AddDocumentModal залишається відкритим
+            }
+
+            originalMime = conversion.originalMime;
+            extractedText = conversion.extractedText || null;
+            converterType = conversion.converter;
+
+            // Підготувати File для upload. Конвертований результат завжди PDF;
+            // passthrough може бути PDF або невідомий тип (лишаємо як є,
+            // Drive iframe покаже preview якщо може).
+            const isPdfBlob = conversion.converter !== 'passthrough'
+              || conversion.originalMime === 'application/pdf';
+            uploadedFile = isPdfBlob
+              ? new File([conversion.pdfBlob], `${conversion.pdfName}.pdf`, { type: 'application/pdf' })
+              : file;
+
+            try {
+              driveId = await uploadFileLocal(uploadedFile, caseData);
+            } catch (err) {
+              console.error('Upload error:', err);
+              toast.error('Не вдалось завантажити файл на Drive', { description: err?.message });
+              throw err;
+            }
+
+            // Якщо є originalBlob (DOCX) — завантажити поряд. Не критично:
+            // якщо впаде, PDF уже на Drive і документ створиться без originalDriveId.
+            if (conversion.originalBlob) {
+              try {
+                const origFile = new File(
+                  [conversion.originalBlob],
+                  file.name,
+                  { type: originalMime || file.type }
+                );
+                originalDriveId = await uploadFileLocal(origFile, caseData);
+              } catch (origErr) {
+                console.warn('Original (DOCX) upload failed:', origErr?.message);
+                toast.show('PDF створено, але оригінал DOCX не зберігся на Drive');
+              }
+            }
+
+            if (conversion.warnings && conversion.warnings.length > 0) {
+              console.info('[convertToPdf] warnings:', conversion.warnings);
             }
           }
           const ICONS = {
@@ -3009,13 +3028,18 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // → 'scanned' (defaultNatureForUI: безпечно бо Drive iframe однаково
           // покаже PDF). Після OCR коригуємо за тим який провайдер реально витяг
           // текст: pdfjsLocal → 'searchable', documentAi/claudeVision → 'scanned'.
-          // Для конвертованих файлів (DOCX/HTML→PDF) використовуємо PDF MIME —
-          // 'searchable' бо текстовий шар у конвертованому PDF присутній.
+          // Для конвертованих DOCX/HTML — явно 'searchable': текст уже витягнуто
+          // через mammoth/innerText, OCR pipeline ми пропускаємо, тому корекції
+          // після OCR не буде. PDF MIME конвертованого uploadedFile сам по собі
+          // дав би defaultNatureForUI='scanned' що неправильно для DOCX/HTML.
           const fileForInfer = uploadedFile || file;
-          const initialNature = fileForInfer
-            ? (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
-                || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name }))
-            : 'searchable';
+          const isTextExtractedConvert = converterType === 'docxToPdf' || converterType === 'htmlToPdf';
+          const initialNature = isTextExtractedConvert
+            ? 'searchable'
+            : (fileForInfer
+                ? (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
+                    || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name }))
+                : 'searchable');
 
           const doc = createDocument({
             procId: procId || proceedings[0]?.id || 'proc_main',
@@ -3065,17 +3089,48 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             subFolders,
           };
 
-          // Якщо для типу немає OCR провайдера (DOCX, XLSX, PPTX, Google Docs
-          // напряму) — пропускаємо OCR крок. Viewer покаже оригінал через
-          // iframe Drive (Drive має нативний preview для цих форматів), а
-          // текстова копія у 02_ОБРОБЛЕНІ адвокату не потрібна для перегляду.
+          // Гілка А — текст уже витягнуто конвертером (DOCX через mammoth,
+          // HTML через innerText). Document AI НЕ викликаємо: text у DOCX/HTML
+          // уже структурований і повний, OCR на render-PDF дав би гірший
+          // результат і даремну витрату токенів. Пишемо .txt у 02_ОБРОБЛЕНІ
+          // напряму через ocrService.writeExtractedTextArtifact — та сама назва
+          // (<basename>_<driveId>.txt), тому getCachedText знайде при відкритті.
+          if (extractedText) {
+            toast.success('Документ додано');
+            try {
+              const written = await ocrService.writeExtractedTextArtifact(ocrFile, extractedText);
+              if (!written) {
+                toast.warning('Текст витягнуто, але не вдалось зберегти кеш на Drive', {
+                  description: 'При відкритті документа текст можна витягти повторно',
+                });
+              }
+            } catch (e) {
+              console.warn('[writeExtractedTextArtifact] failed:', e?.message || e);
+            }
+            // lastOcrAt відмічаємо щоб Viewer не намагався запустити re-OCR.
+            if (onExecuteAction && doc) {
+              try {
+                await onExecuteAction('dossier_agent', 'update_document', {
+                  caseId: caseData.id,
+                  documentId: doc.id,
+                  fields: { lastOcrAt: new Date().toISOString() },
+                });
+              } catch (e) {
+                console.warn('[update_document lastOcrAt] failed:', e?.message || e);
+              }
+            }
+            return;
+          }
+
+          // Гілка Б — для типу немає OCR провайдера (XLSX, PPTX, Google Docs
+          // напряму, або непідтримуваний passthrough). Viewer покаже оригінал
+          // через iframe Drive.
           if (!ocrService.hasOcrSupport(ocrFile)) {
             toast.success('Документ додано');
             return;
           }
 
-          // OCR pipeline — запускається ПІСЛЯ add_document, тому документ
-          // з'являється в реєстрі одразу і модалка може закритись. Корекція
+          // Гілка В — PDF/image. Запускаємо OCR pipeline. Корекція
           // documentNature і lastOcrAt — окремим update_document через
           // runOcrWithRetryUI. Retry і Claude Vision-діалог — узагальнено.
           toast.success('Документ додано');

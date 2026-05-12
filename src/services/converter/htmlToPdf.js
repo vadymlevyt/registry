@@ -1,24 +1,48 @@
 // ── HTML → PDF ───────────────────────────────────────────────────────────────
-// Конвертує HTML файл (від ЄСІТС, з email, з браузера) у PDF Blob.
+// Конвертує HTML файл (від ЄСІТС, з email, з браузера) у PDF Blob і одночасно
+// витягує plain-текст для запису в кеш OCR (.txt у 02_ОБРОБЛЕНІ).
 //
 // Pipeline:
 //   1. Прочитати file як ArrayBuffer
-//   2. detectCharset + decodeHtmlBuffer → UTF-8 рядок (utils/htmlCharsetDetection.js
+//   2. validateHtmlBytes — перші байти НЕ мають бути бінарною сигнатурою
+//      (PNG/JPEG/PDF тощо). Якщо так — THROW «не є валідним HTML».
+//   3. detectCharset + decodeHtmlBuffer → UTF-8 рядок (utils/htmlCharsetDetection.js
 //      обробляє ЄСІТС-варіант windows-1251 з некоректним meta-charset)
-//   3. Створити прихований контейнер у DOM з декодованим HTML і A4 стилями
-//   4. html2pdf.js → Blob('application/pdf')
-//   5. Cleanup DOM
+//   4. Створити прихований A4-контейнер у DOM з декодованим HTML.
+//      Витягти extractedText через container.innerText (браузер сам обробляє
+//      whitespace collapsing, <br> переноси, видимість).
+//      Якщо текст коротший за MIN_TEXT_LENGTH — THROW «порожній».
+//   5. html2pdf.js → Blob('application/pdf')
+//   6. Cleanup DOM, повернути { pdfBlob, extractedText, warnings }
 //
 // Контракт результату:
-//   { pdfBlob: Blob, warnings: string[] }
+//   { pdfBlob: Blob, extractedText: string, warnings: string[] }
 //
-// Помилки кидаються наверх — converterService повертає їх у виклик AddDocumentModal.
+// `extractedText` — plain-текст з innerText. CaseDossier записує його у
+// 02_ОБРОБЛЕНІ як .txt БЕЗ виклику Document AI. Текст у HTML вже структурований
+// і присутній — OCR на render-PDF дасть гірший результат.
 
 import { decodeHtmlBuffer } from '../../utils/htmlCharsetDetection.js';
 
-// A4 стилі для html2pdf — Times New Roman 12pt, поля 2см/3см/2см/2см
-// (стандарт ділового документа). Шрифт fallback на serif для шрифтів які
-// браузер не має.
+// Мінімальна довжина значущого тексту. 30 символів — це приблизно один заголовок
+// або коротке речення. Менше — або порожній шаблон, або файл без текстового
+// вмісту. Поріг трохи нижчий ніж для DOCX (50): HTML часто буває фрагментом
+// (наприклад одна короткА ухвала з ЄСІТС).
+const MIN_TEXT_LENGTH = 30;
+
+// Бінарні сигнатури які ТОЧНО не HTML (перші 4-8 байти). Якщо файл починається
+// з однієї з них — адвокат випадково перейменував не-HTML файл або вибрав не
+// той файл. Кидаємо чесну помилку до того як html2pdf вичерпає 30 секунд на
+// рендер «PDF з пікселями".
+const BINARY_SIGNATURES = [
+  { name: 'PNG', bytes: [0x89, 0x50, 0x4e, 0x47] },     // ‰PNG
+  { name: 'JPEG', bytes: [0xff, 0xd8, 0xff] },           // JPEG SOI
+  { name: 'GIF', bytes: [0x47, 0x49, 0x46, 0x38] },      // GIF8
+  { name: 'PDF', bytes: [0x25, 0x50, 0x44, 0x46] },      // %PDF
+  { name: 'ZIP', bytes: [0x50, 0x4b, 0x03, 0x04] },      // PK (ZIP, DOCX, XLSX, ...)
+  { name: 'WEBP', bytes: [0x52, 0x49, 0x46, 0x46] },     // RIFF
+];
+
 const A4_CSS = `
   font-family: 'Times New Roman', Times, serif;
   font-size: 12pt;
@@ -31,28 +55,37 @@ const A4_CSS = `
   box-sizing: border-box;
 `;
 
-// html2pdf-конфіг — однакова для htmlToPdf і docxToPdf.
 const HTML2PDF_OPTIONS = {
-  margin: 0, // паддінг вже у CSS контейнера
+  margin: 0,
   image: { type: 'jpeg', quality: 0.95 },
   html2canvas: { scale: 2, useCORS: true, logging: false },
   jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
   pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
 };
 
-export async function htmlToPdf(file, context = {}) {
+export async function htmlToPdf(file, _context = {}) {
   const warnings = [];
 
-  // 1. Прочитати ArrayBuffer
+  // 1. ArrayBuffer
   const arrayBuffer = await readAsArrayBuffer(file);
 
-  // 2. Декодувати HTML з правильним charset (UTF-8 / windows-1251 / cp1251)
+  // 2. Валідація сигнатури. HTML — текстовий формат, бінарних сигнатур не має.
+  const binaryMatch = detectBinarySignature(arrayBuffer);
+  if (binaryMatch) {
+    throw new Error(`Файл не є валідним HTML (виявлено сигнатуру ${binaryMatch}). Можливо адвокат випадково вибрав не той файл.`);
+  }
+
+  // 3. Декодувати HTML з правильним charset (UTF-8 / windows-1251 / cp1251)
   const decoded = decodeHtmlBuffer(arrayBuffer, file?.type || 'text/html');
   if (decoded.charset !== 'utf-8' && decoded.charset !== 'UTF-8') {
     warnings.push(`HTML декодовано як ${decoded.charset}`);
   }
 
-  // 3. Створити контейнер. Прихований через position absolute + opacity 0
+  if (!decoded.text || decoded.text.trim().length === 0) {
+    throw new Error('HTML файл порожній.');
+  }
+
+  // 4. Створити контейнер. Прихований через position absolute + opacity 0
   // (display:none ламає html2canvas — він не може зміряти розміри).
   const container = document.createElement('div');
   container.setAttribute('style', `
@@ -72,7 +105,18 @@ export async function htmlToPdf(file, context = {}) {
   document.body.appendChild(container);
 
   try {
-    // 4. html2pdf конвертація. Динамічний імпорт — щоб бандл не тягнув
+    // 4.1 Витягнути plain-текст. innerText кращий ніж textContent: він
+    // враховує whitespace collapse, <br> переноси, ігнорує display:none.
+    // У jsdom innerText може бути undefined — fallback на textContent.
+    const extractedText = (container.innerText || container.textContent || '').trim();
+
+    if (extractedText.length < MIN_TEXT_LENGTH) {
+      throw new Error(
+        `HTML не містить тексту (${extractedText.length} символів). Якщо документ — сканований, додайте його як зображення.`
+      );
+    }
+
+    // 5. html2pdf конвертація. Динамічний імпорт — щоб бандл не тягнув
     // html2pdf при старті аппки, тільки при першій конвертації.
     const html2pdfModule = await import('html2pdf.js');
     const html2pdf = html2pdfModule.default || html2pdfModule;
@@ -86,9 +130,9 @@ export async function htmlToPdf(file, context = {}) {
       throw new Error('html2pdf повернув порожній PDF');
     }
 
-    return { pdfBlob, warnings };
+    return { pdfBlob, extractedText, warnings };
   } finally {
-    // 5. Cleanup — завжди видаляємо контейнер, навіть при помилці
+    // 6. Cleanup — завжди видаляємо контейнер, навіть при помилці
     if (container.parentNode) {
       container.parentNode.removeChild(container);
     }
@@ -96,6 +140,22 @@ export async function htmlToPdf(file, context = {}) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function detectBinarySignature(arrayBuffer) {
+  if (!arrayBuffer || arrayBuffer.byteLength < 4) return null;
+  const view = new Uint8Array(arrayBuffer, 0, 8);
+  for (const sig of BINARY_SIGNATURES) {
+    let match = true;
+    for (let i = 0; i < sig.bytes.length; i++) {
+      if (view[i] !== sig.bytes[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return sig.name;
+  }
+  return null;
+}
 
 function readAsArrayBuffer(file) {
   // file може бути File, Blob, або ArrayBuffer (у тестах)

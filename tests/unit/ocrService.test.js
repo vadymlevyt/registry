@@ -79,7 +79,7 @@ vi.mock('../../src/services/ocr/claudeVision.js', () => makeProvider('claudeVisi
 vi.mock('../../src/services/ocr/pdfjsLocal.js', () => makeProvider('pdfjsLocal'));
 
 // Імпорт ПІСЛЯ моків (vi.mock hoisting працює, але явність кращ для читача)
-const { extractText } = await import('../../src/services/ocrService.js');
+const { extractText, writeExtractedTextArtifact } = await import('../../src/services/ocrService.js');
 
 function fileFixture(overrides = {}) {
   return {
@@ -326,6 +326,63 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     ).rejects.toMatchObject({ code: 'AUTH' });
 
     // documentAi не викликався — ocrService зробив break на AUTH
+    expect(driveState.uploads).toHaveLength(0);
+  });
+});
+
+describe('writeExtractedTextArtifact — запис .txt БЕЗ виклику OCR провайдера', () => {
+  it('пише .txt у 02_ОБРОБЛЕНІ з канонічною назвою <basename>_<driveId>.txt', async () => {
+    const file = fileFixture({ name: 'pozov_kiseliovoi.docx', id: 'drv_abc' });
+    const ok = await writeExtractedTextArtifact(file, 'Позовна заява про стягнення коштів');
+
+    expect(ok).toBe(true);
+    expect(driveState.uploads).toHaveLength(1);
+    expect(driveState.uploads[0].name).toBe('pozov_kiseliovoi_drv_abc.txt');
+    expect(driveState.uploads[0].folderId).toBe('folder_obrob');
+    expect(driveState.uploads[0].content).toBe('Позовна заява про стягнення коштів');
+    expect(driveState.uploads[0].mimeType).toBe('text/plain');
+  });
+
+  it('не викликає жодного OCR провайдера (нема Document AI, Claude Vision, pdfjs)', async () => {
+    // Очищаємо лічильники моків від попередніх тестів у файлі (extractText
+    // викликав їх). Перевіряємо що writeExtractedTextArtifact САМ не торкає
+    // жодного провайдера — це не OCR pipeline, а пряме збереження тексту.
+    const { default: docAi } = await import('../../src/services/ocr/documentAi.js');
+    const { default: claudeV } = await import('../../src/services/ocr/claudeVision.js');
+    const { default: pdfjs } = await import('../../src/services/ocr/pdfjsLocal.js');
+    docAi.extract.mockClear();
+    claudeV.extract.mockClear();
+    pdfjs.extract.mockClear();
+
+    const file = fileFixture({ name: 'doc.html', id: 'drv_xyz' });
+    await writeExtractedTextArtifact(file, 'Текст ухвали з HTML');
+
+    expect(docAi.extract).not.toHaveBeenCalled();
+    expect(claudeV.extract).not.toHaveBeenCalled();
+    expect(pdfjs.extract).not.toHaveBeenCalled();
+  });
+
+  it('не пише .layout.json — DOCX/HTML pageStructure не має за визначенням', async () => {
+    const file = fileFixture({ name: 'doc.docx', id: 'drv_1' });
+    await writeExtractedTextArtifact(file, 'A'.repeat(100));
+
+    const names = driveState.uploads.map((u) => u.name);
+    expect(names).toContain('doc_drv_1.txt');
+    expect(names).not.toContain('doc_drv_1.layout.json');
+  });
+
+  it('повертає false і нічого не пише коли немає 02_ОБРОБЛЕНІ subFolder', async () => {
+    const file = { id: 'drv_2', name: 'doc.html', subFolders: {} };
+    const ok = await writeExtractedTextArtifact(file, 'Достатньо тексту тут є');
+    expect(ok).toBe(false);
+    expect(driveState.uploads).toHaveLength(0);
+  });
+
+  it('повертає false і нічого не пише коли текст порожній', async () => {
+    const file = fileFixture();
+    expect(await writeExtractedTextArtifact(file, '')).toBe(false);
+    expect(await writeExtractedTextArtifact(file, '   ')).toBe(false);
+    expect(await writeExtractedTextArtifact(file, null)).toBe(false);
     expect(driveState.uploads).toHaveLength(0);
   });
 });

@@ -173,6 +173,26 @@ export async function getCachedText(file) {
   }
 }
 
+// writeExtractedTextArtifact — публічний запис .txt у 02_ОБРОБЛЕНІ для caller'а
+// який отримав текст БЕЗ OCR (DOCX через mammoth, HTML через innerText).
+// Використовує той самий механізм що внутрішній writeArtifact: ту ж назву
+// (<basename>_<driveId>.txt), той самий шлях. Це гарантує що ocrService.getCachedText
+// знайде його при наступному відкритті документа.
+//
+// Один сенс: «записати plain-текст у 02_ОБРОБЛЕНІ так, ніби це результат OCR».
+// .layout.json не пишеться — pageStructure у DOCX/HTML немає за визначенням.
+//
+// Параметри:
+//   file — { id (driveId), name, subFolders: { '02_ОБРОБЛЕНІ': folderId } }
+//   text — plain-текст
+//
+// Повертає: true якщо записано, false якщо немає subFolder або помилка запису.
+// Помилка не кидається — кеш не критичний, документ уже на Drive.
+export async function writeExtractedTextArtifact(file, text) {
+  if (!text || !text.trim()) return false;
+  return await writeArtifact(file, textCacheFileName(file), text, 'text/plain');
+}
+
 // hasOcrSupport — чи існує хоч один OCR-провайдер для цього типу файла.
 // Викликається у CaseDossier:onSubmit перед запуском OCR pipeline щоб
 // для непідтримуваних форматів одразу пропустити OCR крок без warning-тоста.
