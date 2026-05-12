@@ -79,14 +79,18 @@ describe('htmlToPdf — HTML → PDF через pdfLibHtmlRenderer', () => {
     await expect(htmlToPdf(file, {})).rejects.toThrow(/порожній/);
   });
 
-  it('використовує body content якщо HTML повний документ', async () => {
-    const file = htmlFile(`<html><head><title>T</title></head><body><p>${LONG_TEXT}</p></body></html>`);
+  it('передає ПОВНИЙ HTML (з <head>!) у рендерер — щоб <style> блоки доходили', async () => {
+    // Критичний фікс: ЄСІТС-документи мають CSS правила (MsoNormal тощо)
+    // у <head><style>. Раніше ми витягали тільки body — CSS губився.
+    const file = htmlFile(`<html><head><style>p { color: red }</style></head><body><p>${LONG_TEXT}</p></body></html>`);
     const result = await htmlToPdf(file, {});
     expect(result.pdfBlob).toBeInstanceOf(Blob);
     expect(result.extractedText).toContain('Ухвала');
-    // <head> не передається в рендерер — тільки body
     const [html] = mockHtmlToPdf.mock.calls[0];
-    expect(html).not.toContain('<title>');
+    expect(html).toContain('<style>');
+    expect(html).toContain('color: red');
+    expect(html).toContain('<body>');
+    expect(html).toContain(LONG_TEXT);
   });
 
   it('використовує fragment HTML як є (без body тегу)', async () => {

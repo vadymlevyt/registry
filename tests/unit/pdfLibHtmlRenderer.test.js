@@ -390,6 +390,77 @@ describe('pdfLibHtmlRenderer — legacy теги і атрибути', () => {
   });
 });
 
+describe('pdfLibHtmlRenderer — Word "save as HTML" specifics', () => {
+  it('розкриває [if gte vml 1] conditional comment з <v:imagedata>', async () => {
+    const png1x1 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    const html = `
+      <html><body>
+        <p>Документ:</p>
+        <!--[if gte vml 1]>
+          <v:shape>
+            <v:imagedata src="data:image/png;base64,${png1x1}"/>
+          </v:shape>
+        <![endif]-->
+        <p>Текст після герба</p>
+      </body></html>
+    `;
+    const blob = await htmlToPdfViaPdfLib(html);
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.size).toBeGreaterThan(0);
+  });
+
+  it('розкриває [if !vml] fallback з <img> і не дублює якщо src той самий', async () => {
+    const png1x1 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    const src = `data:image/png;base64,${png1x1}`;
+    // Типова структура Word: VML і <img> fallback з тим самим src.
+    const html = `
+      <html><body>
+        <!--[if gte vml 1]>
+          <v:shape><v:imagedata src="${src}"/></v:shape>
+        <![endif]-->
+        <!--[if !vml]>
+          <img src="${src}" width="32" height="32"/>
+        <![endif]-->
+        <p>Параграф</p>
+      </body></html>
+    `;
+    const blob = await htmlToPdfViaPdfLib(html);
+    expect(blob).toBeInstanceOf(Blob);
+  });
+
+  it('ігнорує office-specific теги <o:p>, <w:wordDocument>, <st1:...>', async () => {
+    const html = `
+      <html><body>
+        <w:wordDocument><w:body>internal junk</w:body></w:wordDocument>
+        <p>Видимий <o:p>офіс-параграф</o:p> текст</p>
+        <st1:place>Київ</st1:place>
+      </body></html>
+    `;
+    const blob = await htmlToPdfViaPdfLib(html);
+    expect(blob).toBeInstanceOf(Blob);
+    // Не падає на office namespace tags
+  });
+
+  it('читає <style> з <head> навіть якщо передано повний HTML', async () => {
+    const html = `
+      <html><head>
+        <style>
+          p.MsoNormal { text-align: justify; font-family: "Times New Roman"; }
+          p.MsoTitle { text-align: center; font-weight: bold; font-size: 18pt }
+        </style>
+      </head><body>
+        <p class="MsoTitle">УХВАЛА</p>
+        <p class="MsoNormal">Резолютивна частина ухвали.</p>
+      </body></html>
+    `;
+    const blob = await htmlToPdfViaPdfLib(html);
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.size).toBeGreaterThan(0);
+  });
+});
+
 describe('pdfLibHtmlRenderer — defaultFontFamily option', () => {
   it('defaultFontFamily="sans" → текст без CSS використовує sans', async () => {
     const blob = await htmlToPdfViaPdfLib('<p>звичайний текст</p>', { defaultFontFamily: 'sans' });

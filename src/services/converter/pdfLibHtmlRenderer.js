@@ -542,7 +542,39 @@ function isBlock(node) {
   return node && node.nodeType === 1 && BLOCK_TAGS.has(node.tagName.toLowerCase());
 }
 
-const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'meta', 'link', 'head', 'title', 'xml', 'o:p', 'w:wordDocument']);
+// Теги які повністю пропускаємо при рендері.
+// Office-specific: <xml>, <w:wordDocument>, <o:*> (Office Open), <m:*> (OfficeMath),
+// <st1:*>, <st2:*> (Smart Tags) — ЄСІТС/Word дають це сміття.
+const SKIP_TAGS = new Set([
+  'script', 'style', 'noscript', 'meta', 'link', 'head', 'title',
+  'xml', 'w:wordDocument', 'o:p', 'o:smarttagtype', 'o:OfficeDocumentSettings',
+]);
+
+function isOfficeSkipTag(tag) {
+  if (SKIP_TAGS.has(tag)) return true;
+  if (tag.startsWith('o:')) return true;
+  if (tag.startsWith('w:')) return true;
+  if (tag.startsWith('m:')) return true;
+  if (tag.startsWith('st1:') || tag.startsWith('st2:')) return true;
+  return false;
+}
+
+// VML (Vector Markup Language) — Word legacy формат для зображень у "save as HTML".
+// Герб у ЄСІТС часто загорнутий у <v:shape><v:imagedata src="data:image/..."/></v:shape>
+// (всередині <!--[if gte vml 1]>...<![endif]--> conditional comment або поза ним).
+// Шукаємо <v:imagedata> у DOM і витягуємо src/o:href.
+function findVmlImagedataSrc(node) {
+  if (!node || node.nodeType !== 1) return null;
+  const tag = node.tagName ? node.tagName.toLowerCase() : '';
+  if (tag === 'v:imagedata' || tag === 'imagedata' || tag.endsWith(':imagedata')) {
+    return node.getAttribute('src') || node.getAttribute('r:id') || node.getAttribute('o:href') || null;
+  }
+  for (const child of node.childNodes) {
+    const r = findVmlImagedataSrc(child);
+    if (r) return r;
+  }
+  return null;
+}
 
 function collectInlineRuns(node, style, runs, stylesheet) {
   if (!node) return;
@@ -561,7 +593,7 @@ function collectInlineRuns(node, style, runs, stylesheet) {
   if (node.nodeType !== 1) return;
   const tag = node.tagName.toLowerCase();
 
-  if (SKIP_TAGS.has(tag)) return;
+  if (isOfficeSkipTag(tag)) return;
 
   if (tag === 'br') {
     runs.push({ forceBreak: true, style: cloneStyle(style) });
@@ -591,7 +623,8 @@ function collectInlineRuns(node, style, runs, stylesheet) {
   }
 }
 
-function walkDom(node, parentStyle, blocks, stylesheet = null) {
+function walkDom(node, parentStyle, blocks, stylesheet = null, seenImageSrcs = null) {
+  if (!seenImageSrcs) seenImageSrcs = new Set();
   if (!node) return;
   if (node.nodeType !== 1) {
     if (node.nodeType === 3) {
@@ -608,7 +641,7 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
   }
 
   const tag = node.tagName.toLowerCase();
-  if (SKIP_TAGS.has(tag)) return;
+  if (isOfficeSkipTag(tag)) return;
 
   const style = styleForElement(node, parentStyle, stylesheet);
   if (style._hidden) return;
@@ -620,11 +653,25 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
 
   if (tag === 'img') {
     const src = node.getAttribute('src');
-    if (src) {
+    if (src && !seenImageSrcs.has(src)) {
+      seenImageSrcs.add(src);
       const align = style.align || 'left';
       const w = parseLength(node.getAttribute('width'), null);
       const h = parseLength(node.getAttribute('height'), null);
       blocks.push({ type: 'image', src, width: w, height: h, align, style });
+    }
+    return;
+  }
+
+  // VML (Word legacy): <v:shape>, <v:rect>, <v:imagedata> — Word "save as HTML"
+  // використовує VML для зображень. Герб у ЄСІТС-ухвалах часто тут.
+  // Не дублюємо src який вже бачили (Word дублює: VML + <img> fallback).
+  if (tag.startsWith('v:') || tag === 'shape' || tag === 'imagedata' || tag === 'rect') {
+    const src = findVmlImagedataSrc(node);
+    if (src && !seenImageSrcs.has(src)) {
+      seenImageSrcs.add(src);
+      const align = style.align || 'left';
+      blocks.push({ type: 'image', src, width: null, height: null, align, style });
     }
     return;
   }
@@ -661,7 +708,7 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
       const sublistBlocks = [];
       for (const grand of child.childNodes) {
         if (grand.nodeType === 1 && (grand.tagName.toLowerCase() === 'ul' || grand.tagName.toLowerCase() === 'ol')) {
-          walkDom(grand, itemStyle, sublistBlocks, stylesheet);
+          walkDom(grand, itemStyle, sublistBlocks, stylesheet, seenImageSrcs);
         } else {
           collectInlineRuns(grand, itemStyle, runs, stylesheet);
         }
@@ -694,7 +741,7 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
             }
             if (hasBlockChild) {
               for (const grand of cell.childNodes) {
-                walkDom(grand, cellStyle, cellBlocks, stylesheet);
+                walkDom(grand, cellStyle, cellBlocks, stylesheet, seenImageSrcs);
               }
             } else {
               const runs = [];
@@ -735,7 +782,7 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
 
   if (tag === 'blockquote') {
     for (const child of node.childNodes) {
-      walkDom(child, style, blocks, stylesheet);
+      walkDom(child, style, blocks, stylesheet, seenImageSrcs);
     }
     return;
   }
@@ -767,7 +814,7 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
     }
     if (hasBlockChild) {
       for (const child of node.childNodes) {
-        walkDom(child, style, blocks, stylesheet);
+        walkDom(child, style, blocks, stylesheet, seenImageSrcs);
       }
     } else {
       const runs = [];
@@ -780,7 +827,7 @@ function walkDom(node, parentStyle, blocks, stylesheet = null) {
   }
 
   for (const child of node.childNodes) {
-    walkDom(child, style, blocks, stylesheet);
+    walkDom(child, style, blocks, stylesheet, seenImageSrcs);
   }
 }
 
@@ -1400,11 +1447,21 @@ export async function htmlToPdfViaPdfLib(html, options = {}) {
     throw new Error('htmlToPdfViaPdfLib: html має бути непорожнім рядком');
   }
 
-  // 1. Парсинг HTML
+  // 1. Pre-process: розкриваємо MS Office conditional comments.
+  // Word "save as HTML" загортає VML у <!--[if gte vml 1]>...<![endif]--> і
+  // має дзеркальний fallback <!--[if !vml]>...<![endif]--> з <img>. DOMParser
+  // не парсить це — VML і fallback img стають недосяжні. Розкриваємо обидва
+  // блоки у видимий HTML щоб renderer їх побачив. Дублювання герба знімаємо
+  // далі через imageSrcSeen у walkDom.
+  const preprocessed = html
+    .replace(/<!--\s*\[if [^\]]*\]\s*>/gi, '')
+    .replace(/<!\s*\[if [^\]]*\]\s*>/gi, '')
+    .replace(/<!\s*\[endif\]\s*-->/gi, '')
+    .replace(/<!\s*\[endif\]\s*>/gi, '');
+
+  // 2. Парсинг HTML
   const parser = new DOMParser();
-  // Якщо передали тільки body content без <html>, обертаємо щоб DOMParser
-  // коректно парсив + щоб <style> блоки потрапили у doc.
-  const wrappedHtml = /<html[\s>]/i.test(html) ? html : `<!doctype html><html><body>${html}</body></html>`;
+  const wrappedHtml = /<html[\s>]/i.test(preprocessed) ? preprocessed : `<!doctype html><html><body>${preprocessed}</body></html>`;
   const doc = parser.parseFromString(wrappedHtml, 'text/html');
   const root = doc.body || doc.documentElement;
   if (!root) throw new Error('htmlToPdfViaPdfLib: не вдалось розпарсити HTML');
@@ -1412,12 +1469,14 @@ export async function htmlToPdfViaPdfLib(html, options = {}) {
   // 2. Збір CSS правил з усіх <style> блоків (head + body)
   const stylesheet = collectStyleSheet(doc);
 
-  // 3. Збір блоків
+  // 3. Збір блоків. seenImageSrcs дедуплікує герб коли він зʼявляється і у VML
+  // блоці, і у <img> fallback (Word conditional comments — обидва тепер видимі).
   const blocks = [];
   const initStyle = defaultStyle();
   if (options.defaultFontFamily === 'sans') initStyle.fontFamily = 'sans';
+  const seenImageSrcs = new Set();
   for (const child of root.childNodes) {
-    walkDom(child, initStyle, blocks, stylesheet);
+    walkDom(child, initStyle, blocks, stylesheet, seenImageSrcs);
   }
 
   // 4. Підготовка pdf-lib документа з усіма 8 шрифтами

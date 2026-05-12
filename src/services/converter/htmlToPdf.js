@@ -66,15 +66,21 @@ export async function htmlToPdf(file, _context = {}) {
     throw new Error('HTML файл порожній.');
   }
 
-  // 4. Виділяємо body content (або весь fragment якщо без body тегу) і витягаємо
-  // plain-текст для .txt кешу. innerText дає структурований текст з переносами
-  // на <br>/<p>. Контейнер тимчасово в DOM щоб layout-обчислення спрацювало.
+  // 4. Витягаємо plain-текст для .txt кешу. ВАЖЛИВО: для plain-тексту беремо
+  // ТІЛЬКИ body content (innerText на повному HTML включив би script/style).
+  // Але для PDF-рендерера передаємо ПОВНИЙ HTML — рендерер сам коректно
+  // skip'ить script/style/head, а ОДНОЧАСНО парсить <style> блоки у head для
+  // CSS правил (MsoNormal, .MsoTitle тощо у Word "save as HTML" ЄСІТС).
+  //
+  // Попередній баг: передавали тільки body content у рендерер — <head><style>
+  // блок з усіма CSS правилами (MsoNormal, font-family, alignment) НЕ доходив
+  // до рендерера. Тому ЄСІТС-ухвали втрачали 90% форматування.
   const container = document.createElement('div');
   container.setAttribute('style', 'position:absolute;left:-10000px;top:0');
 
   const bodyMatch = decoded.text.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  const innerHtml = bodyMatch ? bodyMatch[1] : decoded.text;
-  container.innerHTML = innerHtml;
+  const bodyContent = bodyMatch ? bodyMatch[1] : decoded.text;
+  container.innerHTML = bodyContent;
   document.body.appendChild(container);
 
   let extractedText;
@@ -90,16 +96,14 @@ export async function htmlToPdf(file, _context = {}) {
     );
   }
 
-  // 5. PDF generation через pdfLibHtmlRenderer. Передаємо ВЕСЬ HTML (body
-  // content або повний fragment) — рендерер сам обходить DOM, парсить inline
-  // стилі, embed'ить base64 зображення (герб у data: URI) і генерує PDF з
-  // selectable text.
+  // 5. PDF generation через pdfLibHtmlRenderer. Передаємо ПОВНИЙ HTML
+  // (decoded.text) — щоб рендерер міг прочитати <style> блок у <head>.
   let pdfBlob;
   try {
     // ЄСІТС-HTML і будь-який інший Word-style HTML за замовчуванням Times-like
     // (serif). font-family у документі може це перекрити через CSS або
     // <font face="..."> — renderer обробить.
-    pdfBlob = await htmlToPdfViaPdfLib(innerHtml, { defaultFontFamily: 'serif' });
+    pdfBlob = await htmlToPdfViaPdfLib(decoded.text, { defaultFontFamily: 'serif' });
   } catch (e) {
     throw new Error(`Не вдалось згенерувати PDF: ${e?.message || e}`);
   }
