@@ -274,6 +274,47 @@
   color: var(--color-accent);
 }
 
+/* Multi-select state. Підсвічуємо рядок коли файл вибраний галочкою. */
+.add-document-modal__drive-item--selected {
+  background: var(--color-accent-subtle, rgba(59, 130, 246, 0.10));
+  border-color: var(--color-accent);
+}
+
+.add-document-modal__drive-item-check {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--color-surface-1, #fff);
+  color: var(--color-surface-1, #fff);
+}
+
+.add-document-modal__drive-item-check--on {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+/* Footer з кількістю вибраного + кнопкою підтвердження у multi-images. */
+.add-document-modal__drive-multi-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.add-document-modal__drive-multi-count {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted, #6b7280);
+}
+
 .add-document-modal__drive-item-info {
   flex: 1;
   min-width: 0;

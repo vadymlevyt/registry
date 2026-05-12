@@ -12,6 +12,7 @@ import {
   Users,
   Image as ImageIcon,
   ArrowLeft,
+  Check,
 } from 'lucide-react';
 import { Modal, Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
@@ -316,7 +317,13 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit }) {
 // folderId і sharedDriveCtx — спільні координати "де ми зараз".
 // breadcrumb — обчислюється підняттям по parents[] до кореня (правило #8: без
 // кирилиці в q=, тут і немає — тільки id-фільтри).
-function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick }) {
+// Параметр selectionMode керує поведінкою:
+//   'single'        — один клік по файлу одразу обирає (default, як було)
+//   'multi-images'  — checkbox біля файлів, фільтрація mimeType image/*,
+//                     кнопка "Обрати N зображень" внизу. onPickMulti(files[])
+//                     викликається при підтвердженні. Папки відкриваються
+//                     як зазвичай — checkbox тільки на файлах.
+function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, onPickMulti, selectionMode = 'single' }) {
   const [mode, setMode] = useState('myDrive');
   const [folderId, setFolderId] = useState(initialFolderId || 'root');
   const [breadcrumb, setBreadcrumb] = useState([]);
@@ -326,6 +333,9 @@ function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick }) {
   const [hitLimit, setHitLimit] = useState(false);
   const [sharedDrivesAvail, setSharedDrivesAvail] = useState(false);
   const [sharedDriveCtx, setSharedDriveCtx] = useState(null);
+  // Multi-select state: Map<fileId, file> для збереження metadata вибраних
+  // навіть коли адвокат перейшов у іншу папку. Очищується при закритті picker.
+  const [selectedFiles, setSelectedFiles] = useState(() => new Map());
 
   // Reset до дефолту щоразу при розкритті.
   useEffect(() => {
@@ -333,6 +343,7 @@ function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick }) {
     setMode('myDrive');
     setFolderId(initialFolderId || 'root');
     setSharedDriveCtx(null);
+    setSelectedFiles(new Map());
   }, [isOpen, initialFolderId]);
 
   // Одноразова перевірка чи є хоч один Shared Drive — щоб показати/сховати чип.
@@ -527,6 +538,17 @@ function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick }) {
 
   function handleItemClick(item) {
     const isFolder = item.mimeType === FOLDER_MIME;
+    // Multi-images: для файлів — toggle вибору, для папок — звичайна навігація.
+    // Файли не-зображення у multi-images mode НЕ кликабельні (filtered у DriveList).
+    if (!isFolder && selectionMode === 'multi-images') {
+      setSelectedFiles((prev) => {
+        const next = new Map(prev);
+        if (next.has(item.id)) next.delete(item.id);
+        else next.set(item.id, item);
+        return next;
+      });
+      return;
+    }
     if (!isFolder) {
       onPick(item);
       return;
@@ -538,6 +560,14 @@ function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick }) {
       return;
     }
     setFolderId(item.id);
+  }
+
+  function handleConfirmMulti() {
+    if (selectedFiles.size === 0) return;
+    if (typeof onPickMulti === 'function') {
+      onPickMulti(Array.from(selectedFiles.values()));
+    }
+    setSelectedFiles(new Map());
   }
 
   function handleCrumbClick(crumb) {
@@ -594,11 +624,39 @@ function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick }) {
             hitLimit={hitLimit}
             onItemClick={handleItemClick}
             onRetry={handleRetry}
+            selectionMode={selectionMode}
+            selectedFiles={selectedFiles}
           />
+
+          {selectionMode === 'multi-images' && (
+            <div className="add-document-modal__drive-multi-footer">
+              <span className="add-document-modal__drive-multi-count">
+                Обрано {selectedFiles.size}
+              </span>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleConfirmMulti}
+                disabled={selectedFiles.size === 0}
+              >
+                Обрати {selectedFiles.size} зображен{multiPlural(selectedFiles.size)}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+// Українська плюральна форма: 1 → "ня", 2-4 → "ня", 5+ → "ь", 0 → "ь".
+function multiPlural(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (n === 0) return 'ь';
+  if (mod10 === 1 && mod100 !== 11) return 'ня';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'ня';
+  return 'ь';
 }
 
 function SourceSwitcher({ mode, sharedDrivesAvail, onChange }) {
@@ -682,7 +740,22 @@ function Breadcrumb({ crumbs, onClick }) {
   );
 }
 
-function DriveList({ items, loading, error, hitLimit, onItemClick, onRetry }) {
+// У multi-images: фільтр items щоб залишити папки + image/* файли.
+// Інші файли (PDF/DOCX) приховуються — у multi-merge режимі вони не релевантні.
+function filterForSelectionMode(items, selectionMode) {
+  if (!items || selectionMode !== 'multi-images') return items;
+  return items.filter((item) => {
+    if (item.mimeType === FOLDER_MIME) return true;
+    if (typeof item.mimeType === 'string' && item.mimeType.startsWith('image/')) return true;
+    // HEIC: Drive часом повертає image/heic як 'image/heic' (стандарт), або
+    // 'image/heif' (iOS). Також /\.heic$/ по name як fallback.
+    if (typeof item.name === 'string' && /\.(heic|heif)$/i.test(item.name)) return true;
+    return false;
+  });
+}
+
+function DriveList({ items, loading, error, hitLimit, onItemClick, onRetry, selectionMode = 'single', selectedFiles }) {
+  const filtered = filterForSelectionMode(items, selectionMode);
   return (
     <div className="add-document-modal__drive-list">
       {loading && (
@@ -724,14 +797,18 @@ function DriveList({ items, loading, error, hitLimit, onItemClick, onRetry }) {
           </button>
         </div>
       )}
-      {!loading && !error && items?.length === 0 && (
-        <div className="add-document-modal__drive-empty">Папка порожня</div>
+      {!loading && !error && filtered?.length === 0 && (
+        <div className="add-document-modal__drive-empty">
+          {selectionMode === 'multi-images' ? 'Зображень не знайдено' : 'Папка порожня'}
+        </div>
       )}
-      {!loading && !error && items?.map((item) => (
+      {!loading && !error && filtered?.map((item) => (
         <DriveListItem
           key={item.id}
           item={item}
           onClick={() => onItemClick(item)}
+          selected={selectedFiles?.has?.(item.id) || false}
+          showCheckbox={selectionMode === 'multi-images' && item.mimeType !== FOLDER_MIME}
         />
       ))}
       {!loading && !error && hitLimit && (
@@ -743,8 +820,9 @@ function DriveList({ items, loading, error, hitLimit, onItemClick, onRetry }) {
   );
 }
 
-function DriveListItem({ item, onClick }) {
+function DriveListItem({ item, onClick, selected = false, showCheckbox = false }) {
   const isFolder = item.mimeType === FOLDER_MIME;
+  const isImage = typeof item.mimeType === 'string' && item.mimeType.startsWith('image/');
   const sizeLabel = !isFolder && item.size
     ? `${(parseInt(item.size, 10) / 1024).toFixed(0)} КБ`
     : null;
@@ -759,11 +837,24 @@ function DriveListItem({ item, onClick }) {
       type="button"
       className={
         'add-document-modal__drive-item' +
-        (isFolder ? ' add-document-modal__drive-item--folder' : '')
+        (isFolder ? ' add-document-modal__drive-item--folder' : '') +
+        (selected ? ' add-document-modal__drive-item--selected' : '')
       }
       onClick={onClick}
+      aria-pressed={showCheckbox ? selected : undefined}
     >
-      {isFolder ? <Folder size={ICON_SIZE.sm} /> : <FileText size={ICON_SIZE.sm} />}
+      {showCheckbox && (
+        <span
+          className={
+            'add-document-modal__drive-item-check' +
+            (selected ? ' add-document-modal__drive-item-check--on' : '')
+          }
+          aria-hidden="true"
+        >
+          {selected && <Check size={14} />}
+        </span>
+      )}
+      {isFolder ? <Folder size={ICON_SIZE.sm} /> : (isImage ? <ImageIcon size={ICON_SIZE.sm} /> : <FileText size={ICON_SIZE.sm} />)}
       <div className="add-document-modal__drive-item-info">
         <div className="add-document-modal__drive-item-name">{item.name}</div>
         {meta && (
