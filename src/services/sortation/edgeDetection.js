@@ -14,13 +14,29 @@
 //   3) Sobel-based — gradient projection. Шукає РІЗКІ переходи на межі
 //      документ↔фон. Робить нелінійну фільтрацію щоб не плутатись з текстом.
 //
-// Результат прийнято коли area між 25% і 99% (нижче — алгоритм помилився,
-// вище — нема сенсу пропонувати).
+// ── TASK B fix Problem 3 ────────────────────────────────────────────────────
+// Адаптація для реальних клієнтських фото:
+//   3a) Tight framing: документ заповнює 95-99% кадру. MAX_AREA_FRACTION
+//       пом'якшено з 0.99 до 0.995. Brightness entry threshold знижено
+//       з 25 до 15 (працює навіть на слабкому контрасті). MIN_AREA_FRACTION
+//       знижено з 0.25 до 0.15 (для маленьких документів у великому фоні).
+//   3b) Edge of frame: документ упирається у край кадру. Алгоритм допускає
+//       щоб 1-2 сторони були «не знайдені» (default до image edge) — за
+//       умови що інші 2-3 знайдені впевнено. boundsAboveThreshold повертає
+//       partial-results замість null.
+//   3c) Orientation-agnostic: алгоритм аналізує row/col projections які
+//       працюють для будь-якого кардинального обертання (0/90/180/270 —
+//       прямокутник лишається axis-aligned). Не залежить від EXIF/DocAI
+//       orientation — детектація запускається на RAW image, crop rect
+//       у raw natural coords. Rotation застосовується ПІСЛЯ crop у pipeline.
+//       Для НЕкардинальних кутів (e.g. 35° tilt) алгоритм поверне axis-aligned
+//       bbox — це коректний нижній bound, адвокат побачить і виправить.
 
 const DOWNSAMPLE_WIDTH = 320;
 const PADDING_PCT = 0.012;
-const MIN_AREA_FRACTION = 0.25;
-const MAX_AREA_FRACTION = 0.99;
+const MIN_AREA_FRACTION = 0.15;
+const MAX_AREA_FRACTION = 0.995;
+const BRIGHTNESS_ENTRY_THRESHOLD = 15; // мінімальний brightness range щоб увійти у brightness strategy
 const DEBUG = true; // лишається ON поки UX стабілізується
 
 /**
@@ -111,10 +127,10 @@ export async function detectDocumentEdges(blob, debugLabel = '') {
   const rowBrightnessRange = arrMax(rowMean) - arrMin(rowMean);
   const colBrightnessRange = arrMax(colMean) - arrMin(colMean);
 
-  // Strategy 1: BRIGHTNESS-BASED
+  // Strategy 1: BRIGHTNESS-BASED — поріг знижений з 25 до 15 (3a)
   let detected = null;
   let strategyUsed = null;
-  if (rowBrightnessRange > 25 && colBrightnessRange > 25) {
+  if (rowBrightnessRange > BRIGHTNESS_ENTRY_THRESHOLD && colBrightnessRange > BRIGHTNESS_ENTRY_THRESHOLD) {
     detected = detectByBrightness(rowMean, colMean, dw, dh);
     if (detected) strategyUsed = 'brightness';
   }
@@ -236,13 +252,40 @@ function detectBySobel(lum, dw, dh) {
   return boundsAboveThreshold(rowGrad, colGrad, rowThr, colThr, dw, dh);
 }
 
+// TASK B fix Problem 3b: edge of frame.
+// Якщо документ упирається в край кадру (наприклад лівий край фото = лівий
+// край документа), на тій стороні differential signal слабкий → first/last
+// row/col above threshold не знайдеться. Раніше null для всього зображення.
+// Тепер дозволяємо 1-2 сторонам бути «не знайденими» — default до image edge
+// (0 / dw-1 / 0 / dh-1) — за умови що:
+//   - знайдено мінімум 2 сторони
+//   - є мінімум 1 горизонтальна (top АБО bottom) І 1 вертикальна (left АБО right)
 function boundsAboveThreshold(rowArr, colArr, rowThr, colThr, dw, dh) {
   let top = -1, bottom = -1, left = -1, right = -1;
   for (let y = 0; y < dh; y++) if (rowArr[y] > rowThr) { top = y; break; }
   for (let y = dh - 1; y >= 0; y--) if (rowArr[y] > rowThr) { bottom = y; break; }
   for (let x = 0; x < dw; x++) if (colArr[x] > colThr) { left = x; break; }
   for (let x = dw - 1; x >= 0; x--) if (colArr[x] > colThr) { right = x; break; }
-  if (top < 0 || bottom < 0 || left < 0 || right < 0) return null;
+
+  const foundTop = top >= 0;
+  const foundBottom = bottom >= 0;
+  const foundLeft = left >= 0;
+  const foundRight = right >= 0;
+
+  const totalFound = [foundTop, foundBottom, foundLeft, foundRight].filter(Boolean).length;
+  if (totalFound < 2) return null;
+
+  // Вимагаємо мінімум 1 horizontal і 1 vertical — інакше одна вісь
+  // повністю невідома (тільки top+bottom без left/right і навпаки).
+  if (!(foundTop || foundBottom)) return null;
+  if (!(foundLeft || foundRight)) return null;
+
+  // Default «не знайдених» сторін до краю кадру (документ упирається у край)
+  if (!foundTop) top = 0;
+  if (!foundBottom) bottom = dh - 1;
+  if (!foundLeft) left = 0;
+  if (!foundRight) right = dw - 1;
+
   if (bottom <= top || right <= left) return null;
   return { top, bottom, left, right };
 }
@@ -266,3 +309,14 @@ function arrMax(arr) {
   for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
   return m;
 }
+
+// Експорт внутрішніх функцій для тестів
+export const __test__ = {
+  boundsAboveThreshold,
+  detectByBrightness,
+  detectByVariance,
+  detectBySobel,
+  MIN_AREA_FRACTION,
+  MAX_AREA_FRACTION,
+  BRIGHTNESS_ENTRY_THRESHOLD,
+};
