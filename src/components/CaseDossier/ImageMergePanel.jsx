@@ -276,25 +276,38 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         setCropProposals(proposals);
       })();
 
-      // Debug toast info якщо включений debugMode
+      // Debug toast info якщо включений debugMode. Формат рядка показує всі
+      // сигнали каскаду (TASK B fix Problem 2):
+      //   <file>: EXIF=<x>, transforms=<y>, blockField=<z>, blockGeo=<w>,
+      //           pageField=<v>, aspect=<r> → <deg>° (<source>)
       if (debugMode && Array.isArray(result.orientationDebug)) {
         const lines = result.orientationDebug
           .map((d, i) => {
             if (!d) return null;
             const file = realFiles[i]?.name || `#${i}`;
-            const exif = d.exif
+            const parts = [];
+            parts.push(d.exif
               ? `EXIF=${d.exif.rawTag}(${d.exif.degrees}°)`
-              : 'EXIF=none';
-            const docAi = d.docAi
-              ? `docAi=${d.docAi.orientation ?? d.docAi.detectedOrientation ?? 0}`
-              : 'docAi=none';
-            const aspect = d.aspect ? `ratio=${d.aspect.ratio}` : 'aspect=none';
-            return `${file}: ${exif}, ${docAi}, ${aspect} → ${d.degrees}° (${d.source}${d.uncertain ? ', uncertain' : ''})`;
+              : 'EXIF=none');
+            parts.push(d.transforms
+              ? `transforms=${d.transforms.degrees}°`
+              : 'transforms=none');
+            parts.push(d.blockField
+              ? `blockField=${d.blockField.dominant}(${d.blockField.dominantCount}/${d.blockField.totalCount})`
+              : 'blockField=none');
+            parts.push(d.blockGeometry
+              ? `blockGeo=mAspect${d.blockGeometry.medianAspect.toFixed(2)}(${d.blockGeometry.blockCount})`
+              : 'blockGeo=none');
+            parts.push(d.pageField && d.pageField.orientation != null
+              ? `pageField=${d.pageField.orientation}`
+              : 'pageField=none');
+            parts.push(d.aspect ? `ratio=${d.aspect.ratio}` : 'aspect=none');
+            return `${file}: ${parts.join(', ')} → ${d.degrees}° (${d.source}${d.uncertain ? ', uncertain' : ''})`;
           })
           .filter(Boolean);
         toast.show('Orientation діагностика', {
           description: lines.join('\n'),
-          duration: 12000,
+          duration: 14000,
         });
       }
     } catch (e) {
@@ -900,7 +913,7 @@ function PreviewView({
             <div className="image-merge-panel__alert image-merge-panel__alert--orient">
               <AlertTriangle size={ICON_SIZE.sm} />
               <span>
-                Орієнтація {uncertainIndices.length} {uncertainIndices.length === 1 ? 'сторінки' : 'сторінок'} визначена за пропорціями (EXIF та Document AI не дали orientation). Перевір — кнопка ↻ виправить.
+                Орієнтація {uncertainIndices.length} {uncertainIndices.length === 1 ? 'сторінки' : 'сторінок'} не визначена автоматично (EXIF немає, Document AI не повернув жодного сигналу). Перевір — кнопка ↻ виправить.
               </span>
             </div>
           )}
@@ -1426,7 +1439,7 @@ function Thumbnail({
           </span>
         )}
         {isUncertain && !duplicateInfo && (
-          <span className="image-merge-panel__thumb-orient-badge" title="Орієнтація визначена за пропорціями. Перевір кнопкою ↻.">
+          <span className="image-merge-panel__thumb-orient-badge" title="Орієнтація не визначена автоматично. Перевір і виправ кнопкою ↻ якщо треба.">
             <AlertTriangle size={10} /> Перевір орієнтацію
           </span>
         )}

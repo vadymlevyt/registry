@@ -165,35 +165,38 @@ export async function getImageDimensions(blob) {
 }
 
 /**
- * Об'єднує EXIF orientation, Document AI orientation і aspect-ratio heuristic
- * у фінальний кут обертання.
+ * Об'єднує EXIF orientation і три сигнали Document AI у фінальний кут.
  *
- * Пріоритет:
+ * НОВИЙ КАСКАД (TASK B fix Problem 2 — ПРИБРАНО aspect ratio fallback):
  *   1. EXIF (фізична орієнтація сенсором — найнадійніше для фото з телефону).
- *      АЛЕ: фото пересилане через месенджери (Telegram/WhatsApp/Viber/Signal)
- *      зазвичай має strip EXIF — тоді цей крок повертає null.
- *   2. Document AI orientation (для відсканованих PDF/зображень де EXIF немає).
- *      ТЕЖ не завжди працює — для деяких фото Document AI повертає
- *      orientation=0 не дивлячись на повернуте зображення.
- *   3. Aspect ratio heuristic (TASK B fix 2): якщо обидва вище повернули 0,
- *      але image landscape (width > height) — підозра що адвокат фотографував
- *      A4 портретний документ телефоном тримаючи landscape. Пропонуємо 270°
- *      (rotate CW back to portrait) і ВИСТАВЛЯЄМО `uncertain: true` щоб UI
- *      показав адвокату попередження «Перевірте — кнопка ↻ виправить».
- *   4. 0 (no-op) — якщо image portrait або немає aspect info.
+ *      Telegram/WhatsApp/Viber/Signal зазвичай strip EXIF → null.
+ *   2. Document AI page.transforms (НОВЕ — найточніший метод):
+ *      Document AI ВЖЕ зробив висновок про орієнтацію щоб розпізнати текст,
+ *      і повернув матриці обертання. Просто читаємо їх. Якщо identity —
+ *      orientation вже правильна.
+ *   3. Document AI block.layout.orientation (per-block enum, dominant >50%):
+ *      DocAI оцінив orientation КОЖНОГО текстового блоку. Більшість одного
+ *      кута → застосовуємо.
+ *   4. Document AI block geometry (bbox aspect ratio): fallback heuristic коли
+ *      DocAI блок-orientation поле відсутнє/неоднозначне.
+ *   5. Document AI page.orientation (page-level enum): останній DocAI сигнал.
+ *   6. NONE — повертаємо 0° + uncertain=true. UI показує warning «Орієнтація
+ *      не визначена, виправ вручну через ↻».
  *
- * Логує своє рішення детально (TASK B fix 1 round 2).
+ * Aspect ratio heuristic ВИДАЛЕНО — гірший за нічого. Він знав ШИРИНУ>ВИСОТУ
+ * але не знав НА ЯКУ СТОРОНУ повертати (90 vs 270, 50/50 шанс), і не виявляв
+ * 180°. Принцип: краще не обертати ніж обернути неправильно.
  *
  * @param {Object} opts
  * @param {Object|null} opts.exifResult — результат readExifOrientation
  * @param {Object|null} opts.docAiPage — перша сторінка Document AI pageStructure
- * @param {{ width, height }|null} opts.imageDimensions — природні розміри зображення
- * @param {string} opts.fileName — для лог-повідомлень
+ * @param {{ width, height }|null} opts.imageDimensions — для логів (не для рішення)
+ * @param {string} opts.fileName
  * @returns {{
  *   degrees: 0|90|180|270,
- *   source: 'exif'|'docAi'|'aspect'|'none',
+ *   source: 'exif'|'docAiTransforms'|'docAiBlockField'|'docAiBlockGeometry'|'docAiPageField'|'none',
  *   uncertain: boolean,
- *   debug: { exif, docAi, aspect, fileName },
+ *   debug: object,
  *   logs: string[]
  * }}
  */
@@ -204,89 +207,108 @@ export function resolveOrientation({ exifResult, docAiPage, imageDimensions, fil
   const debug = {
     fileName: fileName || null,
     exif: exifResult ? { rawTag: exifResult.rawTag, degrees: exifResult.degrees, mirrored: exifResult.mirrored } : null,
-    docAi: null,
-    blocks: null,
+    transforms: null,
+    blockField: null,
+    blockGeometry: null,
+    pageField: null,
     aspect: null,
   };
 
-  // 1. EXIF — найнадійніше джерело
+  // Завжди фіксуємо aspect для логу (не для рішення — щоб бачити чи фото landscape/portrait)
+  if (imageDimensions && Number.isFinite(imageDimensions.width) && Number.isFinite(imageDimensions.height)) {
+    debug.aspect = {
+      width: imageDimensions.width,
+      height: imageDimensions.height,
+      ratio: Math.round((imageDimensions.width / imageDimensions.height) * 100) / 100,
+    };
+  }
+
+  // 1. EXIF
   if (exifResult && Number.isFinite(exifResult.degrees) && exifResult.degrees !== 0) {
     logs.push(`${tag} EXIF tag=${exifResult.rawTag} → rotate ${exifResult.degrees}°`);
     return { degrees: exifResult.degrees, source: 'exif', uncertain: false, debug, logs };
   }
 
-  // 2. Document AI orientation. Якщо degrees=0 — логуємо ключі page для діагностики.
-  const docAiDeg = extractPageOrientation(docAiPage);
-  if (docAiPage && typeof docAiPage === 'object') {
-    debug.docAi = {
-      orientation: docAiPage.orientation ?? null,
-      detectedOrientation: docAiPage.detectedOrientation ?? null,
-      layoutOrientation: docAiPage.layout?.orientation ?? null,
-      dimension: docAiPage.dimension
-        ? { width: docAiPage.dimension.width, height: docAiPage.dimension.height }
-        : null,
-      keys: Object.keys(docAiPage).slice(0, 30),
-    };
-  }
-  if (docAiDeg !== 0) {
-    logs.push(`${tag} Document AI orientation → rotate ${docAiDeg}°`);
-    return { degrees: docAiDeg, source: 'docAi', uncertain: false, debug, logs };
+  // 2. page.transforms — affine matrix які DocAI ЗАСТОСУВАВ при OCR
+  const tResult = extractTransformsRotation(docAiPage);
+  if (tResult) {
+    debug.transforms = tResult;
+    if (tResult.degrees !== 0) {
+      logs.push(
+        `${tag} page.transforms matrix=[${(tResult.matrix || []).slice(0, 4).map((v) => v.toFixed(2)).join(',')}] → rotate ${tResult.degrees}°`
+      );
+      return { degrees: tResult.degrees, source: 'docAiTransforms', uncertain: false, debug, logs };
+    }
+    logs.push(`${tag} page.transforms = identity → orientation already correct (no rotation)`);
+  } else if (docAiPage && Array.isArray(docAiPage.transforms)) {
+    logs.push(`${tag} page.transforms є але не вдалось декодувати (count=${docAiPage.transforms.length})`);
+  } else if (docAiPage) {
+    logs.push(`${tag} page.transforms відсутній у Document AI відповіді`);
   }
 
-  // 3. Document AI block geometry — рахуємо bounding boxes paragraphs/blocks.
-  // Якщо більшість блоків ВЕРТИКАЛЬНІ (height > width) — текст йде боком,
-  // отже зображення повернуте. Дешевше за aspect (ми вже маємо pageStructure),
-  // надійніше бо дивиться на справжній текст, а не лише на габарити кадру.
-  const blocksResult = analyzeBlockGeometry(docAiPage);
-  if (blocksResult) {
-    debug.blocks = blocksResult.debug;
-    if (blocksResult.degrees !== 0) {
+  // 3. block.layout.orientation — per-block enum
+  const blockField = analyzeBlockOrientationField(docAiPage);
+  if (blockField) {
+    debug.blockField = blockField;
+    if (blockField.degrees !== 0) {
       logs.push(
-        `${tag} block geometry: medianAspect=${blocksResult.debug.medianAspect.toFixed(2)} ` +
-        `(${blocksResult.debug.blockCount} блоків) → rotate ${blocksResult.degrees}° ` +
-        `(${blocksResult.confidence})`
+        `${tag} block field: ${blockField.dominantCount}/${blockField.totalCount} блоків ` +
+        `орієнтація=${blockField.dominant} → rotate ${blockField.degrees}° (${blockField.confidence})`
       );
       return {
-        degrees: blocksResult.degrees,
-        source: 'docAiBlocks',
-        uncertain: blocksResult.confidence === 'low',
+        degrees: blockField.degrees,
+        source: 'docAiBlockField',
+        uncertain: blockField.confidence === 'low',
+        debug, logs,
+      };
+    }
+    logs.push(`${tag} block field: більшість PAGE_UP — orientation вже правильна`);
+  }
+
+  // 4. block geometry — fallback по bbox aspect ratio
+  const blockGeo = analyzeBlockGeometry(docAiPage);
+  if (blockGeo) {
+    debug.blockGeometry = blockGeo.debug;
+    if (blockGeo.degrees !== 0) {
+      logs.push(
+        `${tag} block geometry: medianAspect=${blockGeo.debug.medianAspect.toFixed(2)} ` +
+        `(${blockGeo.debug.blockCount} блоків) → rotate ${blockGeo.degrees}° (${blockGeo.confidence})`
+      );
+      return {
+        degrees: blockGeo.degrees,
+        source: 'docAiBlockGeometry',
+        uncertain: blockGeo.confidence === 'low',
         debug, logs,
       };
     }
     logs.push(
-      `${tag} block geometry: medianAspect=${blocksResult.debug.medianAspect.toFixed(2)} ` +
-      `(${blocksResult.debug.blockCount} блоків) — text horizontal, no rotation needed`
+      `${tag} block geometry: medianAspect=${blockGeo.debug.medianAspect.toFixed(2)} ` +
+      `(${blockGeo.debug.blockCount} блоків) — text horizontal`
     );
   }
 
-  // 4. Aspect ratio heuristic — попередні кроки провалились, але image landscape.
-  // Юридичні документи зазвичай A4 portrait. Landscape фото — найімовірніше
-  // повернутий portrait документ. Пропонуємо 270° + marking uncertain=true.
-  if (imageDimensions && Number.isFinite(imageDimensions.width) && Number.isFinite(imageDimensions.height)) {
-    const { width, height } = imageDimensions;
-    const ratio = width / height;
-    debug.aspect = { width, height, ratio: Math.round(ratio * 100) / 100 };
-    // 1.1 поріг — заходимо тільки якщо явно landscape (трохи більше за квадрат теж може бути landscape)
-    if (ratio > 1.1) {
-      logs.push(
-        `${tag} EXIF none, Document AI=0, image landscape ${width}×${height} (ratio ${debug.aspect.ratio}) ` +
-        `→ heuristic rotate 270° (юридичний документ зазвичай A4 portrait). Адвокат може виправити вручну.`
-      );
-      return { degrees: 270, source: 'aspect', uncertain: true, debug, logs };
-    }
-    logs.push(`${tag} image portrait ${width}×${height} (ratio ${debug.aspect.ratio}) → no rotation needed`);
-    return { degrees: 0, source: 'none', uncertain: false, debug, logs };
+  // 5. page.orientation field
+  const docAiDeg = extractPageOrientation(docAiPage);
+  if (docAiPage && typeof docAiPage === 'object') {
+    debug.pageField = {
+      orientation: docAiPage.orientation ?? null,
+      detectedOrientation: docAiPage.detectedOrientation ?? null,
+      layoutOrientation: docAiPage.layout?.orientation ?? null,
+    };
+  }
+  if (docAiDeg !== 0) {
+    logs.push(`${tag} page.orientation field → rotate ${docAiDeg}°`);
+    return { degrees: docAiDeg, source: 'docAiPageField', uncertain: false, debug, logs };
   }
 
-  // 4. Обидва == 0 і немає aspect — нічого не робимо
-  if (exifResult) {
-    logs.push(`${tag} EXIF tag=${exifResult.rawTag} (normal), Document AI=0, no aspect → no rotation`);
-  } else if (docAiPage) {
-    logs.push(`${tag} EXIF none, Document AI=0, no aspect → no rotation`);
-  } else {
-    logs.push(`${tag} no EXIF, no Document AI page, no aspect → no rotation`);
-  }
-  return { degrees: 0, source: 'none', uncertain: false, debug, logs };
+  // 6. NONE — нічого не визначено. Не обертаємо. Адвокат побачить warning і
+  //    виправить через ↻ якщо потрібно.
+  const aspectStr = debug.aspect ? `aspect=${debug.aspect.ratio}` : 'aspect=?';
+  logs.push(
+    `${tag} жоден сигнал не дав orientation (${aspectStr}). НЕ обертаємо — uncertain=true. ` +
+    `Адвокат виправить вручну через ↻ якщо потрібно.`
+  );
+  return { degrees: 0, source: 'none', uncertain: true, debug, logs };
 }
 
 /**
@@ -307,6 +329,185 @@ export function normalizeDegrees(angle) {
     if (d < bestDist) { bestDist = d; best = c; }
   }
   return best;
+}
+
+// ── Document AI page.transforms ─────────────────────────────────────────────
+//
+// Document AI повертає affine transformation matrices які він ЗАСТОСУВАВ до
+// зображення щоб правильно розпізнати текст. Це найточніший сигнал orientation
+// — DocAI бачить літери і знає що зробив для їх читання.
+//
+// Формат у JSON відповіді:
+//   page.transforms = [
+//     { rows, cols, type, data: <base64 string> | <number[]> }
+//   ]
+// data — base64-закодовані bytes значень (CV_32F=4 байти/float, CV_64F=8 байт)
+// у column-major порядку для affine 2×3 матриці.
+//
+// Конвенція матриці (column-major flat 6 значень [a,b,c,d,e,f]):
+//   x' = a*x + c*y + e
+//   y' = b*x + d*y + f
+//
+// Кардинальні обертання:
+//   identity      [1, 0, 0, 1, *, *]  → 0°
+//   90° CW        [0,-1, 1, 0, *, *]  → 90°
+//   180°          [-1,0, 0,-1, *, *]  → 180°
+//   270° CW       [0, 1,-1, 0, *, *]  → 270°
+//
+// Той самий кут який DocAI застосував — той ми і застосовуємо до raw image
+// для виправлення.
+
+const ROTATION_MATRIX_TOLERANCE = 0.05;
+
+function decodeMatrix(matrix) {
+  if (!matrix || matrix.data == null) return null;
+  const rows = Number.isFinite(matrix.rows) ? matrix.rows : 2;
+  const cols = Number.isFinite(matrix.cols) ? matrix.cols : 3;
+  const total = rows * cols;
+  if (total <= 0) return null;
+
+  // Випадок 1: data — масив чисел (Google іноді так серіалізує)
+  if (Array.isArray(matrix.data)) {
+    if (matrix.data.length < 4) return null;
+    return { values: matrix.data.slice(0, total), rows, cols };
+  }
+
+  // Випадок 2: data — base64 string
+  if (typeof matrix.data !== 'string') return null;
+
+  let bytes;
+  try {
+    if (typeof atob === 'function') {
+      const raw = atob(matrix.data);
+      bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    } else if (typeof Buffer !== 'undefined') {
+      const buf = Buffer.from(matrix.data, 'base64');
+      bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    } else {
+      return null;
+    }
+  } catch (e) {
+    return null;
+  }
+
+  const type = matrix.type;
+  // OpenCV типи: 5=CV_32FC1, 6=CV_64FC1. За замовчуванням припускаємо float32
+  // (DocAI використовує саме його у більшості випадків).
+  let bytesPerVal;
+  let readFn;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (type === 6 || type === 14 || type === 22) { // CV_64FC1 чи варіанти
+    bytesPerVal = 8;
+    readFn = (off) => view.getFloat64(off, true);
+  } else {
+    bytesPerVal = 4;
+    readFn = (off) => view.getFloat32(off, true);
+  }
+
+  if (bytes.byteLength < total * bytesPerVal) return null;
+  const values = new Array(total);
+  for (let i = 0; i < total; i++) values[i] = readFn(i * bytesPerVal);
+  return { values, rows, cols };
+}
+
+function rotationFromAffineFlat(values) {
+  if (!Array.isArray(values) || values.length < 4) return null;
+  const T = ROTATION_MATRIX_TOLERANCE;
+  const [a, b, c, d] = values;
+  if (Math.abs(a - 1) < T && Math.abs(b) < T && Math.abs(c) < T && Math.abs(d - 1) < T) return 0;
+  if (Math.abs(a) < T && Math.abs(b + 1) < T && Math.abs(c - 1) < T && Math.abs(d) < T) return 90;
+  if (Math.abs(a + 1) < T && Math.abs(b) < T && Math.abs(c) < T && Math.abs(d + 1) < T) return 180;
+  if (Math.abs(a) < T && Math.abs(b - 1) < T && Math.abs(c + 1) < T && Math.abs(d) < T) return 270;
+  return null;
+}
+
+/**
+ * Читає page.transforms з відповіді Document AI і витягає кут обертання який
+ * DocAI застосував. Повертає той самий кут — він і є fix-кут для raw image.
+ *
+ * @param {Object|null} page — Document AI page
+ * @returns {{ degrees: 0|90|180|270, matrix: number[] }|null}
+ *   null коли немає transforms АБО не вдалось декодувати АБО матриця не
+ *   відповідає кардинальному куту.
+ */
+export function extractTransformsRotation(page) {
+  if (!page || typeof page !== 'object') return null;
+  if (!Array.isArray(page.transforms) || page.transforms.length === 0) return null;
+  for (const matrix of page.transforms) {
+    const decoded = decodeMatrix(matrix);
+    if (!decoded) continue;
+    const deg = rotationFromAffineFlat(decoded.values);
+    if (deg !== null) return { degrees: deg, matrix: decoded.values };
+  }
+  return null;
+}
+
+// ── Document AI block-level orientation field ──────────────────────────────
+//
+// Document AI повертає orientation КОЖНОГО block.layout (PAGE_UP/RIGHT/DOWN/
+// LEFT). Якщо більшість блоків мають однакову не-UP орієнтацію — ймовірно
+// зображення повернуте.
+
+const ENUM_TO_DEG = { 0: 0, 1: 90, 2: 180, 3: 270 };
+const STR_TO_DEG = {
+  PAGE_UP: 0, PAGE_RIGHT: 90, PAGE_DOWN: 180, PAGE_LEFT: 270,
+  page_up: 0, page_right: 90, page_down: 180, page_left: 270,
+};
+
+function readOrientationValue(v) {
+  if (typeof v === 'number' && ENUM_TO_DEG[v] !== undefined) return ENUM_TO_DEG[v];
+  if (typeof v === 'string' && STR_TO_DEG[v] !== undefined) return STR_TO_DEG[v];
+  return null;
+}
+
+/**
+ * Аналізує block.layout.orientation у всіх блоках/параграфах сторінки.
+ * Повертає домінантну орієнтацію якщо >50% блоків з нею узгоджуються.
+ *
+ * @param {Object|null} page
+ * @returns {{degrees:0|90|180|270, dominant:string, dominantCount:number, totalCount:number, confidence:'high'|'medium'|'low'}|null}
+ */
+export function analyzeBlockOrientationField(page) {
+  if (!page || typeof page !== 'object') return null;
+  const blocks = []
+    .concat(Array.isArray(page.blocks) ? page.blocks : [])
+    .concat(Array.isArray(page.paragraphs) ? page.paragraphs : []);
+  if (blocks.length === 0) return null;
+
+  const counts = { 0: 0, 90: 0, 180: 0, 270: 0 };
+  let total = 0;
+  for (const b of blocks) {
+    const ori = b?.layout?.orientation;
+    const deg = readOrientationValue(ori);
+    if (deg !== null) {
+      counts[deg]++;
+      total++;
+    }
+  }
+  if (total === 0) return null;
+
+  let bestDeg = 0;
+  let bestCount = 0;
+  for (const deg of [0, 90, 180, 270]) {
+    if (counts[deg] > bestCount) { bestCount = counts[deg]; bestDeg = deg; }
+  }
+  const fraction = bestCount / total;
+  if (fraction <= 0.5) return null; // не домінантна
+
+  const STR_FROM_DEG = { 0: 'PAGE_UP', 90: 'PAGE_RIGHT', 180: 'PAGE_DOWN', 270: 'PAGE_LEFT' };
+  let confidence;
+  if (fraction >= 0.85 && total >= 5) confidence = 'high';
+  else if (fraction >= 0.7) confidence = 'medium';
+  else confidence = 'low';
+
+  return {
+    degrees: bestDeg,
+    dominant: STR_FROM_DEG[bestDeg],
+    dominantCount: bestCount,
+    totalCount: total,
+    confidence,
+  };
 }
 
 /**

@@ -8,6 +8,8 @@ import {
   readExifOrientation,
   resolveOrientation,
   analyzeBlockGeometry,
+  analyzeBlockOrientationField,
+  extractTransformsRotation,
 } from '../../src/services/sortation/orientationCorrector.js';
 
 // Helper: створити Document AI page object з n блоків заданого розміру.
@@ -252,7 +254,7 @@ describe('orientationCorrector.resolveOrientation', () => {
       fileName: 'scan.pdf',
     });
     expect(r.degrees).toBe(90);
-    expect(r.source).toBe('docAi');
+    expect(r.source).toBe('docAiPageField');
   });
 
   it('обидва = 0 → none', () => {
@@ -272,7 +274,7 @@ describe('orientationCorrector.resolveOrientation', () => {
       fileName: 'scan.jpg',
     });
     expect(r.degrees).toBe(90);
-    expect(r.source).toBe('docAi');
+    expect(r.source).toBe('docAiPageField');
   });
 
   it('EXIF і docAi обидва відсутні → none', () => {
@@ -286,24 +288,26 @@ describe('orientationCorrector.resolveOrientation', () => {
     expect(r.logs.length).toBeGreaterThan(0);
   });
 
-  // ── Aspect ratio heuristic (TASK B fix 2 round 2) ────────────────────
-  // Фото з месенджерів strip EXIF; Document AI часто не повертає orientation.
-  // Якщо image landscape (width > height) — пропонуємо 270° з uncertain=true.
+  // ── No-signal cascade (TASK B fix Problem 2 — aspect ratio видалено) ──
+  // Aspect ratio fallback прибрано: гірший за нічого. Знав ширину/висоту
+  // але не напрямок (90 vs 270 — 50/50 шанс), і не виявляв 180°.
+  // Тепер коли всі сигнали мовчать — НЕ обертаємо, ставимо uncertain=true,
+  // адвокат виправить вручну через ↻.
 
-  it('EXIF strip + docAi=0 + image landscape → heuristic 270°, uncertain=true', () => {
+  it('всі сигнали порожні + landscape → 0°, source=none, uncertain=true', () => {
     const r = resolveOrientation({
       exifResult: null,
       docAiPage: { orientation: 0 },
       imageDimensions: { width: 1800, height: 1350 },
       fileName: 'photo.jpg',
     });
-    expect(r.degrees).toBe(270);
-    expect(r.source).toBe('aspect');
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
     expect(r.uncertain).toBe(true);
     expect(r.debug.aspect.ratio).toBeCloseTo(1.33, 2);
   });
 
-  it('image portrait → no rotation, source=none, uncertain=false', () => {
+  it('всі сигнали порожні + portrait → 0°, source=none, uncertain=true', () => {
     const r = resolveOrientation({
       exifResult: null,
       docAiPage: { orientation: 0 },
@@ -312,22 +316,11 @@ describe('orientationCorrector.resolveOrientation', () => {
     });
     expect(r.degrees).toBe(0);
     expect(r.source).toBe('none');
-    expect(r.uncertain).toBe(false);
+    // Без сигналу — не знаємо, помічаємо uncertain=true
+    expect(r.uncertain).toBe(true);
   });
 
-  it('image майже квадрат (ratio <= 1.1) → no rotation', () => {
-    const r = resolveOrientation({
-      exifResult: null,
-      docAiPage: { orientation: 0 },
-      imageDimensions: { width: 1100, height: 1000 },
-      fileName: 'photo.jpg',
-    });
-    expect(r.degrees).toBe(0);
-    expect(r.source).toBe('none');
-    expect(r.uncertain).toBe(false);
-  });
-
-  it('EXIF реальний → не торкаємо heuristic навіть для landscape', () => {
+  it('EXIF реальний → не торкаємо інші сигнали', () => {
     const r = resolveOrientation({
       exifResult: { degrees: 90, rawTag: 8, mirrored: false },
       docAiPage: { orientation: 0 },
@@ -339,7 +332,7 @@ describe('orientationCorrector.resolveOrientation', () => {
     expect(r.uncertain).toBe(false);
   });
 
-  it('docAi реальний → heuristic не запускається', () => {
+  it('page.orientation enum → джерело docAiPageField', () => {
     const r = resolveOrientation({
       exifResult: null,
       docAiPage: { orientation: 1 }, // 90°
@@ -347,11 +340,11 @@ describe('orientationCorrector.resolveOrientation', () => {
       fileName: 'scan.jpg',
     });
     expect(r.degrees).toBe(90);
-    expect(r.source).toBe('docAi');
+    expect(r.source).toBe('docAiPageField');
     expect(r.uncertain).toBe(false);
   });
 
-  it('debug містить exif/docAi/aspect для діагностики', () => {
+  it('debug містить усі сигнали для діагностики', () => {
     const r = resolveOrientation({
       exifResult: null,
       docAiPage: { orientation: 0, dimension: { width: 1800, height: 1350 } },
@@ -360,7 +353,10 @@ describe('orientationCorrector.resolveOrientation', () => {
     });
     expect(r.debug).toBeTruthy();
     expect(r.debug.fileName).toBe('IMG-test.jpg');
-    expect(r.debug.docAi).toBeTruthy();
+    expect(r.debug).toHaveProperty('transforms');
+    expect(r.debug).toHaveProperty('blockField');
+    expect(r.debug).toHaveProperty('blockGeometry');
+    expect(r.debug).toHaveProperty('pageField');
     expect(r.debug.aspect).toBeTruthy();
   });
 });
@@ -663,10 +659,10 @@ describe('orientationCorrector.resolveOrientation з blocks fallback', () => {
       fileName: 'test.jpg',
     });
     expect(r.degrees).toBe(270);
-    expect(r.source).toBe('docAiBlocks');
+    expect(r.source).toBe('docAiBlockGeometry');
   });
 
-  it('blocks ambiguous → переходить до aspect ratio fallback', () => {
+  it('blocks ambiguous + всі інші сигнали порожні → 0° uncertain (без aspect fallback)', () => {
     const page = makePage({
       blocks: [
         // Квадратні блоки — ambiguous
@@ -682,9 +678,9 @@ describe('orientationCorrector.resolveOrientation з blocks fallback', () => {
       imageDimensions: { width: 1800, height: 1350 },
       fileName: 'test.jpg',
     });
-    // ambiguous blocks → aspect ratio activated (landscape) → 270 uncertain
-    expect(r.degrees).toBe(270);
-    expect(r.source).toBe('aspect');
+    // Aspect ratio fallback ВИДАЛЕНО — повертаємо 0 + uncertain=true
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
     expect(r.uncertain).toBe(true);
   });
 
@@ -706,4 +702,182 @@ describe('orientationCorrector.resolveOrientation з blocks fallback', () => {
     expect(r.degrees).toBe(0);
   });
 
+});
+
+// ── extractTransformsRotation (TASK B fix Problem 2) ──────────────────────
+describe('orientationCorrector.extractTransformsRotation', () => {
+  // Хелпер: створити decoded matrix object з flat values.
+  function matrixFromValues(values) {
+    return { rows: 2, cols: 3, type: 5, data: values };
+  }
+
+  it('null коли transforms відсутні', () => {
+    expect(extractTransformsRotation(null)).toBe(null);
+    expect(extractTransformsRotation({})).toBe(null);
+    expect(extractTransformsRotation({ transforms: [] })).toBe(null);
+  });
+
+  it('identity matrix → 0°', () => {
+    const page = { transforms: [matrixFromValues([1, 0, 0, 1, 0, 0])] };
+    const r = extractTransformsRotation(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(0);
+  });
+
+  it('90° CW matrix [0,-1,1,0,*,*] → 90°', () => {
+    const page = { transforms: [matrixFromValues([0, -1, 1, 0, 0, 1800])] };
+    const r = extractTransformsRotation(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(90);
+  });
+
+  it('180° matrix [-1,0,0,-1,*,*] → 180°', () => {
+    const page = { transforms: [matrixFromValues([-1, 0, 0, -1, 1350, 1800])] };
+    const r = extractTransformsRotation(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(180);
+  });
+
+  it('270° CW matrix [0,1,-1,0,*,*] → 270°', () => {
+    const page = { transforms: [matrixFromValues([0, 1, -1, 0, 1350, 0])] };
+    const r = extractTransformsRotation(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(270);
+  });
+
+  it('non-cardinal matrix → null', () => {
+    const page = { transforms: [matrixFromValues([0.7, 0.7, -0.7, 0.7, 0, 0])] }; // 45°
+    expect(extractTransformsRotation(page)).toBe(null);
+  });
+
+  it('base64-encoded float32 matrix декодується', () => {
+    // [0, -1, 1, 0, 0, 1800] як CV_32F (4 байти/значення, little-endian)
+    const buf = new ArrayBuffer(24);
+    const view = new DataView(buf);
+    view.setFloat32(0, 0, true);
+    view.setFloat32(4, -1, true);
+    view.setFloat32(8, 1, true);
+    view.setFloat32(12, 0, true);
+    view.setFloat32(16, 0, true);
+    view.setFloat32(20, 1800, true);
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const b64 = typeof btoa === 'function' ? btoa(bin) : Buffer.from(bin, 'binary').toString('base64');
+
+    const page = { transforms: [{ rows: 2, cols: 3, type: 5, data: b64 }] };
+    const r = extractTransformsRotation(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(90);
+  });
+
+  it('пропускає невалідну матрицю і йде до наступної', () => {
+    const page = {
+      transforms: [
+        { rows: 0, cols: 0, type: 5, data: '' },        // невалідна
+        matrixFromValues([0, 1, -1, 0, 1350, 0]),       // 270°
+      ],
+    };
+    const r = extractTransformsRotation(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(270);
+  });
+});
+
+// ── analyzeBlockOrientationField (TASK B fix Problem 2) ───────────────────
+describe('orientationCorrector.analyzeBlockOrientationField', () => {
+  function pageWithOrientations(orientations) {
+    return {
+      blocks: orientations.map((o) => ({ layout: { orientation: o } })),
+    };
+  }
+
+  it('null коли немає блоків', () => {
+    expect(analyzeBlockOrientationField(null)).toBe(null);
+    expect(analyzeBlockOrientationField({})).toBe(null);
+    expect(analyzeBlockOrientationField({ blocks: [] })).toBe(null);
+  });
+
+  it('null коли блоки без orientation', () => {
+    const page = { blocks: [{ layout: {} }, { layout: {} }] };
+    expect(analyzeBlockOrientationField(page)).toBe(null);
+  });
+
+  it('усі блоки PAGE_RIGHT → 90°, high confidence', () => {
+    const page = pageWithOrientations(['PAGE_RIGHT', 'PAGE_RIGHT', 'PAGE_RIGHT', 'PAGE_RIGHT', 'PAGE_RIGHT']);
+    const r = analyzeBlockOrientationField(page);
+    expect(r.degrees).toBe(90);
+    expect(r.dominant).toBe('PAGE_RIGHT');
+    expect(r.confidence).toBe('high');
+    expect(r.dominantCount).toBe(5);
+    expect(r.totalCount).toBe(5);
+  });
+
+  it('80% PAGE_LEFT → 270°, medium confidence', () => {
+    const page = pageWithOrientations(['PAGE_LEFT', 'PAGE_LEFT', 'PAGE_LEFT', 'PAGE_LEFT', 'PAGE_UP']);
+    const r = analyzeBlockOrientationField(page);
+    expect(r.degrees).toBe(270);
+    expect(r.confidence).toBe('medium');
+  });
+
+  it('50/50 → null (не домінантна)', () => {
+    const page = pageWithOrientations(['PAGE_UP', 'PAGE_UP', 'PAGE_RIGHT', 'PAGE_RIGHT']);
+    expect(analyzeBlockOrientationField(page)).toBe(null);
+  });
+
+  it('numeric enum 1 (PAGE_RIGHT) працює так само як string', () => {
+    const page = pageWithOrientations([1, 1, 1, 1]);
+    const r = analyzeBlockOrientationField(page);
+    expect(r.degrees).toBe(90);
+  });
+
+  it('PAGE_DOWN dominant → 180°', () => {
+    const page = pageWithOrientations(['PAGE_DOWN', 'PAGE_DOWN', 'PAGE_DOWN', 'PAGE_DOWN']);
+    const r = analyzeBlockOrientationField(page);
+    expect(r.degrees).toBe(180);
+  });
+});
+
+// ── Cascade priority (TASK B fix Problem 2) ───────────────────────────────
+describe('orientationCorrector.resolveOrientation cascade priority', () => {
+  it('transforms > blockField > blockGeometry > pageField', () => {
+    const page = {
+      orientation: 1,                           // pageField → 90°
+      transforms: [{ rows: 2, cols: 3, type: 5, data: [-1, 0, 0, -1, 0, 0] }], // 180°
+      blocks: [
+        { layout: { orientation: 'PAGE_LEFT' } }, // 270°
+        { layout: { orientation: 'PAGE_LEFT' } },
+        { layout: { orientation: 'PAGE_LEFT' } },
+      ],
+    };
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1000, height: 1000 },
+      fileName: 't.jpg',
+    });
+    // transforms виграє
+    expect(r.degrees).toBe(180);
+    expect(r.source).toBe('docAiTransforms');
+  });
+
+  it('blockField обходить blockGeometry і pageField коли transforms = identity', () => {
+    const page = {
+      orientation: 1,
+      transforms: [{ rows: 2, cols: 3, type: 5, data: [1, 0, 0, 1, 0, 0] }], // identity
+      blocks: [
+        { layout: { orientation: 'PAGE_LEFT' } },
+        { layout: { orientation: 'PAGE_LEFT' } },
+        { layout: { orientation: 'PAGE_LEFT' } },
+      ],
+    };
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1000, height: 1000 },
+      fileName: 't.jpg',
+    });
+    expect(r.degrees).toBe(270);
+    expect(r.source).toBe('docAiBlockField');
+  });
 });
