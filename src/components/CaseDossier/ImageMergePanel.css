@@ -951,7 +951,12 @@
 }
 
 /* Straighten slider row (TASK B fix Addition 3) — між cropper і toolbar.
-   Дрібне обертання -45..+45° у real-time через cropper.rotateImage(). */
+   Дрібне обертання -45..+45° у real-time через cropper.rotateImage().
+
+   TASK B fix touch-events round 2: на iPad/Android тривалий тримачний жест
+   викликав text selection / системне меню (друк, "відправити у Viber"...).
+   touch-action: pan-x дозволяє лише горизонтальний пан; user-select+
+   touch-callout прибирають text selection та long-press menu. */
 .image-merge-panel__popup-straighten {
   display: flex;
   align-items: center;
@@ -963,6 +968,10 @@
   height: 48px;
   box-sizing: border-box;
   color: #fff;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .image-merge-panel__popup-straighten-label {
@@ -970,15 +979,29 @@
   color: rgba(255, 255, 255, 0.7);
   flex-shrink: 0;
   min-width: 70px;
+  pointer-events: none; /* щоб тап на label не попадав у системне меню */
 }
 
 .image-merge-panel__popup-straighten-input {
   flex: 1 1 auto;
-  height: 32px;
+  height: 44px;
   background: transparent;
   cursor: pointer;
   -webkit-appearance: none;
   appearance: none;
+  /* Дозволяємо лише горизонтальний пан — блокує zoom і long-press menu */
+  touch-action: pan-x;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Disable text selection в усьому straighten row (label + value + reset) */
+.image-merge-panel__popup-straighten * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* Webkit slider track + thumb */

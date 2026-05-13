@@ -2069,33 +2069,68 @@ function PreviewPopup({
     return { left: r.x, top: r.y, width: r.width, height: r.height };
   }, [pendingRect, effectiveRect, naturalDims, rotation]);
 
-  // Реалтайм handler для слайдера straighten — обертає cropper'ом БЕЗ
-  // регенерації blob URL (щоб slider працював плавно).
-  // rAF throttle (TASK B fix Problem 2): batches rapid input events into
-  // ~60Hz frame updates. Без throttle, кожен input event тригерив
-  // cropper.rotateImage синхронно — стрибки на повільному пристрої.
+  // Реалтайм handler для слайдера straighten.
+  // Стратегія (TASK B fix slider smoothness round 2):
+  //   1. label DOM оновлюється через ref у onInput — кожна frame без React
+  //      re-render всього PreviewPopup
+  //   2. cropper.rotateImage(delta) викликається з { transitions: false,
+  //      normalize: false, immediately: true, interaction: false } — пропускає
+  //      внутрішній postprocess/scheduling, прямий state update
+  //   3. rAF batch — батчимо швидкі input events у один frame
+  //   4. setFineRotation викликається тільки коли значення СУТТЄВО змінилось
+  //      (uniformity для reset кнопки візібільності, без re-render-перевантаження)
   const pendingFineAngleRef = useRef(null);
   const rafIdRef = useRef(null);
+  const labelRef = useRef(null);
+  const sliderInputRef = useRef(null);
+
+  const writeLabel = useCallback((angle) => {
+    if (!labelRef.current) return;
+    const sign = angle > 0 ? '+' : '';
+    labelRef.current.textContent = `${sign}${angle.toFixed(1)}°`;
+  }, []);
+
   const handleFineRotationChange = useCallback((newAngle) => {
     pendingFineAngleRef.current = newAngle;
+    // Update label DOM immediately — без React re-render, instant feedback
+    writeLabel(newAngle);
     if (rafIdRef.current != null) return; // already scheduled this frame
     rafIdRef.current = requestAnimationFrame(() => {
       rafIdRef.current = null;
       const target = pendingFineAngleRef.current;
       pendingFineAngleRef.current = null;
       if (target == null) return;
-      setFineRotation(target);
+      // Lazy update React state: only коли target ВИДНО різниться від current
+      // state (наприклад reset button visibility перемикається 0→non-0).
+      setFineRotation((cur) => {
+        if (cur === 0 && target !== 0) return target;
+        if (cur !== 0 && target === 0) return target;
+        return cur; // не triггерим re-render у середині drag'у
+      });
       const delta = target - lastFineRotation.current;
       if (Math.abs(delta) > 0.0001 && cropperRef.current) {
         try {
-          cropperRef.current.rotateImage(delta, { transitions: false });
+          // Aggressive options — пропускаємо все що можна, прямий state update
+          cropperRef.current.rotateImage(delta, {
+            transitions: false,
+            normalize: false,
+            immediately: true,
+            interaction: false,
+          });
         } catch (e) {
           try { cropperRef.current.rotateImage(delta); } catch {}
         }
         lastFineRotation.current = target;
       }
     });
-  }, []);
+  }, [writeLabel]);
+
+  // Onkey-up / on-release commit handler — повний sync state з final value.
+  const commitFineRotation = useCallback((finalAngle) => {
+    setFineRotation(finalAngle);
+    pendingFineAngleRef.current = null;
+    writeLabel(finalAngle);
+  }, [writeLabel]);
 
   // Cleanup pending rAF на unmount
   useEffect(() => {
@@ -2107,23 +2142,23 @@ function PreviewPopup({
     };
   }, []);
 
-  // ↻ у попапі: миттєво обертає cropper на 90° + оновлює parent userRotation
-  // для persistence (якщо адвокат закриє попап). displayUrl effect skip
-  // через popupRotationLockRef (запобігає подвоєнню обертання).
+  // ↻ у попапі: обертає cropper на 90° з анімацією (default transitions
+  // на Cropper) + оновлює parent userRotation для persistence (якщо адвокат
+  // закриє попап). displayUrl effect skip через popupRotationLockRef.
   const handleRotateInPopup = useCallback(() => {
     if (cropperRef.current) {
-      try { cropperRef.current.rotateImage(90, { transitions: false }); }
-      catch (e) {
-        try { cropperRef.current.rotateImage(90); } catch {}
-      }
+      try { cropperRef.current.rotateImage(90); } catch {}
     }
     popupRotationLockRef.current = true;
     onRotate();
   }, [onRotate]);
 
   const resetFineRotation = useCallback(() => {
+    // Set uncontrolled slider input back to 0, потім rotate + commit
+    if (sliderInputRef.current) sliderInputRef.current.value = '0';
     handleFineRotationChange(0);
-  }, [handleFineRotationChange]);
+    commitFineRotation(0);
+  }, [handleFineRotationChange, commitFineRotation]);
 
   // Скидаємо fineRotation коли popup перевідкривається (key change ремонтує
   // компонент, але refs можуть лишатись стейл — захист).
@@ -2260,23 +2295,33 @@ function PreviewPopup({
 
         {/* Straighten slider — для дрібного вирівнювання (-45° до +45°).
             Видимий тільки коли cropper активний. ↻ кнопка нижче для повних
-            90° лишається окремо. */}
+            90° лишається окремо.
+            Slider використовує defaultValue (uncontrolled) щоб уникнути
+            controlled-input лагів. Live update через ref. Final commit
+            на release через onChange/onPointerUp. */}
         {frameVisible && (
           <div className="image-merge-panel__popup-straighten">
             <span className="image-merge-panel__popup-straighten-label">
               Вирівняти
             </span>
             <input
+              ref={sliderInputRef}
               type="range"
               min={-45}
               max={45}
               step={0.5}
-              value={fineRotation}
-              onChange={(e) => handleFineRotationChange(parseFloat(e.target.value))}
+              defaultValue={0}
+              key={origIdx}
+              onInput={(e) => handleFineRotationChange(parseFloat(e.target.value))}
+              onChange={(e) => commitFineRotation(parseFloat(e.target.value))}
+              onPointerUp={(e) => commitFineRotation(parseFloat(e.currentTarget.value))}
               className="image-merge-panel__popup-straighten-input"
               aria-label="Вирівняти фото"
             />
-            <span className="image-merge-panel__popup-straighten-value">
+            <span
+              ref={labelRef}
+              className="image-merge-panel__popup-straighten-value"
+            >
               {fineRotation > 0 ? '+' : ''}{fineRotation.toFixed(1)}°
             </span>
             {fineRotation !== 0 && (
@@ -2420,10 +2465,9 @@ function CropperHost({ cropperRef, displayUrl, initialCoords, frameVisible, onCh
           handlers: true,
           lines: true,
         }}
-        // Transitions ВИМКНЕНІ — для плавного straighten slider'а instant
-        // обертання краще за animation. На pinch-zoom / pan це теж дає
-        // direct feedback без overshoot.
-        transitions={false}
+        // Transitions enabled (default) — плавна анімація для ↻ button.
+        // Slider передає `transitions: false` per-call для instant feedback.
+        transitions={{ duration: 280, timingFunction: 'ease-out' }}
         backgroundClassName="image-merge-panel__cropper-bg"
         className="image-merge-panel__cropper"
         onChange={(cropper) => {
