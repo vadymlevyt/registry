@@ -3244,6 +3244,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             label="Дата дедлайну"
             value={newDeadline.date}
             onChange={v => setNewDeadline(d => ({ ...d, date: v }))}
+            inline
           />
         </div>
       </Modal>
