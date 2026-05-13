@@ -8,6 +8,7 @@ import {
   readExifOrientation,
   resolveOrientation,
   analyzeBlockOrientationField,
+  analyzeBlockGeometry,
   extractTransformsRotation,
 } from '../../src/services/sortation/orientationCorrector.js';
 
@@ -743,5 +744,172 @@ describe('orientationCorrector.resolveOrientation cascade priority', () => {
     });
     expect(r.degrees).toBe(90); // PAGE_LEFT fix
     expect(r.source).toBe('docAiBlockField');
+  });
+});
+
+// Helper: вертикальний блок (h >> w) у normalized coords
+function tallParagraph(label = null) {
+  return {
+    layout: {
+      ...(label ? { orientation: label } : {}),
+      boundingPoly: { normalizedVertices: [
+        { x: 0.40, y: 0.05 }, { x: 0.45, y: 0.05 },
+        { x: 0.45, y: 0.95 }, { x: 0.40, y: 0.95 },
+      ]},
+    },
+  };
+}
+// Helper: горизонтальний блок (w >> h)
+function wideParagraph(label = null) {
+  return {
+    layout: {
+      ...(label ? { orientation: label } : {}),
+      boundingPoly: { normalizedVertices: [
+        { x: 0.05, y: 0.40 }, { x: 0.95, y: 0.40 },
+        { x: 0.95, y: 0.45 }, { x: 0.05, y: 0.45 },
+      ]},
+    },
+  };
+}
+
+describe('orientationCorrector.analyzeBlockGeometry', () => {
+  it('повертає null коли blocks порожні', () => {
+    expect(analyzeBlockGeometry({ blocks: [] })).toBeNull();
+    expect(analyzeBlockGeometry({})).toBeNull();
+    expect(analyzeBlockGeometry(null)).toBeNull();
+  });
+
+  it('повертає null коли менше 3 блоків з валідним bbox', () => {
+    const page = { paragraphs: [tallParagraph(), tallParagraph()] };
+    expect(analyzeBlockGeometry(page)).toBeNull();
+  });
+
+  it('класифікує блок як tall коли h > 1.6×w', () => {
+    const page = { paragraphs: [tallParagraph(), tallParagraph(), tallParagraph()] };
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBeNull();
+    expect(r.tall).toBe(3);
+    expect(r.wide).toBe(0);
+    expect(r.tallFraction).toBe(1);
+  });
+
+  it('класифікує блок як wide коли w > 1.6×h', () => {
+    const page = { paragraphs: [wideParagraph(), wideParagraph(), wideParagraph()] };
+    const r = analyzeBlockGeometry(page);
+    expect(r.wide).toBe(3);
+    expect(r.tall).toBe(0);
+    expect(r.wideFraction).toBe(1);
+  });
+
+  it('квадратні блоки потрапляють у square (не tall, не wide)', () => {
+    const square = {
+      layout: { boundingPoly: { normalizedVertices: [
+        { x: 0.4, y: 0.4 }, { x: 0.5, y: 0.4 },
+        { x: 0.5, y: 0.5 }, { x: 0.4, y: 0.5 },
+      ]}},
+    };
+    const r = analyzeBlockGeometry({ paragraphs: [square, square, square] });
+    expect(r.square).toBe(3);
+    expect(r.tall).toBe(0);
+    expect(r.wide).toBe(0);
+  });
+
+  it('читає bbox з block.boundingPoly без вкладеного layout (старий формат)', () => {
+    const page = {
+      blocks: [
+        { boundingPoly: { normalizedVertices: [
+          { x: 0.4, y: 0.05 }, { x: 0.45, y: 0.05 },
+          { x: 0.45, y: 0.95 }, { x: 0.4, y: 0.95 },
+        ]}},
+        { boundingPoly: { normalizedVertices: [
+          { x: 0.4, y: 0.05 }, { x: 0.45, y: 0.05 },
+          { x: 0.45, y: 0.95 }, { x: 0.4, y: 0.95 },
+        ]}},
+        { boundingPoly: { normalizedVertices: [
+          { x: 0.4, y: 0.05 }, { x: 0.45, y: 0.05 },
+          { x: 0.45, y: 0.95 }, { x: 0.4, y: 0.95 },
+        ]}},
+      ],
+    };
+    const r = analyzeBlockGeometry(page);
+    expect(r.tall).toBe(3);
+  });
+
+  it('пропускає блоки без bbox і не падає', () => {
+    const page = {
+      paragraphs: [
+        tallParagraph(),
+        { layout: {} }, // no bbox
+        tallParagraph(),
+        tallParagraph(),
+      ],
+    };
+    const r = analyzeBlockGeometry(page);
+    expect(r.total).toBe(3);
+    expect(r.tall).toBe(3);
+  });
+});
+
+describe('orientationCorrector.resolveOrientation з block geometry sanity check', () => {
+  it('PAGE_UP домінує + tall blocks → 0° АЛЕ uncertain=true (DocAI ймовірно пропустив orientation)', () => {
+    const page = {
+      paragraphs: Array.from({ length: 10 }, () => tallParagraph('PAGE_UP')),
+    };
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'broken-docai.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('docAiBlockField');
+    expect(r.uncertain).toBe(true);
+    expect(r.logs.some((l) => l.includes('PAGE_UP домінує АЛЕ'))).toBe(true);
+  });
+
+  it('PAGE_UP домінує + wide blocks → 0° certain (truly upright doc)', () => {
+    const page = {
+      paragraphs: Array.from({ length: 10 }, () => wideParagraph('PAGE_UP')),
+    };
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1350, height: 1800 },
+      fileName: 'upright.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('docAiBlockField');
+    expect(r.uncertain).toBe(false);
+  });
+
+  it('PAGE_DOWN домінує — geometry не запускається (rotation вже визначена)', () => {
+    const page = {
+      paragraphs: Array.from({ length: 10 }, () => wideParagraph('PAGE_DOWN')),
+    };
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1350, height: 1800 },
+      fileName: 'upside-down.jpg',
+    });
+    expect(r.degrees).toBe(180);
+    expect(r.source).toBe('docAiBlockField');
+    expect(r.uncertain).toBe(false);
+  });
+
+  it('NONE: блоки без orientation field + tall blocks → 0° uncertain + лог з підказкою', () => {
+    const page = {
+      paragraphs: Array.from({ length: 10 }, () => tallParagraph(null)),
+    };
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'no-orient.jpg',
+    });
+    expect(r.degrees).toBe(0);
+    expect(r.source).toBe('none');
+    expect(r.uncertain).toBe(true);
+    expect(r.logs.some((l) => l.includes('блоків вертикальні'))).toBe(true);
   });
 });
