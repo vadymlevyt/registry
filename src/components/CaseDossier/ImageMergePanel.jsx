@@ -35,6 +35,7 @@ import {
   Check,
   Copy as CopyIcon,
   Crop as CropIcon,
+  Square as FrameIcon,
 } from 'lucide-react';
 import { Input, Select, Toggle, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
@@ -110,6 +111,14 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   // sortable items на їхніх початкових позиціях у orderedIndices. Set ID
   // груп (індекси у sortResult.duplicates).
   const [dismissedDuplicateGroupIds, setDismissedDuplicateGroupIds] = useState(() => new Set());
+  // processedBlobs (TASK B fix Addition 3): коли адвокат застосовує crop із
+  // straighten-rotation у попапі, ми викликаємо cropper.getCanvas() і
+  // отримуємо повністю-оброблений blob (crop + straighten уже застосовані).
+  // Зберігаємо його разом із baseUserRotation на момент створення.
+  // Map<origIdx, { blob: Blob, baseUserRotation: number }>.
+  // У rebuild цей blob використовується напряму (зі delta userRotation якщо
+  // адвокат повертав ↻ після Apply).
+  const [processedBlobs, setProcessedBlobs] = useState(() => new Map());
   // Debug toggle (TASK B fix 1 round 2) — увімкнення показує адвокату
   // діагностичну інформацію orientation у toast info після склейки. Перський
   // зберігається у localStorage щоб адвокат не вмикав щоразу.
@@ -256,6 +265,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setCropOverrides(new Map());
       setCropDisabled(new Set());
       setDismissedDuplicateGroupIds(new Set());
+      setProcessedBlobs(new Map());
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
@@ -397,6 +407,24 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     setOrderedIndices((prev) => prev.filter((i) => !suspicious.has(i)));
   };
 
+  // Зберігаємо processed blob (crop + straighten вже застосовано) для
+  // конкретної сторінки. baseUserRotation — userRotation на момент Apply,
+  // щоб коректно обчислити delta при наступних ↻.
+  const handleProcessedBlobSave = useCallback((origIdx, blob, baseUserRotation) => {
+    setProcessedBlobs((prev) => {
+      const next = new Map(prev);
+      next.set(origIdx, { blob, baseUserRotation });
+      return next;
+    });
+    // Очищаємо застарілі crop overrides — їх перебиває processed blob.
+    setCropOverrides((prev) => {
+      if (!prev.has(origIdx)) return prev;
+      const next = new Map(prev);
+      next.delete(origIdx);
+      return next;
+    });
+  }, []);
+
   // "Це не дублікати" — група розпадається, члени стають окремими.
   // gIdx = індекс групи у pipelineResult.sortResult.duplicates.
   const handleDismissDuplicateGroup = useCallback((gIdx) => {
@@ -463,16 +491,19 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       let finalLayout;
 
       // Карта effective crop rect для кожної сторінки. null = без обрізки.
-      // override перебиває proposal, disabled скасовує обидва.
+      // override перебиває proposal, disabled скасовує обидва. Якщо для idx
+      // є processedBlob, crop вже застосований у самому blob — не передаємо.
       const effectiveCrops = new Map();
       for (const idx of orderedIndices) {
         if (cropDisabled.has(idx)) continue;
+        if (processedBlobs.has(idx)) continue; // baked у processed blob
         const rect = cropOverrides.get(idx) || cropProposals.get(idx);
         if (rect) effectiveCrops.set(idx, rect);
       }
       const hasCrops = effectiveCrops.size > 0;
+      const hasProcessed = processedBlobs.size > 0;
 
-      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation && !hasCrops) {
+      if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation && !hasCrops && !hasProcessed) {
         finalPdfBlob = pipelineResult.pdfBlob;
         finalText = pipelineResult.extractedText;
         finalLayout = pipelineResult.layoutJson;
@@ -484,6 +515,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
           detectedOrientations: pipelineResult.detectedOrientations || [],
           userRotation,
           effectiveCrops,
+          processedBlobs,
         });
         finalPdfBlob = rebuilt.pdfBlob;
         finalText = rebuilt.extractedText;
@@ -542,6 +574,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         cropOverrides={cropOverrides}
         cropDisabled={cropDisabled}
         dismissedDuplicateGroupIds={dismissedDuplicateGroupIds}
+        processedBlobs={processedBlobs}
         debugMode={debugMode}
         setDebugMode={(v) => {
           setDebugMode(v);
@@ -559,6 +592,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         onKeepRecommendedDuplicate={handleKeepRecommendedDuplicates}
         onKeepAllRecommendedDuplicates={handleKeepAllRecommendedDuplicates}
         onDismissDuplicateGroup={handleDismissDuplicateGroup}
+        onProcessedBlobSave={handleProcessedBlobSave}
         proceedings={caseData?.proceedings || []}
         onSubmit={handleSubmit}
         onCancel={onCancel}
@@ -732,6 +766,7 @@ function PreviewView({
   cropOverrides,
   cropDisabled,
   dismissedDuplicateGroupIds,
+  processedBlobs,
   debugMode,
   setDebugMode,
   form,
@@ -746,6 +781,7 @@ function PreviewView({
   onKeepRecommendedDuplicate,
   onKeepAllRecommendedDuplicates,
   onDismissDuplicateGroup,
+  onProcessedBlobSave,
   proceedings,
   onSubmit,
   onCancel,
@@ -1130,6 +1166,8 @@ function PreviewView({
           url={thumbUrls.get(popupOrigIdx)}
           sourceBlob={realFiles?.[popupOrigIdx] || null}
           rotation={userRotation.get(popupOrigIdx) || 0}
+          processedEntry={processedBlobs?.get?.(popupOrigIdx) || null}
+          onProcessedBlobSave={(blob, baseUserRotation) => onProcessedBlobSave(popupOrigIdx, blob, baseUserRotation)}
           position={orderedIndices.indexOf(popupOrigIdx)}
           total={orderedIndices.length}
           warning={warningsByIndex.get(popupOrigIdx) || null}
@@ -1502,6 +1540,7 @@ async function rebuildFromOcrResults({
   detectedOrientations,
   userRotation,
   effectiveCrops,
+  processedBlobs,
 }) {
   const extractedText = orderedIndices
     .map((idx) => ocrResults[idx]?.text || '')
@@ -1544,22 +1583,38 @@ async function rebuildFromOcrResults({
 
   for (let i = 0; i < orderedIndices.length; i++) {
     const origIdx = orderedIndices[i];
-    // Якщо є effective crop rect — обрізаємо raw blob тут (rect у raw natural
-    // coords). На cropped autoDeg НЕ застосовуємо: адвокат бачив raw image у
-    // попапі з userRotation на ньому, тому crop rect від react-easy-crop вже
-    // вирівняний з userRotation, а autoDeg був би подвоєнням. AI proposal
-    // теж у raw coords без autoDeg.
-    const cropRect = effectiveCrops?.get?.(origIdx) || null;
-    const rawFile = realFiles[origIdx];
-    const sourceFile = cropRect ? await cropImageBlob(rawFile, cropRect) : rawFile;
-    const autoDeg = cropRect
-      ? 0
-      : (Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0);
-    const userDeg = userRotation?.get?.(origIdx) || 0;
-    const totalDeg = (autoDeg + userDeg) % 360;
-    // ВАЖЛИВО: автообертання вже зашите у pipeline pdf, але тут ми будуємо
-    // НОВИЙ PDF з оригінальних realFiles. Тому застосовуємо ПОВНИЙ totalDeg.
-    const blob = totalDeg !== 0 ? await rotateImageBlob(sourceFile, totalDeg) : sourceFile;
+    // Pipeline для отримання фінального blob:
+    //   1. processedBlob (TASK B fix Addition 3): адвокат застосував crop+
+    //      straighten у попапі. Cropper повертав canvas → blob, тут просто
+    //      застосовуємо delta userRotation якщо адвокат повертав ↻ після
+    //      Apply (baseUserRotation = userRotation на момент Apply).
+    //   2. effectiveCrop rect: обрізаємо raw blob (rect у raw natural coords).
+    //      На cropped autoDeg НЕ застосовуємо: адвокат бачив raw image у
+    //      попапі з userRotation на ньому, тому crop rect вже вирівняний
+    //      з userRotation; autoDeg був би подвоєнням.
+    //   3. Жодного crop: rawFile + autoOrientation + userRotation.
+    let blob;
+    const processedEntry = processedBlobs?.get?.(origIdx) || null;
+    if (processedEntry?.blob instanceof Blob) {
+      const baseRot = processedEntry.baseUserRotation || 0;
+      const userDegNow = userRotation?.get?.(origIdx) || 0;
+      const delta = ((userDegNow - baseRot) % 360 + 360) % 360;
+      blob = delta !== 0
+        ? await rotateImageBlob(processedEntry.blob, delta)
+        : processedEntry.blob;
+    } else {
+      const cropRect = effectiveCrops?.get?.(origIdx) || null;
+      const rawFile = realFiles[origIdx];
+      const sourceFile = cropRect ? await cropImageBlob(rawFile, cropRect) : rawFile;
+      const autoDeg = cropRect
+        ? 0
+        : (Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0);
+      const userDeg = userRotation?.get?.(origIdx) || 0;
+      const totalDeg = (autoDeg + userDeg) % 360;
+      // ВАЖЛИВО: автообертання вже зашите у pipeline pdf, але тут ми будуємо
+      // НОВИЙ PDF з оригінальних realFiles. Тому застосовуємо ПОВНИЙ totalDeg.
+      blob = totalDeg !== 0 ? await rotateImageBlob(sourceFile, totalDeg) : sourceFile;
+    }
 
     const url = URL.createObjectURL(blob);
     let img;
@@ -1773,14 +1828,24 @@ function Thumbnail({
 
 function PreviewPopup({
   origIdx, url, sourceBlob, rotation, position, total, warning, duplicateInfo,
-  isUncertain, cropProposal, cropOverride, cropDisabled,
+  isUncertain, cropProposal, cropOverride, cropDisabled, processedEntry,
   onClose, onPrev, onNext, onRotate, onCropOverride, onToggleCropDisabled, onRemove,
+  onProcessedBlobSave,
 }) {
   const effectiveRect = cropOverride || cropProposal || null;
   const frameVisible = !!effectiveRect && !cropDisabled;
 
   const isFirst = position === 0;
   const isLast = position === total - 1;
+
+  // ── Straighten slider (TASK B fix Addition 3) ──────────────────────────
+  // Local fineRotation, default 0. Real-time rotation через cropper.rotateImage.
+  // На Apply: якщо fineRotation != 0, отримуємо canvas з cropper (всі transforms
+  // вже застосовані бібліотекою) → blob → onProcessedBlobSave. Це обходить
+  // обмеження нашого rotateImageBlob (тільки кардинальні кути).
+  const [fineRotation, setFineRotation] = useState(0);
+  const cropperRef = useRef(null);
+  const lastFineRotation = useRef(0);
 
   // Природні розміри оригіналу — для конверсії coords ↔ rotated space.
   const [naturalDims, setNaturalDims] = useState(null);
@@ -1797,18 +1862,47 @@ function PreviewPopup({
     return () => { cancelled = true; };
   }, [url]);
 
-  // displayUrl — те що показуємо у cropper. Якщо rotation != 0, генеруємо
-  // повернутий blob URL (cropper не повинен сам обертати — конфліктувало б
-  // з нашою системою userRotation).
+  // displayUrl — що показуємо у cropper. Pipeline:
+  //   1. Якщо processedEntry існує → використовуємо processed blob (вже з
+  //      попередньою обрізкою/обертанням). Адвокат бачить попередній результат
+  //      і може його доредагувати.
+  //   2. Інакше якщо rotation != 0 → генеруємо повернутий blob URL з sourceBlob
+  //      (cropper не повинен сам обертати на 90° — конфліктувало б з нашою
+  //      системою userRotation; cropper'ський rotateImage використовується
+  //      лише для fineRotation -45..+45°).
+  //   3. Інакше → raw URL.
   const [displayUrl, setDisplayUrl] = useState(url);
   useEffect(() => {
-    if (rotation === 0 || !sourceBlob) {
-      setDisplayUrl(url);
-      return;
-    }
     let cancelled = false;
     let createdUrl = null;
     (async () => {
+      if (processedEntry?.blob instanceof Blob) {
+        // Уже обрізаний/повернутий результат адвоката — показуємо як є.
+        // Враховуємо delta userRotation якщо адвокат повертав ↻ після Apply.
+        const baseRot = processedEntry.baseUserRotation || 0;
+        const delta = ((rotation - baseRot) % 360 + 360) % 360;
+        if (delta === 0) {
+          createdUrl = URL.createObjectURL(processedEntry.blob);
+          if (!cancelled) setDisplayUrl(createdUrl);
+          return;
+        }
+        try {
+          const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
+          const rot = await rotateImageBlob(processedEntry.blob, delta);
+          if (cancelled) return;
+          createdUrl = URL.createObjectURL(rot);
+          setDisplayUrl(createdUrl);
+        } catch (e) {
+          console.warn('[PreviewPopup] processed-blob rotate failed:', e);
+          createdUrl = URL.createObjectURL(processedEntry.blob);
+          if (!cancelled) setDisplayUrl(createdUrl);
+        }
+        return;
+      }
+      if (rotation === 0 || !sourceBlob) {
+        if (!cancelled) setDisplayUrl(url);
+        return;
+      }
       try {
         const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
         const rotated = await rotateImageBlob(sourceBlob, rotation);
@@ -1817,14 +1911,14 @@ function PreviewPopup({
         setDisplayUrl(createdUrl);
       } catch (e) {
         console.warn('[PreviewPopup] rotation blob failed:', e);
-        setDisplayUrl(url);
+        if (!cancelled) setDisplayUrl(url);
       }
     })();
     return () => {
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [rotation, sourceBlob, url]);
+  }, [rotation, sourceBlob, url, processedEntry]);
 
   // Local pending state — чекає на ✓ Apply.
   const [pendingRect, setPendingRect] = useState(effectiveRect || null);
@@ -1845,13 +1939,65 @@ function PreviewPopup({
     return { left: r.x, top: r.y, width: r.width, height: r.height };
   }, [pendingRect, effectiveRect, naturalDims, rotation]);
 
-  // ✓ Apply — записати pendingRect у parent state і закрити
-  const handleApply = useCallback(() => {
-    if (frameVisible && pendingRect) {
+  // Реалтайм handler для слайдера straighten — обертає cropper'ом БЕЗ
+  // регенерації blob URL (щоб slider працював плавно).
+  const handleFineRotationChange = useCallback((newAngle) => {
+    setFineRotation(newAngle);
+    if (cropperRef.current) {
+      const delta = newAngle - lastFineRotation.current;
+      if (Math.abs(delta) > 0.0001) {
+        try { cropperRef.current.rotateImage(delta); } catch (e) {}
+        lastFineRotation.current = newAngle;
+      }
+    }
+  }, []);
+
+  const resetFineRotation = useCallback(() => {
+    handleFineRotationChange(0);
+  }, [handleFineRotationChange]);
+
+  // Скидаємо fineRotation коли popup перевідкривається (key change ремонтує
+  // компонент, але refs можуть лишатись стейл — захист).
+  useEffect(() => {
+    lastFineRotation.current = 0;
+  }, [origIdx]);
+
+  // ✓ Apply — три гілки залежно від стану:
+  //   1. fineRotation != 0 → беремо canvas з cropper (всі трансформи вже
+  //      застосовані бібліотекою) → blob → onProcessedBlobSave. Рebuild
+  //      використовує цей blob напряму.
+  //   2. fineRotation == 0 і frameVisible → onCropOverride(pendingRect) як
+  //      раніше; pipeline застосовує crop+rotate як зараз.
+  //   3. !frameVisible → нічого не зберігаємо, просто закриваємо.
+  const handleApply = useCallback(async () => {
+    if (!frameVisible) {
+      onClose();
+      return;
+    }
+    if (fineRotation !== 0 && cropperRef.current && onProcessedBlobSave) {
+      try {
+        const canvas = cropperRef.current.getCanvas({
+          imageSmoothingQuality: 'high',
+        });
+        if (canvas) {
+          const blob = await new Promise((resolve) => {
+            canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
+          });
+          if (blob) {
+            onProcessedBlobSave(blob, rotation);
+            onClose();
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('[PreviewPopup] getCanvas failed, fallback to rect:', e);
+      }
+    }
+    if (pendingRect) {
       onCropOverride(pendingRect);
     }
     onClose();
-  }, [frameVisible, pendingRect, onCropOverride, onClose]);
+  }, [frameVisible, fineRotation, pendingRect, rotation, onCropOverride, onProcessedBlobSave, onClose]);
 
   // ✂️ Toggle frame visibility (одразу у parent state — швидкий feedback).
   // Якщо нема rect взагалі — створюємо центральний 80×80% rect.
@@ -1922,6 +2068,7 @@ function PreviewPopup({
 
         <div className="image-merge-panel__popup-body">
           <CropperHost
+            cropperRef={cropperRef}
             displayUrl={displayUrl}
             initialCoords={initialCropperCoords}
             frameVisible={frameVisible}
@@ -1939,6 +2086,40 @@ function PreviewPopup({
             }}
           />
         </div>
+
+        {/* Straighten slider — для дрібного вирівнювання (-45° до +45°).
+            Видимий тільки коли cropper активний. ↻ кнопка нижче для повних
+            90° лишається окремо. */}
+        {frameVisible && (
+          <div className="image-merge-panel__popup-straighten">
+            <span className="image-merge-panel__popup-straighten-label">
+              Вирівняти
+            </span>
+            <input
+              type="range"
+              min={-45}
+              max={45}
+              step={0.5}
+              value={fineRotation}
+              onChange={(e) => handleFineRotationChange(parseFloat(e.target.value))}
+              className="image-merge-panel__popup-straighten-input"
+              aria-label="Вирівняти фото"
+            />
+            <span className="image-merge-panel__popup-straighten-value">
+              {fineRotation > 0 ? '+' : ''}{fineRotation.toFixed(1)}°
+            </span>
+            {fineRotation !== 0 && (
+              <button
+                type="button"
+                className="image-merge-panel__popup-straighten-reset"
+                onClick={resetFineRotation}
+                title="Скинути до 0°"
+              >
+                Скинути
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="image-merge-panel__popup-toolbar">
           <button
@@ -1968,11 +2149,11 @@ function PreviewPopup({
                 (frameVisible ? ' image-merge-panel__popup-tool--active' : '')
               }
               onClick={handleToggleCrop}
-              title={frameVisible ? 'Прибрати рамку обрізки' : 'Додати рамку обрізки'}
+              title={frameVisible ? 'Прибрати рамку обрізки' : 'Показати рамку обрізки'}
               disabled={!naturalDims}
             >
-              <CropIcon size={18} />
-              <span>{frameVisible ? 'Без обрізки' : 'Обрізати'}</span>
+              <FrameIcon size={18} />
+              <span>Рамка</span>
             </button>
             <button
               type="button"
@@ -2010,7 +2191,7 @@ function PreviewPopup({
 //
 // Lazy import — react-advanced-cropper ~30KB gzip, не тягнемо у головний bundle.
 
-function CropperHost({ displayUrl, initialCoords, frameVisible, onChange }) {
+function CropperHost({ cropperRef, displayUrl, initialCoords, frameVisible, onChange }) {
   const [cropperLib, setCropperLib] = useState(null);
 
   useEffect(() => {
@@ -2057,6 +2238,7 @@ function CropperHost({ displayUrl, initialCoords, frameVisible, onChange }) {
   return (
     <div className="image-merge-panel__popup-canvas">
       <Cropper
+        ref={cropperRef}
         key={displayUrl}
         src={displayUrl}
         defaultCoordinates={initialCoords || undefined}

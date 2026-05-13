@@ -704,34 +704,38 @@
   color: #fff;
 }
 
-/* Tablet — попап як підняте вікно, темне затемнення довкола */
+/* Tablet — попап як підняте вікно, темне затемнення довкола.
+   Збільшено з 65×75 → 72×80 (+~15-20% photo area), щоб краще використати
+   простір екрану. Кнопки бару залишаються видимими завдяки фіксованим
+   висотам барів. */
 @media (min-width: 768px) and (max-width: 1199px) {
   .image-merge-panel__popup-overlay--full {
     background: rgba(0, 0, 0, 0.85);
     padding: var(--space-3);
   }
   .image-merge-panel__popup--full {
-    width: 65vw;
-    height: 75vh;
-    max-width: 900px;
-    max-height: 720px;
+    width: 72vw;
+    height: 80vh;
+    max-width: 1000px;
+    max-height: 800px;
     border-radius: var(--radius-md, 12px);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
     overflow: hidden;
   }
 }
 
-/* Desktop — попап з обмеженням max-width щоб не розтягувалось на 4K */
+/* Desktop — попап з обмеженням max-width щоб не розтягувалось на 4K.
+   Збільшено з 60×75 → 65×80, max 1100×850 → 1200×900. */
 @media (min-width: 1200px) {
   .image-merge-panel__popup-overlay--full {
     background: rgba(0, 0, 0, 0.85);
     padding: var(--space-3);
   }
   .image-merge-panel__popup--full {
-    width: 60vw;
-    height: 75vh;
-    max-width: 1100px;
-    max-height: 850px;
+    width: 65vw;
+    height: 80vh;
+    max-width: 1200px;
+    max-height: 900px;
     border-radius: var(--radius-md, 12px);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
     overflow: hidden;
@@ -872,8 +876,14 @@
   position: relative;
 }
 
-/* Fit-to-container зображення коли cropper вимкнений (view-only режим) */
+/* Fit-to-container зображення коли cropper вимкнений (view-only режим).
+   absolute + 50% + translate(-50%) гарантує центрування незалежно від layout
+   parent'а. Без цього після toggle крокера фото зміщувалось вліво. */
 .image-merge-panel__popup-fitimg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   max-width: 100%;
   max-height: 100%;
   display: block;
@@ -913,6 +923,100 @@
   .image-merge-panel__popup-img {
     max-height: 78vh;
   }
+}
+
+/* Straighten slider row (TASK B fix Addition 3) — між cropper і toolbar.
+   Дрібне обертання -45..+45° у real-time через cropper.rotateImage(). */
+.image-merge-panel__popup-straighten {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px var(--space-3);
+  background: rgba(0, 0, 0, 0.92);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  height: 48px;
+  box-sizing: border-box;
+  color: #fff;
+}
+
+.image-merge-panel__popup-straighten-label {
+  font-size: var(--text-xs);
+  color: rgba(255, 255, 255, 0.7);
+  flex-shrink: 0;
+  min-width: 70px;
+}
+
+.image-merge-panel__popup-straighten-input {
+  flex: 1 1 auto;
+  height: 32px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Webkit slider track + thumb */
+.image-merge-panel__popup-straighten-input::-webkit-slider-runnable-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.image-merge-panel__popup-straighten-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+/* Firefox */
+.image-merge-panel__popup-straighten-input::-moz-range-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  border: none;
+}
+
+.image-merge-panel__popup-straighten-input::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.image-merge-panel__popup-straighten-value {
+  font-size: var(--text-sm);
+  color: #fff;
+  font-weight: var(--weight-medium);
+  min-width: 50px;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.image-merge-panel__popup-straighten-reset {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-xs);
+  color: #fff;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+
+.image-merge-panel__popup-straighten-reset:hover {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 /* Bottom bar — фіксована висота 80px (+safe-area inset) щоб кнопки
