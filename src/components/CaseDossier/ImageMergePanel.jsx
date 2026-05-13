@@ -106,6 +106,11 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   const [cropProposals, setCropProposals] = useState(() => new Map());
   const [cropOverrides, setCropOverrides] = useState(() => new Map());
   const [cropDisabled, setCropDisabled] = useState(() => new Set());
+  // dismissedDuplicateGroupIds (TASK B fix Problem 4): адвокат натиснув
+  // "Це не дублікати" біля групи — група розпадається, члени стають окремими
+  // sortable items на їхніх початкових позиціях у orderedIndices. Set ID
+  // груп (індекси у sortResult.duplicates).
+  const [dismissedDuplicateGroupIds, setDismissedDuplicateGroupIds] = useState(() => new Set());
   // Debug toggle (TASK B fix 1 round 2) — увімкнення показує адвокату
   // діагностичну інформацію orientation у toast info після склейки. Перський
   // зберігається у localStorage щоб адвокат не вмикав щоразу.
@@ -251,6 +256,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setCropProposals(new Map());
       setCropOverrides(new Map());
       setCropDisabled(new Set());
+      setDismissedDuplicateGroupIds(new Set());
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
@@ -392,6 +398,16 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     setOrderedIndices((prev) => prev.filter((i) => !suspicious.has(i)));
   };
 
+  // "Це не дублікати" — група розпадається, члени стають окремими.
+  // gIdx = індекс групи у pipelineResult.sortResult.duplicates.
+  const handleDismissDuplicateGroup = useCallback((gIdx) => {
+    setDismissedDuplicateGroupIds((prev) => {
+      const next = new Set(prev);
+      next.add(gIdx);
+      return next;
+    });
+  }, []);
+
   // Видалити всі дублікати залишаючи тільки recommended кожної групи.
   const handleKeepRecommendedDuplicates = useCallback((groupIndices, recommended) => {
     const toRemove = groupIndices.filter((i) => i !== recommended);
@@ -525,6 +541,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         cropProposals={cropProposals}
         cropOverrides={cropOverrides}
         cropDisabled={cropDisabled}
+        dismissedDuplicateGroupIds={dismissedDuplicateGroupIds}
         debugMode={debugMode}
         setDebugMode={(v) => {
           setDebugMode(v);
@@ -541,6 +558,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         onRemoveAllSuspicious={handleRemoveAllSuspicious}
         onKeepRecommendedDuplicate={handleKeepRecommendedDuplicates}
         onKeepAllRecommendedDuplicates={handleKeepAllRecommendedDuplicates}
+        onDismissDuplicateGroup={handleDismissDuplicateGroup}
         proceedings={caseData?.proceedings || []}
         onSubmit={handleSubmit}
         onCancel={onCancel}
@@ -712,6 +730,7 @@ function PreviewView({
   cropProposals,
   cropOverrides,
   cropDisabled,
+  dismissedDuplicateGroupIds,
   debugMode,
   setDebugMode,
   form,
@@ -725,6 +744,7 @@ function PreviewView({
   onRemoveAllSuspicious,
   onKeepRecommendedDuplicate,
   onKeepAllRecommendedDuplicates,
+  onDismissDuplicateGroup,
   proceedings,
   onSubmit,
   onCancel,
@@ -761,12 +781,14 @@ function PreviewView({
     return map;
   }, [pipelineResult?.sortResult?.warnings]);
 
-  // Мапа origIdx → { groupId, recommended, reason }. groupId це порядковий
-  // номер групи дублікатів (для UI — кольори/підписи).
+  // Мапа origIdx → { groupId, recommended, reason }. groupId — порядковий
+  // номер групи у sortResult.duplicates. Виключаємо dismissed групи —
+  // адвокат натиснув «Це не дублікати», вважаємо що це окремі сторінки.
   const duplicateMembership = useMemo(() => {
     const map = new Map();
     const groups = pipelineResult?.sortResult?.duplicates || [];
     groups.forEach((g, groupId) => {
+      if (dismissedDuplicateGroupIds?.has?.(groupId)) return;
       for (const idx of g.group) {
         map.set(idx, {
           groupId,
@@ -777,7 +799,76 @@ function PreviewView({
       }
     });
     return map;
-  }, [pipelineResult?.sortResult?.duplicates]);
+  }, [pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds]);
+
+  // ── DisplayItems (TASK B fix Problem 4) ──────────────────────────────
+  // Перетворюємо плоский orderedIndices у список items де дублікати йдуть
+  // ОДНИМ item-групою. Це дає:
+  //   - Стабільне розташування: дублікати завжди разом
+  //   - Drag-and-drop по групі: тягнемо всю групу одним рухом
+  //   - Стабільне сортування групи: за original index (deterministic)
+  //
+  // Item shape:
+  //   { type: 'single', id: 'single_<idx>', idx }
+  //   { type: 'group',  id: 'group_<gIdx>', gIdx, indices: [origIdx,...],
+  //                     recommended, reason }
+  //
+  // Stability: коли AI повторює запуск і повертає різні order, групи лишаються
+  // разом + члени всередині відсортовані за origIdx. Однаковий вхід → той самий
+  // displayItems.
+  const displayItems = useMemo(() => {
+    const groups = pipelineResult?.sortResult?.duplicates || [];
+    const activeGroups = groups
+      .map((g, gIdx) => ({ g, gIdx }))
+      .filter(({ gIdx }) => !dismissedDuplicateGroupIds?.has?.(gIdx));
+
+    if (activeGroups.length === 0) {
+      return orderedIndices.map((idx) => ({ type: 'single', id: `single_${idx}`, idx }));
+    }
+
+    // index → group meta
+    const indexToGroup = new Map();
+    for (const { g, gIdx } of activeGroups) {
+      for (const idx of g.group) indexToGroup.set(idx, { gIdx, g });
+    }
+
+    const items = [];
+    const seenGroups = new Set();
+    for (const idx of orderedIndices) {
+      const meta = indexToGroup.get(idx);
+      if (!meta) {
+        items.push({ type: 'single', id: `single_${idx}`, idx });
+        continue;
+      }
+      if (seenGroups.has(meta.gIdx)) continue;
+      seenGroups.add(meta.gIdx);
+      // Stable order у групі: за original index (deterministic)
+      const sortedMembers = [...meta.g.group]
+        .filter((i) => orderedIndices.includes(i))
+        .sort((a, b) => a - b);
+      items.push({
+        type: 'group',
+        id: `group_${meta.gIdx}`,
+        gIdx: meta.gIdx,
+        indices: sortedMembers,
+        recommended: meta.g.recommended,
+        reason: meta.g.reason,
+      });
+    }
+    return items;
+  }, [orderedIndices, pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds]);
+
+  // Конвертує displayItems зворотньо у плоский array оригінальних індексів —
+  // використовується drag-and-drop handler'ом коли треба зберегти новий
+  // порядок у orderedIndices.
+  const flattenItems = useCallback((items) => {
+    const flat = [];
+    for (const it of items) {
+      if (it.type === 'single') flat.push(it.idx);
+      else flat.push(...it.indices);
+    }
+    return flat;
+  }, []);
 
   const hasSuspicious = (pipelineResult?.sortResult?.warnings || []).length > 0;
   const duplicateGroupsCount = (pipelineResult?.sortResult?.duplicates || []).length;
@@ -875,6 +966,7 @@ function PreviewView({
   return (
     <div className="image-merge-panel__preview">
       <SortableGrid
+        displayItems={displayItems}
         orderedIndices={orderedIndices}
         thumbUrls={thumbUrls}
         warningsByIndex={warningsByIndex}
@@ -882,13 +974,14 @@ function PreviewView({
         userRotation={userRotation}
         uncertainSet={uncertainSet}
         cropStateByIndex={cropStateByIndex}
-        onReorder={onReorder}
+        onReorder={(newItems) => onReorder(flattenItems(newItems))}
         onRemove={onRemove}
         onRotate={onRotate}
         onToggleCropDisabled={onToggleCropDisabled}
         onOpenPopup={handleOpenPopup}
         onContextMenu={handleContextMenu}
         onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+        onDismissDuplicateGroup={onDismissDuplicateGroup}
       />
 
       {(missing || hasSuspicious || duplicateGroupsCount > 0 || uncertainIndices.length > 0 || activeCropCount > 0) && (
@@ -1075,10 +1168,15 @@ function PreviewView({
   );
 }
 
-// ── SortableGrid: @dnd-kit drag-and-drop ──────────────────────────────────
+// ── SortableGrid: @dnd-kit drag-and-drop по displayItems ───────────────────
+//
+// displayItems — list of { type: 'single'|'group', id, ... } (see PreviewView).
+// Sortable одиниці — items (не плоскі індекси). Drag-and-drop переміщує single
+// АБО всю групу одним рухом. Адвокат не може перетягти один член групи
+// окремо — це правильно бо дублікати мають лишатись поруч.
 
 function SortableGrid({
-  orderedIndices,
+  displayItems,
   thumbUrls,
   warningsByIndex,
   duplicateMembership,
@@ -1092,6 +1190,7 @@ function SortableGrid({
   onOpenPopup,
   onContextMenu,
   onKeepRecommendedDuplicate,
+  onDismissDuplicateGroup,
 }) {
   const [dndReady, setDndReady] = useState(null);
 
@@ -1125,27 +1224,48 @@ function SortableGrid({
     return () => { cancelled = true; };
   }, []);
 
+  // Помічник: для одиночного thumbnail position у плоскому списку
+  // (для відображення «#N» лейбла). Для group items — масив positions членів.
+  const computeFlatPositions = useCallback(() => {
+    const map = new Map();
+    let pos = 0;
+    for (const item of displayItems) {
+      if (item.type === 'single') {
+        map.set(item.idx, pos++);
+      } else {
+        for (const idx of item.indices) map.set(idx, pos++);
+      }
+    }
+    return map;
+  }, [displayItems]);
+  const flatPositions = computeFlatPositions();
+
   if (!dndReady) {
     return (
       <div className="image-merge-panel__grid image-merge-panel__grid--loading">
-        {orderedIndices.map((origIdx, position) => (
-          <Thumbnail
-            key={origIdx}
-            origIdx={origIdx}
-            position={position}
-            url={thumbUrls.get(origIdx)}
-            warning={warningsByIndex.get(origIdx) || null}
-            duplicateInfo={duplicateMembership.get(origIdx) || null}
-            rotation={userRotation.get(origIdx) || 0}
-            isUncertain={uncertainSet?.has?.(origIdx) || false}
-            cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
-            onRemove={() => onRemove(origIdx)}
-            onRotate={() => onRotate(origIdx)}
-            onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
-            onOpenPopup={() => onOpenPopup(origIdx)}
-            onContextMenu={(e) => onContextMenu(e, origIdx)}
+        {displayItems.map((item) => (
+          <RenderItem
+            key={item.id}
+            item={item}
+            thumbUrls={thumbUrls}
+            warningsByIndex={warningsByIndex}
+            duplicateMembership={duplicateMembership}
+            userRotation={userRotation}
+            uncertainSet={uncertainSet}
+            cropStateByIndex={cropStateByIndex}
+            flatPositions={flatPositions}
+            onRemove={onRemove}
+            onRotate={onRotate}
+            onToggleCropDisabled={onToggleCropDisabled}
+            onOpenPopup={onOpenPopup}
+            onContextMenu={onContextMenu}
             onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
-            sortable={null}
+            onDismissDuplicateGroup={onDismissDuplicateGroup}
+            sortableRef={null}
+            sortableStyle={null}
+            sortableListeners={null}
+            sortableAttributes={null}
+            isDragging={false}
           />
         ))}
       </div>
@@ -1155,13 +1275,14 @@ function SortableGrid({
   return (
     <DndGrid
       dndReady={dndReady}
-      orderedIndices={orderedIndices}
+      displayItems={displayItems}
       thumbUrls={thumbUrls}
       warningsByIndex={warningsByIndex}
       duplicateMembership={duplicateMembership}
       userRotation={userRotation}
       uncertainSet={uncertainSet}
       cropStateByIndex={cropStateByIndex}
+      flatPositions={flatPositions}
       onReorder={onReorder}
       onRemove={onRemove}
       onRotate={onRotate}
@@ -1169,14 +1290,16 @@ function SortableGrid({
       onOpenPopup={onOpenPopup}
       onContextMenu={onContextMenu}
       onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+      onDismissDuplicateGroup={onDismissDuplicateGroup}
     />
   );
 }
 
 function DndGrid({
-  dndReady, orderedIndices, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
-  cropStateByIndex,
-  onReorder, onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
+  dndReady, displayItems, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
+  cropStateByIndex, flatPositions,
+  onReorder, onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
+  onKeepRecommendedDuplicate, onDismissDuplicateGroup,
 }) {
   const {
     DndContext, PointerSensor, TouchSensor, useSensor, useSensors, closestCenter,
@@ -1191,34 +1314,38 @@ function DndGrid({
   function handleDragEnd(event) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const oldIndex = orderedIndices.indexOf(active.id);
-    const newIndex = orderedIndices.indexOf(over.id);
+    const ids = displayItems.map((it) => it.id);
+    const oldIndex = ids.indexOf(active.id);
+    const newIndex = ids.indexOf(over.id);
     if (oldIndex < 0 || newIndex < 0) return;
-    onReorder(arrayMove(orderedIndices, oldIndex, newIndex));
+    onReorder(arrayMove(displayItems, oldIndex, newIndex));
   }
+
+  const sortableIds = displayItems.map((it) => it.id);
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <SortableContext items={orderedIndices} strategy={rectSortingStrategy}>
+      <SortableContext items={sortableIds} strategy={rectSortingStrategy}>
         <div className="image-merge-panel__grid">
-          {orderedIndices.map((origIdx, position) => (
-            <SortableThumbnail
-              key={origIdx}
+          {displayItems.map((item) => (
+            <SortableItem
+              key={item.id}
               dndReady={dndReady}
-              origIdx={origIdx}
-              position={position}
-              url={thumbUrls.get(origIdx)}
-              warning={warningsByIndex.get(origIdx) || null}
-              duplicateInfo={duplicateMembership.get(origIdx) || null}
-              rotation={userRotation.get(origIdx) || 0}
-              isUncertain={uncertainSet?.has?.(origIdx) || false}
-              cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
-              onRemove={() => onRemove(origIdx)}
-              onRotate={() => onRotate(origIdx)}
-              onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
-              onOpenPopup={() => onOpenPopup(origIdx)}
-              onContextMenu={(e) => onContextMenu(e, origIdx)}
+              item={item}
+              thumbUrls={thumbUrls}
+              warningsByIndex={warningsByIndex}
+              duplicateMembership={duplicateMembership}
+              userRotation={userRotation}
+              uncertainSet={uncertainSet}
+              cropStateByIndex={cropStateByIndex}
+              flatPositions={flatPositions}
+              onRemove={onRemove}
+              onRotate={onRotate}
+              onToggleCropDisabled={onToggleCropDisabled}
+              onOpenPopup={onOpenPopup}
+              onContextMenu={onContextMenu}
               onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+              onDismissDuplicateGroup={onDismissDuplicateGroup}
             />
           ))}
         </div>
@@ -1227,40 +1354,135 @@ function DndGrid({
   );
 }
 
-function SortableThumbnail({
-  dndReady, origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
-  cropState,
-  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate,
+function SortableItem({
+  dndReady, item, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
+  cropStateByIndex, flatPositions,
+  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
+  onKeepRecommendedDuplicate, onDismissDuplicateGroup,
 }) {
   const { useSortable, CSS } = dndReady;
-  const sortable = useSortable({ id: origIdx });
+  const sortable = useSortable({ id: item.id });
   const style = {
     transform: CSS.Transform.toString(sortable.transform),
     transition: sortable.transition,
+    // Group items span more grid cells (group.indices.length × default cell width)
+    gridColumn: item.type === 'group' ? `span ${Math.min(item.indices.length, 3)}` : undefined,
   };
   return (
-    <div ref={sortable.setNodeRef} style={style}>
-      <Thumbnail
-        origIdx={origIdx}
-        position={position}
-        url={url}
-        warning={warning}
-        duplicateInfo={duplicateInfo}
-        rotation={rotation}
-        isUncertain={isUncertain}
-        cropState={cropState}
-        onRemove={onRemove}
-        onRotate={onRotate}
-        onToggleCropDisabled={onToggleCropDisabled}
-        onOpenPopup={onOpenPopup}
-        onContextMenu={onContextMenu}
-        onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
-        sortable={{
-          listeners: sortable.listeners,
-          attributes: sortable.attributes,
-          isDragging: sortable.isDragging,
-        }}
-      />
+    <RenderItem
+      item={item}
+      thumbUrls={thumbUrls}
+      warningsByIndex={warningsByIndex}
+      duplicateMembership={duplicateMembership}
+      userRotation={userRotation}
+      uncertainSet={uncertainSet}
+      cropStateByIndex={cropStateByIndex}
+      flatPositions={flatPositions}
+      onRemove={onRemove}
+      onRotate={onRotate}
+      onToggleCropDisabled={onToggleCropDisabled}
+      onOpenPopup={onOpenPopup}
+      onContextMenu={onContextMenu}
+      onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+      onDismissDuplicateGroup={onDismissDuplicateGroup}
+      sortableRef={sortable.setNodeRef}
+      sortableStyle={style}
+      sortableListeners={sortable.listeners}
+      sortableAttributes={sortable.attributes}
+      isDragging={sortable.isDragging}
+    />
+  );
+}
+
+// Render single thumbnail OR group card with multiple thumbnails inside.
+function RenderItem({
+  item, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
+  cropStateByIndex, flatPositions,
+  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
+  onKeepRecommendedDuplicate, onDismissDuplicateGroup,
+  sortableRef, sortableStyle, sortableListeners, sortableAttributes, isDragging,
+}) {
+  if (item.type === 'single') {
+    const origIdx = item.idx;
+    return (
+      <div ref={sortableRef} style={sortableStyle}>
+        <Thumbnail
+          origIdx={origIdx}
+          position={flatPositions.get(origIdx) ?? 0}
+          url={thumbUrls.get(origIdx)}
+          warning={warningsByIndex.get(origIdx) || null}
+          duplicateInfo={duplicateMembership.get(origIdx) || null}
+          rotation={userRotation.get(origIdx) || 0}
+          isUncertain={uncertainSet?.has?.(origIdx) || false}
+          cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
+          onRemove={() => onRemove(origIdx)}
+          onRotate={() => onRotate(origIdx)}
+          onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
+          onOpenPopup={() => onOpenPopup(origIdx)}
+          onContextMenu={(e) => onContextMenu(e, origIdx)}
+          onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+          sortable={sortableListeners ? {
+            listeners: sortableListeners,
+            attributes: sortableAttributes,
+            isDragging,
+          } : null}
+        />
+      </div>
+    );
+  }
+
+  // Group: rendering wrapper + multiple thumbnails inside (not individually
+  // sortable — group drags as one unit).
+  return (
+    <div
+      ref={sortableRef}
+      style={sortableStyle}
+      className={
+        'image-merge-panel__dup-group' +
+        (isDragging ? ' image-merge-panel__dup-group--dragging' : '')
+      }
+    >
+      <div className="image-merge-panel__dup-group-header">
+        <span className="image-merge-panel__dup-group-label">
+          Дублікати ({item.indices.length}) — рекомендую залишити зелений
+        </span>
+        <button
+          type="button"
+          className="image-merge-panel__dup-group-dismiss"
+          onClick={() => onDismissDuplicateGroup(item.gIdx)}
+          title="Якщо це насправді різні сторінки — розгрупувати"
+        >
+          <X size={12} />
+          Це не дублікати
+        </button>
+      </div>
+      <div
+        className="image-merge-panel__dup-group-body"
+        {...(sortableListeners || {})}
+        {...(sortableAttributes || {})}
+      >
+        {item.indices.map((origIdx) => (
+          <Thumbnail
+            key={origIdx}
+            origIdx={origIdx}
+            position={flatPositions.get(origIdx) ?? 0}
+            url={thumbUrls.get(origIdx)}
+            warning={warningsByIndex.get(origIdx) || null}
+            duplicateInfo={duplicateMembership.get(origIdx) || null}
+            rotation={userRotation.get(origIdx) || 0}
+            isUncertain={uncertainSet?.has?.(origIdx) || false}
+            cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
+            onRemove={() => onRemove(origIdx)}
+            onRotate={() => onRotate(origIdx)}
+            onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
+            onOpenPopup={() => onOpenPopup(origIdx)}
+            onContextMenu={(e) => onContextMenu(e, origIdx)}
+            onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+            sortable={null}
+            inGroup={true}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1379,7 +1601,7 @@ async function rebuildFromOcrResults({
 
 function Thumbnail({
   origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
-  cropState,
+  cropState, inGroup = false,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
 }) {
   const isDuplicateRecommended = duplicateInfo && duplicateInfo.recommended === origIdx;
@@ -1388,9 +1610,10 @@ function Thumbnail({
   const cls =
     'image-merge-panel__thumb' +
     (warning ? ' image-merge-panel__thumb--warn' : '') +
-    (duplicateInfo ? ' image-merge-panel__thumb--dup' : '') +
+    (duplicateInfo && !inGroup ? ' image-merge-panel__thumb--dup' : '') +
     (isDuplicateRecommended ? ' image-merge-panel__thumb--dup-recommended' : '') +
-    (isDuplicateOther ? ' image-merge-panel__thumb--dup-other' : '') +
+    (isDuplicateOther && !inGroup ? ' image-merge-panel__thumb--dup-other' : '') +
+    (inGroup ? ' image-merge-panel__thumb--in-group' : '') +
     (sortable?.isDragging ? ' image-merge-panel__thumb--dragging' : '');
 
   const handleClick = (e) => {
@@ -1504,7 +1727,7 @@ function Thumbnail({
         </button>
       </div>
 
-      {duplicateInfo && isDuplicateRecommended && (
+      {duplicateInfo && isDuplicateRecommended && !inGroup && (
         <button
           type="button"
           className="image-merge-panel__thumb-keep-dup"

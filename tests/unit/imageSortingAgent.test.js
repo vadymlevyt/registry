@@ -474,6 +474,51 @@ describe('imageSortingAgent.sortImages — duplicates', () => {
     expect(result.fallback).toBe(true);
     expect(result.duplicates).toEqual([]);
   });
+
+  // ── Stable ordering (TASK B fix Problem 4) ───────────────────────────
+  // Адвокат натиснув «Створити PDF» двічі для однакового набору фото.
+  // Очікуємо що duplicates групи у однаковому порядку з однаковим
+  // внутрішнім сортуванням. AI може повернути порядок як завгодно — ми
+  // нормалізуємо.
+
+  it('group items сортуються за original index (deterministic)', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1, 2, 3, 4, 5],
+      duplicates: [
+        { group: [5, 2, 4], recommended: 2, reason: 'mixed order from AI' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [0, 1, 2, 3, 4, 5].map((i) => imageItem(i, `t${i}`));
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toHaveLength(1);
+    // Сортовано за index — recommended може бути будь-яким з групи
+    expect(result.duplicates[0].group).toEqual([2, 4, 5]);
+    expect(result.duplicates[0].recommended).toBe(2);
+  });
+
+  it('duplicates[] масив сортується за min(group)', async () => {
+    const callApi = mockApiResponse({
+      order: [0, 1, 2, 3, 4, 5, 6, 7],
+      duplicates: [
+        { group: [6, 7], recommended: 6, reason: 'high indices first' },
+        { group: [2, 3], recommended: 2, reason: 'low indices second' },
+        { group: [4, 5], recommended: 4, reason: 'mid' },
+      ],
+      warnings: [],
+      missing: null,
+      suggestedName: 'X',
+    });
+    const items = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => imageItem(i, `t${i}`));
+    const result = await sortImages(items, { apiKey: 'x', callApi });
+    expect(result.duplicates).toHaveLength(3);
+    // Сортовано за min(group) — [2,3], [4,5], [6,7]
+    expect(result.duplicates[0].group).toEqual([2, 3]);
+    expect(result.duplicates[1].group).toEqual([4, 5]);
+    expect(result.duplicates[2].group).toEqual([6, 7]);
+  });
 });
 
 // ── sortImages: API errors ────────────────────────────────────────────────

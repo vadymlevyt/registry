@@ -450,6 +450,11 @@ export async function sortImages(items, options = {}) {
   // Валідація duplicates: кожна група має мати ≥2 валідних індексів, recommended
   // мусить бути всередині group. Невалідні групи фільтруємо. Перетин між групами
   // (один index у двох групах) — теж невалідно, лишаємо першу групу.
+  //
+  // STABLE ORDERING (TASK B fix Problem 4): нормалізуємо результат для
+  // детермінізму (однаковий вхід → однаковий вихід через повторні запуски).
+  // - cleanGroup сортується за original index (не за порядком у відповіді AI)
+  // - duplicates[] сортуються за min(group) — група з меншим min першою
   const duplicates = [];
   const seenInDuplicate = new Set();
   if (Array.isArray(parsed.duplicates)) {
@@ -465,6 +470,8 @@ export async function sortImages(items, options = {}) {
         cleanGroup.push(v);
       }
       if (cleanGroup.length < 2) continue;
+      // Стабільний порядок у групі — за original index
+      cleanGroup.sort((a, b) => a - b);
       let recommended = Number.isInteger(d.recommended) && cleanGroup.includes(d.recommended)
         ? d.recommended
         : cleanGroup[0];
@@ -475,6 +482,9 @@ export async function sortImages(items, options = {}) {
       duplicates.push({ group: cleanGroup, recommended, reason });
     }
   }
+  // Стабільний порядок груп — за min(group). Гарантує що у preview рендерер
+  // отримує групи у тому самому порядку при кожному запуску.
+  duplicates.sort((a, b) => Math.min(...a.group) - Math.min(...b.group));
 
   const missing = typeof parsed.missing === 'string' && parsed.missing.trim() ? parsed.missing.trim() : null;
 

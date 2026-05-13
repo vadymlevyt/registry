@@ -356,18 +356,97 @@
   border-width: 2px;
 }
 
-/* Дублікати — жовта рамка на ВСІХ членах групи */
+/* Дублікати legacy — жовта рамка на ВСІХ членах групи (для випадку
+   коли не активна групувальна обгортка, see image-merge-panel__dup-group) */
 .image-merge-panel__thumb--dup {
   border-color: #eab308;
   border-width: 2px;
   background: rgba(254, 240, 138, 0.18);
 }
 
-/* Recommended варіант у групі — зелений border ДОДАТКОВО */
+/* Recommended варіант у групі — зелений border ДОДАТКОВО.
+   Працює і для legacy --dup, і для нових групових (--in-group). */
 .image-merge-panel__thumb--dup-recommended {
   border-color: #16a34a;
   border-width: 3px;
   box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.35);
+}
+
+/* Внутрішній thumbnail групи — без власної жовтої рамки (вона на групі) */
+.image-merge-panel__thumb--in-group {
+  border-color: transparent;
+  background: transparent;
+}
+.image-merge-panel__thumb--in-group:hover {
+  border-color: var(--color-accent);
+}
+
+/* ── Duplicate group card (TASK B fix Problem 4) ─────────────────────── */
+/* Spans кілька колонок grid'а. Жовта рамка навколо всієї групи. Header з
+   ярликом + кнопка «Це не дублікати». Drag-and-drop переміщує всю групу. */
+.image-merge-panel__dup-group {
+  border: 2px solid #eab308;
+  background: rgba(254, 240, 138, 0.18);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+}
+
+.image-merge-panel__dup-group--dragging {
+  opacity: 0.55;
+  z-index: 10;
+}
+
+.image-merge-panel__dup-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-xs);
+  color: #92400e;
+  font-weight: var(--weight-medium);
+}
+
+.image-merge-panel__dup-group-label {
+  flex: 1 1 auto;
+}
+
+.image-merge-panel__dup-group-dismiss {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-surface-1, #fff);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  padding: 3px 8px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.image-merge-panel__dup-group-dismiss:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-accent);
+}
+
+.image-merge-panel__dup-group-body {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  cursor: grab;
+}
+
+.image-merge-panel__dup-group-body:active {
+  cursor: grabbing;
+}
+
+.image-merge-panel__dup-group-body > * {
+  flex: 1 1 0;
+  min-width: 100px;
+  max-width: 100%;
 }
 
 .image-merge-panel__thumb--dragging {
