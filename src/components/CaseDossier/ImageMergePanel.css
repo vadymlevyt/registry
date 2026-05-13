@@ -683,8 +683,13 @@
   }
 }
 
-/* Full-screen variant (TASK B fix Problem 1+5) — займає весь viewport,
-   стандартний mobile-style crop editor (Apple Photos / Google Photos UX) */
+/* Crop-editor popup — responsive (TASK B fix Problem 1+5+sizing) ─────────
+   - Phone (<768px): full-screen 100vw×100vh, без backdrop, без border-radius
+   - Tablet (768-1199px): 80vw × 85vh у центрі, backdrop затемнення
+   - Desktop (1200+px): 70vw × 80vh, max 1200×900, backdrop
+   На всіх розмірах: dark theme (чорний фон, білий текст). */
+
+/* Default (mobile) — overlay = чистий чорний без padding */
 .image-merge-panel__popup-overlay--full {
   padding: 0;
   background: #000;
@@ -697,6 +702,40 @@
   border-radius: 0;
   background: #000;
   color: #fff;
+}
+
+/* Tablet — попап як підняте вікно, темне затемнення довкола */
+@media (min-width: 768px) and (max-width: 1199px) {
+  .image-merge-panel__popup-overlay--full {
+    background: rgba(0, 0, 0, 0.85);
+    padding: var(--space-3);
+  }
+  .image-merge-panel__popup--full {
+    width: 80vw;
+    height: 85vh;
+    max-width: 1000px;
+    max-height: 800px;
+    border-radius: var(--radius-md, 12px);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
+}
+
+/* Desktop — попап з обмеженням max-width щоб не розтягувалось на 4K */
+@media (min-width: 1200px) {
+  .image-merge-panel__popup-overlay--full {
+    background: rgba(0, 0, 0, 0.85);
+    padding: var(--space-3);
+  }
+  .image-merge-panel__popup--full {
+    width: 70vw;
+    height: 80vh;
+    max-width: 1200px;
+    max-height: 900px;
+    border-radius: var(--radius-md, 12px);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+  }
 }
 
 .image-merge-panel__popup-header {
