@@ -1954,13 +1954,26 @@ function PreviewPopup({
   const isLast = position === total - 1;
 
   // ── Straighten slider (TASK B fix Addition 3) ──────────────────────────
-  // Local fineRotation, default 0. Real-time rotation через cropper.rotateImage.
-  // На Apply: якщо fineRotation != 0, отримуємо canvas з cropper (всі transforms
-  // вже застосовані бібліотекою) → blob → onProcessedBlobSave. Це обходить
-  // обмеження нашого rotateImageBlob (тільки кардинальні кути).
-  const [fineRotation, setFineRotation] = useState(0);
+  // ВАЖЛИВО (fix React crash): fineRotation НЕ зберігається у React state.
+  // Раніше mix React-controlled label `{fineRotation}°` + direct DOM mutation
+  // (labelRef.textContent) ламав React reconciliation: React очікував N
+  // child text nodes у span, а DOM мав 1 → `insertBefore` помилка при
+  // наступному render'і.
+  //
+  // Нова стратегія — slider повністю поза React-tree:
+  //   - fineRotationRef — поточне значення (не triggerит re-render)
+  //   - labelRef.textContent — оновлюється напряму, span у JSX порожній
+  //   - resetBtnRef.classList — toggle 'hidden' клас, button завжди у DOM
+  //   - sliderInputRef.value — uncontrolled, set на 0 при reset
+  //   - handleApply читає fineRotationRef.current
+  // PreviewPopup НЕ re-renderиться під час drag'у — DOM стабільна, помилки
+  // insertBefore немає.
+  const fineRotationRef = useRef(0);
   const cropperRef = useRef(null);
   const lastFineRotation = useRef(0);
+  const labelRef = useRef(null);
+  const resetBtnRef = useRef(null);
+  const sliderInputRef = useRef(null);
   // ↻ всередині попапу — instant feedback через cropper.rotateImage(90)
   // плюс update parent userRotation. Цей lock запобігає тому щоб
   // displayUrl effect не регенерував blob URL з нуля (повільно, ремонт
@@ -2069,48 +2082,39 @@ function PreviewPopup({
     return { left: r.x, top: r.y, width: r.width, height: r.height };
   }, [pendingRect, effectiveRect, naturalDims, rotation]);
 
-  // Реалтайм handler для слайдера straighten.
-  // Стратегія (TASK B fix slider smoothness round 2):
-  //   1. label DOM оновлюється через ref у onInput — кожна frame без React
-  //      re-render всього PreviewPopup
-  //   2. cropper.rotateImage(delta) викликається з { transitions: false,
-  //      normalize: false, immediately: true, interaction: false } — пропускає
-  //      внутрішній postprocess/scheduling, прямий state update
-  //   3. rAF batch — батчимо швидкі input events у один frame
-  //   4. setFineRotation викликається тільки коли значення СУТТЄВО змінилось
-  //      (uniformity для reset кнопки візібільності, без re-render-перевантаження)
+  // Slider оновлення UI — все через DOM refs, без React re-render.
+  // Спрацьовує на onInput (continous drag) і не triggerит reconciliation.
   const pendingFineAngleRef = useRef(null);
   const rafIdRef = useRef(null);
-  const labelRef = useRef(null);
-  const sliderInputRef = useRef(null);
 
-  const writeLabel = useCallback((angle) => {
-    if (!labelRef.current) return;
-    const sign = angle > 0 ? '+' : '';
-    labelRef.current.textContent = `${sign}${angle.toFixed(1)}°`;
+  const updateSliderUI = useCallback((angle) => {
+    fineRotationRef.current = angle;
+    if (labelRef.current) {
+      const sign = angle > 0 ? '+' : '';
+      labelRef.current.textContent = `${sign}${angle.toFixed(1)}°`;
+    }
+    if (resetBtnRef.current) {
+      if (angle !== 0) {
+        resetBtnRef.current.classList.remove('image-merge-panel__popup-straighten-reset--hidden');
+      } else {
+        resetBtnRef.current.classList.add('image-merge-panel__popup-straighten-reset--hidden');
+      }
+    }
   }, []);
 
   const handleFineRotationChange = useCallback((newAngle) => {
     pendingFineAngleRef.current = newAngle;
-    // Update label DOM immediately — без React re-render, instant feedback
-    writeLabel(newAngle);
+    // Instant DOM update (label + reset button visibility) без re-render
+    updateSliderUI(newAngle);
     if (rafIdRef.current != null) return; // already scheduled this frame
     rafIdRef.current = requestAnimationFrame(() => {
       rafIdRef.current = null;
       const target = pendingFineAngleRef.current;
       pendingFineAngleRef.current = null;
       if (target == null) return;
-      // Lazy update React state: only коли target ВИДНО різниться від current
-      // state (наприклад reset button visibility перемикається 0→non-0).
-      setFineRotation((cur) => {
-        if (cur === 0 && target !== 0) return target;
-        if (cur !== 0 && target === 0) return target;
-        return cur; // не triггерим re-render у середині drag'у
-      });
       const delta = target - lastFineRotation.current;
       if (Math.abs(delta) > 0.0001 && cropperRef.current) {
         try {
-          // Aggressive options — пропускаємо все що можна, прямий state update
           cropperRef.current.rotateImage(delta, {
             transitions: false,
             normalize: false,
@@ -2123,14 +2127,7 @@ function PreviewPopup({
         lastFineRotation.current = target;
       }
     });
-  }, [writeLabel]);
-
-  // Onkey-up / on-release commit handler — повний sync state з final value.
-  const commitFineRotation = useCallback((finalAngle) => {
-    setFineRotation(finalAngle);
-    pendingFineAngleRef.current = null;
-    writeLabel(finalAngle);
-  }, [writeLabel]);
+  }, [updateSliderUI]);
 
   // Cleanup pending rAF на unmount
   useEffect(() => {
@@ -2154,19 +2151,23 @@ function PreviewPopup({
   }, [onRotate]);
 
   const resetFineRotation = useCallback(() => {
-    // Set uncontrolled slider input back to 0, потім rotate + commit
     if (sliderInputRef.current) sliderInputRef.current.value = '0';
     handleFineRotationChange(0);
-    commitFineRotation(0);
-  }, [handleFineRotationChange, commitFineRotation]);
+  }, [handleFineRotationChange]);
 
-  // Скидаємо fineRotation коли popup перевідкривається (key change ремонтує
-  // компонент, але refs можуть лишатись стейл — захист).
+  // Скидаємо fineRotation коли popup перевідкривається АБО коли slider
+  // ремонтується (frameVisible toggle). Без React state — через DOM refs
+  // (slider input value, label text, reset button class).
   useEffect(() => {
     lastFineRotation.current = 0;
-    setFineRotation(0);
+    fineRotationRef.current = 0;
     pendingFineAngleRef.current = null;
-  }, [origIdx]);
+    if (sliderInputRef.current) sliderInputRef.current.value = '0';
+    if (labelRef.current) labelRef.current.textContent = '0.0°';
+    if (resetBtnRef.current) {
+      resetBtnRef.current.classList.add('image-merge-panel__popup-straighten-reset--hidden');
+    }
+  }, [origIdx, frameVisible]);
 
   // ✓ Apply — три гілки залежно від стану:
   //   1. fineRotation != 0 → беремо canvas з cropper (всі трансформи вже
@@ -2180,6 +2181,7 @@ function PreviewPopup({
       onClose();
       return;
     }
+    const fineRotation = fineRotationRef.current;
     if (fineRotation !== 0 && cropperRef.current && onProcessedBlobSave) {
       try {
         const canvas = cropperRef.current.getCanvas({
@@ -2203,7 +2205,7 @@ function PreviewPopup({
       onCropOverride(pendingRect);
     }
     onClose();
-  }, [frameVisible, fineRotation, pendingRect, rotation, onCropOverride, onProcessedBlobSave, onClose]);
+  }, [frameVisible, pendingRect, rotation, onCropOverride, onProcessedBlobSave, onClose]);
 
   // ✂️ Toggle frame visibility (одразу у parent state — швидкий feedback).
   // Якщо нема rect взагалі — створюємо центральний 80×80% rect.
@@ -2293,12 +2295,16 @@ function PreviewPopup({
           />
         </div>
 
-        {/* Straighten slider — для дрібного вирівнювання (-45° до +45°).
-            Видимий тільки коли cropper активний. ↻ кнопка нижче для повних
-            90° лишається окремо.
-            Slider використовує defaultValue (uncontrolled) щоб уникнути
-            controlled-input лагів. Live update через ref. Final commit
-            на release через onChange/onPointerUp. */}
+        {/* Straighten slider (-45° до +45°) — повністю DOM-керований щоб
+            уникнути React reconciliation crashes від частих state updates.
+            Mount/unmount controlled by frameVisible (rare event), внутрішні
+            оновлення (label text, reset button class, slider value) — через
+            refs (updateSliderUI). PreviewPopup НЕ re-renderиться під час
+            drag'у, що виключає insertBefore-DOM конфлікти.
+
+            Static JSX content для label (`0.0°`) і reset button (з hidden
+            класом за замовчуванням) — React НЕ торкається їх text nodes
+            і visibility після mount. */}
         {frameVisible && (
           <div className="image-merge-panel__popup-straighten">
             <span className="image-merge-panel__popup-straighten-label">
@@ -2313,8 +2319,6 @@ function PreviewPopup({
               defaultValue={0}
               key={origIdx}
               onInput={(e) => handleFineRotationChange(parseFloat(e.target.value))}
-              onChange={(e) => commitFineRotation(parseFloat(e.target.value))}
-              onPointerUp={(e) => commitFineRotation(parseFloat(e.currentTarget.value))}
               className="image-merge-panel__popup-straighten-input"
               aria-label="Вирівняти фото"
             />
@@ -2322,18 +2326,17 @@ function PreviewPopup({
               ref={labelRef}
               className="image-merge-panel__popup-straighten-value"
             >
-              {fineRotation > 0 ? '+' : ''}{fineRotation.toFixed(1)}°
+              0.0°
             </span>
-            {fineRotation !== 0 && (
-              <button
-                type="button"
-                className="image-merge-panel__popup-straighten-reset"
-                onClick={resetFineRotation}
-                title="Скинути до 0°"
-              >
-                Скинути
-              </button>
-            )}
+            <button
+              ref={resetBtnRef}
+              type="button"
+              className="image-merge-panel__popup-straighten-reset image-merge-panel__popup-straighten-reset--hidden"
+              onClick={resetFineRotation}
+              title="Скинути до 0°"
+            >
+              Скинути
+            </button>
           </div>
         )}
 

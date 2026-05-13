@@ -1067,6 +1067,13 @@
   background: rgba(255, 255, 255, 0.16);
 }
 
+/* Hidden state via class toggle, не unmount — щоб React reconciliation
+   не торкалась цього subtree під час slider drag'у. */
+.image-merge-panel__popup-straighten-reset--hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* Bottom bar — фіксована висота 80px (+safe-area inset) щоб кнопки
    управління ВЖЕ ВИДИМІ. flex-shrink: 0 не дає cropper area витіснити. */
 .image-merge-panel__popup-toolbar {
