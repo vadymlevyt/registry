@@ -381,6 +381,31 @@
   border-color: var(--color-accent);
 }
 
+/* Processed thumbnail (TASK B fix Problem 1 round 2) — обрізку застосовано.
+   Зелена рамка показує адвокату що ця сторінка вже оброблена і піде у PDF
+   у обрізаному вигляді. */
+.image-merge-panel__thumb--processed {
+  border-color: #16a34a;
+  border-width: 2px;
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.25);
+}
+
+.image-merge-panel__thumb-processed-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  background: #16a34a;
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  z-index: 1;
+}
+
 /* ── Duplicate group card (TASK B fix Problem 4) ─────────────────────── */
 /* Spans кілька колонок grid'а. Жовта рамка навколо всієї групи. Header з
    ярликом + кнопка «Це не дублікати». Drag-and-drop переміщує всю групу. */

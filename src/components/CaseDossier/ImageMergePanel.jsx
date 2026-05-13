@@ -119,6 +119,12 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   // У rebuild цей blob використовується напряму (зі delta userRotation якщо
   // адвокат повертав ↻ після Apply).
   const [processedBlobs, setProcessedBlobs] = useState(() => new Map());
+  // previewUrls (TASK B fix Problem 1 round 2): URL до обрізаного фото для
+  // thumbnail. Генерується автоматично коли cropOverride або processedBlob
+  // змінюється для idx. Дає візуальний фідбек що адвокат застосував обрізку.
+  // Map<origIdx, string>. Старі URL revoke'аються при заміні чи на cleanup.
+  const [previewUrls, setPreviewUrls] = useState(() => new Map());
+  const previewUrlsToRevokeRef = useRef([]);
   // Debug toggle (TASK B fix 1 round 2) — увімкнення показує адвокату
   // діагностичну інформацію orientation у toast info після склейки. Перський
   // зберігається у localStorage щоб адвокат не вмикав щоразу.
@@ -145,8 +151,87 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         try { URL.revokeObjectURL(url); } catch {}
       }
       thumbUrlsRef.current.clear();
+      // Cleanup preview URLs (acumulated через previewUrls life)
+      for (const u of previewUrlsToRevokeRef.current) {
+        try { URL.revokeObjectURL(u); } catch {}
+      }
+      previewUrlsToRevokeRef.current = [];
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Preview URL generation (TASK B fix Problem 1 round 2) ──────────────
+  // Коли cropOverride/processedBlob/userRotation змінюється для idx —
+  // регенеруємо preview blob (cropped + rotated) і зберігаємо URL для
+  // thumbnail. Адвокат бачить обрізаний/повернутий результат у preview
+  // одразу після ✓ Готово, а не лише ✂️ icon.
+  //
+  // Стратегія:
+  //   1. Збираємо набір "потребує preview": idx з processedBlob АБО з
+  //      cropOverride (без processedBlob)
+  //   2. Для кожного — async generation: processed → rotation delta only;
+  //      cropOverride → cropImageBlob + rotateImageBlob (userRotation)
+  //   3. Атомарно встановлюємо новий previewUrls Map; старі URL revoke'аються
+  //      окремо через previewUrlsToRevokeRef (delayed), щоб displayed image
+  //      не зникало під час swap.
+  //   4. Cropper proposals (cropProposals без override) НЕ генерують preview —
+  //      адвокат їх ще не підтвердив.
+  useEffect(() => {
+    const realFiles = pipelineResult?.realFiles;
+    if (!Array.isArray(realFiles) || realFiles.length === 0) return;
+
+    const targets = new Set();
+    for (const idx of processedBlobs.keys()) targets.add(idx);
+    for (const idx of cropOverrides.keys()) targets.add(idx);
+
+    let cancelled = false;
+    (async () => {
+      const { cropImageBlob } = await import('../../services/sortation/cropHelper.js');
+      const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
+      const newUrls = new Map();
+      for (const idx of targets) {
+        if (cancelled) break;
+        try {
+          let blob;
+          const proc = processedBlobs.get(idx);
+          if (proc?.blob instanceof Blob) {
+            const userDeg = userRotation.get(idx) || 0;
+            const baseRot = proc.baseUserRotation || 0;
+            const delta = ((userDeg - baseRot) % 360 + 360) % 360;
+            blob = delta !== 0 ? await rotateImageBlob(proc.blob, delta) : proc.blob;
+          } else {
+            const rect = cropOverrides.get(idx);
+            const rawFile = realFiles[idx];
+            if (!rect || !rawFile) continue;
+            const userDeg = userRotation.get(idx) || 0;
+            const cropped = await cropImageBlob(rawFile, rect);
+            blob = userDeg !== 0 ? await rotateImageBlob(cropped, userDeg) : cropped;
+          }
+          if (cancelled) break;
+          newUrls.set(idx, URL.createObjectURL(blob));
+        } catch (e) {
+          console.warn('[preview] generation failed for idx', idx, e);
+        }
+      }
+      if (cancelled) {
+        for (const u of newUrls.values()) { try { URL.revokeObjectURL(u); } catch {} }
+        return;
+      }
+      // Replace previewUrls atomically. Old URLs queued for delayed revoke
+      // (after React paints with new URLs).
+      setPreviewUrls((prev) => {
+        for (const [, oldUrl] of prev) previewUrlsToRevokeRef.current.push(oldUrl);
+        return newUrls;
+      });
+      // Delayed revoke (next tick — після того як React updated DOM)
+      setTimeout(() => {
+        const toRevoke = previewUrlsToRevokeRef.current;
+        previewUrlsToRevokeRef.current = [];
+        for (const u of toRevoke) { try { URL.revokeObjectURL(u); } catch {} }
+      }, 1000);
+    })();
+    return () => { cancelled = true; };
+  }, [cropOverrides, processedBlobs, userRotation, pipelineResult?.realFiles]);
 
   const handleDeviceFiles = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -266,6 +351,12 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setCropDisabled(new Set());
       setDismissedDuplicateGroupIds(new Set());
       setProcessedBlobs(new Map());
+      // Revoke попередніх preview URL якщо були (функціональний setState
+       // щоб отримати latest map)
+      setPreviewUrls((prev) => {
+        for (const u of prev.values()) { try { URL.revokeObjectURL(u); } catch {} }
+        return new Map();
+      });
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
@@ -568,6 +659,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         pipelineResult={pipelineResult}
         orderedIndices={orderedIndices}
         thumbUrls={thumbUrlsRef.current}
+        previewUrls={previewUrls}
         realFiles={pipelineResult?.realFiles || []}
         userRotation={userRotation}
         cropProposals={cropProposals}
@@ -760,6 +852,7 @@ function PreviewView({
   pipelineResult,
   orderedIndices,
   thumbUrls,
+  previewUrls,
   realFiles,
   userRotation,
   cropProposals,
@@ -1006,6 +1099,7 @@ function PreviewView({
         displayItems={displayItems}
         orderedIndices={orderedIndices}
         thumbUrls={thumbUrls}
+        previewUrls={previewUrls}
         warningsByIndex={warningsByIndex}
         duplicateMembership={duplicateMembership}
         userRotation={userRotation}
@@ -1218,6 +1312,7 @@ function PreviewView({
 function SortableGrid({
   displayItems,
   thumbUrls,
+  previewUrls,
   warningsByIndex,
   duplicateMembership,
   userRotation,
@@ -1288,6 +1383,7 @@ function SortableGrid({
             key={item.id}
             item={item}
             thumbUrls={thumbUrls}
+            previewUrls={previewUrls}
             warningsByIndex={warningsByIndex}
             duplicateMembership={duplicateMembership}
             userRotation={userRotation}
@@ -1317,6 +1413,7 @@ function SortableGrid({
       dndReady={dndReady}
       displayItems={displayItems}
       thumbUrls={thumbUrls}
+      previewUrls={previewUrls}
       warningsByIndex={warningsByIndex}
       duplicateMembership={duplicateMembership}
       userRotation={userRotation}
@@ -1336,7 +1433,7 @@ function SortableGrid({
 }
 
 function DndGrid({
-  dndReady, displayItems, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
+  dndReady, displayItems, thumbUrls, previewUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
   cropStateByIndex, flatPositions,
   onReorder, onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup,
@@ -1373,6 +1470,7 @@ function DndGrid({
               dndReady={dndReady}
               item={item}
               thumbUrls={thumbUrls}
+              previewUrls={previewUrls}
               warningsByIndex={warningsByIndex}
               duplicateMembership={duplicateMembership}
               userRotation={userRotation}
@@ -1395,7 +1493,7 @@ function DndGrid({
 }
 
 function SortableItem({
-  dndReady, item, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
+  dndReady, item, thumbUrls, previewUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
   cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup,
@@ -1412,6 +1510,7 @@ function SortableItem({
     <RenderItem
       item={item}
       thumbUrls={thumbUrls}
+      previewUrls={previewUrls}
       warningsByIndex={warningsByIndex}
       duplicateMembership={duplicateMembership}
       userRotation={userRotation}
@@ -1436,7 +1535,7 @@ function SortableItem({
 
 // Render single thumbnail OR group card with multiple thumbnails inside.
 function RenderItem({
-  item, thumbUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
+  item, thumbUrls, previewUrls, warningsByIndex, duplicateMembership, userRotation, uncertainSet,
   cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup,
@@ -1444,12 +1543,16 @@ function RenderItem({
 }) {
   if (item.type === 'single') {
     const origIdx = item.idx;
+    const previewUrl = previewUrls?.get?.(origIdx);
+    const displayUrl = previewUrl || thumbUrls.get(origIdx);
+    const isProcessed = !!previewUrl;
     return (
       <div ref={sortableRef} style={sortableStyle}>
         <Thumbnail
           origIdx={origIdx}
           position={flatPositions.get(origIdx) ?? 0}
-          url={thumbUrls.get(origIdx)}
+          url={displayUrl}
+          isProcessed={isProcessed}
           warning={warningsByIndex.get(origIdx) || null}
           duplicateInfo={duplicateMembership.get(origIdx) || null}
           rotation={userRotation.get(origIdx) || 0}
@@ -1501,27 +1604,31 @@ function RenderItem({
         {...(sortableListeners || {})}
         {...(sortableAttributes || {})}
       >
-        {item.indices.map((origIdx) => (
-          <Thumbnail
-            key={origIdx}
-            origIdx={origIdx}
-            position={flatPositions.get(origIdx) ?? 0}
-            url={thumbUrls.get(origIdx)}
-            warning={warningsByIndex.get(origIdx) || null}
-            duplicateInfo={duplicateMembership.get(origIdx) || null}
-            rotation={userRotation.get(origIdx) || 0}
-            isUncertain={uncertainSet?.has?.(origIdx) || false}
-            cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
-            onRemove={() => onRemove(origIdx)}
-            onRotate={() => onRotate(origIdx)}
-            onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
-            onOpenPopup={() => onOpenPopup(origIdx)}
-            onContextMenu={(e) => onContextMenu(e, origIdx)}
-            onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
-            sortable={null}
-            inGroup={true}
-          />
-        ))}
+        {item.indices.map((origIdx) => {
+          const previewUrl = previewUrls?.get?.(origIdx);
+          return (
+            <Thumbnail
+              key={origIdx}
+              origIdx={origIdx}
+              position={flatPositions.get(origIdx) ?? 0}
+              url={previewUrl || thumbUrls.get(origIdx)}
+              isProcessed={!!previewUrl}
+              warning={warningsByIndex.get(origIdx) || null}
+              duplicateInfo={duplicateMembership.get(origIdx) || null}
+              rotation={userRotation.get(origIdx) || 0}
+              isUncertain={uncertainSet?.has?.(origIdx) || false}
+              cropState={cropStateByIndex?.get?.(origIdx) || 'none'}
+              onRemove={() => onRemove(origIdx)}
+              onRotate={() => onRotate(origIdx)}
+              onToggleCropDisabled={() => onToggleCropDisabled(origIdx)}
+              onOpenPopup={() => onOpenPopup(origIdx)}
+              onContextMenu={(e) => onContextMenu(e, origIdx)}
+              onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+              sortable={null}
+              inGroup={true}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -1657,7 +1764,7 @@ async function rebuildFromOcrResults({
 // ── Thumbnail ──────────────────────────────────────────────────────────────
 
 function Thumbnail({
-  origIdx, position, url, warning, duplicateInfo, rotation, isUncertain,
+  origIdx, position, url, isProcessed = false, warning, duplicateInfo, rotation, isUncertain,
   cropState, inGroup = false,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
 }) {
@@ -1671,6 +1778,7 @@ function Thumbnail({
     (isDuplicateRecommended ? ' image-merge-panel__thumb--dup-recommended' : '') +
     (isDuplicateOther && !inGroup ? ' image-merge-panel__thumb--dup-other' : '') +
     (inGroup ? ' image-merge-panel__thumb--in-group' : '') +
+    (isProcessed ? ' image-merge-panel__thumb--processed' : '') +
     (sortable?.isDragging ? ' image-merge-panel__thumb--dragging' : '');
 
   const handleClick = (e) => {
@@ -1699,7 +1807,9 @@ function Thumbnail({
             src={url}
             alt={`Сторінка ${position + 1}`}
             className="image-merge-panel__thumb-img"
-            style={rotation ? { transform: `rotate(${rotation}deg)` } : undefined}
+            // isProcessed → rotation вже baked у preview blob (не накладаємо CSS).
+            // !isProcessed → preview = raw → застосовуємо CSS rotation для UX feedback.
+            style={(!isProcessed && rotation) ? { transform: `rotate(${rotation}deg)` } : undefined}
           />
         ) : (
           <div className="image-merge-panel__thumb-placeholder">
@@ -1707,6 +1817,11 @@ function Thumbnail({
           </div>
         )}
         <span className="image-merge-panel__thumb-pos">#{position + 1}</span>
+        {isProcessed && (
+          <span className="image-merge-panel__thumb-processed-badge" title="Обрізку застосовано">
+            <Check size={11} />
+          </span>
+        )}
         {isDuplicateRecommended && (
           <span className="image-merge-panel__thumb-dup-badge image-merge-panel__thumb-dup-badge--recommended">
             <Check size={12} />
@@ -1846,6 +1961,14 @@ function PreviewPopup({
   const [fineRotation, setFineRotation] = useState(0);
   const cropperRef = useRef(null);
   const lastFineRotation = useRef(0);
+  // ↻ всередині попапу — instant feedback через cropper.rotateImage(90)
+  // плюс update parent userRotation. Цей lock запобігає тому щоб
+  // displayUrl effect не регенерував blob URL з нуля (повільно, ремонт
+  // cropper'а, втрачає cropper internal rotation).
+  // Один тап ↻ → lock=true → effect skip → cropper instant rotate.
+  // Зовнішні зміни rotation (теоретично — якщо архітектурно з'являться)
+  // НЕ ставлять lock → effect виконується.
+  const popupRotationLockRef = useRef(false);
 
   // Природні розміри оригіналу — для конверсії coords ↔ rotated space.
   const [naturalDims, setNaturalDims] = useState(null);
@@ -1873,6 +1996,13 @@ function PreviewPopup({
   //   3. Інакше → raw URL.
   const [displayUrl, setDisplayUrl] = useState(url);
   useEffect(() => {
+    // TASK B fix Problem 3: ↻ всередині попапу вже зробив cropper.rotateImage(90).
+    // Регенерація blob URL і ремонт cropper'а тут була б подвоєнням обертання
+    // (cropper показав би +180° замість +90°). Lock пропускає цей цикл.
+    if (popupRotationLockRef.current) {
+      popupRotationLockRef.current = false;
+      return;
+    }
     let cancelled = false;
     let createdUrl = null;
     (async () => {
@@ -1941,16 +2071,55 @@ function PreviewPopup({
 
   // Реалтайм handler для слайдера straighten — обертає cropper'ом БЕЗ
   // регенерації blob URL (щоб slider працював плавно).
+  // rAF throttle (TASK B fix Problem 2): batches rapid input events into
+  // ~60Hz frame updates. Без throttle, кожен input event тригерив
+  // cropper.rotateImage синхронно — стрибки на повільному пристрої.
+  const pendingFineAngleRef = useRef(null);
+  const rafIdRef = useRef(null);
   const handleFineRotationChange = useCallback((newAngle) => {
-    setFineRotation(newAngle);
+    pendingFineAngleRef.current = newAngle;
+    if (rafIdRef.current != null) return; // already scheduled this frame
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      const target = pendingFineAngleRef.current;
+      pendingFineAngleRef.current = null;
+      if (target == null) return;
+      setFineRotation(target);
+      const delta = target - lastFineRotation.current;
+      if (Math.abs(delta) > 0.0001 && cropperRef.current) {
+        try {
+          cropperRef.current.rotateImage(delta, { transitions: false });
+        } catch (e) {
+          try { cropperRef.current.rotateImage(delta); } catch {}
+        }
+        lastFineRotation.current = target;
+      }
+    });
+  }, []);
+
+  // Cleanup pending rAF на unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current != null) {
+        try { cancelAnimationFrame(rafIdRef.current); } catch {}
+        rafIdRef.current = null;
+      }
+    };
+  }, []);
+
+  // ↻ у попапі: миттєво обертає cropper на 90° + оновлює parent userRotation
+  // для persistence (якщо адвокат закриє попап). displayUrl effect skip
+  // через popupRotationLockRef (запобігає подвоєнню обертання).
+  const handleRotateInPopup = useCallback(() => {
     if (cropperRef.current) {
-      const delta = newAngle - lastFineRotation.current;
-      if (Math.abs(delta) > 0.0001) {
-        try { cropperRef.current.rotateImage(delta); } catch (e) {}
-        lastFineRotation.current = newAngle;
+      try { cropperRef.current.rotateImage(90, { transitions: false }); }
+      catch (e) {
+        try { cropperRef.current.rotateImage(90); } catch {}
       }
     }
-  }, []);
+    popupRotationLockRef.current = true;
+    onRotate();
+  }, [onRotate]);
 
   const resetFineRotation = useCallback(() => {
     handleFineRotationChange(0);
@@ -1960,6 +2129,8 @@ function PreviewPopup({
   // компонент, але refs можуть лишатись стейл — захист).
   useEffect(() => {
     lastFineRotation.current = 0;
+    setFineRotation(0);
+    pendingFineAngleRef.current = null;
   }, [origIdx]);
 
   // ✓ Apply — три гілки залежно від стану:
@@ -2136,7 +2307,7 @@ function PreviewPopup({
             <button
               type="button"
               className="image-merge-panel__popup-tool"
-              onClick={onRotate}
+              onClick={handleRotateInPopup}
               title="Повернути на 90° (R)"
             >
               <RotateCw size={18} />
@@ -2249,6 +2420,10 @@ function CropperHost({ cropperRef, displayUrl, initialCoords, frameVisible, onCh
           handlers: true,
           lines: true,
         }}
+        // Transitions ВИМКНЕНІ — для плавного straighten slider'а instant
+        // обертання краще за animation. На pinch-zoom / pan це теж дає
+        // direct feedback без overshoot.
+        transitions={false}
         backgroundClassName="image-merge-panel__cropper-bg"
         className="image-merge-panel__cropper"
         onChange={(cropper) => {
