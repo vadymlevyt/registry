@@ -949,21 +949,31 @@ function PreviewView({
     return m;
   }, [userRotation, processedBlobs, pipelineResult?.realFiles?.length]);
 
-  // Маппінг origIdx → crop state ('none' | 'active' | 'disabled') для UI.
-  // 'none' = немає proposal/override → іконка не показується.
-  // 'active' = є rect і не disabled → іконка яскрава, обрізка буде застосована.
+  // Маппінг origIdx → crop state ('none' | 'active' | 'disabled' | 'applied').
+  // 'none'     = немає proposal/override → іконка не показується.
+  // 'active'   = є rect і не disabled, НЕ applied → сіра ✂️ (стан 2).
   // 'disabled' = адвокат вимкнув → іконка тьмяна, обрізка НЕ застосовується.
+  // 'applied'  = адвокат тапнув ✓ Готово АБО processedBlob через straighten
+  //              → зелена ✓ замість ✂️. Sources of truth: cropAppliedSet
+  //              (явний крок адвоката) і processedBlobs (canvas-baked crop).
   const cropStateByIndex = useMemo(() => {
     const map = new Map();
     const allIds = new Set([
       ...(cropProposals?.keys?.() || []),
       ...(cropOverrides?.keys?.() || []),
+      ...(processedBlobs?.keys?.() || []),
     ]);
     for (const idx of allIds) {
-      map.set(idx, cropDisabled?.has?.(idx) ? 'disabled' : 'active');
+      if (cropAppliedSet?.has?.(idx) || processedBlobs?.has?.(idx)) {
+        map.set(idx, 'applied');
+      } else if (cropDisabled?.has?.(idx)) {
+        map.set(idx, 'disabled');
+      } else {
+        map.set(idx, 'active');
+      }
     }
     return map;
-  }, [cropProposals, cropOverrides, cropDisabled]);
+  }, [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs]);
 
   const activeCropCount = useMemo(() => {
     let n = 0;
@@ -1354,7 +1364,7 @@ function PreviewView({
           onPrev={() => handlePopupNav(-1)}
           onNext={() => handlePopupNav(1)}
           onRotate={() => onRotate(popupOrigIdx)}
-          onCropOverride={(rect) => onCropOverride(popupOrigIdx, rect)}
+          onCropOverride={(rect, opts) => onCropOverride(popupOrigIdx, rect, opts)}
           onToggleCropDisabled={() => onToggleCropDisabled(popupOrigIdx)}
           onRemove={() => {
             const cur = popupOrigIdx;
@@ -1625,6 +1635,9 @@ function RenderItem({
     const origIdx = item.idx;
     const previewUrl = previewUrls?.get?.(origIdx);
     const displayUrl = previewUrl || thumbUrls.get(origIdx);
+    // isProcessed — preview blob існує (auto-rotation АБО crop запечений).
+    // Залишений тільки для CSS; зелена ✓ керується cropState === 'applied'
+    // (одне джерело правди у cropStateByIndex).
     const isProcessed = !!previewUrl;
     return (
       <div ref={sortableRef} style={sortableStyle}>
@@ -1842,6 +1855,11 @@ function Thumbnail({
   const isDuplicateRecommended = duplicateInfo && duplicateInfo.recommended === origIdx;
   const isDuplicateOther = duplicateInfo && duplicateInfo.recommended !== origIdx;
 
+  // cropApplied — єдине джерело правди для зеленого індикатора. cropState
+  // === 'applied' встановлюється у cropStateByIndex коли cropAppliedSet.has
+  // або processedBlobs.has — тобто адвокат явно тапнув ✓ Готово АБО straighten
+  // canvas baked повний результат.
+  const cropApplied = cropState === 'applied';
   const cls =
     'image-merge-panel__thumb' +
     (warning ? ' image-merge-panel__thumb--warn' : '') +
@@ -1849,7 +1867,7 @@ function Thumbnail({
     (isDuplicateRecommended ? ' image-merge-panel__thumb--dup-recommended' : '') +
     (isDuplicateOther && !inGroup ? ' image-merge-panel__thumb--dup-other' : '') +
     (inGroup ? ' image-merge-panel__thumb--in-group' : '') +
-    (isProcessed ? ' image-merge-panel__thumb--processed' : '') +
+    (cropApplied ? ' image-merge-panel__thumb--processed' : '') +
     (sortable?.isDragging ? ' image-merge-panel__thumb--dragging' : '');
 
   const handleClick = (e) => {
@@ -1892,7 +1910,7 @@ function Thumbnail({
           </div>
         )}
         <span className="image-merge-panel__thumb-pos">#{position + 1}</span>
-        {isProcessed && (
+        {cropApplied && (
           <span className="image-merge-panel__thumb-processed-badge" title="Обрізку застосовано">
             <Check size={11} />
           </span>
@@ -1913,7 +1931,10 @@ function Thumbnail({
             <AlertTriangle size={10} /> Перевір орієнтацію
           </span>
         )}
-        {cropState && cropState !== 'none' && (
+        {/* ✂️ показуємо ТІЛЬКИ у станах 'active' (AI/manual frame не applied)
+            і 'disabled'. При 'applied' замість ✂️ показується зелена ✓ вище.
+            Один індикатор у певний момент — стан користувацький однозначний. */}
+        {(cropState === 'active' || cropState === 'disabled') && (
           <button
             type="button"
             className={
@@ -1926,7 +1947,7 @@ function Thumbnail({
             }}
             title={
               cropState === 'active'
-                ? 'AI пропонує обрізку. Тап — вимкнути для цього фото.'
+                ? 'Є рамка обрізки. Тап — вимкнути для цього фото.'
                 : 'Обрізку вимкнено. Тап — увімкнути назад.'
             }
             aria-label="Перемкнути обрізку"
@@ -2340,9 +2361,17 @@ function PreviewPopup({
     onClose();
   }, [pendingRect, frameVisible, onCropOverride, onClose]);
 
-  // ✂️ Toggle frame visibility (одразу у parent state — швидкий feedback).
-  // Якщо нема rect взагалі — створюємо центральний 80×80% rect.
+  // ✂️ Toggle frame:
+  //   cropApplied=true → "розблокувати редагування" (clear applied,
+  //     зберігаємо rect; frame повертається на повне фото).
+  //   frameVisible=true → ховаємо через cropDisabled.
+  //   has effectiveRect (disabled) → знімаємо disabled.
+  //   немає rect → створюємо центральну рамку 80%.
   const handleToggleCrop = useCallback(() => {
+    if (cropApplied && effectiveRect) {
+      onCropOverride(effectiveRect, { applied: false });
+      return;
+    }
     if (frameVisible) {
       onToggleCropDisabled();
       return;
@@ -2360,7 +2389,7 @@ function PreviewPopup({
       height: Math.round(naturalDims.height * (1 - 2 * margin)),
     };
     onCropOverride(defaultRect);
-  }, [frameVisible, effectiveRect, naturalDims, onToggleCropDisabled, onCropOverride]);
+  }, [cropApplied, frameVisible, effectiveRect, naturalDims, onToggleCropDisabled, onCropOverride]);
 
   return (
     <div className="image-merge-panel__popup-overlay image-merge-panel__popup-overlay--full" role="dialog" aria-modal="true">
