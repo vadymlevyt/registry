@@ -497,7 +497,12 @@
   height: 140px;
   object-fit: cover;
   display: block;
-  transition: transform 0.2s ease;
+  /* User rotation шарується через CSS transform — анімація 0.3s ease для
+     плавного відгуку при тапі ↻ на thumbnail. Раніше регресія мнясала
+     blob URL на кожному ↻ → стрибок без анімації. Тепер blob запікає тільки
+     auto+crop, user rotation — CSS-only → transition спрацьовує. */
+  transition: transform 0.3s ease;
+  transform-origin: center;
 }
 
 /* Десктоп — більший превʼю */
