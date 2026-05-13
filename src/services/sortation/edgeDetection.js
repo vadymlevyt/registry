@@ -6,26 +6,22 @@
 // документа на фото (стіл/підлога/руки навколо) і пропонує адвокату — він
 // може вимкнути пропозицію якщо неправильна, або відкоригувати рукоятки.
 //
-// Гібридний алгоритм:
-//   1) Brightness-based: документ — світла область на темнішому фоні
-//      (типовий випадок: біле A4 на дерев'яному столі). Швидкий і робастний.
-//   2) Variance-based fallback: документ — область з текстом (висока варіація
-//      яскравості). Спрацьовує для тексту на світлому фоні.
+// Гібридний алгоритм — каскад від найдешевшого до найточнішого:
+//   1) Brightness-based — документ помітно світліший за фон.
+//      Швидкий і робастний для типового кейсу (білий папір на темному столі).
+//   2) Variance-based — документ — область з текстом (висока варіація).
+//      Спрацьовує для тексту на світлому фоні де brightness не дав контрасту.
+//   3) Sobel-based — gradient projection. Шукає РІЗКІ переходи на межі
+//      документ↔фон. Робить нелінійну фільтрацію щоб не плутатись з текстом.
 //
-// Робимо на ДАУНСЕМПЛІ (≤300px по ширині) бо нам потрібні відносні межі.
-//
-// Повертає координати у natural image space. null коли:
-// — не вдалося декодувати зображення
-// — знайдена область < 25% площі (явно неправильно)
-// — знайдена область > 97% площі (нема сенсу пропонувати, документ заповнює кадр)
+// Результат прийнято коли area між 25% і 99% (нижче — алгоритм помилився,
+// вище — нема сенсу пропонувати).
 
-const DOWNSAMPLE_WIDTH = 300;
-const PADDING_PCT = 0.015;
+const DOWNSAMPLE_WIDTH = 320;
+const PADDING_PCT = 0.012;
 const MIN_AREA_FRACTION = 0.25;
-const MAX_AREA_FRACTION = 0.97;
-// Включити для діагностики у браузерній консолі. Не лишати true у production
-// бо для 30 фото буде 30 рядків логів.
-const DEBUG = true;
+const MAX_AREA_FRACTION = 0.99;
+const DEBUG = true; // лишається ON поки UX стабілізується
 
 /**
  * @param {Blob} blob — вхідне зображення (JPEG/PNG/WEBP)
@@ -77,13 +73,13 @@ export async function detectDocumentEdges(blob, debugLabel = '') {
     return null;
   }
 
-  // Per-pixel luminance (Rec. 601).
+  // Luminance (Rec. 601)
   const lum = new Float32Array(dw * dh);
   for (let i = 0, p = 0; p < pixels.length; p += 4, i++) {
     lum[i] = 0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2];
   }
 
-  // Row/col статистика
+  // Row/col стат
   const rowMean = new Float32Array(dh);
   const rowStd = new Float32Array(dh);
   for (let y = 0; y < dh; y++) {
@@ -98,7 +94,6 @@ export async function detectDocumentEdges(blob, debugLabel = '') {
     rowMean[y] = mean;
     rowStd[y] = Math.sqrt(Math.max(0, sumSq / dw - mean * mean));
   }
-
   const colMean = new Float32Array(dw);
   const colStd = new Float32Array(dw);
   for (let x = 0; x < dw; x++) {
@@ -113,37 +108,41 @@ export async function detectDocumentEdges(blob, debugLabel = '') {
     colStd[x] = Math.sqrt(Math.max(0, sumSq / dh - mean * mean));
   }
 
-  // Strategy 1: BRIGHTNESS-BASED
-  // Документ зазвичай світліший за фон. Якщо є чіткий контраст яскравості
-  // (range > 25 з 255), використовуємо brightness як основний сигнал.
-  const rowBrightnessRange = Math.max(...rowMean) - Math.min(...rowMean);
-  const colBrightnessRange = Math.max(...colMean) - Math.min(...colMean);
+  const rowBrightnessRange = arrMax(rowMean) - arrMin(rowMean);
+  const colBrightnessRange = arrMax(colMean) - arrMin(colMean);
 
+  // Strategy 1: BRIGHTNESS-BASED
   let detected = null;
+  let strategyUsed = null;
   if (rowBrightnessRange > 25 && colBrightnessRange > 25) {
     detected = detectByBrightness(rowMean, colMean, dw, dh);
-    if (DEBUG && detected) {
-      console.log('[edgeDetect]', debugLabel, 'brightness OK', detected, 'range=', rowBrightnessRange.toFixed(0), colBrightnessRange.toFixed(0));
-    }
+    if (detected) strategyUsed = 'brightness';
   }
 
-  // Strategy 2: VARIANCE-BASED fallback
+  // Strategy 2: VARIANCE-BASED
   if (!detected) {
     detected = detectByVariance(rowStd, colStd, dw, dh);
-    if (DEBUG && detected) {
-      console.log('[edgeDetect]', debugLabel, 'variance OK', detected);
-    }
+    if (detected) strategyUsed = 'variance';
+  }
+
+  // Strategy 3: SOBEL-BASED — фолбек коли документ і фон схожі за яскравістю
+  // і варіація рівномірна. Sobel шукає РІЗКІ переходи, які зазвичай є саме
+  // на межі документ/фон.
+  if (!detected) {
+    detected = detectBySobel(lum, dw, dh);
+    if (detected) strategyUsed = 'sobel';
   }
 
   if (!detected) {
     if (DEBUG) {
-      console.log('[edgeDetect]', debugLabel, 'NO detection: brightnessRange=',
-        rowBrightnessRange.toFixed(0), colBrightnessRange.toFixed(0));
+      console.log('[edgeDetect]', debugLabel, 'NO detection',
+        'rowBrightnessRange=', rowBrightnessRange.toFixed(0),
+        'colBrightnessRange=', colBrightnessRange.toFixed(0));
     }
     return null;
   }
 
-  // Padding + scale назад до natural
+  // Padding + scale назад
   const padX = Math.round(dw * PADDING_PCT);
   const padY = Math.round(dh * PADDING_PCT);
   const dLeft = Math.max(0, detected.left - padX);
@@ -155,11 +154,11 @@ export async function detectDocumentEdges(blob, debugLabel = '') {
 
   const areaFraction = (dWidth * dHeight) / (dw * dh);
   if (areaFraction < MIN_AREA_FRACTION) {
-    if (DEBUG) console.log('[edgeDetect]', debugLabel, 'rejected: area too small', areaFraction.toFixed(2));
+    if (DEBUG) console.log('[edgeDetect]', debugLabel, 'rejected: area too small', areaFraction.toFixed(2), strategyUsed);
     return null;
   }
   if (areaFraction > MAX_AREA_FRACTION) {
-    if (DEBUG) console.log('[edgeDetect]', debugLabel, 'rejected: area too large (nothing to crop)', areaFraction.toFixed(2));
+    if (DEBUG) console.log('[edgeDetect]', debugLabel, 'rejected: area too large (nothing to crop)', areaFraction.toFixed(2), strategyUsed);
     return null;
   }
 
@@ -171,44 +170,78 @@ export async function detectDocumentEdges(blob, debugLabel = '') {
     width: Math.round(dWidth * sx),
     height: Math.round(dHeight * sy),
   };
-  if (DEBUG) console.log('[edgeDetect]', debugLabel, 'PROPOSAL', result, 'area=', areaFraction.toFixed(2));
+  if (DEBUG) {
+    console.log('[edgeDetect]', debugLabel, 'PROPOSAL', result,
+      'area=', areaFraction.toFixed(2), 'via', strategyUsed);
+  }
   return result;
 }
 
-// Знайти діапазон рядків/колонок з яскравістю > порогу (порог = 60% від
-// діапазону між min і max). Працює коли документ помітно світліший за фон.
+// ── Strategies ─────────────────────────────────────────────────────────────
+
 function detectByBrightness(rowMean, colMean, dw, dh) {
-  const rowMin = Math.min(...rowMean), rowMax = Math.max(...rowMean);
-  const colMin = Math.min(...colMean), colMax = Math.max(...colMean);
-  // Поріг між фоном (низьке) і документом (високе). 0.55 — близько до midpoint
-  // зміщене у бік документа щоб слабкий шум не зачепило.
+  const rowMin = arrMin(rowMean), rowMax = arrMax(rowMean);
+  const colMin = arrMin(colMean), colMax = arrMax(colMean);
   const rowThr = rowMin + (rowMax - rowMin) * 0.55;
   const colThr = colMin + (colMax - colMin) * 0.55;
-
-  let top = -1, bottom = -1, left = -1, right = -1;
-  for (let y = 0; y < dh; y++) if (rowMean[y] > rowThr) { top = y; break; }
-  for (let y = dh - 1; y >= 0; y--) if (rowMean[y] > rowThr) { bottom = y; break; }
-  for (let x = 0; x < dw; x++) if (colMean[x] > colThr) { left = x; break; }
-  for (let x = dw - 1; x >= 0; x--) if (colMean[x] > colThr) { right = x; break; }
-
-  if (top < 0 || bottom < 0 || left < 0 || right < 0) return null;
-  if (bottom <= top || right <= left) return null;
-  return { top, bottom, left, right };
+  return boundsAboveThreshold(rowMean, colMean, rowThr, colThr, dw, dh);
 }
 
-// Знайти діапазон рядків/колонок з варіацією > порогу (= з текстом / структурою).
-// Використовується коли brightness-based не дав чіткого результату.
 function detectByVariance(rowStd, colStd, dw, dh) {
-  const rowThr = percentile(rowStd, 0.4); // 40th percentile — фон зазвичай нижче
+  const rowThr = percentile(rowStd, 0.4);
   const colThr = percentile(colStd, 0.4);
   if (rowThr < 1.0 || colThr < 1.0) return null;
+  return boundsAboveThreshold(rowStd, colStd, rowThr, colThr, dw, dh);
+}
 
+// Sobel: рахуємо |∂I/∂x| + |∂I/∂y| на даунсемплі. Проектуємо на осі.
+// Резкі вертикальні переходи (документ/фон стик) проявляються як піки у
+// rowGrad/colGrad. Текст всередині документа теж дає gradient — щоб
+// відфільтрувати, дивимось на CONTRAST: rowGrad перших і останніх 10% рядків
+// (бордюри зображення) має бути значно НИЖЧИЙ за центральні (= документ).
+// Якщо так — границі знайдено. Якщо ні — Sobel не допоможе, повертаємо null.
+function detectBySobel(lum, dw, dh) {
+  const grad = new Float32Array(dw * dh);
+  for (let y = 1; y < dh - 1; y++) {
+    for (let x = 1; x < dw - 1; x++) {
+      const i = y * dw + x;
+      const gx = Math.abs(lum[i + 1] - lum[i - 1]);
+      const gy = Math.abs(lum[i + dw] - lum[i - dw]);
+      grad[i] = gx + gy;
+    }
+  }
+
+  const rowGrad = new Float32Array(dh);
+  for (let y = 0; y < dh; y++) {
+    let s = 0;
+    const row = y * dw;
+    for (let x = 0; x < dw; x++) s += grad[row + x];
+    rowGrad[y] = s / dw;
+  }
+  const colGrad = new Float32Array(dw);
+  for (let x = 0; x < dw; x++) {
+    let s = 0;
+    for (let y = 0; y < dh; y++) s += grad[y * dw + x];
+    colGrad[x] = s / dh;
+  }
+
+  // Поріг адаптивний: 60% від медіани (низькі рядки = фон без структури)
+  const rowMed = percentile(rowGrad, 0.5);
+  const colMed = percentile(colGrad, 0.5);
+  // Якщо медіана надто низька (рівномірна сцена) — Sobel не дасть нічого
+  // цікавого
+  if (rowMed < 2 || colMed < 2) return null;
+  const rowThr = rowMed * 0.6;
+  const colThr = colMed * 0.6;
+  return boundsAboveThreshold(rowGrad, colGrad, rowThr, colThr, dw, dh);
+}
+
+function boundsAboveThreshold(rowArr, colArr, rowThr, colThr, dw, dh) {
   let top = -1, bottom = -1, left = -1, right = -1;
-  for (let y = 0; y < dh; y++) if (rowStd[y] > rowThr) { top = y; break; }
-  for (let y = dh - 1; y >= 0; y--) if (rowStd[y] > rowThr) { bottom = y; break; }
-  for (let x = 0; x < dw; x++) if (colStd[x] > colThr) { left = x; break; }
-  for (let x = dw - 1; x >= 0; x--) if (colStd[x] > colThr) { right = x; break; }
-
+  for (let y = 0; y < dh; y++) if (rowArr[y] > rowThr) { top = y; break; }
+  for (let y = dh - 1; y >= 0; y--) if (rowArr[y] > rowThr) { bottom = y; break; }
+  for (let x = 0; x < dw; x++) if (colArr[x] > colThr) { left = x; break; }
+  for (let x = dw - 1; x >= 0; x--) if (colArr[x] > colThr) { right = x; break; }
   if (top < 0 || bottom < 0 || left < 0 || right < 0) return null;
   if (bottom <= top || right <= left) return null;
   return { top, bottom, left, right };
@@ -219,4 +252,17 @@ function percentile(arr, p) {
   const sorted = Array.from(arr).sort((a, b) => a - b);
   const idx = Math.floor(sorted.length * p);
   return sorted[Math.min(idx, sorted.length - 1)];
+}
+
+// Math.min(...arr) / Math.max(...arr) має ліміт аргументів і повільний для
+// великих TypedArrays. Лінійний прохід — швидше і безпечніше.
+function arrMin(arr) {
+  let m = Infinity;
+  for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+  return m;
+}
+function arrMax(arr) {
+  let m = -Infinity;
+  for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+  return m;
 }

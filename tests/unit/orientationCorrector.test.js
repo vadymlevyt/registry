@@ -7,7 +7,28 @@ import {
   extractPageOrientation,
   readExifOrientation,
   resolveOrientation,
+  analyzeBlockGeometry,
 } from '../../src/services/sortation/orientationCorrector.js';
+
+// Helper: створити Document AI page object з n блоків заданого розміру.
+// vertices у normalized coords (0-1). dimension — page розміри у pixels.
+function makePage({ dimension = { width: 1000, height: 1500 }, blocks = [] } = {}) {
+  return {
+    dimension,
+    paragraphs: blocks.map((b) => ({
+      layout: {
+        boundingPoly: {
+          normalizedVertices: [
+            { x: b.x, y: b.y },
+            { x: b.x + b.w, y: b.y },
+            { x: b.x + b.w, y: b.y + b.h },
+            { x: b.x, y: b.y + b.h },
+          ],
+        },
+      },
+    })),
+  };
+}
 
 describe('orientationCorrector.normalizeDegrees', () => {
   it('точні значення повертаються як є', () => {
@@ -485,4 +506,204 @@ describe('orientationCorrector.rotateImageBlob', () => {
     expect(capturedCanvas.width).toBe(100);
     expect(capturedCanvas.height).toBe(200);
   });
+});
+
+describe('orientationCorrector.analyzeBlockGeometry', () => {
+  it('повертає null для page без paragraphs', () => {
+    expect(analyzeBlockGeometry(null)).toBe(null);
+    expect(analyzeBlockGeometry({})).toBe(null);
+    expect(analyzeBlockGeometry({ paragraphs: [] })).toBe(null);
+  });
+
+  it('повертає null коли менше 3 блоків (замало даних)', () => {
+    const page = makePage({
+      blocks: [
+        { x: 0.1, y: 0.1, w: 0.8, h: 0.03 },
+        { x: 0.1, y: 0.15, w: 0.8, h: 0.03 },
+      ],
+    });
+    expect(analyzeBlockGeometry(page)).toBe(null);
+  });
+
+  it('горизонтальний текст (типовий портретний документ) → 0°', () => {
+    // 5 широких-низьких блоків, типова портретна A4
+    const page = makePage({
+      blocks: [
+        { x: 0.1, y: 0.1, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.18, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.26, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.34, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.42, w: 0.8, h: 0.04 },
+      ],
+    });
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(0);
+    expect(r.confidence).toBe('high'); // 5+ блоків, медіана >2.5
+  });
+
+  it('вертикальний текст з найбільшим блоком ПРАВОРУЧ → 270° (image 90 CW)', () => {
+    // Уявимо: A4 portrait документ повернуто 90° CW → у image він landscape,
+    // блоки виглядають вертикальними (тонкі і високі). Header документа
+    // (найбільший за площею блок) опинився справа.
+    const blocks = [
+      // Header — найбільший, у правій половині (cx=0.85)
+      { x: 0.78, y: 0.1, w: 0.14, h: 0.7 },
+      // Інші вертикальні блоки
+      { x: 0.55, y: 0.15, w: 0.10, h: 0.6 },
+      { x: 0.35, y: 0.20, w: 0.08, h: 0.5 },
+      { x: 0.18, y: 0.25, w: 0.08, h: 0.4 },
+      { x: 0.05, y: 0.30, w: 0.07, h: 0.3 },
+    ];
+    const page = makePage({ blocks });
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(270);
+    expect(['high', 'medium']).toContain(r.confidence);
+  });
+
+  it('вертикальний текст з найбільшим блоком ЛІВОРУЧ → 90° (image 270 CW)', () => {
+    // A4 portrait повернуто 270° CW (= 90° CCW) → header опинився ЛІВОРУЧ
+    const blocks = [
+      // Header — найбільший, у лівій половині (cx=0.15)
+      { x: 0.08, y: 0.1, w: 0.14, h: 0.7 },
+      { x: 0.3, y: 0.15, w: 0.10, h: 0.6 },
+      { x: 0.5, y: 0.20, w: 0.08, h: 0.5 },
+      { x: 0.65, y: 0.25, w: 0.08, h: 0.4 },
+      { x: 0.80, y: 0.30, w: 0.07, h: 0.3 },
+    ];
+    const page = makePage({ blocks });
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(90);
+  });
+
+  it('вертикальний текст з найбільшим блоком ПО ЦЕНТРУ → 270° low confidence', () => {
+    const blocks = [
+      { x: 0.45, y: 0.1, w: 0.10, h: 0.7 }, // центр (cx=0.5)
+      { x: 0.30, y: 0.15, w: 0.08, h: 0.6 },
+      { x: 0.20, y: 0.20, w: 0.07, h: 0.5 },
+      { x: 0.60, y: 0.25, w: 0.07, h: 0.4 },
+    ];
+    const page = makePage({ blocks });
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(270);
+    expect(r.confidence).toBe('low');
+  });
+
+  it('ambiguous aspect (~1.0) → null', () => {
+    // Квадратні блоки — не явно горизонтальні і не вертикальні
+    const blocks = [
+      { x: 0.1, y: 0.1, w: 0.2, h: 0.18 },
+      { x: 0.4, y: 0.1, w: 0.2, h: 0.18 },
+      { x: 0.1, y: 0.4, w: 0.2, h: 0.18 },
+      { x: 0.4, y: 0.4, w: 0.2, h: 0.18 },
+    ];
+    const page = makePage({ blocks });
+    expect(analyzeBlockGeometry(page)).toBe(null);
+  });
+
+  it('fallback на blocks якщо paragraphs відсутній', () => {
+    const page = {
+      dimension: { width: 1000, height: 1500 },
+      blocks: [
+        { layout: { boundingPoly: { normalizedVertices: [
+          { x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 }, { x: 0.9, y: 0.14 }, { x: 0.1, y: 0.14 }
+        ] } } },
+        { layout: { boundingPoly: { normalizedVertices: [
+          { x: 0.1, y: 0.2 }, { x: 0.9, y: 0.2 }, { x: 0.9, y: 0.24 }, { x: 0.1, y: 0.24 }
+        ] } } },
+        { layout: { boundingPoly: { normalizedVertices: [
+          { x: 0.1, y: 0.3 }, { x: 0.9, y: 0.3 }, { x: 0.9, y: 0.34 }, { x: 0.1, y: 0.34 }
+        ] } } },
+      ],
+    };
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(0);
+  });
+
+  it('pixel vertices без normalizedVertices працюють', () => {
+    const page = {
+      dimension: { width: 1000, height: 1500 },
+      paragraphs: [
+        { layout: { boundingPoly: { vertices: [
+          { x: 100, y: 100 }, { x: 900, y: 100 }, { x: 900, y: 160 }, { x: 100, y: 160 }
+        ] } } },
+        { layout: { boundingPoly: { vertices: [
+          { x: 100, y: 200 }, { x: 900, y: 200 }, { x: 900, y: 260 }, { x: 100, y: 260 }
+        ] } } },
+        { layout: { boundingPoly: { vertices: [
+          { x: 100, y: 300 }, { x: 900, y: 300 }, { x: 900, y: 360 }, { x: 100, y: 360 }
+        ] } } },
+      ],
+    };
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBe(null);
+    expect(r.degrees).toBe(0); // wide-thin blocks → horizontal text → 0°
+  });
+});
+
+describe('orientationCorrector.resolveOrientation з blocks fallback', () => {
+  it('коли EXIF і docAi orientation нульові — спрацьовує blocks geometry', () => {
+    const page = makePage({
+      blocks: [
+        // Вертикальні блоки, найбільший справа → 270°
+        { x: 0.80, y: 0.1, w: 0.12, h: 0.7 },
+        { x: 0.55, y: 0.15, w: 0.10, h: 0.6 },
+        { x: 0.35, y: 0.20, w: 0.08, h: 0.5 },
+        { x: 0.15, y: 0.25, w: 0.08, h: 0.4 },
+      ],
+    });
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1800, height: 1350 }, // landscape
+      fileName: 'test.jpg',
+    });
+    expect(r.degrees).toBe(270);
+    expect(r.source).toBe('docAiBlocks');
+  });
+
+  it('blocks ambiguous → переходить до aspect ratio fallback', () => {
+    const page = makePage({
+      blocks: [
+        // Квадратні блоки — ambiguous
+        { x: 0.1, y: 0.1, w: 0.2, h: 0.18 },
+        { x: 0.4, y: 0.1, w: 0.2, h: 0.18 },
+        { x: 0.1, y: 0.4, w: 0.2, h: 0.18 },
+        { x: 0.4, y: 0.4, w: 0.2, h: 0.18 },
+      ],
+    });
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1800, height: 1350 },
+      fileName: 'test.jpg',
+    });
+    // ambiguous blocks → aspect ratio activated (landscape) → 270 uncertain
+    expect(r.degrees).toBe(270);
+    expect(r.source).toBe('aspect');
+    expect(r.uncertain).toBe(true);
+  });
+
+  it('blocks горизонтальний → 0° без uncertain', () => {
+    const page = makePage({
+      blocks: [
+        { x: 0.1, y: 0.1, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.18, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.26, w: 0.8, h: 0.04 },
+        { x: 0.1, y: 0.34, w: 0.8, h: 0.04 },
+      ],
+    });
+    const r = resolveOrientation({
+      exifResult: null,
+      docAiPage: page,
+      imageDimensions: { width: 1350, height: 1800 },
+      fileName: 'test.jpg',
+    });
+    expect(r.degrees).toBe(0);
+  });
+
 });

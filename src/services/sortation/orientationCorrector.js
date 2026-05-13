@@ -205,6 +205,7 @@ export function resolveOrientation({ exifResult, docAiPage, imageDimensions, fil
     fileName: fileName || null,
     exif: exifResult ? { rawTag: exifResult.rawTag, degrees: exifResult.degrees, mirrored: exifResult.mirrored } : null,
     docAi: null,
+    blocks: null,
     aspect: null,
   };
 
@@ -232,7 +233,33 @@ export function resolveOrientation({ exifResult, docAiPage, imageDimensions, fil
     return { degrees: docAiDeg, source: 'docAi', uncertain: false, debug, logs };
   }
 
-  // 3. Aspect ratio heuristic — обидва вище провалились, але image landscape.
+  // 3. Document AI block geometry — рахуємо bounding boxes paragraphs/blocks.
+  // Якщо більшість блоків ВЕРТИКАЛЬНІ (height > width) — текст йде боком,
+  // отже зображення повернуте. Дешевше за aspect (ми вже маємо pageStructure),
+  // надійніше бо дивиться на справжній текст, а не лише на габарити кадру.
+  const blocksResult = analyzeBlockGeometry(docAiPage);
+  if (blocksResult) {
+    debug.blocks = blocksResult.debug;
+    if (blocksResult.degrees !== 0) {
+      logs.push(
+        `${tag} block geometry: medianAspect=${blocksResult.debug.medianAspect.toFixed(2)} ` +
+        `(${blocksResult.debug.blockCount} блоків) → rotate ${blocksResult.degrees}° ` +
+        `(${blocksResult.confidence})`
+      );
+      return {
+        degrees: blocksResult.degrees,
+        source: 'docAiBlocks',
+        uncertain: blocksResult.confidence === 'low',
+        debug, logs,
+      };
+    }
+    logs.push(
+      `${tag} block geometry: medianAspect=${blocksResult.debug.medianAspect.toFixed(2)} ` +
+      `(${blocksResult.debug.blockCount} блоків) — text horizontal, no rotation needed`
+    );
+  }
+
+  // 4. Aspect ratio heuristic — попередні кроки провалились, але image landscape.
   // Юридичні документи зазвичай A4 portrait. Landscape фото — найімовірніше
   // повернутий portrait документ. Пропонуємо 270° + marking uncertain=true.
   if (imageDimensions && Number.isFinite(imageDimensions.width) && Number.isFinite(imageDimensions.height)) {
@@ -280,6 +307,147 @@ export function normalizeDegrees(angle) {
     if (d < bestDist) { bestDist = d; best = c; }
   }
   return best;
+}
+
+/**
+ * Аналізує геометрію bounding boxes paragraphs/blocks з Document AI page.
+ * Якщо більшість блоків вертикальні (height > width) у системі координат
+ * IMAGE, текст йде боком → зображення повернуте на 90 або 270 градусів.
+ *
+ * Алгоритм:
+ *   1. Витягуємо bbox кожного paragraph (fallback: block, line).
+ *   2. Обчислюємо aspect = width/height для кожного.
+ *   3. Median aspect:
+ *      - > 1.5: текст ГОРИЗОНТАЛЬНИЙ (рядки йдуть зліва направо у image)
+ *        → image upright (0°) — рідко 180° (потребує семантичного аналізу,
+ *          ми його не робимо).
+ *      - < 0.7: текст ВЕРТИКАЛЬНИЙ — image повернуте 90 або 270 CW.
+ *        Розрізняємо 90 vs 270 за положенням НАЙБІЛЬШОГО блоку у X
+ *        (зазвичай «шапка»/header документа найбільша і вгорі):
+ *        - cx у правій половині → image повернуте 90 CW → fix +270 CW
+ *        - cx у лівій половині → image повернуте 270 CW → fix +90 CW
+ *      - 0.7..1.5: ambiguous (рукописний / складна верстка) — null.
+ *
+ * Confidence:
+ *   - 'high': медіана сильно за порогами (<0.5 або >2.0) + 5+ блоків
+ *   - 'medium': медіана у нормі (<0.7 або >1.5) + 3+ блоки
+ *   - 'low': мало блоків або медіана близько до межі — uncertain=true
+ *
+ * @param {Object|null} page — Document AI page object
+ * @returns {{degrees:0|90|180|270, confidence:'high'|'medium'|'low', debug:Object}|null}
+ *   null коли немає достатньо блоків або медіана ambiguous.
+ */
+export function analyzeBlockGeometry(page) {
+  if (!page || typeof page !== 'object') return null;
+  const boxes = extractBlockBoxes(page);
+  if (boxes.length < 3) return null;
+
+  // Aspect ratio кожного блоку у image coords
+  const aspects = boxes.map((b) => b.w / b.h).filter((a) => Number.isFinite(a) && a > 0);
+  if (aspects.length < 3) return null;
+  aspects.sort((a, b) => a - b);
+  const medianAspect = aspects[Math.floor(aspects.length / 2)];
+
+  const debug = {
+    blockCount: boxes.length,
+    medianAspect,
+    pageWidth: page.dimension?.width || null,
+    pageHeight: page.dimension?.height || null,
+  };
+
+  // Текст ГОРИЗОНТАЛЬНИЙ — image upright (0°). 180° потребувало б семантичного
+  // аналізу (порядок літер у словах), не реалізуємо тут.
+  if (medianAspect > 1.5) {
+    return {
+      degrees: 0,
+      confidence: medianAspect > 2.5 && boxes.length >= 5 ? 'high' : 'medium',
+      debug,
+    };
+  }
+
+  // Текст ВЕРТИКАЛЬНИЙ — image повернуте 90 або 270.
+  if (medianAspect < 0.7) {
+    // Знайти найбільший блок (за площею) — зазвичай це основний текстовий блок
+    // або header. Його X-центр відносно ширини сторінки скаже куди було
+    // повернуто.
+    const largest = boxes.reduce((a, b) => (a.w * a.h > b.w * b.h ? a : b));
+    const pageW = page.dimension?.width || maxBy(boxes, (b) => b.x + b.w);
+    const cx = largest.x + largest.w / 2;
+    const xRatio = pageW > 0 ? cx / pageW : 0.5;
+    debug.largestBlock = { x: largest.x, y: largest.y, w: largest.w, h: largest.h, cxRatio: xRatio };
+
+    // Якщо largest block у правій половині image — image повернуте 90 CW
+    // (header опинився справа) → fix потрібен +270 CW (= -90).
+    // У лівій половині — image повернуте 270 CW → fix +90 CW.
+    let degrees;
+    let confidence;
+    if (xRatio > 0.55) {
+      degrees = 270;
+      confidence = medianAspect < 0.5 && boxes.length >= 5 ? 'high' : 'medium';
+    } else if (xRatio < 0.45) {
+      degrees = 90;
+      confidence = medianAspect < 0.5 && boxes.length >= 5 ? 'high' : 'medium';
+    } else {
+      // Центральний — невизначений. За замовчуванням 270 (найчастіше при
+      // вертикальній камері), але mark як low confidence.
+      degrees = 270;
+      confidence = 'low';
+    }
+    return { degrees, confidence, debug };
+  }
+
+  // Ambiguous — текст не явно горизонтальний і не явно вертикальний.
+  return null;
+}
+
+// Витягує bounding boxes з paragraphs (fallback на blocks, потім lines).
+// Підтримує і normalizedVertices (0-1), і pixel vertices.
+function extractBlockBoxes(page) {
+  const tryArr = page.paragraphs || page.blocks || page.lines;
+  if (!Array.isArray(tryArr) || tryArr.length === 0) {
+    // Запасний шлях — глянути layout якщо є
+    return [];
+  }
+  const pageW = page.dimension?.width || 0;
+  const pageH = page.dimension?.height || 0;
+  const boxes = [];
+  for (const item of tryArr) {
+    const poly = item?.layout?.boundingPoly;
+    if (!poly) continue;
+    const verts = poly.normalizedVertices || poly.vertices;
+    if (!Array.isArray(verts) || verts.length < 3) continue;
+    const xs = verts.map((v) => Number(v.x) || 0);
+    const ys = verts.map((v) => Number(v.y) || 0);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    // Якщо це normalizedVertices, масштабуємо у pixel coords (потрібно для
+    // largest-block X position). Якщо немає dimension — лишаємо у 0-1.
+    let x, y, w, h;
+    if (poly.normalizedVertices && pageW && pageH) {
+      x = minX * pageW;
+      y = minY * pageH;
+      w = (maxX - minX) * pageW;
+      h = (maxY - minY) * pageH;
+    } else {
+      x = minX;
+      y = minY;
+      w = maxX - minX;
+      h = maxY - minY;
+    }
+    if (w > 0 && h > 0) boxes.push({ x, y, w, h });
+  }
+  return boxes;
+}
+
+function maxBy(arr, fn) {
+  let m = -Infinity;
+  for (const item of arr) {
+    const v = fn(item);
+    if (v > m) m = v;
+  }
+  return m;
 }
 
 /**
