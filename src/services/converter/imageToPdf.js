@@ -43,25 +43,52 @@ function isHeic(file) {
 
 // Завантаження HTMLImage з fallback на createImageBitmap. HTMLImage реалізація
 // у деяких Chrome для Android має edge cases з progressive JPEG (фото з
-// Samsung Galaxy камер) — повертає resolve але img.naturalWidth=0.
-// createImageBitmap значно надійніший: спрацьовує атомарно, decode у воркері,
-// і ImageBitmap працює як source для canvas.drawImage без додаткової роботи.
+// Samsung Galaxy камер) — повертає resolve але img.naturalWidth=0, або
+// resolve до того як ПОВНІ pixel data доступні (canvas.drawImage потім
+// малює порожній/частковий image).
+//
+// Тому послідовність:
+//   1. Image.src = blobUrl
+//   2. await img.decode() якщо доступно — стандартний API який резолвиться
+//      коли image ПОВНІСТЮ декодована (не просто завантажена). Це закриває
+//      progressive JPEG race коли onload firing до завершення decoding.
+//   3. Якщо decode() не підтримує — fallback на onload event listener.
+//   4. Перевірка naturalWidth > 0 після всього — sanity gate.
+//   5. Якщо все ламається — createImageBitmap fallback (працює напряму з Blob,
+//      decode у воркері, надійніше для нестандартних JPEG варіантів).
 async function loadImageFromBlob(blob, blobUrl) {
-  // Перший крок: HTMLImage через blob URL. Найшвидший і найсумісніший.
   try {
-    const img = await new Promise((resolve, reject) => {
-      const im = new Image();
-      im.onload = () => {
-        if ((im.naturalWidth || im.width) > 0 && (im.naturalHeight || im.height) > 0) {
-          resolve(im);
-        } else {
-          reject(new Error('HTMLImage завантажено але naturalWidth=0'));
-        }
-      };
-      im.onerror = () => reject(new Error('HTMLImage onerror'));
-      im.src = blobUrl;
-    });
-    return { source: img, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+    const im = new Image();
+    im.src = blobUrl;
+    // img.decode() (Chromium-based, Safari 16+) — резолвиться коли pixel data
+    // повністю готова. Без цього на progressive JPEG canvas.drawImage може
+    // намалювати порожнє/часткове зображення → PDF з порожньою сторінкою.
+    if (typeof im.decode === 'function') {
+      try {
+        await im.decode();
+      } catch (decodeErr) {
+        // decode() може throw 'EncodingError' для нестандартних JPEG;
+        // fallback на onload patternу.
+        await new Promise((resolve, reject) => {
+          if (im.complete && (im.naturalWidth || im.width) > 0) return resolve();
+          im.onload = resolve;
+          im.onerror = () => reject(new Error('HTMLImage onerror after decode fail'));
+        });
+      }
+    } else {
+      // Старі браузери без decode() — чекаємо onload.
+      await new Promise((resolve, reject) => {
+        if (im.complete && (im.naturalWidth || im.width) > 0) return resolve();
+        im.onload = resolve;
+        im.onerror = () => reject(new Error('HTMLImage onerror'));
+      });
+    }
+    const w = im.naturalWidth || im.width;
+    const h = im.naturalHeight || im.height;
+    if (!(w > 0 && h > 0)) {
+      throw new Error(`HTMLImage завантажено але розміри невалідні (${w}×${h})`);
+    }
+    return { source: im, width: w, height: h };
   } catch (htmlImageErr) {
     // Fallback: createImageBitmap працює напряму з Blob і обробляє більше
     // форматів/варіантів JPEG. Доступний у всіх сучасних браузерах.

@@ -1487,6 +1487,37 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     if (!response.ok) throw new Error(`Drive upload failed: ${response.status}`);
     const data = await response.json();
     console.log(`[uploadFileLocal] uploaded ✓ driveId=${data.id} (folder: ${targetFolderLabel})`);
+
+    // Post-upload verification: read back file metadata (parents, name, size).
+    // Раніше upload «успіх» означав тільки що POST повернув 200 + id, але
+    // не що Drive дійсно зберіг файл у правильній папці з правильним MIME.
+    // Якщо щось «зникало» між POST і реальним розміщенням — адвокат шукав
+    // PDF у 01_ОРИГІНАЛИ і не знаходив, але звідки помилка — неясно.
+    // Тепер ми верифікуємо явно і логуємо результат.
+    try {
+      const verify = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${data.id}?fields=id,name,parents,size,mimeType`
+      );
+      if (verify.ok) {
+        const meta = await verify.json();
+        const inExpectedFolder = Array.isArray(meta.parents) && meta.parents.includes(targetFolderId);
+        console.log(
+          `[uploadFileLocal] verify ✓ name="${meta.name}" parents=${JSON.stringify(meta.parents)} ` +
+          `size=${meta.size} mime=${meta.mimeType} inExpectedFolder=${inExpectedFolder}`
+        );
+        if (!inExpectedFolder) {
+          console.warn(
+            `[uploadFileLocal] ⚠ файл збережено АЛЕ не у очікуваній папці ${targetFolderLabel} (${targetFolderId}). ` +
+            `Реальні parents: ${JSON.stringify(meta.parents)}.`
+          );
+        }
+      } else {
+        console.warn(`[uploadFileLocal] verify GET повернув ${verify.status} для driveId=${data.id} — файл може бути недоступний`);
+      }
+    } catch (verifyErr) {
+      console.warn('[uploadFileLocal] verify failed (non-fatal):', verifyErr?.message || verifyErr);
+    }
+
     return data.id;
   }
 
