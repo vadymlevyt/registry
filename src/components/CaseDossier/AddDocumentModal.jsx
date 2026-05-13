@@ -14,7 +14,7 @@ import {
   ArrowLeft,
   Check,
 } from 'lucide-react';
-import { Modal, Input, Select, Toggle, Button } from '../UI';
+import { Modal, Input, Select, Toggle, Button, DatePicker } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { driveRequest } from '../../services/driveAuth.js';
 import { toast } from '../../services/toast.js';
@@ -348,9 +348,8 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
           </div>
         )}
 
-        <Input
+        <DatePicker
           label="Дата документа"
-          type="date"
           value={state.date}
           onChange={(v) => setState((s) => ({ ...s, date: v }))}
         />

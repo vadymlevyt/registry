@@ -1,0 +1,325 @@
+/* ── DatePicker ─────────────────────────────────────────────────────────── */
+
+.ui-datepicker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.ui-datepicker__label {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  font-weight: var(--weight-medium);
+}
+
+/* ── Trigger button (закритий стан) ───────────────────────────────────── */
+
+.ui-datepicker__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+  min-height: 36px;
+  text-align: left;
+  outline: none;
+}
+.ui-datepicker__trigger:hover:not(:disabled) {
+  border-color: var(--color-text-3);
+}
+.ui-datepicker--open .ui-datepicker__trigger,
+.ui-datepicker__trigger:focus-visible {
+  border-color: var(--color-accent);
+}
+.ui-datepicker--error .ui-datepicker__trigger {
+  border-color: var(--color-danger);
+}
+.ui-datepicker--disabled .ui-datepicker__trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-datepicker__trigger-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-datepicker__trigger-value--placeholder {
+  color: var(--color-text-3);
+}
+.ui-datepicker__trigger-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+/* ── Popover з календарем ─────────────────────────────────────────────── */
+
+.ui-datepicker__popover {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-dropdown);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-3);
+  min-width: 280px;
+}
+
+/* На вузьких екранах попап має не вилазити за межі вʼюпорту — переходимо
+   у positionr fixed centered. */
+@media (max-width: 480px) {
+  .ui-datepicker__popover {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: var(--z-modal);
+    width: calc(100vw - 32px);
+    max-width: 360px;
+  }
+}
+
+/* ── Calendar (спільне для popover і inline) ──────────────────────────── */
+
+.ui-datepicker__calendar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ui-datepicker__cal-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.ui-datepicker__nav {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-2);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.ui-datepicker__nav:hover:not(:disabled) {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.ui-datepicker__nav:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.ui-datepicker__cal-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+.ui-datepicker__cal-title:hover {
+  background: var(--color-surface-2);
+}
+.ui-datepicker__cal-title-year {
+  color: var(--color-text-2);
+  font-weight: var(--weight-regular);
+}
+
+/* ── Weekdays row ─────────────────────────────────────────────────────── */
+
+.ui-datepicker__weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.ui-datepicker__weekday {
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  padding: var(--space-1) 0;
+  font-weight: var(--weight-medium);
+}
+.ui-datepicker__weekday--weekend {
+  color: var(--color-danger);
+  opacity: 0.7;
+}
+
+/* ── Days grid ────────────────────────────────────────────────────────── */
+
+.ui-datepicker__days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.ui-datepicker__day {
+  aspect-ratio: 1 / 1;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast);
+  padding: 0;
+}
+.ui-datepicker__day:hover:not(:disabled):not(.ui-datepicker__day--selected) {
+  background: var(--color-surface-2);
+}
+.ui-datepicker__day--other {
+  color: var(--color-text-3);
+  opacity: 0.5;
+}
+.ui-datepicker__day--weekend:not(.ui-datepicker__day--selected) {
+  color: var(--color-danger);
+  opacity: 0.85;
+}
+.ui-datepicker__day--today {
+  border-color: var(--color-accent);
+  font-weight: var(--weight-semibold);
+}
+.ui-datepicker__day--selected,
+.ui-datepicker__day--selected:hover {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+  font-weight: var(--weight-semibold);
+}
+.ui-datepicker__day--disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Months / Years grids ─────────────────────────────────────────────── */
+
+.ui-datepicker__months,
+.ui-datepicker__years {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.ui-datepicker__month-cell,
+.ui-datepicker__year-cell {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  min-height: 44px;
+}
+.ui-datepicker__month-cell:hover,
+.ui-datepicker__year-cell:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-text-3);
+}
+.ui-datepicker__month-cell--selected,
+.ui-datepicker__year-cell--selected,
+.ui-datepicker__month-cell--selected:hover,
+.ui-datepicker__year-cell--selected:hover {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+  font-weight: var(--weight-semibold);
+}
+
+/* ── Footer (Сьогодні / Очистити) ────────────────────────────────────── */
+
+.ui-datepicker__cal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.ui-datepicker__footer-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-2);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.ui-datepicker__footer-btn:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+/* ── Inline mode ──────────────────────────────────────────────────────── */
+
+.ui-datepicker--inline .ui-datepicker__calendar {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+/* ── Error / hint ─────────────────────────────────────────────────────── */
+
+.ui-datepicker__error {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+.ui-datepicker__hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+}
+
+/* ── Touch targets для мобільних ──────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .ui-datepicker__trigger {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .ui-datepicker__day {
+    min-height: 40px;
+  }
+}

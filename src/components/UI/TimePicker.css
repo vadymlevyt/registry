@@ -1,0 +1,216 @@
+/* ── TimePicker ─────────────────────────────────────────────────────────── */
+
+.ui-timepicker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.ui-timepicker__label {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  font-weight: var(--weight-medium);
+}
+
+/* ── Trigger button ───────────────────────────────────────────────────── */
+
+.ui-timepicker__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+  min-height: 36px;
+  text-align: left;
+  outline: none;
+}
+.ui-timepicker__trigger:hover:not(:disabled) {
+  border-color: var(--color-text-3);
+}
+.ui-timepicker--open .ui-timepicker__trigger,
+.ui-timepicker__trigger:focus-visible {
+  border-color: var(--color-accent);
+}
+.ui-timepicker--error .ui-timepicker__trigger {
+  border-color: var(--color-danger);
+}
+.ui-timepicker--disabled .ui-timepicker__trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-timepicker__trigger-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ui-timepicker__trigger-value--placeholder {
+  color: var(--color-text-3);
+}
+.ui-timepicker__trigger-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+/* ── Popover ──────────────────────────────────────────────────────────── */
+
+.ui-timepicker__popover {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-dropdown);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-3);
+}
+
+@media (max-width: 480px) {
+  .ui-timepicker__popover {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: var(--z-modal);
+  }
+}
+
+/* ── Wheels (HH : MM) ─────────────────────────────────────────────────── */
+
+.ui-timepicker__wheels {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  position: relative;
+}
+
+.ui-timepicker__colon {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+  padding: 0 var(--space-1);
+  align-self: center;
+}
+
+/* Контейнер однієї колонки. position relative — щоб центральна smug-rule
+   позиціонувалась поверх скролл-зони. */
+.ui-timepicker__wheel {
+  position: relative;
+  width: 64px;
+  /* 5 видимих рядків × 44px = 220px */
+  height: 220px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+}
+
+/* Сам скрол-контейнер з snap. Звертаємось до scrollbar via webkit
+   selector щоб приховати — wheel має виглядати як цільний кружок,
+   а не як список з скролл-баром. */
+.ui-timepicker__wheel-scroller {
+  height: 100%;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  outline: none;
+}
+.ui-timepicker__wheel-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+/* Padding 2 items зверху і знизу — щоб перший і останній item могли
+   досягти центру при snap. */
+.ui-timepicker__wheel-pad {
+  height: 88px; /* 2 × ITEM_HEIGHT (44px) */
+  pointer-events: none;
+}
+
+.ui-timepicker__wheel-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--color-text-2);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+  transition: color var(--transition-fast), font-weight var(--transition-fast);
+}
+.ui-timepicker__wheel-item:hover {
+  color: var(--color-text);
+}
+.ui-timepicker__wheel-item--selected {
+  color: var(--color-accent);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-lg);
+}
+
+/* Центральна smug-індикатор (рамка зверху і знизу від поточного item) */
+.ui-timepicker__wheel-center {
+  position: absolute;
+  top: 88px; /* 2 × ITEM_HEIGHT */
+  left: 0;
+  right: 0;
+  height: 44px;
+  pointer-events: none;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--color-accent) 8%, transparent),
+    transparent
+  );
+}
+
+/* ── Inline mode ──────────────────────────────────────────────────────── */
+
+.ui-timepicker--inline .ui-timepicker__wheels {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+/* ── Error / hint ─────────────────────────────────────────────────────── */
+
+.ui-timepicker__error {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+.ui-timepicker__hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+}
+
+@media (max-width: 768px) {
+  .ui-timepicker__trigger {
+    min-height: 44px;
+    font-size: 16px;
+  }
+}

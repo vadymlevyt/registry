@@ -24,6 +24,7 @@ import { handleReturn as smartHandleReturn } from './services/smartReturnHandler
 import { MODULES, categoryForCase } from './services/moduleNames';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import { ToastContainer } from './components/UI/ToastContainer.jsx';
+import { DatePicker, TimePicker } from './components/UI';
 import { Scale } from 'lucide-react';
 import { ICON_SIZE } from './components/UI/icons.js';
 import './App.css';
@@ -2797,15 +2798,15 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
         </div>
         <div className="form-group">
           <label className="form-label">Дата засідання</label>
-          <input className="form-input" type="date" value={form.hearing_date} onChange={e=>set('hearing_date',e.target.value)} />
+          <DatePicker value={form.hearing_date} onChange={(v)=>set('hearing_date', v)} placeholder="Оберіть дату" />
         </div>
         <div className="form-group">
           <label className="form-label">Час засідання</label>
-          <input className="form-input" type="time" value={form.hearing_time} onChange={e=>set('hearing_time',e.target.value)} />
+          <TimePicker value={form.hearing_time} onChange={(v)=>set('hearing_time', v)} placeholder="Оберіть час" />
         </div>
         <div className="form-group">
           <label className="form-label">Дедлайн подачі</label>
-          <input className="form-input" type="date" value={form.deadline} onChange={e=>set('deadline',e.target.value)} />
+          <DatePicker value={form.deadline} onChange={(v)=>set('deadline', v)} placeholder="Оберіть дату" />
         </div>
         <div className="form-group">
           <label className="form-label">Тип дедлайну</label>

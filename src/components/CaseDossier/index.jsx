@@ -22,6 +22,7 @@ import {
   ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
+import { DatePicker, DateTimePicker, Input, Modal, Button } from "../UI";
 import { DocumentViewer } from "../DocumentViewer";
 import { AddDocumentModal } from "./AddDocumentModal.jsx";
 import { DeleteDocumentModal } from "./DeleteDocumentModal.jsx";
@@ -445,6 +446,17 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [isCreatingContext, setIsCreatingContext] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [editingNoteText, setEditingNoteText] = useState('');
+
+  // ── Date/time picker modal state ──────────────────────────────────────
+  // Нове засідання — одна модалка з DateTimePicker (дата і час обовʼязкові
+  // одночасно). Раніше було ДВА послідовні systemPrompt'и для дати і часу,
+  // причому час був «(можна не додавати)» — це порушувало вимогу що адвокат
+  // має знати точний час щоб з'явитись у суді.
+  const [addHearingOpen, setAddHearingOpen] = useState(false);
+  // Новий дедлайн — одна модалка з полем назви + DatePicker (зараз — два
+  // послідовні systemPrompt'и).
+  const [addDeadlineOpen, setAddDeadlineOpen] = useState(false);
+  const [newDeadline, setNewDeadline] = useState({ name: '', date: '' });
 
   const [caseContext, setCaseContext] = useState(null);
 
@@ -1804,14 +1816,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
               <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{"Засідання"}</div>
               <button
-                onClick={async () => {
-                  const date = await systemPrompt("Дата засідання", { inputType: "date", title: "Нове засідання" });
-                  if (!date || !onExecuteAction) return;
-                  const time = await systemPrompt("Час (можна пропустити)", { inputType: "time", title: "Нове засідання" });
-                  onExecuteAction("dossier_agent", "add_hearing", {
-                    caseId: caseData.id, date, time: time || "", duration: 120
-                  });
-                }}
+                onClick={() => setAddHearingOpen(true)}
                 style={{ background: "transparent", border: "1px dashed var(--color-border)", color: "var(--color-text-2)", borderRadius: 'var(--radius-sm)', padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
               >{"+ Додати"}</button>
             </div>
@@ -1823,33 +1828,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 const isPast = (h.date || "") < today;
                 return (
                   <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", background: "var(--color-surface-2)", borderRadius: 'var(--radius-sm)', marginBottom: 4, opacity: isPast ? 0.55 : 1, borderLeft: `3px solid ${isPast ? "var(--color-text-3)" : "var(--color-accent)"}` }}>
-                    <input
-                      type="date"
-                      defaultValue={h.date || ""}
-                      onBlur={e => {
-                        const v = e.target.value;
-                        if (!v || v === h.date || !onExecuteAction) return;
-                        onExecuteAction("dossier_agent", "update_hearing", {
-                          caseId: caseData.id, hearingId: h.id,
-                          date: v, time: h.time, duration: h.duration
-                        });
-                      }}
-                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12 }}
-                    />
-                    <input
-                      type="time"
-                      defaultValue={h.time || ""}
-                      onBlur={e => {
-                        const v = e.target.value;
-                        if (v === (h.time || "") || !onExecuteAction) return;
-                        onExecuteAction("dossier_agent", "update_hearing", {
-                          caseId: caseData.id, hearingId: h.id,
-                          date: h.date, time: v, duration: h.duration
-                        });
-                      }}
-                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12 }}
-                    />
-                    <span style={{ fontSize: 10, color: "var(--color-text-3)", flex: 1 }}>{isPast ? "минуле" : (h.status || "scheduled")}</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1, alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "var(--color-text)", fontVariantNumeric: "tabular-nums" }}>
+                        {h.date || "—"}{h.time ? `  ${h.time}` : ""}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setAddHearingOpen({ hearingId: h.id, date: h.date || "", time: h.time || "", duration: h.duration });
+                        }}
+                        style={{ background: "transparent", border: "none", color: "var(--color-text-2)", cursor: "pointer", fontSize: 11, padding: "0 4px" }}
+                        title="Редагувати дату/час"
+                      >{"✏️"}</button>
+                    </div>
+                    <span style={{ fontSize: 10, color: "var(--color-text-3)" }}>{isPast ? "минуле" : (h.status || "scheduled")}</span>
                     <button
                       onClick={() => {
                         if (!onExecuteAction) return;
@@ -1874,14 +1865,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
               <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{"Дедлайни"}</div>
               <button
-                onClick={async () => {
-                  const name = await systemPrompt("Назва дедлайну", { title: "Новий дедлайн" });
-                  if (!name) return;
-                  const date = await systemPrompt("Дата дедлайну", { inputType: "date", title: "Новий дедлайн" });
-                  if (!date || !onExecuteAction) return;
-                  onExecuteAction("dossier_agent", "add_deadline", {
-                    caseId: caseData.id, name, date
-                  });
+                onClick={() => {
+                  setNewDeadline({ name: '', date: '' });
+                  setAddDeadlineOpen(true);
                 }}
                 style={{ background: "transparent", border: "1px dashed var(--color-border)", color: "var(--color-text-2)", borderRadius: 'var(--radius-sm)', padding: "3px 9px", fontSize: 11, cursor: "pointer" }}
               >{"+ Додати"}</button>
@@ -1908,19 +1894,18 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                       }}
                       style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12, flex: 1, minWidth: 80 }}
                     />
-                    <input
-                      type="date"
-                      defaultValue={d.date || ""}
-                      onBlur={e => {
-                        const v = e.target.value;
-                        if (!v || v === d.date || !onExecuteAction) return;
-                        onExecuteAction("dossier_agent", "update_deadline", {
-                          caseId: caseData.id, deadlineId: d.id,
-                          name: d.name, date: v
-                        });
-                      }}
-                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", borderRadius: 'var(--radius-xs)', padding: "3px 6px", fontSize: 12 }}
-                    />
+                    <div style={{ minWidth: 140 }}>
+                      <DatePicker
+                        value={d.date || ""}
+                        onChange={v => {
+                          if (!v || v === d.date || !onExecuteAction) return;
+                          onExecuteAction("dossier_agent", "update_deadline", {
+                            caseId: caseData.id, deadlineId: d.id,
+                            name: d.name, date: v
+                          });
+                        }}
+                      />
+                    </div>
                     <button
                       onClick={() => {
                         if (!onExecuteAction) return;
@@ -3194,6 +3179,74 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           }
         }}
       />
+
+      {/* Модалка нового / редагування засідання — DateTimePicker з обовʼязковими
+          датою і часом. addHearingOpen=true для нового, або об'єкт
+          { hearingId, date, time, duration } для редагування. */}
+      <DateTimePicker
+        isOpen={!!addHearingOpen}
+        title={addHearingOpen?.hearingId ? "Редагувати засідання" : "Нове засідання"}
+        initialDate={typeof addHearingOpen === 'object' ? addHearingOpen?.date : ''}
+        initialTime={typeof addHearingOpen === 'object' ? addHearingOpen?.time : ''}
+        saveLabel={addHearingOpen?.hearingId ? "Зберегти" : "Додати"}
+        onClose={() => setAddHearingOpen(false)}
+        onSave={({ date, time }) => {
+          if (!onExecuteAction) { setAddHearingOpen(false); return; }
+          if (addHearingOpen?.hearingId) {
+            onExecuteAction("dossier_agent", "update_hearing", {
+              caseId: caseData.id, hearingId: addHearingOpen.hearingId,
+              date, time, duration: addHearingOpen.duration,
+            });
+          } else {
+            onExecuteAction("dossier_agent", "add_hearing", {
+              caseId: caseData.id, date, time, duration: 120,
+            });
+          }
+          setAddHearingOpen(false);
+        }}
+      />
+
+      {/* Модалка нового дедлайну — назва (обовʼязкова) + DatePicker. Замінює
+          двоступеневий systemPrompt flow. */}
+      <Modal
+        isOpen={addDeadlineOpen}
+        onClose={() => setAddDeadlineOpen(false)}
+        title="Новий дедлайн"
+        size="sm"
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => setAddDeadlineOpen(false)}>Скасувати</Button>
+            <Button
+              variant="primary"
+              disabled={!newDeadline.name.trim() || !newDeadline.date}
+              onClick={() => {
+                if (!newDeadline.name.trim() || !newDeadline.date || !onExecuteAction) return;
+                onExecuteAction("dossier_agent", "add_deadline", {
+                  caseId: caseData.id,
+                  name: newDeadline.name.trim(),
+                  date: newDeadline.date,
+                });
+                setAddDeadlineOpen(false);
+              }}
+            >Додати</Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <Input
+            label="Назва дедлайну"
+            value={newDeadline.name}
+            onChange={v => setNewDeadline(d => ({ ...d, name: v }))}
+            placeholder="Наприклад: Заява про витрати"
+            autoFocus
+          />
+          <DatePicker
+            label="Дата дедлайну"
+            value={newDeadline.date}
+            onChange={v => setNewDeadline(d => ({ ...d, date: v }))}
+          />
+        </div>
+      </Modal>
 
     </div>
   );
