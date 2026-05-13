@@ -167,7 +167,7 @@ export async function getImageDimensions(blob) {
 /**
  * Об'єднує EXIF orientation і Document AI сигнали у фінальний кут обертання.
  *
- * КАСКАД (TASK B — aspect ratio fallback ПРИБРАНО повністю):
+ * КАСКАД:
  *   1. EXIF (фізична орієнтація сенсором — найнадійніше для фото з телефону).
  *      Telegram/WhatsApp/Viber/Signal зазвичай strip EXIF → null.
  *   2. Document AI page.transforms (affine matrix що DocAI застосував при OCR).
@@ -176,17 +176,23 @@ export async function getImageDimensions(blob) {
  *   3. Document AI blocks[].orientation (per-block enum, dominant >60%):
  *      DocAI оцінив orientation КОЖНОГО текстового блоку. Якщо >60% блоків
  *      мають однакову orientation != PAGE_UP — застосовуємо відповідне
- *      обертання. PAGE_UP домінує → 0° (image upright).
+ *      обертання. PAGE_UP домінує → 0° (image upright). Перед тим як повірити
+ *      PAGE_UP робимо sanity check — block geometry: якщо >70% блоків
+ *      вертикальні (h > 1.6 × w), DocAI ймовірно помилився; auto-rotate
+ *      все одно не робимо (без content analysis напрямок 90 vs 270 невідомий),
+ *      але повертаємо uncertain=true щоб UI попередив.
  *   4. Document AI page.orientation (page-level enum): останній DocAI сигнал
  *      коли блоків немає (тільки meta на рівні сторінки).
- *   5. NONE — повертаємо 0° + uncertain=true. UI показує warning «Орієнтація
- *      не визначена, виправ вручну через ↻».
+ *   5. NONE — повертаємо 0° + uncertain=true. Перед тим перевіряємо block
+ *      geometry — якщо більшість блоків вертикальні, додаємо це у лог щоб
+ *      адвокат розумів причину warning'у. UI показує «Перевір орієнтацію».
  *
- * Aspect ratio heuristic ПРИБРАНО (попередній bbox geometry fallback теж):
- * вона знала ШИРИНУ>ВИСОТУ але не НА ЯКУ СТОРОНУ повертати (90 vs 270 — 50/50
- * шанс), і не виявляла 180°. Принцип: краще не обертати ніж обернути
- * неправильно. Document AI blocks[].orientation — однозначний string enum,
- * не потребує жодних геометричних здогадок.
+ * Aspect ratio heuristic ПРИБРАНО (image-level — width vs height): вона
+ * знала що ШИРИНУ > ВИСОТУ але не НА ЯКУ СТОРОНУ повертати, і не виявляла
+ * 180°. Натомість block-level geometry (height vs width КОЖНОГО блоку
+ * тексту) — інформативніше: вона ловить вертикальний text layout
+ * (signal для 90/270 rotation) НЕЗАЛЕЖНО від aspect ratio самого фото
+ * (адвокат може зробити квадратне фото повернутого документа).
  *
  * @param {Object} opts
  * @param {Object|null} opts.exifResult — результат readExifOrientation
@@ -261,11 +267,39 @@ export function resolveOrientation({ exifResult, docAiPage, imageDimensions, fil
     );
     if (blockField.degrees !== 0) {
       logs.push(`${tag} → rotate ${blockField.degrees}° CW (виправити ${blockField.dominant})`);
+      return {
+        degrees: blockField.degrees,
+        source: 'docAiBlockField',
+        uncertain: blockField.confidence === 'low',
+        debug, logs,
+      };
+    }
+    // PAGE_UP домінує. Перевіряємо block geometry — sanity check на випадок
+    // коли DocAI помилково мітить вертикальний текст як PAGE_UP (бачив на
+    // реальних фото з мессенджерів — landscape image, текст біжить
+    // вертикально, але всі layout.orientation = PAGE_UP). Якщо більшість
+    // блоків вертикальні — піднімаємо uncertain, адвокат побачить warning.
+    const geo = analyzeBlockGeometry(docAiPage);
+    if (geo) debug.blockGeometry = geo;
+    if (geo && geo.tallFraction >= 0.7 && geo.total >= 5) {
+      logs.push(
+        `${tag} ⚠ PAGE_UP домінує АЛЕ block geometry: ${geo.tall}/${geo.total} блоків ` +
+        `вертикальні (${Math.round(geo.tallFraction * 100)}%, h>1.6w). DocAI ймовірно ` +
+        `пропустив orientation. Не обертаємо автоматично (без text content analysis ` +
+        `напрямок 90 vs 270 невідомий), але показуємо warning «Перевір орієнтацію».`
+      );
+      return { degrees: 0, source: 'docAiBlockField', uncertain: true, debug, logs };
+    }
+    if (geo) {
+      logs.push(
+        `${tag} block geometry sanity check: ${geo.wide}/${geo.total} блоків горизонтальні, ` +
+        `${geo.tall}/${geo.total} вертикальні — узгоджується з PAGE_UP. → 0°.`
+      );
     } else {
-      logs.push(`${tag} → 0° (PAGE_UP домінує, image upright)`);
+      logs.push(`${tag} → 0° (PAGE_UP домінує, image upright; geometry даних замало для перевірки)`);
     }
     return {
-      degrees: blockField.degrees,
+      degrees: 0,
       source: 'docAiBlockField',
       uncertain: blockField.confidence === 'low',
       debug, logs,
@@ -288,13 +322,25 @@ export function resolveOrientation({ exifResult, docAiPage, imageDimensions, fil
   }
 
   // 5. NONE — нічого не визначено. Не обертаємо. Адвокат побачить warning і
-  //    виправить через ↻ якщо потрібно. Aspect ratio heuristic ПРИБРАНО —
-  //    краще не обертати ніж обернути неправильно.
+  //    виправить через ↻ якщо потрібно. Аspect ratio (image-level) ПРИБРАНО,
+  //    але block geometry дає корисний сигнал у лог (якщо текст вертикальний,
+  //    адвокат бачить ЧОМУ uncertain — підказка робити ↻).
   const aspectStr = debug.aspect ? `aspect=${debug.aspect.ratio}` : 'aspect=?';
-  logs.push(
-    `${tag} жоден сигнал не дав orientation (${aspectStr}). НЕ обертаємо — uncertain=true. ` +
-    `Адвокат виправить вручну через ↻ якщо потрібно.`
-  );
+  const geoNone = analyzeBlockGeometry(docAiPage);
+  if (geoNone) debug.blockGeometry = geoNone;
+  if (geoNone && geoNone.tallFraction >= 0.7 && geoNone.total >= 5) {
+    logs.push(
+      `${tag} жоден orientation сигнал не дано (${aspectStr}). АЛЕ block geometry: ` +
+      `${geoNone.tall}/${geoNone.total} блоків вертикальні (${Math.round(geoNone.tallFraction * 100)}%). ` +
+      `Ймовірно 90°/270° оберт — напрямок неоднозначний без content analysis. ` +
+      `НЕ обертаємо — uncertain=true. Адвокат виправить через ↻.`
+    );
+  } else {
+    logs.push(
+      `${tag} жоден сигнал не дав orientation (${aspectStr}). НЕ обертаємо — uncertain=true. ` +
+      `Адвокат виправить вручну через ↻ якщо потрібно.`
+    );
+  }
   return { degrees: 0, source: 'none', uncertain: true, debug, logs };
 }
 
@@ -550,6 +596,76 @@ export function analyzeBlockOrientationField(page) {
     totalCount: total,
     confidence,
     distribution,
+  };
+}
+
+// ── Block geometry sanity check ─────────────────────────────────────────────
+//
+// На реальних фото з мессенджерів (Telegram/WhatsApp strip EXIF) траплялись
+// випадки коли Document AI повертав ВСІ blocks[].layout.orientation = PAGE_UP
+// для landscape-фото з вертикальним текстом — тобто DocAI не помітив що фото
+// повернуте, але блоки які він вирізав були ВИСОКИМИ і ВУЗЬКИМИ (бо текст
+// біг вертикально у image coords). Block bbox geometry — додатковий sanity
+// check: рахуємо скільки блоків таких, що h > 1.6×w (suttєво вищі за ширші).
+//
+// Ratio 1.6 обраний емпірично: типовий paragraph horizontal text дає
+// w/h ≈ 3-10 (широкий і не дуже високий); vertical text у тих же блоках —
+// w/h ≈ 0.1-0.3. Поріг 1/1.6 = 0.625 чітко відсікає горизонтальні від
+// вертикальних, з мізерним overlap зони (квадратні блоки типу штампів —
+// мала група).
+//
+// Цей сигнал виявляє 90° vs 270° (text running vertically), НЕ виявляє 180°
+// (текст усе ще горизонтальний, лише перевернутий). Для 180° треба покладатись
+// на blocks[].orientation field з DocAI або content analysis.
+
+/**
+ * Аналізує bounding box geometry блоків. Повертає статистику горизонтальних
+ * vs вертикальних блоків. Використовується як sanity check для PAGE_UP-
+ * домінантного blocks[].orientation і для NONE-гілки каскаду.
+ *
+ * @param {Object|null} page
+ * @returns {{tall:number, wide:number, square:number, total:number, tallFraction:number, wideFraction:number}|null}
+ *   null коли блоків замало для статистики (<3 з валідним bbox) або page відсутній.
+ */
+export function analyzeBlockGeometry(page) {
+  if (!page || typeof page !== 'object') return null;
+  const blocks = []
+    .concat(Array.isArray(page.blocks) ? page.blocks : [])
+    .concat(Array.isArray(page.paragraphs) ? page.paragraphs : []);
+  if (blocks.length === 0) return null;
+
+  let tall = 0, wide = 0, square = 0;
+  for (const b of blocks) {
+    const poly = b?.layout?.boundingPoly || b?.boundingPoly;
+    if (!poly) continue;
+    const verts = Array.isArray(poly.normalizedVertices) && poly.normalizedVertices.length > 0
+      ? poly.normalizedVertices
+      : (Array.isArray(poly.vertices) ? poly.vertices : null);
+    if (!verts || verts.length === 0) continue;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const v of verts) {
+      const x = Number(v?.x ?? 0);
+      const y = Number(v?.y ?? 0);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    const w = maxX - minX;
+    const h = maxY - minY;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) continue;
+    const ratio = w / h;
+    if (ratio < 1 / 1.6) tall++;
+    else if (ratio > 1.6) wide++;
+    else square++;
+  }
+  const total = tall + wide + square;
+  if (total < 3) return null;
+  return {
+    tall, wide, square, total,
+    tallFraction: tall / total,
+    wideFraction: wide / total,
   };
 }
 

@@ -178,11 +178,25 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   //      адвокат їх ще не підтвердив.
   useEffect(() => {
     const realFiles = pipelineResult?.realFiles;
+    const detectedOrientations = pipelineResult?.detectedOrientations || [];
     if (!Array.isArray(realFiles) || realFiles.length === 0) return;
 
+    // Збираємо набір індексів, для яких потрібен rotated preview blob.
+    // Раніше тут були лише processedBlobs + cropOverrides → індекси з лише
+    // detectedOrientation падали на thumbUrls (raw), і фото з повернутим
+    // авто-кутом показувалось боком після обробки навіть коли каскад правильно
+    // визначив кут (multiImageToPdf застосовував його тільки до PDF, не до
+    // preview blob). Тепер додаємо ще індекси з ненульовим
+    // detectedOrientation АБО userRotation — preview = raw + (auto + user) °.
     const targets = new Set();
     for (const idx of processedBlobs.keys()) targets.add(idx);
     for (const idx of cropOverrides.keys()) targets.add(idx);
+    for (let i = 0; i < realFiles.length; i++) {
+      if (targets.has(i)) continue;
+      const autoDeg = Number.isFinite(detectedOrientations[i]) ? detectedOrientations[i] : 0;
+      const userDeg = userRotation.get(i) || 0;
+      if ((((autoDeg + userDeg) % 360) + 360) % 360 !== 0) targets.add(i);
+    }
 
     let cancelled = false;
     (async () => {
@@ -199,13 +213,24 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
             const baseRot = proc.baseUserRotation || 0;
             const delta = ((userDeg - baseRot) % 360 + 360) % 360;
             blob = delta !== 0 ? await rotateImageBlob(proc.blob, delta) : proc.blob;
-          } else {
+          } else if (cropOverrides.has(idx)) {
             const rect = cropOverrides.get(idx);
             const rawFile = realFiles[idx];
             if (!rect || !rawFile) continue;
             const userDeg = userRotation.get(idx) || 0;
             const cropped = await cropImageBlob(rawFile, rect);
             blob = userDeg !== 0 ? await rotateImageBlob(cropped, userDeg) : cropped;
+          } else {
+            // Гілка тільки авто/користувацького обертання — без crop.
+            // totalDeg збігається з тим, що multiImageToPdf запікає у PDF
+            // (rotateImageBlob(file, resolved.degrees)) + delta від адвоката.
+            // Preview thumbnail тепер виглядає так само як фінальний документ.
+            const rawFile = realFiles[idx];
+            if (!rawFile) continue;
+            const autoDeg = Number.isFinite(detectedOrientations[idx]) ? detectedOrientations[idx] : 0;
+            const userDeg = userRotation.get(idx) || 0;
+            const totalDeg = (((autoDeg + userDeg) % 360) + 360) % 360;
+            blob = totalDeg !== 0 ? await rotateImageBlob(rawFile, totalDeg) : rawFile;
           }
           if (cancelled) break;
           newUrls.set(idx, URL.createObjectURL(blob));
@@ -231,7 +256,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       }, 1000);
     })();
     return () => { cancelled = true; };
-  }, [cropOverrides, processedBlobs, userRotation, pipelineResult?.realFiles]);
+  }, [cropOverrides, processedBlobs, userRotation, pipelineResult?.realFiles, pipelineResult?.detectedOrientations]);
 
   const handleDeviceFiles = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -1259,7 +1284,18 @@ function PreviewView({
           origIdx={popupOrigIdx}
           url={thumbUrls.get(popupOrigIdx)}
           sourceBlob={realFiles?.[popupOrigIdx] || null}
-          rotation={userRotation.get(popupOrigIdx) || 0}
+          // ВАЖЛИВО: popup отримує (auto + user) °, а не лише user. Інакше
+          // після того як каскад правильно визначив 180° для перевернутого
+          // фото, відкриття попапу показувало raw image без обертання — все
+          // інше у preview-grid рисувалось правильно, а у popup'і — боком.
+          // CropperHost + rotateRectCCW нижче читають той самий кут і
+          // конвертують rect назад у raw coords.
+          rotation={(((
+            (Number.isFinite(pipelineResult?.detectedOrientations?.[popupOrigIdx])
+              ? pipelineResult.detectedOrientations[popupOrigIdx]
+              : 0)
+            + (userRotation.get(popupOrigIdx) || 0)
+          ) % 360) + 360) % 360}
           processedEntry={processedBlobs?.get?.(popupOrigIdx) || null}
           onProcessedBlobSave={(blob, baseUserRotation) => onProcessedBlobSave(popupOrigIdx, blob, baseUserRotation)}
           position={orderedIndices.indexOf(popupOrigIdx)}
@@ -1713,13 +1749,16 @@ async function rebuildFromOcrResults({
       const cropRect = effectiveCrops?.get?.(origIdx) || null;
       const rawFile = realFiles[origIdx];
       const sourceFile = cropRect ? await cropImageBlob(rawFile, cropRect) : rawFile;
-      const autoDeg = cropRect
-        ? 0
-        : (Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0);
+      // autoDeg застосовується ЗАВЖДИ (раніше для crop-гілки скидався у 0).
+      // Конвенція тепер: popup показує raw + (autoDeg + userDeg). Cropper
+      // повертає rect у тому ж rotated просторі; rotateRectCCW конвертує
+      // назад у raw natural coords. Отже cropImageBlob(rawFile, rect) дає
+      // cropped raw-orientation файл — щоб виправити орієнтацію, потрібно
+      // застосувати totalDeg = (auto + user). Без autoDeg фото з повернутим
+      // авто-кутом після crop'у залишалось би боком у фінальному PDF.
+      const autoDeg = Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0;
       const userDeg = userRotation?.get?.(origIdx) || 0;
       const totalDeg = (autoDeg + userDeg) % 360;
-      // ВАЖЛИВО: автообертання вже зашите у pipeline pdf, але тут ми будуємо
-      // НОВИЙ PDF з оригінальних realFiles. Тому застосовуємо ПОВНИЙ totalDeg.
       blob = totalDeg !== 0 ? await rotateImageBlob(sourceFile, totalDeg) : sourceFile;
     }
 
