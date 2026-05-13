@@ -959,30 +959,87 @@
   cursor: pointer;
 }
 
-/* ── Crop режим (TASK B fix 2 round 2) ─────────────────────────────────── */
+/* ── Unified popup canvas з inline crop frame (TASK B fix Problem 1) ──── */
 
-.image-merge-panel__crop-host {
+/* Полотно в попапі — фон + позиціонування для абсолютних elements */
+.image-merge-panel__popup-canvas {
   position: relative;
   width: 100%;
   height: 100%;
   min-height: 320px;
   background: #1f2937;
+  overflow: hidden;
+  touch-action: none; /* блокуємо системний scroll/zoom щоб drag handles ловили події */
 }
 
-/* react-easy-crop генерує внутрішні div що позиціонуються absolute,
-   нам треба зайняти весь крос-host */
-.image-merge-panel__crop-host > div {
-  position: absolute !important;
+@media (min-width: 1024px) {
+  .image-merge-panel__popup-canvas {
+    min-height: 480px;
+  }
+}
+
+.image-merge-panel__popup-canvas .image-merge-panel__popup-img {
+  /* Перевизначає базовий popup-img max-width/max-height — тут позиція абсолютна */
+  max-width: none;
+  max-height: none;
+}
+
+/* Crop frame — рамка з обвідкою + dark overlay назовні (через box-shadow). */
+.image-merge-panel__crop-frame {
+  border: 2px solid #fff;
+  box-shadow:
+    0 0 0 9999px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(0, 0, 0, 0.4) inset;
+  cursor: move;
+  touch-action: none;
+}
+
+.image-merge-panel__crop-frame-body {
+  position: absolute;
   inset: 0;
+  background: transparent;
+  cursor: move;
 }
 
-.image-merge-panel__popup-nav--primary {
-  background: var(--color-accent);
-  color: #fff;
-  border-color: var(--color-accent);
+/* 8 рукояток: 4 кути + 4 ребра. Touch-friendly 22px (видно), 36px hit area
+   (через padding на body). */
+.image-merge-panel__crop-handle {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  background: #fff;
+  border: 2px solid #2563eb;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  touch-action: none;
+  z-index: 1;
 }
 
-.image-merge-panel__popup-nav--primary:hover {
-  background: var(--color-accent);
-  filter: brightness(1.05);
+.image-merge-panel__crop-handle--nw { left: -11px; top: -11px; cursor: nwse-resize; }
+.image-merge-panel__crop-handle--n  { left: 50%; top: -11px; transform: translateX(-50%); cursor: ns-resize; }
+.image-merge-panel__crop-handle--ne { right: -11px; top: -11px; cursor: nesw-resize; }
+.image-merge-panel__crop-handle--e  { right: -11px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.image-merge-panel__crop-handle--se { right: -11px; bottom: -11px; cursor: nwse-resize; }
+.image-merge-panel__crop-handle--s  { left: 50%; bottom: -11px; transform: translateX(-50%); cursor: ns-resize; }
+.image-merge-panel__crop-handle--sw { left: -11px; bottom: -11px; cursor: nesw-resize; }
+.image-merge-panel__crop-handle--w  { left: -11px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+
+/* Edge handles (n/s/e/w) видовжені — простіше тапнути */
+.image-merge-panel__crop-handle--n,
+.image-merge-panel__crop-handle--s {
+  width: 44px;
+  border-radius: 11px;
+}
+
+.image-merge-panel__crop-handle--e,
+.image-merge-panel__crop-handle--w {
+  height: 44px;
+  border-radius: 11px;
+}
+
+/* Активна крокувальна кнопка ✂️ (frame видно) — підсвічуємо */
+.image-merge-panel__popup-tool--active {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: #2563eb;
+  color: #1e3a8a;
 }
