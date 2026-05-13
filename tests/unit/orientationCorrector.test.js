@@ -779,6 +779,25 @@ describe('orientationCorrector.analyzeBlockGeometry', () => {
     expect(analyzeBlockGeometry(null)).toBeNull();
   });
 
+  // Regression guard для регресії яка ламала pipeline при debugMode=true:
+  // ImageMergePanel.jsx читав d.blockGeometry.medianAspect.toFixed(2) і
+  // .blockCount, які НЕ існують у returned shape. Тест замикає контракт —
+  // якщо хтось перейменує/видалить поля, тест ламається до того як адвокат
+  // знову зіткнеться з «Cannot read properties of undefined».
+  it('returned shape має очікувані поля: tall, wide, square, total, tallFraction, wideFraction', () => {
+    const page = { paragraphs: [tallParagraph(), tallParagraph(), tallParagraph()] };
+    const r = analyzeBlockGeometry(page);
+    expect(r).not.toBeNull();
+    expect(r).toEqual(expect.objectContaining({
+      tall: expect.any(Number),
+      wide: expect.any(Number),
+      square: expect.any(Number),
+      total: expect.any(Number),
+      tallFraction: expect.any(Number),
+      wideFraction: expect.any(Number),
+    }));
+  });
+
   it('повертає null коли менше 3 блоків з валідним bbox', () => {
     const page = { paragraphs: [tallParagraph(), tallParagraph()] };
     expect(analyzeBlockGeometry(page)).toBeNull();

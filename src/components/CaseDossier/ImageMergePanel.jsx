@@ -419,35 +419,47 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       // сигнали каскаду (TASK B fix Problem 2):
       //   <file>: EXIF=<x>, transforms=<y>, blockField=<z>, blockGeo=<w>,
       //           pageField=<v>, aspect=<r> → <deg>° (<source>)
+      // Обгорнуто у try/catch ОКРЕМО від основного pipeline catch'у —
+      // діагностичний toast не може ламати pipeline (адвокат уже у
+      // phase=preview, помилка форматування рядка не повинна повертати у
+      // phase=selecting з «merge failed»).
       if (debugMode && Array.isArray(result.orientationDebug)) {
-        const lines = result.orientationDebug
-          .map((d, i) => {
-            if (!d) return null;
-            const file = realFiles[i]?.name || `#${i}`;
-            const parts = [];
-            parts.push(d.exif
-              ? `EXIF=${d.exif.rawTag}(${d.exif.degrees}°)`
-              : 'EXIF=none');
-            parts.push(d.transforms
-              ? `transforms=${d.transforms.degrees}°`
-              : 'transforms=none');
-            parts.push(d.blockField
-              ? `blockField=${d.blockField.dominant}(${d.blockField.dominantCount}/${d.blockField.totalCount})`
-              : 'blockField=none');
-            parts.push(d.blockGeometry
-              ? `blockGeo=mAspect${d.blockGeometry.medianAspect.toFixed(2)}(${d.blockGeometry.blockCount})`
-              : 'blockGeo=none');
-            parts.push(d.pageField && d.pageField.orientation != null
-              ? `pageField=${d.pageField.orientation}`
-              : 'pageField=none');
-            parts.push(d.aspect ? `ratio=${d.aspect.ratio}` : 'aspect=none');
-            return `${file}: ${parts.join(', ')} → ${d.degrees}° (${d.source}${d.uncertain ? ', uncertain' : ''})`;
-          })
-          .filter(Boolean);
-        toast.show('Orientation діагностика', {
-          description: lines.join('\n'),
-          duration: 14000,
-        });
+        try {
+          const lines = result.orientationDebug
+            .map((d, i) => {
+              if (!d) return null;
+              const file = realFiles[i]?.name || `#${i}`;
+              const parts = [];
+              parts.push(d.exif
+                ? `EXIF=${d.exif.rawTag}(${d.exif.degrees}°)`
+                : 'EXIF=none');
+              parts.push(d.transforms
+                ? `transforms=${d.transforms.degrees}°`
+                : 'transforms=none');
+              parts.push(d.blockField
+                ? `blockField=${d.blockField.dominant}(${d.blockField.dominantCount}/${d.blockField.totalCount})`
+                : 'blockField=none');
+              parts.push(d.blockGeometry
+                // analyzeBlockGeometry повертає {tall, wide, square, total,
+                // tallFraction, wideFraction} — раніше тут було посилання на
+                // d.blockGeometry.medianAspect.toFixed(2) і .blockCount, яких
+                // не існувало у returned shape.
+                ? `blockGeo=tall${d.blockGeometry.tall ?? 0}/wide${d.blockGeometry.wide ?? 0}/total${d.blockGeometry.total ?? 0} (${Math.round((d.blockGeometry.tallFraction ?? 0) * 100)}% vert)`
+                : 'blockGeo=none');
+              parts.push(d.pageField && d.pageField.orientation != null
+                ? `pageField=${d.pageField.orientation}`
+                : 'pageField=none');
+              parts.push(d.aspect ? `ratio=${d.aspect.ratio}` : 'aspect=none');
+              return `${file}: ${parts.join(', ')} → ${d.degrees}° (${d.source}${d.uncertain ? ', uncertain' : ''})`;
+            })
+            .filter(Boolean);
+          toast.show('Orientation діагностика', {
+            description: lines.join('\n'),
+            duration: 14000,
+          });
+        } catch (debugErr) {
+          console.warn('[merge] debug toast format failed (non-fatal):', debugErr);
+        }
       }
     } catch (e) {
       console.error('[merge] pipeline failed:', e);

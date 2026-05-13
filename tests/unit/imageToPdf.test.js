@@ -110,4 +110,71 @@ describe('imageToPdf', () => {
     mockOutput.mockReturnValueOnce(new Blob([], { type: 'application/pdf' }));
     await expect(imageToPdf(jpgFile(), {})).rejects.toThrow(/порожній/);
   });
+
+  it('кидає чітку помилку коли HTMLImage завантажується з naturalWidth=0', async () => {
+    // Симулюємо випадок коли image «успішно» завантажилось але має 0 розміри
+    // (специфічний edge case для деяких progressive JPEG на Android Chrome).
+    Object.defineProperty(global.Image.prototype, 'src', {
+      configurable: true,
+      set() {
+        setTimeout(() => {
+          Object.defineProperty(this, 'naturalWidth', { value: 0, configurable: true });
+          Object.defineProperty(this, 'naturalHeight', { value: 0, configurable: true });
+          Object.defineProperty(this, 'width', { value: 0, configurable: true });
+          Object.defineProperty(this, 'height', { value: 0, configurable: true });
+          this.onload?.();
+        }, 0);
+      },
+    });
+    // createImageBitmap також fail у цьому тесті щоб fallback не спрацював.
+    const origCreateImageBitmap = global.createImageBitmap;
+    global.createImageBitmap = undefined;
+    try {
+      await expect(imageToPdf(jpgFile(), {})).rejects.toThrow(/декодувати/);
+    } finally {
+      global.createImageBitmap = origCreateImageBitmap;
+    }
+  });
+
+  it('використовує createImageBitmap fallback коли HTMLImage не справляється', async () => {
+    // HTMLImage імітуємо що падає
+    Object.defineProperty(global.Image.prototype, 'src', {
+      configurable: true,
+      set() {
+        setTimeout(() => this.onerror?.(), 0);
+      },
+    });
+    const closeMock = vi.fn();
+    global.createImageBitmap = vi.fn(async () => ({
+      width: 1000,
+      height: 1500,
+      close: closeMock,
+    }));
+    try {
+      const result = await imageToPdf(jpgFile(), {});
+      expect(global.createImageBitmap).toHaveBeenCalled();
+      expect(closeMock).toHaveBeenCalled();
+      expect(result.pdfBlob).toBeInstanceOf(Blob);
+    } finally {
+      delete global.createImageBitmap;
+    }
+  });
+
+  it('cleanup blob URL виконується навіть якщо завантаження падає', async () => {
+    const revokeSpy = vi.spyOn(global.URL, 'revokeObjectURL');
+    Object.defineProperty(global.Image.prototype, 'src', {
+      configurable: true,
+      set() {
+        setTimeout(() => this.onerror?.(), 0);
+      },
+    });
+    global.createImageBitmap = vi.fn(async () => { throw new Error('bitmap fail'); });
+    try {
+      await expect(imageToPdf(jpgFile(), {})).rejects.toThrow();
+      expect(revokeSpy).toHaveBeenCalled();
+    } finally {
+      revokeSpy.mockRestore();
+      delete global.createImageBitmap;
+    }
+  });
 });

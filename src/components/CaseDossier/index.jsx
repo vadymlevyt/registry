@@ -1451,15 +1451,27 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       }
     }
 
-    // Пріоритет: 01_ОРИГІНАЛИ → root папки справи → cData.driveFolderId (legacy)
-    const targetFolderId =
-      subFolders?.['01_ОРИГІНАЛИ'] ||
-      cData.storage?.driveFolderId ||
-      cData.driveFolderId;
+    // Пріоритет: 01_ОРИГІНАЛИ → root папки справи → cData.driveFolderId (legacy).
+    // Логування у консоль показує адвокату ДЕ опинився файл: якщо
+    // subFolders.01_ОРИГІНАЛИ є — пишемо туди (стандарт), якщо ні — fallback на
+    // root з warning у консолі. Раніше fallback відбувався тихо: адвокат
+    // шукав PDF у 01_ОРИГІНАЛИ і не знаходив, бо файл лежав у root папки
+    // справи (subFolders неповний після ensureSubFolders).
+    let targetFolderId = subFolders?.['01_ОРИГІНАЛИ'];
+    let targetFolderLabel = '01_ОРИГІНАЛИ';
+    if (!targetFolderId) {
+      targetFolderId = cData.storage?.driveFolderId || cData.driveFolderId;
+      targetFolderLabel = '(root case folder, 01_ОРИГІНАЛИ subFolder ID missing)';
+      console.warn(
+        '[uploadFileLocal] subFolders.01_ОРИГІНАЛИ не знайдено — fallback на root папку справи. ' +
+        'Файл буде НЕ у 01_ОРИГІНАЛИ. Перевір cData.storage.subFolders.'
+      );
+    }
 
     if (!targetFolderId) {
       throw new Error('Не знайдено цільову папку Drive для справи (немає subFolders і немає driveFolderId)');
     }
+    console.log(`[uploadFileLocal] uploading "${file.name}" (${file.size} bytes) → ${targetFolderLabel} (${targetFolderId})`);
 
     const metadata = {
       name: file.name,
@@ -1474,6 +1486,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     );
     if (!response.ok) throw new Error(`Drive upload failed: ${response.status}`);
     const data = await response.json();
+    console.log(`[uploadFileLocal] uploaded ✓ driveId=${data.id} (folder: ${targetFolderLabel})`);
     return data.id;
   }
 
@@ -3006,6 +3019,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
             if (conversion.warnings && conversion.warnings.length > 0) {
               console.info('[convertToPdf] warnings:', conversion.warnings);
+              // Якщо є warning про підозріло малий PDF — показуємо адвокату
+              // явним toast'ом замість мовчазного console.info. Інакше адвокат
+              // не побачить що PDF можливо порожній/неповний.
+              const suspiciousWarning = conversion.warnings.find(w => /unusually small|порожн/i.test(w));
+              if (suspiciousWarning) {
+                toast.warning('PDF створено, але може бути неповним', { description: suspiciousWarning });
+              }
             }
           }
 

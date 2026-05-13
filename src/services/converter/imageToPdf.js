@@ -3,16 +3,23 @@
 //
 // Pipeline:
 //   1. Якщо HEIC — pre-convert через heicToJpeg
-//   2. Завантажити image у HTMLImageElement (через blob URL)
+//   2. Завантажити image у HTMLImageElement (через blob URL). Fallback на
+//      createImageBitmap якщо HTMLImage не справляється (рідкісні progressive
+//      JPEG corner cases на деяких Android-браузерах).
 //   3. Обрати орієнтацію A4 за пропорцією зображення (portrait/landscape)
-//   4. jsPDF — створити PDF A4 з вставкою зображення з масштабом fit
-//   5. Cleanup blob URL
+//   4. Canvas → JPEG dataURL (RGB, quality 0.92 — кольори зберігаються).
+//   5. jsPDF додає JPEG dataURL у A4 PDF з fit-масштабом.
+//   6. Cleanup blob URL у finally (раніше revoke виконувався тільки на
+//      happy-path, при помилці blob URL leak'ився).
 //
 // Контракт результату:
 //   { pdfBlob: Blob, warnings: string[] }
 //
-// TASK B розширить це: orientation correction через Document AI orientation
-// метадані, склейка кількох зображень у один PDF.
+// КОЛЬОРИ: канвас з'являється у sRGB режимі за замовчуванням, ctx.drawImage
+// копіює пікселі 1:1 включно з усіма каналами (R/G/B). canvas.toDataURL
+// 'image/jpeg' зберігає 3 канали (без альфа). Жодного grayscale-конвертування
+// у цьому пайплайні немає — адвокат бачить точно ту саму кольорову картинку
+// яку завантажив, тільки запаковану у PDF контейнер.
 
 import { heicToJpeg } from './heicToJpeg.js';
 
@@ -20,6 +27,13 @@ import { heicToJpeg } from './heicToJpeg.js';
 const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
 const A4_MARGIN_MM = 10; // 1см поля з усіх сторін
+const PX_TO_MM = 0.264583; // 1px ≈ 0.264583 мм (72 dpi)
+
+// Мінімальний прийнятний розмір PDF з зображенням ~A4. PDF-заголовок + одна
+// сторінка без image — ~1-2KB. Зображення JPEG quality 0.92 будь-якого
+// розумного розміру дає принаймні 20-50KB. Все що менше 4KB — підозра що
+// addImage тихо провалився.
+const MIN_PDF_BYTES = 4 * 1024;
 
 function isHeic(file) {
   const name = (file?.name || '').toLowerCase();
@@ -27,13 +41,42 @@ function isHeic(file) {
   return mime === 'image/heic' || mime === 'image/heif' || /\.heic$/i.test(name);
 }
 
-function loadImage(blobUrl) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Не вдалося завантажити зображення'));
-    img.src = blobUrl;
-  });
+// Завантаження HTMLImage з fallback на createImageBitmap. HTMLImage реалізація
+// у деяких Chrome для Android має edge cases з progressive JPEG (фото з
+// Samsung Galaxy камер) — повертає resolve але img.naturalWidth=0.
+// createImageBitmap значно надійніший: спрацьовує атомарно, decode у воркері,
+// і ImageBitmap працює як source для canvas.drawImage без додаткової роботи.
+async function loadImageFromBlob(blob, blobUrl) {
+  // Перший крок: HTMLImage через blob URL. Найшвидший і найсумісніший.
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => {
+        if ((im.naturalWidth || im.width) > 0 && (im.naturalHeight || im.height) > 0) {
+          resolve(im);
+        } else {
+          reject(new Error('HTMLImage завантажено але naturalWidth=0'));
+        }
+      };
+      im.onerror = () => reject(new Error('HTMLImage onerror'));
+      im.src = blobUrl;
+    });
+    return { source: img, width: img.naturalWidth || img.width, height: img.naturalHeight || img.height };
+  } catch (htmlImageErr) {
+    // Fallback: createImageBitmap працює напряму з Blob і обробляє більше
+    // форматів/варіантів JPEG. Доступний у всіх сучасних браузерах.
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(blob);
+        return { source: bitmap, width: bitmap.width, height: bitmap.height };
+      } catch (bitmapErr) {
+        throw new Error(
+          `Не вдалось завантажити зображення: HTMLImage="${htmlImageErr.message}", createImageBitmap="${bitmapErr.message}"`
+        );
+      }
+    }
+    throw new Error(`Не вдалось завантажити зображення: ${htmlImageErr.message}`);
+  }
 }
 
 export async function imageToPdf(file, context = {}) {
@@ -42,57 +85,102 @@ export async function imageToPdf(file, context = {}) {
 
   // 1. HEIC → JPEG (iPhone фото)
   if (isHeic(file)) {
-    const conv = await heicToJpeg(file, context);
-    workingFile = conv.jpegFile;
-    warnings.push('HEIC конвертовано у JPEG');
+    try {
+      const conv = await heicToJpeg(file, context);
+      workingFile = conv.jpegFile;
+      warnings.push('HEIC конвертовано у JPEG');
+    } catch (e) {
+      throw new Error(`HEIC → JPEG конвертація провалилась: ${e?.message || e}`);
+    }
   }
 
-  // 2. Завантажити зображення для виміру розмірів
+  // 2. Завантажити зображення (img або ImageBitmap)
   const blobUrl = URL.createObjectURL(workingFile);
-  let img;
+  let loaded;
   try {
-    img = await loadImage(blobUrl);
+    try {
+      loaded = await loadImageFromBlob(workingFile, blobUrl);
+    } catch (e) {
+      throw new Error(`Не вдалось декодувати зображення (${workingFile.type || 'unknown'}): ${e?.message || e}`);
+    }
+    const { source, width, height } = loaded;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      throw new Error(`Невалідні розміри зображення: ${width}×${height}`);
+    }
+
+    // 3. Орієнтація PDF — за пропорцією
+    const orientation = width > height ? 'landscape' : 'portrait';
+    const pageW = orientation === 'landscape' ? A4_HEIGHT_MM : A4_WIDTH_MM;
+    const pageH = orientation === 'landscape' ? A4_WIDTH_MM : A4_HEIGHT_MM;
+    const usableW = pageW - 2 * A4_MARGIN_MM;
+    const usableH = pageH - 2 * A4_MARGIN_MM;
+
+    const imgWmm = width * PX_TO_MM;
+    const imgHmm = height * PX_TO_MM;
+    const ratio = Math.min(usableW / imgWmm, usableH / imgHmm);
+    const drawW = imgWmm * ratio;
+    const drawH = imgHmm * ratio;
+    const offsetX = (pageW - drawW) / 2;
+    const offsetY = (pageH - drawH) / 2;
+
+    // 4. Канвас → JPEG dataURL (RGB, без альфа). Жодного grayscale —
+    // ctx.drawImage копіює всі канали, toDataURL зберігає кольори оригіналу.
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas 2D context недоступний');
+    }
+    try {
+      ctx.drawImage(source, 0, 0);
+    } catch (e) {
+      throw new Error(`Canvas.drawImage провалився: ${e?.message || e}`);
+    }
+    // ImageBitmap після використання краще close — звільнити GPU memory.
+    if (source && typeof source.close === 'function') {
+      try { source.close(); } catch {}
+    }
+
+    let dataUrl;
+    try {
+      dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    } catch (e) {
+      throw new Error(`Canvas.toDataURL провалився: ${e?.message || e}`);
+    }
+    if (!dataUrl || !dataUrl.startsWith('data:image/jpeg')) {
+      throw new Error(`Canvas.toDataURL повернув некорректний dataURL (length=${dataUrl?.length || 0})`);
+    }
+
+    // 5. jsPDF — створити PDF, додати JPEG
+    const jspdfModule = await import('jspdf');
+    const JsPDF = jspdfModule.jsPDF || jspdfModule.default;
+    const pdf = new JsPDF({ unit: 'mm', format: 'a4', orientation });
+    try {
+      pdf.addImage(dataUrl, 'JPEG', offsetX, offsetY, drawW, drawH);
+    } catch (e) {
+      throw new Error(`jsPDF.addImage провалився: ${e?.message || e}`);
+    }
+
+    let pdfBlob;
+    try {
+      pdfBlob = pdf.output('blob');
+    } catch (e) {
+      throw new Error(`jsPDF.output('blob') провалився: ${e?.message || e}`);
+    }
+    if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
+      throw new Error(`jsPDF повернув порожній PDF`);
+    }
+    if (pdfBlob.size < MIN_PDF_BYTES) {
+      // Підозріло малий PDF — addImage могла тихо створити порожню сторінку.
+      // Не кидаємо (буває для дуже маленьких зображень), але попереджаємо.
+      warnings.push(`PDF unusually small (${pdfBlob.size} bytes) — перевір вміст`);
+    }
+
+    return { pdfBlob, warnings };
   } finally {
-    // Cleanup blob URL — img вже має пікселі у пам'яті, URL не потрібен
-    // (cleanup ПІСЛЯ передачі data до jsPDF — на цьому етапі ще ні)
+    // Cleanup blob URL — виконується ЗАВЖДИ (включно з помилкою). Раніше
+    // revoke був на happy-path, при exception лишався URL leak.
+    URL.revokeObjectURL(blobUrl);
   }
-
-  // 3. Орієнтація PDF — за пропорцією
-  const orientation = img.width > img.height ? 'landscape' : 'portrait';
-  const pageW = orientation === 'landscape' ? A4_HEIGHT_MM : A4_WIDTH_MM;
-  const pageH = orientation === 'landscape' ? A4_WIDTH_MM : A4_HEIGHT_MM;
-  const usableW = pageW - 2 * A4_MARGIN_MM;
-  const usableH = pageH - 2 * A4_MARGIN_MM;
-
-  // Fit: пропорційно вписати у usableW x usableH
-  const ratio = Math.min(usableW / (img.width * 0.264583), usableH / (img.height * 0.264583));
-  // 1px ≈ 0.264583 мм (72 dpi). jsPDF приймає мм.
-  const drawW = img.width * 0.264583 * ratio;
-  const drawH = img.height * 0.264583 * ratio;
-  const offsetX = (pageW - drawW) / 2;
-  const offsetY = (pageH - drawH) / 2;
-
-  // 4. Канвас для PNG/JPG data URL (jsPDF приймає або data URL, або Image)
-  const canvas = document.createElement('canvas');
-  canvas.width = img.width;
-  canvas.height = img.height;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0);
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-
-  // Cleanup blob URL
-  URL.revokeObjectURL(blobUrl);
-
-  // 5. jsPDF створення документа
-  const jspdfModule = await import('jspdf');
-  const JsPDF = jspdfModule.jsPDF || jspdfModule.default;
-  const pdf = new JsPDF({ unit: 'mm', format: 'a4', orientation });
-  pdf.addImage(dataUrl, 'JPEG', offsetX, offsetY, drawW, drawH);
-
-  const pdfBlob = pdf.output('blob');
-  if (!(pdfBlob instanceof Blob) || pdfBlob.size === 0) {
-    throw new Error('jsPDF повернув порожній PDF');
-  }
-
-  return { pdfBlob, warnings };
 }
