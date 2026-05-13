@@ -43,6 +43,25 @@ describe('converterService — маршрутизація за типом фай
       expect(canConvert(fakeFile('scan.webp', 'image/webp'))).toBe(true);
     });
 
+    // Regression guard: для розширення .jpeg адвокат бачив що PDF не
+    // створюється (тільки .txt/.layout.json), а для .jpg все працювало.
+    // Тести замикають усі варіанти регістру/розширення + порожній MIME
+    // (Android-picker для .jpeg часом повертає type='' замість image/jpeg).
+    it('Зображення з усіма варіантами регістру і MIME підтримуються', () => {
+      expect(canConvert(fakeFile('scan.jpeg', 'image/jpeg'))).toBe(true);
+      expect(canConvert(fakeFile('scan.JPG', 'image/jpeg'))).toBe(true);
+      expect(canConvert(fakeFile('scan.JPEG', 'image/jpeg'))).toBe(true);
+      expect(canConvert(fakeFile('scan.PNG', 'image/png'))).toBe(true);
+      expect(canConvert(fakeFile('scan.WEBP', 'image/webp'))).toBe(true);
+      // Порожній MIME — fallback на extension
+      expect(canConvert(fakeFile('scan.jpeg', ''))).toBe(true);
+      expect(canConvert(fakeFile('scan.jpg', ''))).toBe(true);
+      expect(canConvert(fakeFile('scan.png', ''))).toBe(true);
+      // application/octet-stream (некоректний MIME з деяких пікерів)
+      expect(canConvert(fakeFile('scan.jpeg', 'application/octet-stream'))).toBe(true);
+      expect(canConvert(fakeFile('scan.jpg', 'application/octet-stream'))).toBe(true);
+    });
+
     it('Невідомий тип — false', () => {
       expect(canConvert(fakeFile('archive.zip', 'application/zip'))).toBe(false);
       expect(canConvert(fakeFile('book.epub', 'application/epub+zip'))).toBe(false);
@@ -78,6 +97,66 @@ describe('converterService — маршрутизація за типом фай
       expect(result.warnings.length).toBeGreaterThan(0);
       expect(result.warnings[0]).toContain('не конвертується');
       expect(reportActivity).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('convertToPdf — image routing (regression guard для .jpeg)', () => {
+    // imageToPdf тестується окремо; тут тільки перевіряємо що ВСІ варіанти
+    // розширень/MIME для зображень потрапляють у image-гілку (converter='imageToPdf')
+    // а не у passthrough. Раніше .jpeg з порожнім MIME міг потрапити у passthrough
+    // якщо MIME-перевірка зачинала на name.endsWith('.jpg') а не на /\.jpe?g/.
+    beforeEach(() => {
+      vi.resetModules();
+      vi.doMock('../../src/services/converter/imageToPdf.js', () => ({
+        imageToPdf: vi.fn(async () => ({
+          pdfBlob: new Blob(['fake-pdf'], { type: 'application/pdf' }),
+          warnings: [],
+        })),
+      }));
+    });
+
+    async function route(name, type) {
+      const { convertToPdf: cvt } = await import('../../src/services/converter/converterService.js');
+      const file = new File(['fake'], name, { type });
+      const r = await cvt(file, {});
+      return r.converter;
+    }
+
+    it('.jpeg з image/jpeg → imageToPdf', async () => {
+      expect(await route('photo.jpeg', 'image/jpeg')).toBe('imageToPdf');
+    });
+    it('.jpg з image/jpeg → imageToPdf', async () => {
+      expect(await route('photo.jpg', 'image/jpeg')).toBe('imageToPdf');
+    });
+    it('.JPEG (uppercase) з image/jpeg → imageToPdf', async () => {
+      expect(await route('photo.JPEG', 'image/jpeg')).toBe('imageToPdf');
+    });
+    it('.JPG (uppercase) з image/jpeg → imageToPdf', async () => {
+      expect(await route('photo.JPG', 'image/jpeg')).toBe('imageToPdf');
+    });
+    it('.png з image/png → imageToPdf', async () => {
+      expect(await route('scan.png', 'image/png')).toBe('imageToPdf');
+    });
+    it('.PNG (uppercase) → imageToPdf', async () => {
+      expect(await route('scan.PNG', 'image/png')).toBe('imageToPdf');
+    });
+    it('.jpeg з порожнім MIME (Android picker quirk) → imageToPdf (не passthrough)', async () => {
+      expect(await route('photo.jpeg', '')).toBe('imageToPdf');
+    });
+    it('.jpg з порожнім MIME → imageToPdf', async () => {
+      expect(await route('photo.jpg', '')).toBe('imageToPdf');
+    });
+    it('.jpeg з application/octet-stream → imageToPdf (нормалізуємо MIME)', async () => {
+      expect(await route('photo.jpeg', 'application/octet-stream')).toBe('imageToPdf');
+    });
+    it('.webp → imageToPdf', async () => {
+      expect(await route('photo.webp', 'image/webp')).toBe('imageToPdf');
+    });
+    it('originalMime нормалізується у image/* навіть коли file.type порожній', async () => {
+      const { convertToPdf: cvt } = await import('../../src/services/converter/converterService.js');
+      const file = new File(['fake'], 'photo.jpeg', { type: '' });
+      const r = await cvt(file, {});
+      expect(r.originalMime).toBe('image/jpeg');
     });
   });
 

@@ -68,8 +68,37 @@ const MIME_DOCX = [
   'application/msword',
 ];
 
-function isImage(mime) {
-  return typeof mime === 'string' && mime.startsWith('image/');
+// Симетрично до сімейств вище — мапінг розширень → image MIME. Використовується
+// у isImage() з fallback на ім'я і в normalizeFileType, коли File API не дає
+// MIME (певні Android-пікери віддають порожній type для .jpeg хоча для .jpg
+// віддають image/jpeg — звідси «.jpeg → text/layout робиться, PDF ні»: пік
+// неоднозначно класифікувався, конверсія йшла, але деяка downstream-логіка
+// бачила mime='' і вирішувала що це не зображення).
+const IMAGE_EXT_TO_MIME = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  jpe: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+};
+
+function extOf(name) {
+  if (typeof name !== 'string') return '';
+  const m = /\.([^./\\]+)$/.exec(name);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function isImage(mime, name) {
+  if (typeof mime === 'string' && mime.startsWith('image/')) return true;
+  // Friendly fallback по розширенню — для випадків коли file picker не
+  // встановив MIME (порожній type) або встановив octet-stream.
+  return !!IMAGE_EXT_TO_MIME[extOf(name)];
 }
 
 function isHtml(mime, name) {
@@ -183,15 +212,33 @@ export async function convertToPdf(file, context = {}) {
   }
 
   // 4. Зображення → PDF (HEIC → JPEG → PDF або JPG/PNG → PDF)
-  if (isImage(mime) || /\.(jpe?g|png|heic|webp)$/i.test(name)) {
+  if (isImage(mime, name)) {
+    // Підставляємо коректний MIME у пасаж до imageToPdf: для деяких Android
+    // пікерів `file.type` приходить порожній або 'application/octet-stream'
+    // саме для .jpeg, що ламало внутрішнє рішення «це зображення».
+    // Замість мутації існуючого File (immutable) створюємо новий з
+    // нормалізованим type — blob bytes ті самі.
+    const inferredMime = IMAGE_EXT_TO_MIME[extOf(name)] || 'image/jpeg';
+    const normalizedMime = (typeof mime === 'string' && mime.startsWith('image/'))
+      ? mime
+      : inferredMime;
+    let inputFile = file;
+    if (inputFile && inputFile.type !== normalizedMime) {
+      try {
+        inputFile = new File([file], file.name || name, { type: normalizedMime });
+      } catch (e) {
+        // Якщо File ctor недоступний (rare), залишаємо original — imageToPdf
+        // використовує blob bytes напряму, MIME не блокує.
+      }
+    }
     const { imageToPdf } = await import('./imageToPdf.js');
-    const result = await imageToPdf(file, context);
+    const result = await imageToPdf(inputFile, context);
     return makeResult({
       pdfBlob: result.pdfBlob,
       originalBlob: null, // зображення-оригінал не зберігаємо (всередині PDF)
       pdfName: baseName(name),
       originalName: name,
-      originalMime: mime || 'image/jpeg',
+      originalMime: normalizedMime,
       extractedText: null, // OCR pipeline витягне текст пізніше
       warnings: result.warnings || [],
       converter: 'imageToPdf',
@@ -277,8 +324,7 @@ export function canConvert(file) {
     isPdf(mime, name) ||
     isHtml(mime, name) ||
     isDocx(mime, name) ||
-    isImage(mime) ||
-    /\.(jpe?g|png|heic|webp)$/i.test(name)
+    isImage(mime, name)
   );
 }
 
