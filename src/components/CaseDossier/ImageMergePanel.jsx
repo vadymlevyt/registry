@@ -16,7 +16,6 @@ import {
   useState,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   forwardRef,
@@ -537,6 +536,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         pipelineResult={pipelineResult}
         orderedIndices={orderedIndices}
         thumbUrls={thumbUrlsRef.current}
+        realFiles={pipelineResult?.realFiles || []}
         userRotation={userRotation}
         cropProposals={cropProposals}
         cropOverrides={cropOverrides}
@@ -726,6 +726,7 @@ function PreviewView({
   pipelineResult,
   orderedIndices,
   thumbUrls,
+  realFiles,
   userRotation,
   cropProposals,
   cropOverrides,
@@ -1127,6 +1128,7 @@ function PreviewView({
           key={popupOrigIdx}
           origIdx={popupOrigIdx}
           url={thumbUrls.get(popupOrigIdx)}
+          sourceBlob={realFiles?.[popupOrigIdx] || null}
           rotation={userRotation.get(popupOrigIdx) || 0}
           position={orderedIndices.indexOf(popupOrigIdx)}
           total={orderedIndices.length}
@@ -1748,28 +1750,29 @@ function Thumbnail({
   );
 }
 
-// ── Preview popup — UNIFIED (TASK B fix Problem 1) ────────────────────────
+// ── Preview popup — FULL-SCREEN crop editor (TASK B fix Problem 1+5) ──────
 //
-// Один попап для всього: перегляд + inline crop frame через одну візуальну
-// поверхню. Без окремої «crop модалки» з її «Перегляд» кнопкою — адвокат
-// бачить одне і те саме фото з/без рамки залежно від стану ✂️.
+// Стандартний mobile-style crop editor (Apple Photos/Google Photos UX):
+//   - Full-screen overlay (займає весь viewport)
+//   - Top bar: ✕ Cancel (закрити без застосування), title, ✓ Apply
+//                (застосувати рамку і закрити)
+//   - Main: react-advanced-cropper (pinch-zoom + pan + drag handles на 4
+//                кутах і 4 ребрах одночасно) — або просто image якщо frame
+//                схований
+//   - Bottom bar: ‹ Попередня · ↻ ✂️ 🗑 · Наступна ›
 //
 // Інваріанти:
-//   - cropRect завжди у RAW natural image coords (до userRotation).
-//     userRotation застосовується ОКРЕМО (на rebuildFromOcrResults) до raw
-//     blob після cropImageBlob. Тому popup малює рамку у raw coords,
-//     обертаючи її візуально для користувача.
-//   - frameVisible = !cropDisabled && (proposal || override). Це похідний
-//     стан — без власного storage.
-//   - ✂️ toolbar button:
-//        має рамку → toggleCropDisabled (ховає)
-//        нема рамки і є збережений rect (proposal/override+disabled) → toggleCropDisabled (показує)
-//        нема рамки і нема rect → onCropOverride(default rect 80×80% центру)
-//   - ↻ rotates ONLY the rotation state — рамка лишається у тих самих raw
-//     coords, але візуально обертається разом із зображенням.
+//   - cropRect parent state у RAW natural image coords (до userRotation).
+//   - Cropper працює на ROTATED display blob (генерується з userRotation).
+//     Отже coords з cropper.getCoordinates() — у rotated coord space.
+//     При onChange конвертуємо назад через rotateRectCCW.
+//   - pendingRect — local state, оновлюється onChange. Записується у parent
+//     через onCropOverride ТІЛЬКИ при ✓ Apply. Cancel/✕ → discard.
+//   - frameVisible — derived from parent props (cropDisabled + наявність rect).
+//     ✂️ toggle parent state одразу (не залежить від apply).
 
 function PreviewPopup({
-  origIdx, url, rotation, position, total, warning, duplicateInfo,
+  origIdx, url, sourceBlob, rotation, position, total, warning, duplicateInfo,
   isUncertain, cropProposal, cropOverride, cropDisabled,
   onClose, onPrev, onNext, onRotate, onCropOverride, onToggleCropDisabled, onRemove,
 }) {
@@ -1779,7 +1782,7 @@ function PreviewPopup({
   const isFirst = position === 0;
   const isLast = position === total - 1;
 
-  // Природні розміри зображення (для перерахунку rect ↔ display).
+  // Природні розміри оригіналу — для конверсії coords ↔ rotated space.
   const [naturalDims, setNaturalDims] = useState(null);
   useEffect(() => {
     if (!url) return;
@@ -1794,16 +1797,70 @@ function PreviewPopup({
     return () => { cancelled = true; };
   }, [url]);
 
-  // Toggle ✂️ — універсальна логіка add/remove.
-  // Якщо нема rect взагалі (ні proposal ні override) — створюємо центральний
-  // 80×80% rect у raw coords, щоб адвокат міг почати тягнути рукоятки.
+  // displayUrl — те що показуємо у cropper. Якщо rotation != 0, генеруємо
+  // повернутий blob URL (cropper не повинен сам обертати — конфліктувало б
+  // з нашою системою userRotation).
+  const [displayUrl, setDisplayUrl] = useState(url);
+  useEffect(() => {
+    if (rotation === 0 || !sourceBlob) {
+      setDisplayUrl(url);
+      return;
+    }
+    let cancelled = false;
+    let createdUrl = null;
+    (async () => {
+      try {
+        const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
+        const rotated = await rotateImageBlob(sourceBlob, rotation);
+        if (cancelled) return;
+        createdUrl = URL.createObjectURL(rotated);
+        setDisplayUrl(createdUrl);
+      } catch (e) {
+        console.warn('[PreviewPopup] rotation blob failed:', e);
+        setDisplayUrl(url);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [rotation, sourceBlob, url]);
+
+  // Local pending state — чекає на ✓ Apply.
+  const [pendingRect, setPendingRect] = useState(effectiveRect || null);
+  // Reset тільки якщо parent state змінився (наприклад toggle frame). НЕ
+  // скидаємо при rotation — користувацькі adjustments повинні зберігатись
+  // через ↻.
+  useEffect(() => {
+    setPendingRect(effectiveRect || null);
+  }, [effectiveRect]);
+
+  // Початковий rect для cropper у ROTATED coord space. Використовуємо
+  // pendingRect (preserves user's adjustments across rotation) → fallback на
+  // effectiveRect.
+  const initialCropperCoords = useMemo(() => {
+    const rectToUse = pendingRect || effectiveRect;
+    if (!rectToUse || !naturalDims) return null;
+    const r = rotateRectCW(rectToUse, naturalDims.width, naturalDims.height, rotation);
+    return { left: r.x, top: r.y, width: r.width, height: r.height };
+  }, [pendingRect, effectiveRect, naturalDims, rotation]);
+
+  // ✓ Apply — записати pendingRect у parent state і закрити
+  const handleApply = useCallback(() => {
+    if (frameVisible && pendingRect) {
+      onCropOverride(pendingRect);
+    }
+    onClose();
+  }, [frameVisible, pendingRect, onCropOverride, onClose]);
+
+  // ✂️ Toggle frame visibility (одразу у parent state — швидкий feedback).
+  // Якщо нема rect взагалі — створюємо центральний 80×80% rect.
   const handleToggleCrop = useCallback(() => {
     if (frameVisible) {
       onToggleCropDisabled();
       return;
     }
     if (effectiveRect) {
-      // Є збережений (просто disabled) — повертаємо
       onToggleCropDisabled();
       return;
     }
@@ -1819,51 +1876,67 @@ function PreviewPopup({
   }, [frameVisible, effectiveRect, naturalDims, onToggleCropDisabled, onCropOverride]);
 
   return (
-    <div className="image-merge-panel__popup-overlay" role="dialog" aria-modal="true">
-      <div className="image-merge-panel__popup">
-        <div className="image-merge-panel__popup-header">
-          <span className="image-merge-panel__popup-position">
-            Сторінка {position + 1} з {total}
-          </span>
-          {duplicateInfo && (
-            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--dup">
-              {duplicateInfo.recommended === origIdx ? 'Рекомендований варіант' : 'Дублікат'}
-            </span>
-          )}
-          {warning && (
-            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--warn">
-              <AlertTriangle size={14} /> Підозрілий
-            </span>
-          )}
-          {isUncertain && !warning && (
-            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--warn">
-              <AlertTriangle size={14} /> Перевір орієнтацію
-            </span>
-          )}
-          {frameVisible && (
-            <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--dup">
-              <CropIcon size={12} /> Буде обрізано
-            </span>
-          )}
+    <div className="image-merge-panel__popup-overlay image-merge-panel__popup-overlay--full" role="dialog" aria-modal="true">
+      <div className="image-merge-panel__popup image-merge-panel__popup--full">
+        <div className="image-merge-panel__popup-topbar">
           <button
             type="button"
-            className="image-merge-panel__popup-close"
+            className="image-merge-panel__popup-topbtn"
             onClick={onClose}
-            aria-label="Закрити"
-            title="Закрити (Esc)"
+            aria-label="Скасувати (без обрізки)"
+            title="Скасувати без обрізки (Esc)"
           >
-            <X size={20} />
+            <X size={22} />
+          </button>
+          <div className="image-merge-panel__popup-topcenter">
+            <span className="image-merge-panel__popup-position">
+              Сторінка {position + 1} з {total}
+            </span>
+            {duplicateInfo && (
+              <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--dup">
+                {duplicateInfo.recommended === origIdx ? 'Рекомендований' : 'Дублікат'}
+              </span>
+            )}
+            {warning && (
+              <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--warn">
+                <AlertTriangle size={12} /> Підозрілий
+              </span>
+            )}
+            {isUncertain && !warning && (
+              <span className="image-merge-panel__popup-tag image-merge-panel__popup-tag--warn">
+                <AlertTriangle size={12} /> Орієнтація?
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="image-merge-panel__popup-topbtn image-merge-panel__popup-topbtn--primary"
+            onClick={handleApply}
+            aria-label="Готово (застосувати обрізку)"
+            title="Готово — застосувати"
+          >
+            <Check size={22} />
+            <span className="image-merge-panel__popup-topbtn-label">Готово</span>
           </button>
         </div>
 
         <div className="image-merge-panel__popup-body">
-          <PopupImageWithCrop
-            url={url}
-            rotation={rotation}
-            naturalDims={naturalDims}
-            cropRect={frameVisible ? effectiveRect : null}
-            onCropRectChange={onCropOverride}
-            position={position}
+          <CropperHost
+            displayUrl={displayUrl}
+            initialCoords={initialCropperCoords}
+            frameVisible={frameVisible}
+            onChange={(rotatedRect) => {
+              if (!naturalDims) return;
+              const original = rotateRectCCW(
+                rotatedRect, naturalDims.width, naturalDims.height, rotation
+              );
+              setPendingRect({
+                x: Math.round(original.x),
+                y: Math.round(original.y),
+                width: Math.round(original.width),
+                height: Math.round(original.height),
+              });
+            }}
           />
         </div>
 
@@ -1876,7 +1949,7 @@ function PreviewPopup({
             title="Попередня (←)"
             aria-label="Попередня"
           >
-            ‹ Попередня
+            ‹
           </button>
           <div className="image-merge-panel__popup-tools">
             <button
@@ -1919,238 +1992,94 @@ function PreviewPopup({
             title="Наступна (→)"
             aria-label="Наступна"
           >
-            Наступна ›
+            ›
           </button>
-        </div>
-
-        <div className="image-merge-panel__popup-hint">
-          {frameVisible
-            ? 'Тягни кути рамки щоб налаштувати обрізку. Все всередині — піде у PDF.'
-            : '↻ — повернути на 90° · ✂️ — додати рамку обрізки · Закриття зберігає стан'}
         </div>
       </div>
     </div>
   );
 }
 
-// ── Image with inline crop frame overlay ──────────────────────────────────
-// Custom overlay тому що react-easy-crop не підтримує free-form крок (aspect
-// має бути числом, не null) — давав «вертикальну лінію» замість рамки.
+// ── CropperHost: оболонка над react-advanced-cropper з lazy load ──────────
+// Cropper обробляє жести: pinch-zoom, pan, drag handles на 4 кутах + 4 ребрах.
+// Free aspect (stencilProps.aspectRatio={undefined}). Повертає coords у
+// natural pixel coords ROTATED image space. Ми конвертуємо назовні.
 //
-// Координатні простори:
-//   raw natural    — координати у пікселях оригінального blob (cropRect),
-//                    стабільні незалежно від rotation
-//   rotated natural — координати після rotation (для рендеру frame)
-//   container px   — піксельні координати всередині popup-body (для CSS)
+// Якщо frameVisible=false — рендеримо просто img без cropper для UX «view
+// тільки» (адвокат може закрити без обрізки).
 //
-// fitScale = container_px / rotated_natural — зум зображення щоб вписатись
-// у контейнер. Однаковий для зображення і для рамки — тому frame завжди
-// над тим самим контентом.
+// Lazy import — react-advanced-cropper ~30KB gzip, не тягнемо у головний bundle.
 
-function PopupImageWithCrop({ url, rotation, naturalDims, cropRect, onCropRectChange, position }) {
-  const containerRef = useRef(null);
-  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+function CropperHost({ displayUrl, initialCoords, frameVisible, onChange }) {
+  const [cropperLib, setCropperLib] = useState(null);
 
-  useLayoutEffect(() => {
-    if (!containerRef.current) return;
-    const el = containerRef.current;
-    function measure() {
-      const rect = el.getBoundingClientRect();
-      setContainerSize({ w: rect.width, h: rect.height });
-    }
-    measure();
-    let ro;
-    if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => measure());
-      ro.observe(el);
-    }
-    window.addEventListener('resize', measure);
-    return () => {
-      if (ro) ro.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, []);
-
-  const swap = rotation === 90 || rotation === 270;
-  const rotW = naturalDims ? (swap ? naturalDims.height : naturalDims.width) : 0;
-  const rotH = naturalDims ? (swap ? naturalDims.width : naturalDims.height) : 0;
-  const fitScale = useMemo(() => {
-    if (!rotW || !rotH || !containerSize.w || !containerSize.h) return 0;
-    return Math.min(containerSize.w / rotW, containerSize.h / rotH);
-  }, [rotW, rotH, containerSize]);
-
-  // Visual bounding box (after rotation)
-  const visualWidth = rotW * fitScale;
-  const visualHeight = rotH * fitScale;
-  const visualLeft = (containerSize.w - visualWidth) / 2;
-  const visualTop = (containerSize.h - visualHeight) / 2;
-
-  // Image element CSS box (BEFORE CSS rotation): natural orientation × fitScale.
-  // CSS rotate() rotates around center → CSS box залишається тих самих
-  // dimensions, лише видимість обертається. Розміщуємо img так щоб його CENTER
-  // збігався з центром visual box.
-  const imgWidth = naturalDims ? naturalDims.width * fitScale : 0;
-  const imgHeight = naturalDims ? naturalDims.height * fitScale : 0;
-  const imgLeft = containerSize.w / 2 - imgWidth / 2;
-  const imgTop = containerSize.h / 2 - imgHeight / 2;
-
-  // Convert raw cropRect → display rect in container coords.
-  const displayRect = useMemo(() => {
-    if (!cropRect || !naturalDims || fitScale === 0) return null;
-    const rotated = rotateRectCW(cropRect, naturalDims.width, naturalDims.height, rotation);
-    return {
-      left: visualLeft + rotated.x * fitScale,
-      top: visualTop + rotated.y * fitScale,
-      width: rotated.width * fitScale,
-      height: rotated.height * fitScale,
-    };
-  }, [cropRect, naturalDims, rotation, fitScale, visualLeft, visualTop]);
-
-  // Drag state. type ∈ {body, nw, ne, sw, se, n, s, e, w}
-  // startRotated — rect у rotated-natural coords при початку drag, щоб усі
-  // delta завжди обчислюватись від зафіксованого стану.
-  const dragRef = useRef(null);
-
-  const handlePointerDown = useCallback((e, dragType) => {
-    if (!cropRect || !naturalDims) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const rotated = rotateRectCW(cropRect, naturalDims.width, naturalDims.height, rotation);
-    dragRef.current = {
-      type: dragType,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      startRotated: rotated,
-      pointerId: e.pointerId,
-    };
-    try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch {}
-  }, [cropRect, naturalDims, rotation]);
-
-  const handlePointerMove = useCallback((e) => {
-    const drag = dragRef.current;
-    if (!drag || !naturalDims || fitScale === 0) return;
-    e.preventDefault();
-    const dxDisp = e.clientX - drag.startClientX;
-    const dyDisp = e.clientY - drag.startClientY;
-    const dxRot = dxDisp / fitScale;
-    const dyRot = dyDisp / fitScale;
-
-    let r = { ...drag.startRotated };
-    const t = drag.type;
-    if (t === 'body') { r.x += dxRot; r.y += dyRot; }
-    if (t === 'nw' || t === 'w' || t === 'sw') { r.x += dxRot; r.width -= dxRot; }
-    if (t === 'ne' || t === 'e' || t === 'se') { r.width += dxRot; }
-    if (t === 'nw' || t === 'n' || t === 'ne') { r.y += dyRot; r.height -= dyRot; }
-    if (t === 'sw' || t === 's' || t === 'se') { r.height += dyRot; }
-
-    const MIN = Math.min(50, Math.min(rotW, rotH) * 0.05);
-    if (r.width < MIN) {
-      if (t === 'nw' || t === 'w' || t === 'sw') {
-        r.x = drag.startRotated.x + drag.startRotated.width - MIN;
+  useEffect(() => {
+    if (cropperLib) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const mod = await import('react-advanced-cropper');
+        await import('react-advanced-cropper/dist/style.css');
+        if (cancelled) return;
+        setCropperLib({ Cropper: mod.Cropper });
+      } catch (e) {
+        console.warn('[CropperHost] lazy load failed:', e);
       }
-      r.width = MIN;
-    }
-    if (r.height < MIN) {
-      if (t === 'nw' || t === 'n' || t === 'ne') {
-        r.y = drag.startRotated.y + drag.startRotated.height - MIN;
-      }
-      r.height = MIN;
-    }
-    if (r.x < 0) {
-      if (t === 'body') r.x = 0;
-      else { r.width += r.x; r.x = 0; }
-    }
-    if (r.y < 0) {
-      if (t === 'body') r.y = 0;
-      else { r.height += r.y; r.y = 0; }
-    }
-    if (r.x + r.width > rotW) {
-      if (t === 'body') r.x = rotW - r.width;
-      else r.width = rotW - r.x;
-    }
-    if (r.y + r.height > rotH) {
-      if (t === 'body') r.y = rotH - r.height;
-      else r.height = rotH - r.y;
-    }
+    })();
+    return () => { cancelled = true; };
+  }, [cropperLib]);
 
-    const rawRect = rotateRectCCW(r, naturalDims.width, naturalDims.height, rotation);
-    onCropRectChange({
-      x: Math.round(rawRect.x),
-      y: Math.round(rawRect.y),
-      width: Math.round(rawRect.width),
-      height: Math.round(rawRect.height),
-    });
-  }, [naturalDims, fitScale, rotW, rotH, rotation, onCropRectChange]);
-
-  const handlePointerUp = useCallback((e) => {
-    const drag = dragRef.current;
-    if (drag && drag.pointerId === e.pointerId) {
-      try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch {}
-      dragRef.current = null;
-    }
-  }, []);
-
-  return (
-    <div
-      ref={containerRef}
-      className="image-merge-panel__popup-canvas"
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-    >
-      {url && naturalDims && (
+  if (!frameVisible) {
+    // View-only: image fit-to-container (object-fit: contain), без рамки
+    return (
+      <div className="image-merge-panel__popup-canvas">
         <img
-          src={url}
-          alt={`Сторінка ${position + 1}`}
-          className="image-merge-panel__popup-img"
+          src={displayUrl}
+          alt="Перегляд сторінки"
+          className="image-merge-panel__popup-fitimg"
           draggable={false}
-          style={{
-            position: 'absolute',
-            left: imgLeft,
-            top: imgTop,
-            width: imgWidth,
-            height: imgHeight,
-            transform: rotation ? `rotate(${rotation}deg)` : 'none',
-            transformOrigin: 'center center',
-            maxWidth: 'none',
-            maxHeight: 'none',
-            transition: 'transform 0.2s ease',
-          }}
         />
-      )}
-      {displayRect && (
-        <div
-          className="image-merge-panel__crop-frame"
-          style={{
-            position: 'absolute',
-            left: displayRect.left,
-            top: displayRect.top,
-            width: displayRect.width,
-            height: displayRect.height,
-          }}
-        >
-          <div
-            className="image-merge-panel__crop-frame-body"
-            onPointerDown={(e) => handlePointerDown(e, 'body')}
-          />
-          {[
-            { k: 'nw', cx: 0, cy: 0 },
-            { k: 'n', cx: 0.5, cy: 0 },
-            { k: 'ne', cx: 1, cy: 0 },
-            { k: 'e', cx: 1, cy: 0.5 },
-            { k: 'se', cx: 1, cy: 1 },
-            { k: 's', cx: 0.5, cy: 1 },
-            { k: 'sw', cx: 0, cy: 1 },
-            { k: 'w', cx: 0, cy: 0.5 },
-          ].map((h) => (
-            <div
-              key={h.k}
-              className={`image-merge-panel__crop-handle image-merge-panel__crop-handle--${h.k}`}
-              onPointerDown={(e) => handlePointerDown(e, h.k)}
-            />
-          ))}
-        </div>
-      )}
+      </div>
+    );
+  }
+
+  if (!cropperLib) {
+    return (
+      <div className="image-merge-panel__popup-canvas">
+        <div style={{ color: '#fff', padding: 20 }}>Завантаження редактора…</div>
+      </div>
+    );
+  }
+
+  const { Cropper } = cropperLib;
+  // key={displayUrl} — force re-mount при зміні зображення (після rotate),
+  // інакше library ігнорує нові defaultCoordinates після першого mount.
+  return (
+    <div className="image-merge-panel__popup-canvas">
+      <Cropper
+        key={displayUrl}
+        src={displayUrl}
+        defaultCoordinates={initialCoords || undefined}
+        stencilProps={{
+          aspectRatio: undefined,
+          movable: true,
+          resizable: true,
+          handlers: true,
+          lines: true,
+        }}
+        backgroundClassName="image-merge-panel__cropper-bg"
+        className="image-merge-panel__cropper"
+        onChange={(cropper) => {
+          const c = cropper.getCoordinates();
+          if (!c || !c.width || !c.height) return;
+          onChange({
+            x: c.left,
+            y: c.top,
+            width: c.width,
+            height: c.height,
+          });
+        }}
+      />
     </div>
   );
 }

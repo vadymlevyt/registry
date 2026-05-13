@@ -683,6 +683,22 @@
   }
 }
 
+/* Full-screen variant (TASK B fix Problem 1+5) — займає весь viewport,
+   стандартний mobile-style crop editor (Apple Photos / Google Photos UX) */
+.image-merge-panel__popup-overlay--full {
+  padding: 0;
+  background: #000;
+}
+
+.image-merge-panel__popup--full {
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+  background: #000;
+  color: #fff;
+}
+
 .image-merge-panel__popup-header {
   display: flex;
   align-items: center;
@@ -690,6 +706,71 @@
   padding: 12px var(--space-3);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+}
+
+/* Top bar для full-screen crop editor (TASK B fix Problem 1+5) */
+.image-merge-panel__popup-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: env(safe-area-inset-top, 0) 12px 0;
+  height: 56px;
+  background: rgba(0, 0, 0, 0.92);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  color: #fff;
+}
+
+.image-merge-panel__popup-topcenter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  justify-content: center;
+  font-size: var(--text-sm);
+  color: #fff;
+  overflow: hidden;
+}
+
+.image-merge-panel__popup-topbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 10px 14px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
+  min-width: 56px;
+  min-height: 44px;
+  justify-content: center;
+}
+
+.image-merge-panel__popup-topbtn:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.image-merge-panel__popup-topbtn--primary {
+  background: rgba(37, 99, 235, 0.95);
+  color: #fff;
+  font-weight: var(--weight-medium);
+}
+
+.image-merge-panel__popup-topbtn--primary:hover {
+  background: rgba(37, 99, 235, 1);
+}
+
+.image-merge-panel__popup-topbtn-label {
+  display: inline;
+}
+
+@media (max-width: 480px) {
+  .image-merge-panel__popup-topbtn-label {
+    display: none;
+  }
 }
 
 .image-merge-panel__popup-position {
@@ -739,11 +820,22 @@
 .image-merge-panel__popup-body {
   flex: 1;
   min-height: 320px;
-  background: #1f2937;
+  background: #000;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+}
+
+/* Fit-to-container зображення коли cropper вимкнений (view-only режим) */
+.image-merge-panel__popup-fitimg {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+  object-fit: contain;
 }
 
 .image-merge-panel__popup-zoom-wrap {
@@ -783,30 +875,33 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px var(--space-3);
-  border-top: 1px solid var(--color-border);
-  background: var(--color-surface-1);
+  padding: 12px var(--space-3) calc(12px + env(safe-area-inset-bottom, 0));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.92);
   gap: var(--space-2);
   flex-shrink: 0;
+  color: #fff;
 }
 
 .image-merge-panel__popup-nav {
-  background: none;
-  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: var(--radius-xs);
-  padding: 8px 12px;
+  padding: 10px 14px;
   cursor: pointer;
-  color: var(--color-text);
-  font-size: var(--text-sm);
+  color: #fff;
+  font-size: 18px;
+  font-weight: var(--weight-medium);
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .image-merge-panel__popup-nav:not(:disabled):hover {
-  background: var(--color-surface-2);
-  border-color: var(--color-accent);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .image-merge-panel__popup-nav:disabled {
-  opacity: 0.4;
+  opacity: 0.3;
   cursor: not-allowed;
 }
 
@@ -819,31 +914,91 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: none;
-  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: var(--radius-xs);
-  padding: 8px 12px;
+  padding: 10px 14px;
   cursor: pointer;
-  color: var(--color-text);
+  color: #fff;
   font-size: var(--text-sm);
+  min-height: 44px;
 }
 
 .image-merge-panel__popup-tool:hover {
-  background: var(--color-surface-2);
-  border-color: var(--color-accent);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .image-merge-panel__popup-tool--danger:hover {
-  color: var(--color-danger, #dc2626);
-  border-color: var(--color-danger, #dc2626);
+  background: rgba(220, 38, 38, 0.85);
+  color: #fff;
+  border-color: rgba(220, 38, 38, 1);
+}
+
+.image-merge-panel__popup-tool--active {
+  background: rgba(37, 99, 235, 0.85);
+  border-color: rgba(37, 99, 235, 1);
+  color: #fff;
+}
+
+.image-merge-panel__popup-tool--active:hover {
+  background: rgba(37, 99, 235, 1);
 }
 
 .image-merge-panel__popup-hint {
   text-align: center;
   font-size: var(--text-xs);
-  color: var(--color-text-muted, #6b7280);
+  color: rgba(255, 255, 255, 0.6);
   padding: 6px var(--space-3) 10px;
   flex-shrink: 0;
+}
+
+/* react-advanced-cropper — кастомні стилі поверх default темної теми. */
+.image-merge-panel__cropper {
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+.image-merge-panel__cropper-bg {
+  background: #000;
+}
+
+/* Збільшуємо handlers і робимо помітнішими (touch-friendly).
+   Класи з library: .advanced-cropper-simple-handler — за замовчуванням 10×10.
+   Робимо 22×22 з білим фоном і синім border. */
+.image-merge-panel__cropper .advanced-cropper-simple-handler {
+  background: #fff;
+  border: 2px solid #2563eb;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* Edge handlers (north/south/east/west — посередині сторін) — видовжені */
+.image-merge-panel__cropper .advanced-cropper-handler-wrapper--north .advanced-cropper-simple-handler,
+.image-merge-panel__cropper .advanced-cropper-handler-wrapper--south .advanced-cropper-simple-handler {
+  width: 44px;
+  height: 14px;
+  border-radius: 7px;
+}
+
+.image-merge-panel__cropper .advanced-cropper-handler-wrapper--west .advanced-cropper-simple-handler,
+.image-merge-panel__cropper .advanced-cropper-handler-wrapper--east .advanced-cropper-simple-handler {
+  width: 14px;
+  height: 44px;
+  border-radius: 7px;
+}
+
+/* Лінії рамки — синій яскравий замість default білого */
+.image-merge-panel__cropper .advanced-cropper-simple-line {
+  border-color: rgba(37, 99, 235, 0.95);
+  border-width: 2px;
+}
+
+/* Темне затемнення поза рамкою — глибше за default 50% */
+.image-merge-panel__cropper .advanced-cropper-stencil-overlay {
+  color: rgba(0, 0, 0, 0.55);
 }
 
 /* ── Контекстне меню (desktop right-click) ─────────────────────────────── */
