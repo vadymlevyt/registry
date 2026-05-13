@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import './DatePicker.css';
 
 // ── DatePicker ───────────────────────────────────────────────────────────────
@@ -128,6 +129,46 @@ export function DatePicker({
 
   const wrapperRef = useRef(null);
   const buttonRef = useRef(null);
+  const popoverRef = useRef(null);
+
+  // Position popoveру у viewport coords коли він рендериться через портал.
+  // Раніше попап був position:absolute усередині wrapper'а, тому коли DatePicker
+  // знаходився всередині Modal (.ui-modal має overflow:hidden + max-height:90vh),
+  // календар обрізався. Тепер портал прокидує попап у document.body і
+  // position:fixed з обчисленими bounds — обмежень contining block немає,
+  // календар видно повністю незалежно від батьківського overflow.
+  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0 });
+  useLayoutEffect(() => {
+    if (inline || !open || !buttonRef.current) return undefined;
+    const updatePos = () => {
+      const r = buttonRef.current?.getBoundingClientRect();
+      if (!r) return;
+      // За замовчуванням попап під кнопкою. Якщо не вистачає місця знизу
+      // (calendar ~360px), показуємо над кнопкою.
+      const popoverH = popoverRef.current?.offsetHeight || 360;
+      const popoverW = popoverRef.current?.offsetWidth || 300;
+      const margin = 8;
+      let top = r.bottom + margin;
+      if (top + popoverH > window.innerHeight - margin) {
+        // Не влазить знизу — пробуємо зверху
+        const topAbove = r.top - margin - popoverH;
+        top = topAbove >= margin ? topAbove : Math.max(margin, window.innerHeight - popoverH - margin);
+      }
+      let left = r.left;
+      if (left + popoverW > window.innerWidth - margin) {
+        left = Math.max(margin, window.innerWidth - popoverW - margin);
+      }
+      setPopoverPos({ top, left });
+    };
+    updatePos();
+    // Перепозиціонуємо на scroll/resize — Modal scrolling, viewport resize.
+    window.addEventListener('scroll', updatePos, true);
+    window.addEventListener('resize', updatePos);
+    return () => {
+      window.removeEventListener('scroll', updatePos, true);
+      window.removeEventListener('resize', updatePos);
+    };
+  }, [open, inline, mode]);
 
   // Якщо value змінюється ззовні — підлаштуємо view (щоб після перевідкриття
   // календар показував місяць обраної дати, а не куди адвокат до того клікнув).
@@ -137,12 +178,16 @@ export function DatePicker({
     setViewMonth(parsedValue.month);
   }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Закриваємо попап при кліку поза ним. Для inline-режиму не потрібно.
+  // Закриваємо попап при кліку поза ним. popoverRef перевіряється окремо бо
+  // після порталізації popover не належить до wrapperRef піддерева.
   useEffect(() => {
     if (inline || !open) return undefined;
     const handler = (e) => {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(e.target)) setOpen(false);
+      const wr = wrapperRef.current;
+      const pop = popoverRef.current;
+      if (wr && wr.contains(e.target)) return;
+      if (pop && pop.contains(e.target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handler);
     document.addEventListener('touchstart', handler);
@@ -423,10 +468,15 @@ export function DatePicker({
         </span>
         <span className="ui-datepicker__trigger-icon" aria-hidden="true">📅</span>
       </button>
-      {open && (
-        <div className="ui-datepicker__popover">
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={popoverRef}
+          className="ui-datepicker__popover ui-datepicker__popover--portaled"
+          style={{ top: popoverPos.top, left: popoverPos.left }}
+        >
           {renderCalendar()}
-        </div>
+        </div>,
+        document.body
       )}
       {error && <div className="ui-datepicker__error">{error}</div>}
       {!error && hint && <div className="ui-datepicker__hint">{hint}</div>}

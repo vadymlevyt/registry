@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import './TimePicker.css';
 
 // ── TimePicker ───────────────────────────────────────────────────────────────
@@ -176,6 +177,7 @@ export function TimePicker({
   const [open, setOpen] = useState(inline);
   const wrapperRef = useRef(null);
   const buttonRef = useRef(null);
+  const popoverRef = useRef(null);
 
   const parsed = parseHHMM(value);
   const hour = parsed?.hour;
@@ -189,11 +191,45 @@ export function TimePicker({
   const wheelHour = Number.isFinite(hour) ? hour : 9;
   const wheelMinute = Number.isFinite(minute) ? minute : 0;
 
+  // Portal-position для popover — щоб обрізання у Modal/.overflow:hidden
+  // батьках не приховувало wheels. Див. ту саму логіку у DatePicker.jsx.
+  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0 });
+  useLayoutEffect(() => {
+    if (inline || !open || !buttonRef.current) return undefined;
+    const updatePos = () => {
+      const r = buttonRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const popoverH = popoverRef.current?.offsetHeight || 260;
+      const popoverW = popoverRef.current?.offsetWidth || 200;
+      const margin = 8;
+      let top = r.bottom + margin;
+      if (top + popoverH > window.innerHeight - margin) {
+        const topAbove = r.top - margin - popoverH;
+        top = topAbove >= margin ? topAbove : Math.max(margin, window.innerHeight - popoverH - margin);
+      }
+      let left = r.left;
+      if (left + popoverW > window.innerWidth - margin) {
+        left = Math.max(margin, window.innerWidth - popoverW - margin);
+      }
+      setPopoverPos({ top, left });
+    };
+    updatePos();
+    window.addEventListener('scroll', updatePos, true);
+    window.addEventListener('resize', updatePos);
+    return () => {
+      window.removeEventListener('scroll', updatePos, true);
+      window.removeEventListener('resize', updatePos);
+    };
+  }, [open, inline]);
+
   useEffect(() => {
     if (inline || !open) return undefined;
     const handler = (e) => {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(e.target)) setOpen(false);
+      const wr = wrapperRef.current;
+      const pop = popoverRef.current;
+      if (wr && wr.contains(e.target)) return;
+      if (pop && pop.contains(e.target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handler);
     document.addEventListener('touchstart', handler);
@@ -292,10 +328,15 @@ export function TimePicker({
         </span>
         <span className="ui-timepicker__trigger-icon" aria-hidden="true">🕒</span>
       </button>
-      {open && (
-        <div className="ui-timepicker__popover">
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={popoverRef}
+          className="ui-timepicker__popover ui-timepicker__popover--portaled"
+          style={{ top: popoverPos.top, left: popoverPos.left }}
+        >
           {renderWheels()}
-        </div>
+        </div>,
+        document.body
       )}
       {error && <div className="ui-timepicker__error">{error}</div>}
       {!error && hint && <div className="ui-timepicker__hint">{hint}</div>}

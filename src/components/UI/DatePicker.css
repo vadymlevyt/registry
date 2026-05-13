@@ -67,11 +67,14 @@
 
 /* ── Popover з календарем ─────────────────────────────────────────────── */
 
+/* Базові стилі — використовуються і для inline-альтернативи, і для
+   порталізованої версії. Портал створює елемент у document.body з
+   position:fixed (top/left обчислюються у JS), щоб попап не обрізався
+   контейнерами з overflow:hidden (Modal, scroll containers).
+   Раніше попап був position:absolute у wrapper'і — і всередині .ui-modal
+   (overflow:hidden, max-height:90vh) календар обрізався і адвокату
+   доводилось скролити модалку. */
 .ui-datepicker__popover {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  left: 0;
-  z-index: var(--z-dropdown);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -80,15 +83,18 @@
   min-width: 280px;
 }
 
-/* На вузьких екранах попап має не вилазити за межі вʼюпорту — переходимо
-   у positionr fixed centered. */
+.ui-datepicker__popover--portaled {
+  position: fixed;
+  z-index: var(--z-modal);
+}
+
+/* На вузьких екранах центруємо у viewport — щоб попап не з'являвся
+   маленьким біля кнопки і не вилазив за межі. */
 @media (max-width: 480px) {
-  .ui-datepicker__popover {
-    position: fixed;
-    top: 50%;
-    left: 50%;
+  .ui-datepicker__popover--portaled {
+    top: 50% !important;
+    left: 50% !important;
     transform: translate(-50%, -50%);
-    z-index: var(--z-modal);
     width: calc(100vw - 32px);
     max-width: 360px;
   }
