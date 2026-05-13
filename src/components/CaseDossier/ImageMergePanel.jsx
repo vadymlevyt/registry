@@ -106,6 +106,14 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   const [cropProposals, setCropProposals] = useState(() => new Map());
   const [cropOverrides, setCropOverrides] = useState(() => new Map());
   const [cropDisabled, setCropDisabled] = useState(() => new Set());
+  // cropAppliedSet — індекси для яких адвокат тапнув ✓ Готово (явний crop).
+  // Розділення від cropOverrides потрібне для сценарію коли адвокат "тільки
+  // налаштував рамку" і закрив попап через ✕: рамка зберігається у
+  // cropOverrides (для фінального PDF), але preview thumbnail показує full
+  // image — не cropped. Apply через ✓ Готово додає idx сюди і preview/popup
+  // показують cropped варіант. Final PDF rebuild ігнорує cropAppliedSet
+  // (завжди апплаїть rect якщо є — це існуюча поведінка перед фіксом).
+  const [cropAppliedSet, setCropAppliedSet] = useState(() => new Set());
   // dismissedDuplicateGroupIds (TASK B fix Problem 4): адвокат натиснув
   // "Це не дублікати" біля групи — група розпадається, члени стають окремими
   // sortable items на їхніх початкових позиціях у orderedIndices. Set ID
@@ -181,59 +189,51 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     const detectedOrientations = pipelineResult?.detectedOrientations || [];
     if (!Array.isArray(realFiles) || realFiles.length === 0) return;
 
-    // Збираємо набір індексів, для яких потрібен rotated preview blob.
-    // Раніше тут були лише processedBlobs + cropOverrides → індекси з лише
-    // detectedOrientation падали на thumbUrls (raw), і фото з повернутим
-    // авто-кутом показувалось боком після обробки навіть коли каскад правильно
-    // визначив кут (multiImageToPdf застосовував його тільки до PDF, не до
-    // preview blob). Тепер додаємо ще індекси з ненульовим
-    // detectedOrientation АБО userRotation — preview = raw + (auto + user) °.
+    // Контекст для unified renderer (computeRenderedBlob). Один об'єкт зі
+    // всім станом → одна реалізація логіки трансформації, ніяких локальних
+    // дублікатів формул.
+    const ctx = {
+      realFiles,
+      detectedOrientations,
+      userRotation,
+      processedBlobs,
+      cropOverrides,
+      cropProposals,
+      cropDisabled,
+      cropAppliedSet,
+    };
+
+    // Збираємо набір індексів які потребують rotated/cropped preview blob.
+    // Користувацька rotation у preview НЕ запікається у blob — застосовується
+    // через CSS transform для плавної анімації. Тому генеруємо preview blob
+    // лише коли є зміна на blob-рівні: auto rotation, crop (applied), або
+    // processedBlob. Якщо ні — фолбек на сирий thumbUrl + CSS rotation.
     const targets = new Set();
-    for (const idx of processedBlobs.keys()) targets.add(idx);
-    for (const idx of cropOverrides.keys()) targets.add(idx);
     for (let i = 0; i < realFiles.length; i++) {
-      if (targets.has(i)) continue;
       const autoDeg = Number.isFinite(detectedOrientations[i]) ? detectedOrientations[i] : 0;
-      const userDeg = userRotation.get(i) || 0;
-      if ((((autoDeg + userDeg) % 360) + 360) % 360 !== 0) targets.add(i);
+      const hasProc = processedBlobs.has(i);
+      const hasAppliedCrop = cropAppliedSet.has(i) && cropOverrides.has(i) && !cropDisabled.has(i);
+      if (autoDeg !== 0 || hasProc || hasAppliedCrop) targets.add(i);
     }
 
     let cancelled = false;
     (async () => {
-      const { cropImageBlob } = await import('../../services/sortation/cropHelper.js');
-      const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
+      const { computeRenderedBlob } = await import('../../services/sortation/imageRenderer.js');
       const newUrls = new Map();
       for (const idx of targets) {
         if (cancelled) break;
         try {
-          let blob;
-          const proc = processedBlobs.get(idx);
-          if (proc?.blob instanceof Blob) {
-            const userDeg = userRotation.get(idx) || 0;
-            const baseRot = proc.baseUserRotation || 0;
-            const delta = ((userDeg - baseRot) % 360 + 360) % 360;
-            blob = delta !== 0 ? await rotateImageBlob(proc.blob, delta) : proc.blob;
-          } else if (cropOverrides.has(idx)) {
-            const rect = cropOverrides.get(idx);
-            const rawFile = realFiles[idx];
-            if (!rect || !rawFile) continue;
-            const userDeg = userRotation.get(idx) || 0;
-            const cropped = await cropImageBlob(rawFile, rect);
-            blob = userDeg !== 0 ? await rotateImageBlob(cropped, userDeg) : cropped;
-          } else {
-            // Гілка тільки авто/користувацького обертання — без crop.
-            // totalDeg збігається з тим, що multiImageToPdf запікає у PDF
-            // (rotateImageBlob(file, resolved.degrees)) + delta від адвоката.
-            // Preview thumbnail тепер виглядає так само як фінальний документ.
-            const rawFile = realFiles[idx];
-            if (!rawFile) continue;
-            const autoDeg = Number.isFinite(detectedOrientations[idx]) ? detectedOrientations[idx] : 0;
-            const userDeg = userRotation.get(idx) || 0;
-            const totalDeg = (((autoDeg + userDeg) % 360) + 360) % 360;
-            blob = totalDeg !== 0 ? await rotateImageBlob(rawFile, totalDeg) : rawFile;
-          }
+          // applyUserRotation:false — user rotation шарується через CSS
+          // transform у Thumbnail. applyCrop:true — crop запікається лише
+          // якщо cropAppliedSet.has(idx) (логіка всередині computeRenderedBlob).
+          const blob = await computeRenderedBlob(
+            { ...ctx, idx },
+            { applyUserRotation: false, applyCrop: true, includeProposalRect: false }
+          );
           if (cancelled) break;
-          newUrls.set(idx, URL.createObjectURL(blob));
+          if (blob && blob !== realFiles[idx]) {
+            newUrls.set(idx, URL.createObjectURL(blob));
+          }
         } catch (e) {
           console.warn('[preview] generation failed for idx', idx, e);
         }
@@ -248,7 +248,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         for (const [, oldUrl] of prev) previewUrlsToRevokeRef.current.push(oldUrl);
         return newUrls;
       });
-      // Delayed revoke (next tick — після того як React updated DOM)
       setTimeout(() => {
         const toRevoke = previewUrlsToRevokeRef.current;
         previewUrlsToRevokeRef.current = [];
@@ -256,7 +255,15 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       }, 1000);
     })();
     return () => { cancelled = true; };
-  }, [cropOverrides, processedBlobs, userRotation, pipelineResult?.realFiles, pipelineResult?.detectedOrientations]);
+  }, [
+    cropOverrides, cropProposals, cropDisabled, cropAppliedSet,
+    processedBlobs,
+    pipelineResult?.realFiles, pipelineResult?.detectedOrientations,
+  ]);
+  // ВАЖЛИВО: userRotation НЕ у deps. Preview blob запікається БЕЗ user rotation
+  // (тільки auto + crop), а user rotation шарується через CSS transform у
+  // Thumbnail для плавної анімації. Тому зміна userRotation не повинна
+  // регенерувати blob URL — це б ламало CSS transition.
 
   const handleDeviceFiles = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -374,6 +381,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setCropProposals(new Map());
       setCropOverrides(new Map());
       setCropDisabled(new Set());
+      setCropAppliedSet(new Set());
       setDismissedDuplicateGroupIds(new Set());
       setProcessedBlobs(new Map());
       // Revoke попередніх preview URL якщо були (функціональний setState
@@ -481,11 +489,27 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   // Адвокат потягнув рукоятки у попапі — зберігаємо нову rect. Якщо rect
   // null — скидаємо override (повертаємо до proposal якщо є). Якщо адвокат
   // обрізав через ручний crop без proposal — override стає єдиним джерелом.
-  const handleCropOverride = useCallback((origIdx, rect) => {
+  //
+  // applied прапор:
+  //   true  — викликано через ✓ Готово (apply). Preview thumbnail показує
+  //           cropped варіант, popup при наступному відкритті теж cropped.
+  //   false — викликано через ✕ Cancel після того як адвокат рухав рукоятки
+  //           (scenario 2: "тільки налаштував рамку, не обрізав"). Preview
+  //           thumbnail показує full image, рамка збережена для фінального
+  //           PDF rebuild і для re-edit у попапі.
+  const handleCropOverride = useCallback((origIdx, rect, opts = {}) => {
+    const applied = opts.applied === true;
     setCropOverrides((prev) => {
       const next = new Map(prev);
       if (rect === null) next.delete(origIdx);
       else next.set(origIdx, rect);
+      return next;
+    });
+    setCropAppliedSet((prev) => {
+      const next = new Set(prev);
+      if (rect === null) next.delete(origIdx);
+      else if (applied) next.add(origIdx);
+      else next.delete(origIdx); // явне зняття applied: повертаємо у frame-only
       return next;
     });
     // Якщо адвокат вручну редагує — це сигнал що він ХОЧЕ обрізку. Знімаємо
@@ -606,17 +630,13 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       let finalText;
       let finalLayout;
 
-      // Карта effective crop rect для кожної сторінки. null = без обрізки.
-      // override перебиває proposal, disabled скасовує обидва. Якщо для idx
-      // є processedBlob, crop вже застосований у самому blob — не передаємо.
-      const effectiveCrops = new Map();
-      for (const idx of orderedIndices) {
-        if (cropDisabled.has(idx)) continue;
-        if (processedBlobs.has(idx)) continue; // baked у processed blob
-        const rect = cropOverrides.get(idx) || cropProposals.get(idx);
-        if (rect) effectiveCrops.set(idx, rect);
-      }
-      const hasCrops = effectiveCrops.size > 0;
+      // Чи є хоч одна сторінка з активним crop? Це визначає чи треба rebuild
+      // замість використання готового pipelineResult.pdfBlob. computeRenderedBlob
+      // вирішує per-idx (override застосовується якщо applied; proposal —
+      // includeProposalRect=true у rebuild), тому ми лише детектимо наявність.
+      const hasCrops =
+        Array.from(cropOverrides.keys()).some((idx) => !cropDisabled.has(idx) && orderedIndices.includes(idx)) ||
+        Array.from(cropProposals.keys()).some((idx) => !cropDisabled.has(idx) && !cropOverrides.has(idx) && orderedIndices.includes(idx));
       const hasProcessed = processedBlobs.size > 0;
 
       if (orderUnchanged && removedIndices.size === 0 && !hasUserRotation && !hasCrops && !hasProcessed) {
@@ -630,7 +650,10 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
           ocrResults: pipelineResult.ocrResults,
           detectedOrientations: pipelineResult.detectedOrientations || [],
           userRotation,
-          effectiveCrops,
+          cropOverrides,
+          cropProposals,
+          cropDisabled,
+          cropAppliedSet,
           processedBlobs,
         });
         finalPdfBlob = rebuilt.pdfBlob;
@@ -690,6 +713,7 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         cropProposals={cropProposals}
         cropOverrides={cropOverrides}
         cropDisabled={cropDisabled}
+        cropAppliedSet={cropAppliedSet}
         dismissedDuplicateGroupIds={dismissedDuplicateGroupIds}
         processedBlobs={processedBlobs}
         debugMode={debugMode}
@@ -883,6 +907,7 @@ function PreviewView({
   cropProposals,
   cropOverrides,
   cropDisabled,
+  cropAppliedSet,
   dismissedDuplicateGroupIds,
   processedBlobs,
   debugMode,
@@ -905,6 +930,25 @@ function PreviewView({
   onCancel,
   submitting,
 }) {
+  // Map origIdx → CSS rotation degrees для thumbnail transform. Preview blob
+  // в previewUrls запікається БЕЗ user rotation (тільки auto + crop), тому
+  // user rotation шарується через CSS transform — плавна анімація 0.3s ease.
+  //
+  // Якщо є processedBlob, voн уже має (auto + user_at_apply + crop +
+  // straighten) baked. CSS dialect: (userNow - baseUserRot) — delta з
+  // моменту apply. Без processedBlob: повний user rotation.
+  const cssRotationMap = useMemo(() => {
+    const m = new Map();
+    const total = (pipelineResult?.realFiles?.length) || 0;
+    for (let i = 0; i < total; i++) {
+      const userDeg = userRotation?.get?.(i) || 0;
+      const proc = processedBlobs?.get?.(i);
+      const baseUser = proc?.baseUserRotation || 0;
+      m.set(i, (((userDeg - baseUser) % 360) + 360) % 360);
+    }
+    return m;
+  }, [userRotation, processedBlobs, pipelineResult?.realFiles?.length]);
+
   // Маппінг origIdx → crop state ('none' | 'active' | 'disabled') для UI.
   // 'none' = немає proposal/override → іконка не показується.
   // 'active' = є rect і не disabled → іконка яскрава, обрізка буде застосована.
@@ -1127,7 +1171,7 @@ function PreviewView({
         previewUrls={previewUrls}
         warningsByIndex={warningsByIndex}
         duplicateMembership={duplicateMembership}
-        userRotation={userRotation}
+        userRotation={cssRotationMap}
         uncertainSet={uncertainSet}
         cropStateByIndex={cropStateByIndex}
         onReorder={(newItems) => onReorder(flattenItems(newItems))}
@@ -1284,18 +1328,18 @@ function PreviewView({
           origIdx={popupOrigIdx}
           url={thumbUrls.get(popupOrigIdx)}
           sourceBlob={realFiles?.[popupOrigIdx] || null}
-          // ВАЖЛИВО: popup отримує (auto + user) °, а не лише user. Інакше
-          // після того як каскад правильно визначив 180° для перевернутого
-          // фото, відкриття попапу показувало raw image без обертання — все
-          // інше у preview-grid рисувалось правильно, а у popup'і — боком.
-          // CropperHost + rotateRectCCW нижче читають той самий кут і
-          // конвертують rect назад у raw coords.
-          rotation={(((
-            (Number.isFinite(pipelineResult?.detectedOrientations?.[popupOrigIdx])
-              ? pipelineResult.detectedOrientations[popupOrigIdx]
-              : 0)
-            + (userRotation.get(popupOrigIdx) || 0)
-          ) % 360) + 360) % 360}
+          // ВАЖЛИВО: автообертання і user обертання передаються ОКРЕМО.
+          // Popup сам комбінує їх у total для displayUrl/cropper math, але
+          // baseUserRotation для processedBlob — це user рівень тільки,
+          // інакше delta-логіка плутається. Раніше передавали (auto + user)
+          // як єдине поле — це ламало processedBlob delta після ↻ всередині
+          // попапу (baseUserRotation == auto + user_at_apply, тоді як
+          // computeRenderedBlob чекає user рівень).
+          autoRotation={Number.isFinite(pipelineResult?.detectedOrientations?.[popupOrigIdx])
+            ? pipelineResult.detectedOrientations[popupOrigIdx]
+            : 0}
+          userRotation={userRotation.get(popupOrigIdx) || 0}
+          cropApplied={cropAppliedSet.has(popupOrigIdx)}
           processedEntry={processedBlobs?.get?.(popupOrigIdx) || null}
           onProcessedBlobSave={(blob, baseUserRotation) => onProcessedBlobSave(popupOrigIdx, blob, baseUserRotation)}
           position={orderedIndices.indexOf(popupOrigIdx)}
@@ -1682,7 +1726,10 @@ async function rebuildFromOcrResults({
   ocrResults,
   detectedOrientations,
   userRotation,
-  effectiveCrops,
+  cropOverrides,
+  cropProposals,
+  cropDisabled,
+  cropAppliedSet,
   processedBlobs,
 }) {
   const extractedText = orderedIndices
@@ -1715,8 +1762,7 @@ async function rebuildFromOcrResults({
       })
     : null;
 
-  const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
-  const { cropImageBlob } = await import('./../../services/sortation/cropHelper.js');
+  const { computeRenderedBlob } = await import('../../services/sortation/imageRenderer.js');
   const jspdfMod = await import('jspdf');
   const JsPDF = jspdfMod.jsPDF || jspdfMod.default;
 
@@ -1724,43 +1770,29 @@ async function rebuildFromOcrResults({
   const A4W = 210, A4H = 297, M = 10;
   const PX_TO_MM = 0.264583;
 
+  // Один контекст на весь rebuild — computeRenderedBlob отримує idx і вирішує
+  // який шлях (processedBlob fast-path vs raw → crop → rotate). includeProposalRect:
+  // true для PDF — фінальний документ застосовує proposal навіть якщо адвокат
+  // не підтвердив через ✓ Готово (зберегли існуючу поведінку preview-rebuild
+  // де effectiveCrops збирав override||proposal).
+  const renderCtx = {
+    realFiles,
+    detectedOrientations: detectedOrientations || [],
+    userRotation: userRotation || new Map(),
+    processedBlobs: processedBlobs || new Map(),
+    cropOverrides: cropOverrides || new Map(),
+    cropProposals: cropProposals || new Map(),
+    cropDisabled: cropDisabled || new Set(),
+    cropAppliedSet: cropAppliedSet || new Set(),
+  };
+
   for (let i = 0; i < orderedIndices.length; i++) {
     const origIdx = orderedIndices[i];
-    // Pipeline для отримання фінального blob:
-    //   1. processedBlob (TASK B fix Addition 3): адвокат застосував crop+
-    //      straighten у попапі. Cropper повертав canvas → blob, тут просто
-    //      застосовуємо delta userRotation якщо адвокат повертав ↻ після
-    //      Apply (baseUserRotation = userRotation на момент Apply).
-    //   2. effectiveCrop rect: обрізаємо raw blob (rect у raw natural coords).
-    //      На cropped autoDeg НЕ застосовуємо: адвокат бачив raw image у
-    //      попапі з userRotation на ньому, тому crop rect вже вирівняний
-    //      з userRotation; autoDeg був би подвоєнням.
-    //   3. Жодного crop: rawFile + autoOrientation + userRotation.
-    let blob;
-    const processedEntry = processedBlobs?.get?.(origIdx) || null;
-    if (processedEntry?.blob instanceof Blob) {
-      const baseRot = processedEntry.baseUserRotation || 0;
-      const userDegNow = userRotation?.get?.(origIdx) || 0;
-      const delta = ((userDegNow - baseRot) % 360 + 360) % 360;
-      blob = delta !== 0
-        ? await rotateImageBlob(processedEntry.blob, delta)
-        : processedEntry.blob;
-    } else {
-      const cropRect = effectiveCrops?.get?.(origIdx) || null;
-      const rawFile = realFiles[origIdx];
-      const sourceFile = cropRect ? await cropImageBlob(rawFile, cropRect) : rawFile;
-      // autoDeg застосовується ЗАВЖДИ (раніше для crop-гілки скидався у 0).
-      // Конвенція тепер: popup показує raw + (autoDeg + userDeg). Cropper
-      // повертає rect у тому ж rotated просторі; rotateRectCCW конвертує
-      // назад у raw natural coords. Отже cropImageBlob(rawFile, rect) дає
-      // cropped raw-orientation файл — щоб виправити орієнтацію, потрібно
-      // застосувати totalDeg = (auto + user). Без autoDeg фото з повернутим
-      // авто-кутом після crop'у залишалось би боком у фінальному PDF.
-      const autoDeg = Number.isFinite(detectedOrientations?.[origIdx]) ? detectedOrientations[origIdx] : 0;
-      const userDeg = userRotation?.get?.(origIdx) || 0;
-      const totalDeg = (autoDeg + userDeg) % 360;
-      blob = totalDeg !== 0 ? await rotateImageBlob(sourceFile, totalDeg) : sourceFile;
-    }
+    const blob = await computeRenderedBlob(
+      { ...renderCtx, idx: origIdx },
+      { applyUserRotation: true, applyCrop: true, includeProposalRect: true }
+    );
+    if (!blob) continue;
 
     const url = URL.createObjectURL(blob);
     let img;
@@ -1846,9 +1878,13 @@ function Thumbnail({
             src={url}
             alt={`Сторінка ${position + 1}`}
             className="image-merge-panel__thumb-img"
-            // isProcessed → rotation вже baked у preview blob (не накладаємо CSS).
-            // !isProcessed → preview = raw → застосовуємо CSS rotation для UX feedback.
-            style={(!isProcessed && rotation) ? { transform: `rotate(${rotation}deg)` } : undefined}
+            // CSS rotation завжди застосовується для USER rotation — blob у
+            // previewUrls запікається без неї (тільки auto + crop), щоб ↻
+            // тапи давали плавну CSS transition анімацію 0.3s ease на transform.
+            // Якщо є processedBlob — rotation = (userNow - baseUserRot), тобто
+            // delta з моменту apply (бо processedBlob уже має user_at_apply
+            // запечений). Без processedBlob — rotation = повний user рівень.
+            style={rotation ? { transform: `rotate(${rotation}deg)` } : undefined}
           />
         ) : (
           <div className="image-merge-panel__thumb-placeholder">
@@ -1981,13 +2017,27 @@ function Thumbnail({
 //     ✂️ toggle parent state одразу (не залежить від apply).
 
 function PreviewPopup({
-  origIdx, url, sourceBlob, rotation, position, total, warning, duplicateInfo,
-  isUncertain, cropProposal, cropOverride, cropDisabled, processedEntry,
+  origIdx, url, sourceBlob, autoRotation: autoRotationProp, userRotation: userRotationOnly,
+  position, total, warning, duplicateInfo,
+  isUncertain, cropProposal, cropOverride, cropDisabled, cropApplied, processedEntry,
   onClose, onPrev, onNext, onRotate, onCropOverride, onToggleCropDisabled, onRemove,
   onProcessedBlobSave,
 }) {
+  const autoRotation = (((autoRotationProp || 0) % 360) + 360) % 360;
+  const userRotation = (((userRotationOnly || 0) % 360) + 360) % 360;
+  // Сума авто і користувацького обертання — спільний кут для displayUrl
+  // rotation і cropper math (rotateRectCW/CCW конверсій coords). Popup
+  // показує фото у фінальній орієнтації (як preview і як піде у PDF).
+  const rotation = (((autoRotation + userRotation) % 360) + 360) % 360;
   const effectiveRect = cropOverride || cropProposal || null;
-  const frameVisible = !!effectiveRect && !cropDisabled;
+  // frameVisible: рамка з рукоятками показується тільки коли є rect, рамка
+  // не вимкнена явно, і crop НЕ ще застосований. Після ✓ Готово (cropApplied
+  // = true) popup переходить у "view cropped" mode без рукояток — адвокат
+  // може ↻ або закрити, але re-edit рамки потребує спершу зняти apply.
+  const frameVisible = !!effectiveRect && !cropDisabled && !cropApplied;
+  // Track чи адвокат фізично рухав рукоятки під час сесії — для scenario 2
+  // (save frame on ✕ Cancel якщо frame був адаптований).
+  const pendingRectChangedRef = useRef(false);
 
   const isFirst = position === 0;
   const isLast = position === total - 1;
@@ -2037,20 +2087,23 @@ function PreviewPopup({
     return () => { cancelled = true; };
   }, [url]);
 
-  // displayUrl — що показуємо у cropper. Pipeline:
-  //   1. Якщо processedEntry існує → використовуємо processed blob (вже з
-  //      попередньою обрізкою/обертанням). Адвокат бачить попередній результат
-  //      і може його доредагувати.
-  //   2. Інакше якщо rotation != 0 → генеруємо повернутий blob URL з sourceBlob
-  //      (cropper не повинен сам обертати на 90° — конфліктувало б з нашою
-  //      системою userRotation; cropper'ський rotateImage використовується
-  //      лише для fineRotation -45..+45°).
-  //   3. Інакше → raw URL.
+  // displayUrl — що показуємо у cropper. Через ОДИН unified renderer
+  // (computeRenderedBlob) щоб popup показував те саме що preview thumbnail
+  // і фінальний PDF — без дублікатів логіки.
+  //
+  // applyUserRotation=true — user rotation baked у blob (popup завжди
+  //   показує фінальну орієнтацію; на відміну від preview thumbnail який
+  //   використовує CSS transform для плавної анімації).
+  // applyCrop=cropApplied — якщо адвокат тапнув ✓ Готово, popup показує
+  //   обрізаний варіант (сценарій 4). Інакше — full image з рамкою.
+  // includeProposalRect=cropApplied — proposal не вважається застосованим
+  //   допоки адвокат явно не підтвердив через ✓ Готово.
+  //
+  // Lock pattern зберігається: ↻ всередині попапу робить cropper.rotateImage(90)
+  // напряму, parent userRotation інкрементується — lock пропускає цей цикл
+  // useEffect'у щоб не подвоїти обертання.
   const [displayUrl, setDisplayUrl] = useState(url);
   useEffect(() => {
-    // TASK B fix Problem 3: ↻ всередині попапу вже зробив cropper.rotateImage(90).
-    // Регенерація blob URL і ремонт cropper'а тут була б подвоєнням обертання
-    // (cropper показав би +180° замість +90°). Lock пропускає цей цикл.
     if (popupRotationLockRef.current) {
       popupRotationLockRef.current = false;
       return;
@@ -2058,41 +2111,52 @@ function PreviewPopup({
     let cancelled = false;
     let createdUrl = null;
     (async () => {
-      if (processedEntry?.blob instanceof Blob) {
-        // Уже обрізаний/повернутий результат адвоката — показуємо як є.
-        // Враховуємо delta userRotation якщо адвокат повертав ↻ після Apply.
-        const baseRot = processedEntry.baseUserRotation || 0;
-        const delta = ((rotation - baseRot) % 360 + 360) % 360;
-        if (delta === 0) {
-          createdUrl = URL.createObjectURL(processedEntry.blob);
-          if (!cancelled) setDisplayUrl(createdUrl);
-          return;
-        }
-        try {
-          const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
-          const rot = await rotateImageBlob(processedEntry.blob, delta);
-          if (cancelled) return;
-          createdUrl = URL.createObjectURL(rot);
-          setDisplayUrl(createdUrl);
-        } catch (e) {
-          console.warn('[PreviewPopup] processed-blob rotate failed:', e);
-          createdUrl = URL.createObjectURL(processedEntry.blob);
-          if (!cancelled) setDisplayUrl(createdUrl);
-        }
-        return;
-      }
-      if (rotation === 0 || !sourceBlob) {
-        if (!cancelled) setDisplayUrl(url);
-        return;
-      }
       try {
-        const { rotateImageBlob } = await import('../../services/sortation/orientationCorrector.js');
-        const rotated = await rotateImageBlob(sourceBlob, rotation);
+        const { computeRenderedBlob } = await import('../../services/sortation/imageRenderer.js');
+        // Контекст для renderer'у складаємо тут — у popup props ми отримали
+        // все потрібне (sourceBlob як raw, cropOverride, processedEntry).
+        // userRotation і detectedOrientations — обгортки Map/Array з одним
+        // елементом по індексу 0, бо renderer працює per-batch.
+        const userRotationMap = new Map();
+        userRotationMap.set(0, userRotation);
+        const procMap = new Map();
+        if (processedEntry?.blob instanceof Blob) procMap.set(0, processedEntry);
+        const overrideMap = new Map();
+        if (cropOverride) overrideMap.set(0, cropOverride);
+        const proposalMap = new Map();
+        if (cropProposal) proposalMap.set(0, cropProposal);
+        const disabledSet = new Set();
+        if (cropDisabled) disabledSet.add(0);
+        const appliedSet = new Set();
+        if (cropApplied) appliedSet.add(0);
+
+        const blob = await computeRenderedBlob(
+          {
+            idx: 0,
+            realFiles: [sourceBlob],
+            detectedOrientations: [autoRotation],
+            userRotation: userRotationMap,
+            processedBlobs: procMap,
+            cropOverrides: overrideMap,
+            cropProposals: proposalMap,
+            cropDisabled: disabledSet,
+            cropAppliedSet: appliedSet,
+          },
+          {
+            applyUserRotation: true,
+            applyCrop: cropApplied,
+            includeProposalRect: cropApplied,
+          }
+        );
         if (cancelled) return;
-        createdUrl = URL.createObjectURL(rotated);
-        setDisplayUrl(createdUrl);
+        if (blob) {
+          createdUrl = URL.createObjectURL(blob);
+          setDisplayUrl(createdUrl);
+        } else {
+          setDisplayUrl(url);
+        }
       } catch (e) {
-        console.warn('[PreviewPopup] rotation blob failed:', e);
+        console.warn('[PreviewPopup] displayUrl render failed:', e);
         if (!cancelled) setDisplayUrl(url);
       }
     })();
@@ -2100,7 +2164,10 @@ function PreviewPopup({
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [rotation, sourceBlob, url, processedEntry]);
+  }, [
+    autoRotation, userRotation, sourceBlob, url, processedEntry,
+    cropOverride, cropProposal, cropDisabled, cropApplied,
+  ]);
 
   // Local pending state — чекає на ✓ Apply.
   const [pendingRect, setPendingRect] = useState(effectiveRect || null);
@@ -2183,9 +2250,16 @@ function PreviewPopup({
   // закриє попап). displayUrl effect skip через popupRotationLockRef.
   const handleRotateInPopup = useCallback(() => {
     if (cropperRef.current) {
+      // Cropper mounted → робимо visual rotation через нього (анімація 0.3s
+      // built-in), ставимо lock щоб displayUrl effect не подвоїв обертання
+      // регенерацією blob URL з новим userRotation. Lock відкидається на
+      // наступному запуску ефекту.
       try { cropperRef.current.rotateImage(90); } catch {}
+      popupRotationLockRef.current = true;
     }
-    popupRotationLockRef.current = true;
+    // Якщо cropper НЕ mounted (cropApplied=true → frameVisible=false → plain
+    // img), пропускаємо lock. displayUrl effect повинен регенерувати blob
+    // з новим userRotation, інакше ↻ візуально нічого не дасть.
     onRotate();
   }, [onRotate]);
 
@@ -2208,13 +2282,20 @@ function PreviewPopup({
     }
   }, [origIdx, frameVisible]);
 
-  // ✓ Apply — три гілки залежно від стану:
+  // ✓ Готово (Apply) — три гілки залежно від стану:
   //   1. fineRotation != 0 → беремо canvas з cropper (всі трансформи вже
   //      застосовані бібліотекою) → blob → onProcessedBlobSave. Рebuild
   //      використовує цей blob напряму.
-  //   2. fineRotation == 0 і frameVisible → onCropOverride(pendingRect) як
-  //      раніше; pipeline застосовує crop+rotate як зараз.
+  //   2. fineRotation == 0 і frameVisible → onCropOverride(pendingRect,
+  //      {applied: true}) — рамка зберігається І preview thumbnail показує
+  //      cropped варіант.
   //   3. !frameVisible → нічого не зберігаємо, просто закриваємо.
+  //
+  // baseUserRotation для onProcessedBlobSave — це USER rotation на момент
+  // apply (НЕ rotation prop який = auto + user). Інакше delta-логіка у
+  // computeRenderedBlob/userRotationCssDelta давала б помилку: коли адвокат
+  // обертає ↻ після apply, ми обчислюємо (user_now - baseUser) — baseUser
+  // має бути user рівень, не сума з auto.
   const handleApply = useCallback(async () => {
     if (!frameVisible) {
       onClose();
@@ -2231,7 +2312,9 @@ function PreviewPopup({
             canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
           });
           if (blob) {
-            onProcessedBlobSave(blob, rotation);
+            // baseUserRotation = USER component тільки (без auto). delta-логіка
+            // у computeRenderedBlob/userRotationCssDelta очікує саме user рівень.
+            onProcessedBlobSave(blob, userRotation);
             onClose();
             return;
           }
@@ -2241,10 +2324,21 @@ function PreviewPopup({
       }
     }
     if (pendingRect) {
-      onCropOverride(pendingRect);
+      onCropOverride(pendingRect, { applied: true });
     }
     onClose();
-  }, [frameVisible, pendingRect, rotation, onCropOverride, onProcessedBlobSave, onClose]);
+  }, [frameVisible, pendingRect, userRotation, onCropOverride, onProcessedBlobSave, onClose]);
+
+  // ✕ Cancel — сценарій 2: якщо адвокат рухав рукоятки рамки під час сесії
+  // (pendingRect відрізняється від ефективного rect що був на момент відкриття),
+  // зберігаємо нову рамку як "frame-only" (НЕ applied). Інакше — просто
+  // закриваємо.
+  const handleCancel = useCallback(() => {
+    if (pendingRect && pendingRectChangedRef.current && frameVisible) {
+      onCropOverride(pendingRect, { applied: false });
+    }
+    onClose();
+  }, [pendingRect, frameVisible, onCropOverride, onClose]);
 
   // ✂️ Toggle frame visibility (одразу у parent state — швидкий feedback).
   // Якщо нема rect взагалі — створюємо центральний 80×80% rect.
@@ -2275,9 +2369,9 @@ function PreviewPopup({
           <button
             type="button"
             className="image-merge-panel__popup-topbtn"
-            onClick={onClose}
-            aria-label="Скасувати (без обрізки)"
-            title="Скасувати без обрізки (Esc)"
+            onClick={handleCancel}
+            aria-label="Закрити (зберегти рамку)"
+            title="Закрити (рамка збережеться для фінального PDF) (Esc)"
           >
             <X size={22} />
           </button>
@@ -2324,12 +2418,14 @@ function PreviewPopup({
               const original = rotateRectCCW(
                 rotatedRect, naturalDims.width, naturalDims.height, rotation
               );
-              setPendingRect({
+              const nextRect = {
                 x: Math.round(original.x),
                 y: Math.round(original.y),
                 width: Math.round(original.width),
                 height: Math.round(original.height),
-              });
+              };
+              setPendingRect(nextRect);
+              pendingRectChangedRef.current = true;
             }}
           />
         </div>
