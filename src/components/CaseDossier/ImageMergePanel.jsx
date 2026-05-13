@@ -37,7 +37,7 @@ import {
   Crop as CropIcon,
   Square as FrameIcon,
 } from 'lucide-react';
-import { Input, Select, Toggle, Button } from '../UI';
+import { Input, Select, Toggle, Button, DatePicker } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { toast } from '../../services/toast.js';
 import { convertImagesToPdf } from '../../services/converter/converterService.js';
@@ -1298,9 +1298,8 @@ function PreviewView({
           />
         )}
 
-        <Input
+        <DatePicker
           label="Дата документа"
-          type="date"
           value={form.date}
           onChange={(v) => setForm((s) => ({ ...s, date: v }))}
         />

@@ -1,0 +1,53 @@
+/* ── DateTimePicker (модалка-обгортка) ────────────────────────────────── */
+
+.ui-datetimepicker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Резюме обраного значення вгорі — показує адвокату що буде збережено. */
+.ui-datetimepicker__summary {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.ui-datetimepicker__summary--complete {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg));
+  font-weight: var(--weight-medium);
+}
+
+/* Двоколонкове розташування: календар ліворуч, wheel'и часу праворуч. */
+.ui-datetimepicker__panes {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.ui-datetimepicker__pane--date {
+  min-width: 0;
+}
+
+.ui-datetimepicker__pane--time {
+  flex-shrink: 0;
+}
+
+/* На вузьких екранах — однострінжкова колонка. Календар зверху, час знизу.
+   У DateTimePicker модалці це важливо бо planset може мати portrait
+   orientation і двоколонка перевищує доступну ширину. */
+@media (max-width: 640px) {
+  .ui-datetimepicker__panes {
+    grid-template-columns: 1fr;
+  }
+  .ui-datetimepicker__pane--time {
+    justify-self: center;
+  }
+}
