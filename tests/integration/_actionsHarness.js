@@ -37,6 +37,15 @@ const PERMISSIONS = {
   document_processor_agent: [
     'add_documents', 'update_processing_context',
   ],
+  // TASK 0.3.5 v7
+  court_sync_agent: [
+    'add_hearing', 'update_hearing',
+    'mark_synced_from_ecits', 'update_case_ecits_state',
+    'update_parties', 'update_team', 'update_process_participants',
+    'update_proceeding_composition',
+    'update_document_movement_card', 'update_alternative_sources',
+  ],
+  metadata_extractor_agent: [], // disabled, defined для майбутнього
 };
 
 const UI_ONLY_ACTIONS = new Set(['delete_document', 'delete_proceeding']);
@@ -313,6 +322,148 @@ export function createHarness({ initialCases = [] } = {}) {
           : c
       ));
       return { success: true };
+    },
+
+    // ── TASK 0.3.5 v7 — спрощені реалізації для harness ──────────────────
+    mark_synced_from_ecits: ({ caseId, status = 'synced', failureReason = null, documentsCount = 0, hearingsCount = 0, durationMs = null }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const m = c.ecitsState?.syncMetrics || {
+          totalSyncs: 0, successfulSyncs: 0, failedSyncs: 0,
+          documentsExtracted: 0, hearingsExtracted: 0, lastDurationMs: null,
+        };
+        return {
+          ...c,
+          ecitsState: {
+            ...(c.ecitsState || {}),
+            lastSyncedAt: new Date().toISOString(),
+            lastSyncedBy: 'vadym',
+            syncStatus: status,
+            failureReason,
+            syncMetrics: {
+              totalSyncs: m.totalSyncs + 1,
+              successfulSyncs: m.successfulSyncs + (status === 'synced' ? 1 : 0),
+              failedSyncs: m.failedSyncs + (status === 'failed' ? 1 : 0),
+              documentsExtracted: m.documentsExtracted + (Number.isFinite(documentsCount) ? documentsCount : 0),
+              hearingsExtracted: m.hearingsExtracted + (Number.isFinite(hearingsCount) ? hearingsCount : 0),
+              lastDurationMs: durationMs ?? null,
+            },
+          },
+        };
+      }));
+      return found ? { success: true } : { success: false, error: `Справу ${caseId} не знайдено` };
+    },
+
+    update_case_ecits_state: ({ caseId, patch, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!patch) return { success: false, error: "patch обов'язковий" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return {
+          ...c,
+          ecitsState: { ...(c.ecitsState || {}), ...patch, _lastSource: source },
+        };
+      }));
+      return found ? { success: true } : { success: false, error: `Справу ${caseId} не знайдено` };
+    },
+
+    update_parties: ({ caseId, parties, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(parties)) return { success: false, error: "parties має бути масивом" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return { ...c, parties };
+      }));
+      return found ? { success: true, count: parties.length } : { success: false, error: `Справу ${caseId} не знайдено` };
+    },
+
+    update_team: ({ caseId, team }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(team)) return { success: false, error: "team має бути масивом" };
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return { ...c, team };
+      }));
+      return found ? { success: true, count: team.length } : { success: false, error: `Справу ${caseId} не знайдено` };
+    },
+
+    update_process_participants: ({ caseId, participants, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(participants)) return { success: false, error: "participants має бути масивом" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return { ...c, processParticipants: participants };
+      }));
+      return found ? { success: true, count: participants.length } : { success: false, error: `Справу ${caseId} не знайдено` };
+    },
+
+    update_proceeding_composition: ({ caseId, proceedingId, composition, source }) => {
+      if (!caseId || !proceedingId) return { success: false, error: "caseId і proceedingId обов'язкові" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      let procFound = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        return {
+          ...c,
+          proceedings: (c.proceedings || []).map(p => {
+            if (p.id !== proceedingId) return p;
+            procFound = true;
+            return { ...p, composition };
+          }),
+        };
+      }));
+      return procFound ? { success: true } : { success: false, error: `Провадження ${proceedingId} не знайдено` };
+    },
+
+    update_document_movement_card: ({ caseId, documentId, movementCard, source }) => {
+      if (!caseId || !documentId) return { success: false, error: "caseId і documentId обов'язкові" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      let docFound = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        return {
+          ...c,
+          documents: (c.documents || []).map(d => {
+            if (d.id !== documentId) return d;
+            docFound = true;
+            return { ...d, movementCard };
+          }),
+        };
+      }));
+      return docFound ? { success: true } : { success: false, error: `Документ ${documentId} не знайдено` };
+    },
+
+    update_alternative_sources: ({ caseId, documentId, alternativeSource }) => {
+      if (!caseId || !documentId) return { success: false, error: "caseId і documentId обов'язкові" };
+      if (!alternativeSource) return { success: false, error: "alternativeSource обов'язковий" };
+      let docFound = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        return {
+          ...c,
+          documents: (c.documents || []).map(d => {
+            if (d.id !== documentId) return d;
+            docFound = true;
+            const existing = Array.isArray(d.alternativeSources) ? d.alternativeSources : [];
+            return { ...d, alternativeSources: [...existing, alternativeSource] };
+          }),
+        };
+      }));
+      return docFound ? { success: true } : { success: false, error: `Документ ${documentId} не знайдено` };
     },
   };
 

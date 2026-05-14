@@ -102,17 +102,79 @@ export const CANONICAL_DOCUMENT_FIELDS = {
   },
 
   // ── Джерело надходження ──────────────────────────────────────────────────
-  // source — канал по якому документ потрапив у систему. Універсальне поле
-  // для всіх майбутніх каналів (manual_upload, ecits, telegram, email).
-  // Nullable, default null — старі документи отримують null автоматично без
-  // schema bump (це додавання nullable поля з дефолтом, не зміна структури).
+  // source — канал ПОХОДЖЕННЯ файлу (TASK 0.3.5 v7 — переіменовано і розширено).
+  // НЕ плутати з document.addedBy (actor — хто додав запис, з TASK 0.3.4 v6.5).
   // Довідник значень — src/constants/documentSources.js.
+  // Міграція v6.5→v7: 'manual_upload'→'manual', 'ecits'→'court_sync',
+  // null/undefined → 'manual', невідоме → 'unknown' з warning.
   source: {
     type: 'string',
     required: false,
     nullable: true,
-    enum: ['manual_upload', 'ecits', 'telegram', 'email', null],
-    description: 'Канал надходження. null = старі документи до TASK 0.2'
+    enum: ['manual', 'court_sync', 'metadata_extractor', 'telegram', 'email', 'unknown', null],
+    default: 'manual',
+    description: 'Канал ПОХОДЖЕННЯ файлу. manual = адвокат завантажив локально. court_sync = синхронізовано з ЄСІТС-кабінету. metadata_extractor = парсинг файлу не-ЄСІТС каналу. telegram/email = відповідні канали. unknown = невідоме походження (fallback при міграції). null = старі документи до v7. НЕ плутати з document.addedBy (actor).'
+  },
+
+  // ── Впевненість у джерелі ──────────────────────────────────────────────
+  // sourceConfidence — наскільки можна довіряти даним з цього source.
+  // high = адвокат підтвердив або синхронізація з офіційного джерела.
+  // medium = автоматичний парсинг з ймовірністю помилки.
+  // low = здогадка (наприклад, OCR з неякісного скану).
+  sourceConfidence: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    enum: ['high', 'medium', 'low', null],
+    default: 'high',
+    description: 'Впевненість у source-даних. Default high для існуючих (адвокат вручну).'
+  },
+
+  // ── Час витягнення/створення ─────────────────────────────────────────
+  // extractedAt — коли запис було витягнуто/створено в системі. Default null
+  // для старих документів. Заповнюється для записів з source != manual.
+  extractedAt: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    format: 'datetime',
+    default: null,
+    description: 'Коли запис було витягнуто/створено в системі (ISO datetime). null для старих або manual.'
+  },
+
+  // ── Деталі ЄСІТС-походження ──────────────────────────────────────────
+  // ecitsSource — заповнюється коли source === court_sync або
+  // metadata_extractor парсить ЄСІТС-документ. Multi-user готовність:
+  // userId фіксує через чий кабінет первинно отримано.
+  // Не плутати з movementCard — там окрема семантика (рух у судовій системі).
+  ecitsSource: {
+    type: 'object',
+    required: false,
+    nullable: true,
+    default: null,
+    description: 'Деталі ЄСІТС-походження. Заповнюється для source court_sync. Структура: { ecitsDocumentId, ecitsNotificationId, notificationType, cabinetUrl, receivedThroughCabinet: { userId, cabinetIdentifier }, receivedAlsoThroughCabinet: [{ userId, cabinetIdentifier }] }.'
+  },
+
+  // ── Картка руху документа ────────────────────────────────────────────
+  // movementCard — повна таблиця доставки документа в межах судової системи.
+  // Окрема структура від ecitsSource: ecitsSource = звідки/коли в систему,
+  // movementCard = коли і кому доставлено учасникам.
+  movementCard: {
+    type: 'object',
+    required: false,
+    nullable: true,
+    default: null,
+    description: 'Картка руху документа з ЄСІТС. Структура: { state, dnzs, documentDate, infoDeliveryToECourt, fileDeliveryToECourt, deliveries: [...], attachments: [...] }.'
+  },
+
+  // ── Аудит multi-source синхронізації ─────────────────────────────────
+  // alternativeSources — коли різні канали повернули дані про той самий
+  // документ. Зростає при multi-source синхронізаціях. Default [].
+  alternativeSources: {
+    type: 'array',
+    required: false,
+    default: [],
+    description: 'Аудит коли різні канали повернули дані про той самий документ. Кожен елемент: { source, sourceConfidence, receivedAt, dataHash }.'
   },
 
   // ── Оригінал поряд з PDF ──────────────────────────────────────────────────

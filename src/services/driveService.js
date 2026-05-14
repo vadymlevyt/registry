@@ -199,6 +199,25 @@ export async function backupRegistryDataPreV3(token, payload) {
   }
 }
 
+// Бекап перед TASK 0.3.5 міграцією v6.5 → v7 (canonical schema for ECITS), поза ротацією.
+export async function backupRegistryDataPreV7(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_v7_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-v7 backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Бекап перед TASK 0.3.4 міграцією v6 → v6.5 (addedBy semantic cleanup), поза ротацією.
 export async function backupRegistryDataPreV6_5(token, payload) {
   try {

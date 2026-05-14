@@ -4,11 +4,19 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import * as eventBus from './services/eventBus';
+import {
+  ECITS_SYNC_COMPLETED, ECITS_CASE_STATE_UPDATED,
+  CASE_PARTIES_UPDATED, CASE_TEAM_UPDATED, CASE_PROCESS_PARTICIPANTS_UPDATED,
+  PROCEEDING_COMPOSITION_UPDATED, DOCUMENT_MOVEMENT_CARD_UPDATED,
+  DOCUMENT_ALTERNATIVE_SOURCE_ADDED,
+} from './services/eventBusTopics';
+import { canOverwrite, buildAlternativeSourceRecord } from './services/sourcePolicy';
 import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
 import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
 import { createDocument, validateDocument } from './services/documentFactory';
@@ -228,6 +236,29 @@ function isProceedingDescendant(proceedings, candidateId, ancestorId) {
 const UI_ONLY_ACTIONS = new Set([
   'delete_document',
   'delete_proceeding',
+]);
+
+// TASK 0.3.5 v7 — ACTIONS які НЕ нараховуються в time_entries через
+// executeAction-hook activityTracker.report. Системні дії, не робота адвоката.
+// Принцип: автосинхронізація з ЄСІТС не повинна потрапити у білінг як case_work.
+const SYSTEM_ACTIONS_NO_BILLING = new Set([
+  // Внутрішні (Billing Foundation v2)
+  'track_session_start', 'track_session_end', 'batch_update',
+  // Sync ACTIONS (TASK 0.3.5)
+  'mark_synced_from_ecits', 'update_case_ecits_state',
+]);
+
+// TASK 0.3.5 v7 — edit-ACTIONS канонічної схеми (R1 AI-first дзеркало).
+// Викликані з source 'manual' — нараховуються (адвокат через UI/агента редагує).
+// Викликані з source 'court_sync' / 'metadata_extractor' — НЕ нараховуються
+// (автосинхронізація). Розрізняє source у params.
+const EDIT_ACTIONS_SOURCE_AWARE = new Set([
+  'update_parties',
+  'update_team',                          // не приймає source — завжди нараховується (internal)
+  'update_process_participants',
+  'update_proceeding_composition',
+  'update_document_movement_card',
+  'update_alternative_sources',
 ]);
 
 function getNextDeadline(caseItem) {
@@ -4096,6 +4127,33 @@ function App() {
           }
         }
 
+        // TASK 0.3.5 — pre-v7 бекап перед canonical schema bump для ЄСІТС, поза ротацією.
+        if (raw != null && (registry.schemaVersion || 6.5) < 7) {
+          const flagV7 = localStorage.getItem('levytskyi_pre_v7_backup_done');
+          if (!flagV7) {
+            const res = await backupRegistryDataPreV7(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v7_backup_done', '1');
+              console.log(`[TASK 0.3.5] Pre-v7 backup: ${res.fileName}`);
+            } else {
+              console.warn('[TASK 0.3.5] Pre-v7 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // TASK 0.3.5 — canonical schema for ECITS (v6.5 → v7).
+        // Розширення document.source enum, нові поля документа/case/proceeding/hearing,
+        // user.ecitsCabinetIdentifier для multi-user dedupe.
+        if ((registry.schemaVersion || 1) < 7) {
+          const v7 = migrateToVersion7(registry);
+          if (v7.didMigrate) {
+            registry = v7.registry;
+            didMigrate = true;
+            toVersion = v7.toVersion;
+            // Console.log усередині migrateToVersion7 — детальний breakdown.
+          }
+        }
+
         // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
         if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
           try {
@@ -4794,7 +4852,13 @@ function App() {
     },
 
     // ГРУПА 2 — Засідання
-    add_hearing: ({ caseId, date, time, duration = 120, type = null }) => {
+    // TASK 0.3.5 v7: backward-compatible розширення новими опційними параметрами
+    // (source, sourceConfidence, ecitsContext, assignedTo, attendedBy).
+    // Якщо source не передано — fallback 'manual' з warning у консоль.
+    add_hearing: ({
+      caseId, date, time, duration = 120, type = null,
+      source, sourceConfidence, ecitsContext, assignedTo, attendedBy,
+    }) => {
       if (!date) {
         console.error("[VALIDATION] add_hearing відхилено: дата обов'язкова");
         return { success: false, error: "Дата засідання обов'язкова" };
@@ -4803,7 +4867,27 @@ function App() {
         console.error("[VALIDATION] add_hearing відхилено: час обов'язковий");
         return { success: false, error: "Час засідання обов'язковий" };
       }
-      const hearing = { id: `hrg_${Date.now()}`, date, time, duration, status: 'scheduled', type };
+      const effectiveSource = source ?? 'manual';
+      if (!source) {
+        // eslint-disable-next-line no-console
+        console.warn("[ACTION add_hearing] called without explicit source, falling back to 'manual'");
+      }
+      const isSystemSourced = effectiveSource === 'court_sync' || effectiveSource === 'metadata_extractor';
+      const hearing = {
+        id: `hrg_${Date.now()}`,
+        date,
+        time,
+        duration,
+        status: 'scheduled',
+        type,
+        // v7 поля (всі з безпечними дефолтами для backward-compat)
+        source: effectiveSource,
+        sourceConfidence: sourceConfidence ?? 'high',
+        extractedAt: isSystemSourced ? new Date().toISOString() : null,
+        ecitsContext: ecitsContext ?? null,
+        assignedTo: assignedTo ?? null,
+        attendedBy: Array.isArray(attendedBy) ? attendedBy : [],
+      };
       setCases(prev => prev.map(c =>
         c.id === caseId
           ? { ...c, hearings: [...(c.hearings || []), hearing], updatedAt: new Date().toISOString() }
@@ -4812,7 +4896,10 @@ function App() {
       return { success: true, hearingId: hearing.id };
     },
 
-    update_hearing: ({ caseId, hearingId, date, time, duration, type }) => {
+    update_hearing: ({
+      caseId, hearingId, date, time, duration, type,
+      source, sourceConfidence, ecitsContext, assignedTo, attendedBy,
+    }) => {
       if (time !== undefined && (time === null || !String(time).trim())) {
         console.error("[VALIDATION] update_hearing відхилено: час не може бути порожнім");
         return { success: false, error: "Час засідання не може бути порожнім" };
@@ -4834,12 +4921,24 @@ function App() {
 
         return {
           ...c,
-          hearings: (c.hearings || []).map(h =>
-            h.id === targetId
-              ? { ...h, date: date ?? h.date, time: time ?? h.time,
-                  duration: duration ?? h.duration, type: type ?? h.type }
-              : h
-          ),
+          hearings: (c.hearings || []).map(h => {
+            if (h.id !== targetId) return h;
+            const isSystemUpdate = source === 'court_sync' || source === 'metadata_extractor';
+            return {
+              ...h,
+              date: date ?? h.date,
+              time: time ?? h.time,
+              duration: duration ?? h.duration,
+              type: type ?? h.type,
+              // v7 поля — оновлюємо лише якщо передано (зберігаємо існуючі)
+              ...(source !== undefined ? { source } : {}),
+              ...(sourceConfidence !== undefined ? { sourceConfidence } : {}),
+              ...(isSystemUpdate ? { extractedAt: new Date().toISOString() } : {}),
+              ...(ecitsContext !== undefined ? { ecitsContext } : {}),
+              ...(assignedTo !== undefined ? { assignedTo } : {}),
+              ...(Array.isArray(attendedBy) ? { attendedBy } : {}),
+            };
+          }),
           updatedAt: new Date().toISOString()
         };
       }));
@@ -5705,6 +5804,291 @@ function App() {
       };
     },
 
+    // ГРУПА 7 — ЄСІТС sync (TASK 0.3.5 v7)
+    // mark_synced_from_ecits — позначає що справа була синхронізована з ЄСІТС.
+    // Інкрементує syncMetrics counters і публікує eventBus подію.
+    // Не пишеться в auditLog (це системна дія, не критична).
+    // Виключена з activityTracker-hook (див. SYSTEM_ACTIONS_NO_BILLING).
+    mark_synced_from_ecits: ({
+      caseId,
+      status = 'synced',
+      failureReason = null,
+      durationMs = null,
+      documentsCount = 0,
+      hearingsCount = 0,
+    }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const currentMetrics = c.ecitsState?.syncMetrics || {
+          totalSyncs: 0, successfulSyncs: 0, failedSyncs: 0,
+          documentsExtracted: 0, hearingsExtracted: 0, lastDurationMs: null,
+        };
+        return {
+          ...c,
+          ecitsState: {
+            ...(c.ecitsState || {}),
+            lastSyncedAt: timestamp,
+            lastSyncedBy: userId,
+            syncStatus: status,
+            failureReason,
+            syncMetrics: {
+              totalSyncs: currentMetrics.totalSyncs + 1,
+              successfulSyncs: currentMetrics.successfulSyncs + (status === 'synced' ? 1 : 0),
+              failedSyncs: currentMetrics.failedSyncs + (status === 'failed' ? 1 : 0),
+              documentsExtracted: currentMetrics.documentsExtracted + (Number.isFinite(documentsCount) ? documentsCount : 0),
+              hearingsExtracted: currentMetrics.hearingsExtracted + (Number.isFinite(hearingsCount) ? hearingsCount : 0),
+              lastDurationMs: durationMs ?? null,
+            },
+          },
+          updatedAt: timestamp,
+        };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      try {
+        eventBus.publish(ECITS_SYNC_COMPLETED, {
+          caseId, tenantId, userId, timestamp, status, documentsCount, hearingsCount,
+        });
+      } catch (e) {
+        console.warn('[mark_synced_from_ecits] eventBus publish failed:', e);
+      }
+      return { success: true, syncedAt: timestamp };
+    },
+
+    // update_case_ecits_state — мерджить patch у case.ecitsState з canOverwrite logic.
+    // Source — обов'язковий параметр для аудиту і пріоритетизації.
+    // Якщо новий source має нижчий пріоритет ніж існуючий _lastSource —
+    // перезапис не відбувається (логуємо у консоль).
+    update_case_ecits_state: ({ caseId, patch, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!patch || typeof patch !== 'object') return { success: false, error: "patch обов'язковий (object)" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      let overwriteSkipped = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const existingState = c.ecitsState || {};
+        const existingSource = existingState._lastSource;
+        if (existingSource && !canOverwrite(existingSource, source)) {
+          // eslint-disable-next-line no-console
+          console.log(`[ACTION update_case_ecits_state] source '${source}' has lower priority than '${existingSource}', skipping overwrite for case ${caseId}`);
+          overwriteSkipped = true;
+          return c;
+        }
+        return {
+          ...c,
+          ecitsState: {
+            ...existingState,
+            ...patch,
+            _lastSource: source,
+          },
+          updatedAt: timestamp,
+        };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      try {
+        eventBus.publish(ECITS_CASE_STATE_UPDATED, {
+          caseId, tenantId, userId, fieldsChanged: Object.keys(patch),
+          source, timestamp, overwriteSkipped,
+        });
+      } catch (e) {
+        console.warn('[update_case_ecits_state] eventBus publish failed:', e);
+      }
+      return { success: true, overwriteSkipped };
+    },
+
+    // ГРУПА 8 — AI-first дзеркало (TASK 0.3.5 v7, R1)
+    // 6 edit-ACTIONS щоб нові поля v7 не залишились мертвими — адвокат через
+    // діалог з агентом може редагувати parties, processParticipants,
+    // composition, movementCard, alternativeSources, team.
+    //
+    // Усі замінюють масиви/об'єкти цілковито (replace-all, не merge).
+    // source — обов'язковий для всіх крім update_team (бо internal).
+
+    // 1. update_parties — replace-all для процесуальних сторін.
+    update_parties: ({ caseId, parties, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(parties)) return { success: false, error: "parties має бути масивом" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      const isSystemSourced = source === 'court_sync' || source === 'metadata_extractor';
+      const enriched = parties.map(p => ({
+        ...p,
+        source: p.source ?? source,
+        sourceConfidence: p.sourceConfidence ?? (source === 'manual' ? 'high' : 'medium'),
+        extractedAt: p.extractedAt ?? (isSystemSourced ? timestamp : null),
+      }));
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return { ...c, parties: enriched, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      try {
+        eventBus.publish(CASE_PARTIES_UPDATED, { caseId, tenantId, userId, source, timestamp });
+      } catch (e) { console.warn('[update_parties] eventBus failed:', e); }
+      return { success: true, count: enriched.length };
+    },
+
+    // 2. update_team — replace-all для internal bureau team.
+    // Зберігає SaaS Foundation v3 структуру з permissions per-member.
+    // Не приймає source (це internal action, не пов'язана з ЄСІТС).
+    update_team: ({ caseId, team }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(team)) return { success: false, error: "team має бути масивом" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return { ...c, team, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      try {
+        eventBus.publish(CASE_TEAM_UPDATED, { caseId, tenantId, userId, timestamp });
+      } catch (e) { console.warn('[update_team] eventBus failed:', e); }
+      return { success: true, count: team.length };
+    },
+
+    // 3. update_process_participants — replace-all для процесуальних учасників.
+    // НЕ переписує team[] (внутрішня бюро-команда — окрема структура).
+    update_process_participants: ({ caseId, participants, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!Array.isArray(participants)) return { success: false, error: "participants має бути масивом" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      const isSystemSourced = source === 'court_sync' || source === 'metadata_extractor';
+      const enriched = participants.map(p => ({
+        ...p,
+        source: p.source ?? source,
+        sourceConfidence: p.sourceConfidence ?? (source === 'manual' ? 'high' : 'medium'),
+        extractedAt: p.extractedAt ?? (isSystemSourced ? timestamp : null),
+      }));
+      let found = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return { ...c, processParticipants: enriched, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      try {
+        eventBus.publish(CASE_PROCESS_PARTICIPANTS_UPDATED, { caseId, tenantId, userId, source, timestamp });
+      } catch (e) { console.warn('[update_process_participants] eventBus failed:', e); }
+      return { success: true, count: enriched.length };
+    },
+
+    // 4. update_proceeding_composition — оновлює склад суду конкретного провадження.
+    update_proceeding_composition: ({ caseId, proceedingId, composition, source }) => {
+      if (!caseId || !proceedingId) return { success: false, error: "caseId і proceedingId обов'язкові" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      let procFound = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const updatedProcs = (c.proceedings || []).map(p => {
+          if (p.id !== proceedingId) return p;
+          procFound = true;
+          return { ...p, composition: composition ?? null, updatedAt: timestamp };
+        });
+        return { ...c, proceedings: updatedProcs, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      if (!procFound) return { success: false, error: `Провадження ${proceedingId} не знайдено` };
+      try {
+        eventBus.publish(PROCEEDING_COMPOSITION_UPDATED, { caseId, proceedingId, tenantId, userId, source, timestamp });
+      } catch (e) { console.warn('[update_proceeding_composition] eventBus failed:', e); }
+      return { success: true };
+    },
+
+    // 5. update_document_movement_card — записує картку руху документа.
+    update_document_movement_card: ({ caseId, documentId, movementCard, source }) => {
+      if (!caseId || !documentId) return { success: false, error: "caseId і documentId обов'язкові" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      let docFound = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const updatedDocs = (c.documents || []).map(d => {
+          if (d.id !== documentId) return d;
+          docFound = true;
+          return { ...d, movementCard: movementCard ?? null, updatedAt: timestamp };
+        });
+        return { ...c, documents: updatedDocs, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      if (!docFound) return { success: false, error: `Документ ${documentId} не знайдено` };
+      try {
+        eventBus.publish(DOCUMENT_MOVEMENT_CARD_UPDATED, { caseId, documentId, tenantId, userId, source, timestamp });
+      } catch (e) { console.warn('[update_document_movement_card] eventBus failed:', e); }
+      return { success: true };
+    },
+
+    // 6. update_alternative_sources — додає запис до document.alternativeSources[]
+    // коли multi-source синхронізація знаходить той самий документ через інший канал.
+    update_alternative_sources: ({ caseId, documentId, alternativeSource }) => {
+      if (!caseId || !documentId) return { success: false, error: "caseId і documentId обов'язкові" };
+      if (!alternativeSource || typeof alternativeSource !== 'object') {
+        return { success: false, error: "alternativeSource обов'язковий (object)" };
+      }
+      // Якщо передано dataHash — використовуємо як є; інакше будуємо запис.
+      const record = alternativeSource.dataHash
+        ? alternativeSource
+        : buildAlternativeSourceRecord(
+            alternativeSource.source ?? 'unknown',
+            alternativeSource.sourceConfidence ?? null,
+            alternativeSource.data ?? alternativeSource,
+          );
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      let docFound = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const updatedDocs = (c.documents || []).map(d => {
+          if (d.id !== documentId) return d;
+          docFound = true;
+          const existing = Array.isArray(d.alternativeSources) ? d.alternativeSources : [];
+          return { ...d, alternativeSources: [...existing, record], updatedAt: timestamp };
+        });
+        return { ...c, documents: updatedDocs, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      if (!docFound) return { success: false, error: `Документ ${documentId} не знайдено` };
+      try {
+        eventBus.publish(DOCUMENT_ALTERNATIVE_SOURCE_ADDED, {
+          caseId, documentId, tenantId, userId,
+          source: record.source, timestamp,
+        });
+      } catch (e) { console.warn('[update_alternative_sources] eventBus failed:', e); }
+      return { success: true };
+    },
+
     // ГРУПА 6 — Композитна дія
     batch_update: async ({ operations, agentId }) => {
       const results = [];
@@ -5796,6 +6180,28 @@ function App() {
       'batch_update',
     ],
 
+    // TASK 0.3.5 v7 — Court Sync agent для ЄСІТС-інтеграції.
+    // Дозволено: hearing CRUD (для синхронізації засідань), sync ACTIONS,
+    // 6 edit-ACTIONS канонічної схеми (parties, processParticipants,
+    // composition, movementCard, alternativeSources, team).
+    // ЗАБОРОНЕНО (через відсутність у списку): destroy_case, add_document,
+    // update_document, delete_document, create_case (Court Sync не створює
+    // справи — тільки оновлює існуючі за caseId з ЄСІТС).
+    court_sync_agent: [
+      'add_hearing', 'update_hearing',
+      'mark_synced_from_ecits', 'update_case_ecits_state',
+      'update_parties', 'update_team', 'update_process_participants',
+      'update_proceeding_composition',
+      'update_document_movement_card', 'update_alternative_sources',
+    ],
+
+    // TASK 0.3.5 v7 — Metadata Extractor agent.
+    // ВАЖЛИВО: defined але DISABLED через порожній allowlist. Будь-який
+    // executeAction виклик буде відхилено standard PERMISSIONS-перевіркою.
+    // Активація — окремим TASK у майбутньому коли реальний парсер буде готовий.
+    // Зарезервоване ім'я щоб не забути про роль і не плутати з court_sync_agent.
+    metadata_extractor_agent: [],
+
     // destroy_case, delete_time_entry, delete_document, delete_proceeding —
     // жоден агент. Тільки UI з підтвердженням.
   };
@@ -5880,9 +6286,18 @@ function App() {
       }
 
       // 6. v4 Billing Foundation — звіт у activityTracker для значущих дій.
-      // Не репортимо track_session_*, batch_update і самі _query дії.
-      if (result && (result.success || result.successCount) &&
-          !['track_session_start', 'track_session_end', 'batch_update'].includes(action)) {
+      // Виключаємо системні дії (SYSTEM_ACTIONS_NO_BILLING).
+      // TASK 0.3.5: edit-ACTIONS викликані з source !== 'manual' теж не
+      // нараховуються (це автосинхронізація, не робота адвоката).
+      let shouldReport = result && (result.success || result.successCount) &&
+                         !SYSTEM_ACTIONS_NO_BILLING.has(action);
+      if (shouldReport && EDIT_ACTIONS_SOURCE_AWARE.has(action)) {
+        const sourceParam = params?.source;
+        if (sourceParam && sourceParam !== 'manual') {
+          shouldReport = false; // автосинхронізація, не нараховується
+        }
+      }
+      if (shouldReport) {
         try {
           // Категорія за наявністю caseId — case_work або admin.
           const hookCaseId = params?.caseId || result?.caseId || null;
@@ -5969,6 +6384,11 @@ function App() {
       if ((registry.schemaVersion || 1) < 6.5) {
         const v6_5 = migrateToVersion6_5(registry);
         if (v6_5.didMigrate) registry = v6_5.registry;
+      }
+      // TASK 0.3.5 — canonical schema v7 при відновленні (legacy може бути < v7).
+      if ((registry.schemaVersion || 1) < 7) {
+        const v7 = migrateToVersion7(registry);
+        if (v7.didMigrate) registry = v7.registry;
       }
       // Розпаковуємо стейт з бекапу.
       if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));

@@ -26,6 +26,17 @@
 //                   перед TASK 0.3.5 (canonical schema bump v7 для ЄСІТС).
 //                   Number 6.5 (а не 7) — точкова чистка не претендує на повний bump.
 //                   Окремий крок — migrateToVersion6_5 нижче.
+// schemaVersion 7   — canonical schema для ЄСІТС-інтеграції (TASK 0.3.5).
+//                   Розширення document.source enum (manual_upload→manual,
+//                   ecits→court_sync, додано metadata_extractor/unknown).
+//                   Нові поля документа: sourceConfidence, extractedAt,
+//                   ecitsSource, movementCard, alternativeSources.
+//                   Нові поля справи: ecitsState (з syncMetrics), parties[],
+//                   processParticipants[]. proceeding.composition.
+//                   Нові поля hearing: source, sourceConfidence, extractedAt,
+//                   ecitsContext, assignedTo, attendedBy.
+//                   user.ecitsCabinetIdentifier для multi-user dedupe.
+//                   Окремий крок — migrateToVersion7 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -48,11 +59,11 @@ import { DEFAULT_TENANT_TIME_STANDARDS } from './timeStandards.js';
 import { MODULES } from './moduleNames.js';
 
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
-// migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5). Використовується
-// App.jsx для запису нової версії registry і тестами як "це остаточний таргет системи".
-// Number 6.5 — точкова чистка addedBy enum перед v7 (TASK 0.3.4 → TASK 0.3.5).
-export const CURRENT_SCHEMA_VERSION = 6.5;
-export const MIGRATION_VERSION = '6.5_addedby_cleanup';
+// migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5 →
+// migrateToVersion7). Використовується App.jsx для запису нової версії registry
+// і тестами як "це остаточний таргет системи".
+export const CURRENT_SCHEMA_VERSION = 7;
+export const MIGRATION_VERSION = '7.0_ecits_canonical';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -212,6 +223,7 @@ function ensureModuleIntegration(existing) {
 // Повертає settingsVersion-label який відповідає переданій version. Для рідкісного
 // випадку коли registry на Drive має schemaVersion але втратив settingsVersion.
 function labelForVersion(version) {
+  if (version >= 7) return '7.0_ecits_canonical';
   if (version >= 6.5) return '6.5_addedby_cleanup';
   if (version >= 6) return '6.0_founder_flag';
   if (version >= 5) return '5.0_canonical_documents';
@@ -525,6 +537,223 @@ export function migrateToVersion6_5(registry) {
     didMigrate: true,
     fromVersion,
     toVersion: 6.5,
+    stats,
+  };
+}
+
+// ── v6.5 → v7: canonical schema for ECITS integration (TASK 0.3.5) ──────────
+// Розширює канонічну схему системи для прийому даних з ЄСІТС-кабінету і
+// інших каналів (Telegram, email, ручне введення, парсинг). Обидва канали
+// (Court Sync і Metadata Extractor) пишуть в одну схему через одні ACTIONS.
+//
+// Зміни:
+// • document.source enum: manual_upload→manual, ecits→court_sync, +metadata_extractor, +unknown
+// • document: +sourceConfidence, +extractedAt, +ecitsSource, +movementCard, +alternativeSources
+// • case: +ecitsState (з syncMetrics), +parties[], +processParticipants[]
+// • proceeding: +composition
+// • hearing: +source, +sourceConfidence, +extractedAt, +ecitsContext, +assignedTo, +attendedBy[]
+// • user: +ecitsCabinetIdentifier
+//
+// Ідемпотентна: повторний запуск з v7+ повертає didMigrate=false.
+// Викликається з App.jsx EFFECT-A послідовно після migrateToVersion6_5.
+
+// Маппінг legacy source values → canonical v7.
+// Невідоме значення → 'unknown' з warning у консоль.
+const SOURCE_MIGRATION_MAP = {
+  manual_upload: 'manual',
+  ecits: 'court_sync',
+  manual: 'manual',
+  court_sync: 'court_sync',
+  metadata_extractor: 'metadata_extractor',
+  telegram: 'telegram',
+  email: 'email',
+  unknown: 'unknown',
+};
+
+function migrateDocumentSource(oldSource, stats) {
+  if (oldSource === undefined || oldSource === null) {
+    stats.null_to_manual++;
+    return 'manual';
+  }
+  const mapped = SOURCE_MIGRATION_MAP[oldSource];
+  if (mapped) {
+    if (oldSource === 'manual_upload' && mapped === 'manual') {
+      stats.manual_upload_to_manual++;
+    } else if (oldSource === 'ecits' && mapped === 'court_sync') {
+      stats.ecits_to_court_sync++;
+    } else if (oldSource === 'telegram') {
+      stats.keep_telegram++;
+    } else if (oldSource === 'email') {
+      stats.keep_email++;
+    } else {
+      stats[`${oldSource}_unchanged`] = (stats[`${oldSource}_unchanged`] || 0) + 1;
+    }
+    return mapped;
+  }
+  // eslint-disable-next-line no-console
+  console.warn(`[TASK 0.3.5] Unknown document source '${oldSource}', setting to 'unknown'`);
+  stats.unknown_other++;
+  return 'unknown';
+}
+
+function buildDefaultEcitsState() {
+  return {
+    caseId: null,
+    filedAt: null,
+    court: null,
+    lastSyncedAt: null,
+    lastSyncedBy: null,
+    syncStatus: 'never',
+    failureReason: null,
+    syncMetrics: {
+      totalSyncs: 0,
+      successfulSyncs: 0,
+      failedSyncs: 0,
+      documentsExtracted: 0,
+      hearingsExtracted: 0,
+      lastDurationMs: null,
+    },
+  };
+}
+
+export function migrateToVersion7(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 7) {
+    return {
+      registry,
+      didMigrate: false,
+      fromVersion,
+      toVersion: fromVersion,
+      stats: null,
+    };
+  }
+
+  // eslint-disable-next-line no-console
+  console.log('[TASK 0.3.5] Starting v6.5 → v7 migration: canonical schema for ECITS...');
+
+  const stats = {
+    documentsUpdated: 0,
+    casesUpdated: 0,
+    hearingsUpdated: 0,
+    proceedingsUpdated: 0,
+    usersUpdated: 0,
+    // Source enum migration breakdown
+    manual_upload_to_manual: 0,
+    ecits_to_court_sync: 0,
+    keep_telegram: 0,
+    keep_email: 0,
+    null_to_manual: 0,
+    unknown_other: 0,
+  };
+
+  const cases = Array.isArray(registry?.cases) ? registry.cases : [];
+
+  const migratedCases = cases.map(caseItem => {
+    if (!caseItem || typeof caseItem !== 'object') return caseItem;
+
+    // 1. Documents — source enum migration + 5 нових полів
+    const updatedDocs = Array.isArray(caseItem.documents)
+      ? caseItem.documents.map(doc => {
+          if (!doc || typeof doc !== 'object') return doc;
+          stats.documentsUpdated++;
+          return {
+            ...doc,
+            source: migrateDocumentSource(doc.source, stats),
+            sourceConfidence: doc.sourceConfidence ?? 'high',
+            extractedAt: doc.extractedAt ?? null,
+            ecitsSource: doc.ecitsSource ?? null,
+            movementCard: doc.movementCard ?? null,
+            alternativeSources: Array.isArray(doc.alternativeSources) ? doc.alternativeSources : [],
+          };
+        })
+      : caseItem.documents;
+
+    // 2. Proceedings — додати composition
+    const updatedProceedings = Array.isArray(caseItem.proceedings)
+      ? caseItem.proceedings.map(p => {
+          if (!p || typeof p !== 'object') return p;
+          if (p.composition !== undefined) return p; // ідемпотентність
+          stats.proceedingsUpdated++;
+          return { ...p, composition: null };
+        })
+      : caseItem.proceedings;
+
+    // 3. Hearings — додати v7 поля
+    const updatedHearings = Array.isArray(caseItem.hearings)
+      ? caseItem.hearings.map(h => {
+          if (!h || typeof h !== 'object') return h;
+          stats.hearingsUpdated++;
+          return {
+            ...h,
+            source: h.source ?? 'manual',
+            sourceConfidence: h.sourceConfidence ?? 'high',
+            extractedAt: h.extractedAt ?? null,
+            ecitsContext: h.ecitsContext ?? null,
+            assignedTo: h.assignedTo ?? null,
+            attendedBy: Array.isArray(h.attendedBy) ? h.attendedBy : [],
+          };
+        })
+      : caseItem.hearings;
+
+    stats.casesUpdated++;
+    return {
+      ...caseItem,
+      documents: updatedDocs,
+      proceedings: updatedProceedings,
+      hearings: updatedHearings,
+      // 4. Case-level v7 поля (НЕ чіпаємо team[] — Варіант A з review)
+      ecitsState: caseItem.ecitsState ?? buildDefaultEcitsState(),
+      parties: Array.isArray(caseItem.parties) ? caseItem.parties : [],
+      processParticipants: Array.isArray(caseItem.processParticipants) ? caseItem.processParticipants : [],
+    };
+  });
+
+  // 5. Users — додати ecitsCabinetIdentifier
+  const usersIn = Array.isArray(registry?.users) && registry.users.length > 0
+    ? registry.users
+    : [DEFAULT_USER];
+  const usersOut = usersIn.map(u => {
+    if (!u || typeof u !== 'object') return u;
+    if ('ecitsCabinetIdentifier' in u) return u; // ідемпотентність
+    stats.usersUpdated++;
+    return { ...u, ecitsCabinetIdentifier: null };
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK 0.3.5] Migration done:\n` +
+    `  Documents updated: ${stats.documentsUpdated}\n` +
+    `  Source enum migration:\n` +
+    `    manual_upload → manual: ${stats.manual_upload_to_manual}\n` +
+    `    ecits → court_sync: ${stats.ecits_to_court_sync}\n` +
+    `    null/undefined → manual: ${stats.null_to_manual}\n` +
+    `    telegram kept: ${stats.keep_telegram}\n` +
+    `    email kept: ${stats.keep_email}\n` +
+    `    unknown → 'unknown' (fallback): ${stats.unknown_other}\n` +
+    `  Cases updated: ${stats.casesUpdated}\n` +
+    `  Hearings updated: ${stats.hearingsUpdated}\n` +
+    `  Proceedings updated: ${stats.proceedingsUpdated}\n` +
+    `  Users updated: ${stats.usersUpdated}\n` +
+    `[TASK 0.3.5] Migration v6.5 → v7 done.`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 7,
+      settingsVersion: '7.0_ecits_canonical',
+      cases: migratedCases,
+      users: usersOut,
+      lastMigration: {
+        from: fromVersion,
+        to: 7,
+        at: new Date().toISOString(),
+      },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 7,
     stats,
   };
 }

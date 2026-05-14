@@ -74,15 +74,54 @@ export function createDocument(metadata = {}) {
     addedBy: normalizeAddedBy(metadata.addedBy),
     status: metadata.status || 'active',
 
-    // source — канал надходження. null означає "невідомо" (старі документи
-    // або точки створення які ще не передають source).
-    source: metadata.source ?? null,
+    // source — канал ПОХОДЖЕННЯ файлу (TASK 0.3.5 v7).
+    // Default 'manual' для нових документів. Legacy значення міграція переоновлює.
+    source: normalizeSource(metadata.source),
+
+    // sourceConfidence — впевненість у source-даних. Default 'high' (адвокат вручну).
+    sourceConfidence: metadata.sourceConfidence ?? 'high',
+
+    // extractedAt — коли запис витягнуто. null для manual (адвокат сам ввів).
+    // Заповнюється для синхронізацій (court_sync, metadata_extractor).
+    extractedAt: metadata.extractedAt ?? null,
+
+    // ecitsSource — деталі ЄСІТС-походження. Заповнюється тільки коли source
+    // === court_sync або metadata_extractor парсить ЄСІТС-документ.
+    ecitsSource: metadata.ecitsSource ?? null,
+
+    // movementCard — повна таблиця руху документа з ЄСІТС.
+    movementCard: metadata.movementCard ?? null,
+
+    // alternativeSources — аудит multi-source синхронізацій.
+    alternativeSources: Array.isArray(metadata.alternativeSources) ? metadata.alternativeSources : [],
 
     // originalDriveId / originalMime — оригінал поряд з PDF (DOCX→PDF
     // конвертація). Для PDF/HTML/images null (оригінал не зберігається).
     originalDriveId: metadata.originalDriveId ?? null,
     originalMime: metadata.originalMime ?? null,
   };
+}
+
+// Нормалізація legacy значень source на новий enum (TASK 0.3.5 v7).
+// safety net для будь-якої точки коду яка ще передає старе значення.
+const SOURCE_LEGACY_MAP = {
+  manual_upload: 'manual',
+  ecits: 'court_sync',
+  manual: 'manual',
+  court_sync: 'court_sync',
+  metadata_extractor: 'metadata_extractor',
+  telegram: 'telegram',
+  email: 'email',
+  unknown: 'unknown',
+};
+
+function normalizeSource(value) {
+  if (value === undefined || value === null) return 'manual';
+  const mapped = SOURCE_LEGACY_MAP[value];
+  if (mapped) return mapped;
+  // eslint-disable-next-line no-console
+  console.warn(`[documentFactory] Unknown source value '${value}', falling back to 'unknown'`);
+  return 'unknown';
 }
 
 // Перевірити що об'єкт відповідає канонічній схемі.

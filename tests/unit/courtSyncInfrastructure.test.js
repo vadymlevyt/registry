@@ -101,9 +101,9 @@ describe('eventBusTopics — константи модуля ЄСІТС', () => 
     expect(ECITS_SUBMISSION_COMPLETED).toBe('ecits.submission_completed');
   });
 
-  it('ECITS_TOPICS — frozen array з 4 елементами', () => {
+  it('ECITS_TOPICS — frozen array з 6 елементами (TASK 0.3.5 додав 2 sync події)', () => {
     expect(Object.isFrozen(ECITS_TOPICS)).toBe(true);
-    expect(ECITS_TOPICS).toHaveLength(4);
+    expect(ECITS_TOPICS).toHaveLength(6);
     expect(ECITS_TOPICS).toContain(ECITS_DOCUMENTS_RECEIVED);
   });
 });
@@ -180,24 +180,29 @@ describe('tenant.settings.moduleIntegration.ecits — дефолти DEFAULT_TEN
 
 // ── document.source ──────────────────────────────────────────────────────────
 
-describe('document.source — нове поле канонічної схеми', () => {
-  it('createDocument() створює document зі source=null коли не передано', () => {
+describe('document.source — канонічна схема (TASK 0.3.5 v7)', () => {
+  it("createDocument() створює document зі source='manual' коли не передано", () => {
     const doc = createDocument({ name: 'X.pdf' });
     expect(doc).toHaveProperty('source');
-    expect(doc.source).toBeNull();
+    // TASK 0.3.5: default 'manual' замість null (factory нормалізує)
+    expect(doc.source).toBe('manual');
   });
 
-  it("createDocument приймає валідне значення source", () => {
+  it("createDocument приймає валідне значення source 'court_sync'", () => {
+    const doc = createDocument({ name: 'X.pdf', source: 'court_sync' });
+    expect(doc.source).toBe('court_sync');
+    const v = validateDocument(doc);
+    expect(v.valid).toBe(true);
+  });
+
+  it("normalizeSource: legacy 'manual_upload' → 'manual'", () => {
+    const doc = createDocument({ name: 'X.pdf', source: 'manual_upload' });
+    expect(doc.source).toBe('manual');
+  });
+
+  it("normalizeSource: legacy 'ecits' → 'court_sync'", () => {
     const doc = createDocument({ name: 'X.pdf', source: 'ecits' });
-    expect(doc.source).toBe('ecits');
-    const v = validateDocument(doc);
-    expect(v.valid).toBe(true);
-  });
-
-  it("validateDocument приймає null source (для старих документів)", () => {
-    const doc = createDocument({ name: 'X.pdf' });
-    const v = validateDocument(doc);
-    expect(v.valid).toBe(true);
+    expect(doc.source).toBe('court_sync');
   });
 
   it("validateDocument відхиляє невалідне значення source", () => {
@@ -208,9 +213,9 @@ describe('document.source — нове поле канонічної схеми'
     expect(v.errors.some(e => e.includes('source'))).toBe(true);
   });
 
-  it('всі чотири канали присутні в DOCUMENT_SOURCES і мають labels', () => {
+  it('всі шість каналів присутні в DOCUMENT_SOURCES і мають labels (v7)', () => {
     expect(DOCUMENT_SOURCES).toEqual([
-      'manual_upload', 'ecits', 'telegram', 'email',
+      'manual', 'court_sync', 'metadata_extractor', 'telegram', 'email', 'unknown',
     ]);
     for (const src of DOCUMENT_SOURCES) {
       expect(typeof DOCUMENT_SOURCE_LABELS[src]).toBe('string');

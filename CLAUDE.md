@@ -1,9 +1,9 @@
 # CLAUDE.md — Legal BMS АБ Левицького
 
-**Версія:** 5.3
+**Версія:** 5.4
 **Останнє оновлення:** 14.05.2026
-**Поточний schemaVersion:** 6.5
-**Поточний settingsVersion:** "6.5_addedby_cleanup"
+**Поточний schemaVersion:** 7
+**Поточний settingsVersion:** "7.0_ecits_canonical"
 
 ---
 
@@ -117,7 +117,7 @@ Blank page = JS помилка яка не перехоплена.
 - Додати міграцію в `migrationService.js` (для базових структур) або окремий файл у `src/services/migrations/` (для специфічної логіки — як `v4ToV5.js`)
 - Міграція має бути **ідемпотентною** (повторні запуски не ламають дані)
 - Перед першою міграцією — обов'язковий бекап `registry_data_backup_pre_<name>_<ts>.json` у `_backups/` поза ротацією
-- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 6.5` і `MIGRATION_VERSION = '6.5_addedby_cleanup'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — окремий крок через `migrateToVersion6`. addedBy cleanup v6.5 — окремий крок через `migrateToVersion6_5`. Усі чотири послідовно викликаються в `App.jsx` EFFECT-A.
+- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 7` і `MIGRATION_VERSION = '7.0_ecits_canonical'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — окремий крок через `migrateToVersion6`. addedBy cleanup v6.5 — окремий крок через `migrateToVersion6_5`. ECITS canonical v7 — окремий крок через `migrateToVersion7`. Усі п'ять послідовно викликаються в `App.jsx` EFFECT-A (з власними бекапами і прапорами).
 
 ### №7 — executeAction async
 `executeAction` — **async функція**. Усі callers що читають `.success`/`.error` — мусять `await`.
@@ -817,6 +817,76 @@ New (3 значення без перекриття): `['user', 'agent', 'system
 - НЕ повертати legacy значення `lawyer_via_dp` / `lawyer_manual` / `ecits` / `migration` у новий код. `normalizeAddedBy` їх переведе, але це signal про необхідність ревізії точки створення документа.
 - НЕ використовувати `addedBy` для перевірки "звідки прийшов файл" — для цього є `source`.
 - НЕ розширювати `addedBy` enum без bump'у схеми — це signal про порушення правила #11.
+
+---
+
+## TASK 0.3.5 — CANONICAL SCHEMA V7 ДЛЯ ЄСІТС
+
+**Дата:** 2026-05-14
+**schemaVersion:** 6.5 → 7
+**settingsVersion:** "7.0_ecits_canonical"
+**Тип:** інфраструктурний — підготовка канонічної схеми до прийому даних з ЄСІТС-кабінету та інших каналів
+
+### Принцип
+
+Обидва канали (Court Sync через Claude for Chrome і Metadata Extractor для не-ЄСІТС каналів) пишуть у **ТУ САМУ канонічну схему** через **ТІ САМІ ACTIONS**. Споживачі (картка справи, дашборд, білінг, агенти) не розрізняють джерело — працюють зі стабільною схемою. `source`-мітка зберігається для аудиту і пріоритетизації при конфліктах.
+
+### Розширення схеми
+
+**document (+5 полів):** `sourceConfidence`, `extractedAt`, `ecitsSource`, `movementCard`, `alternativeSources`. `source` enum переіменовано: `manual_upload→manual`, `ecits→court_sync`, додано `metadata_extractor`/`unknown`.
+
+**case (+3 поля):** `ecitsState` (з `syncMetrics` counters), `parties[]`, `processParticipants[]`. **`team[]` НЕ чіпаємо** — це internal bureau team з permissions (SaaS Foundation v3).
+
+**proceeding (+1 поле):** `composition` (`{ presiding, reporter, members[] }`).
+
+**hearing (+6 полів):** `source`, `sourceConfidence`, `extractedAt`, `ecitsContext`, `assignedTo`, `attendedBy[]`. `add_hearing` і `update_hearing` приймають їх backward-compat (warning якщо source не передано).
+
+**user (+1 поле):** `ecitsCabinetIdentifier` (multi-user dedupe у Court Sync).
+
+### Source-policy (sourcePolicy.js)
+
+`SOURCE_PRIORITY`: `manual` (100) > `court_sync` (80) > `metadata_extractor` (60) > `telegram`/`email` (50) > `unknown` (10). `canOverwrite(existingSource, newSource)` повертає true якщо новий має вищий пріоритет. У майбутньому SaaS може стати tenant-scoped.
+
+### Нові ACTIONS (8)
+
+**Sync:**
+- `mark_synced_from_ecits({caseId, status, durationMs, documentsCount, hearingsCount})` — інкрементує `syncMetrics`, публікує `ecits.sync_completed`
+- `update_case_ecits_state({caseId, patch, source})` — мерджить patch з `canOverwrite`-перевіркою, публікує `ecits.case_state_updated`
+
+**Edit (R1 AI-first дзеркало):**
+- `update_parties({caseId, parties, source})` — replace-all
+- `update_team({caseId, team})` — internal bureau, без source
+- `update_process_participants({caseId, participants, source})` — replace-all
+- `update_proceeding_composition({caseId, proceedingId, composition, source})`
+- `update_document_movement_card({caseId, documentId, movementCard, source})`
+- `update_alternative_sources({caseId, documentId, alternativeSource})` — append
+
+Усі публікують відповідну подію в eventBus з `tenantId` у payload (multi-tenant SaaS-готовність).
+
+### PERMISSIONS — дві нові ролі
+
+- **`court_sync_agent`** — defined і enabled. Дозволено: `add_hearing`, `update_hearing`, всі 8 нових ACTIONS. Заборонено: `destroy_case`, `add_document`, `update_document`, `delete_document`, `create_case`.
+- **`metadata_extractor_agent`** — defined але DISABLED через порожній allowlist `[]`. Активація — окремим TASK у майбутньому.
+
+### Billing — нові ACTIONS не в білінг
+
+`SYSTEM_ACTIONS_NO_BILLING` Set винесено з inline-list. Включає: `mark_synced_from_ecits`, `update_case_ecits_state`. Edit-ACTIONS (`EDIT_ACTIONS_SOURCE_AWARE`) — нараховуються тільки якщо `source === 'manual'` (адвокат через UI/агента редагує). Викликані з `court_sync` чи `metadata_extractor` — НЕ нараховуються (автосинхронізація не робота адвоката).
+
+### AI-First дзеркало
+
+6 нових edit-ACTIONS закривають AI-first порушення R1: всі нові v7 поля (parties, team, processParticipants, composition, movementCard, alternativeSources) мають ACTIONS для редагування. Адвокат може через діалог з агентом сказати "додай сторону", "познач склад суду", "запиши що той самий документ прийшов з телеграму" — все є.
+
+### Tracking debt
+
+Поля `case.client` (string) і `proceeding.judges` (string) залишаються як **denormalized summary** для UI рендерингу. Real source — `parties[]` і `composition`. Backfill — окремий майбутній TASK (читає parties, генерує summary). UI не змінюється поки backfill не зроблено.
+
+### Заборонено
+
+- НЕ створювати ACTIONS відкладені (`add_timeline_event`, `update_case_dnzs`) — це наступні TASK.
+- НЕ активувати `metadata_extractor_agent` (тільки defined).
+- НЕ міняти семантику `case.team[]` — це internal bureau, окрема структура від `processParticipants[]`.
+- НЕ перейменовувати `client` / `judges` — denormalized залишається до окремого backfill TASK.
+- НЕ використовувати `update_case_ecits_state.patch` для не-`ecitsState` полів (для них окремі ACTIONS).
 
 ---
 

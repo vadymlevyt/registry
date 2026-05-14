@@ -133,6 +133,13 @@ export const DEFAULT_USER = {
   // true тільки для одного користувача (засновника); точка розширення для
   // майбутніх founder-only модулів (Розвідник, Admin metrics, Dev tools).
   isFounder: true,
+  // ecitsCabinetIdentifier — як адвокат відомий у ЄСІТС-кабінеті (РНОКПП,
+  // email або login — recon покаже точно). Потрібен для multi-user dedupe
+  // у Court Sync: коли в одному tenant'і кілька адвокатів синхронізують
+  // ті самі справи — треба знати чий кабінет первинно отримав документ.
+  // TASK 0.3.5 v7. Default null — заповнюється вручну в Налаштуваннях
+  // (UI окремий TASK) або при першому використанні Court Sync.
+  ecitsCabinetIdentifier: null,
   createdAt: '2016-06-15T00:00:00Z',
   lastLoginAt: null,
 };

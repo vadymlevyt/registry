@@ -111,9 +111,36 @@ describe('documentFactory', () => {
       expect(doc.originalMime).toContain('wordprocessingml');
     });
 
-    it('source приймає manual_upload (з AddDocumentModal)', () => {
+    it("source приймає manual (з AddDocumentModal v7)", () => {
+      const doc = createDocument({ name: 'X', source: 'manual' });
+      expect(doc.source).toBe('manual');
+    });
+
+    it("normalizeSource: legacy 'manual_upload' → 'manual'", () => {
       const doc = createDocument({ name: 'X', source: 'manual_upload' });
-      expect(doc.source).toBe('manual_upload');
+      expect(doc.source).toBe('manual');
+    });
+
+    it("normalizeSource: legacy 'ecits' → 'court_sync'", () => {
+      const doc = createDocument({ name: 'X', source: 'ecits' });
+      expect(doc.source).toBe('court_sync');
+    });
+
+    it("normalizeSource: невідоме значення → 'unknown' з warning", () => {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const doc = createDocument({ name: 'X', source: 'garbage_channel' });
+      expect(doc.source).toBe('unknown');
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('garbage_channel'));
+      spy.mockRestore();
+    });
+
+    it("v7 поля створюються з безпечними дефолтами", () => {
+      const doc = createDocument({ name: 'X' });
+      expect(doc.sourceConfidence).toBe('high');
+      expect(doc.extractedAt).toBeNull();
+      expect(doc.ecitsSource).toBeNull();
+      expect(doc.movementCard).toBeNull();
+      expect(doc.alternativeSources).toEqual([]);
     });
   });
 

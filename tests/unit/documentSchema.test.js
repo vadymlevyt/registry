@@ -10,13 +10,22 @@ import {
 
 describe('documentSchema', () => {
   describe('CANONICAL_DOCUMENT_FIELDS', () => {
-    it('містить 23 поля (TASK A додав originalDriveId / originalMime)', () => {
-      // 23 = id, name, originalName, category, author, documentNature, namingStatus, isKey,
-      //      procId, driveId, driveUrl, folder, pageCount, size, icon, date,
-      //      addedAt, updatedAt, addedBy, status, source, originalDriveId, originalMime
-      // originalDriveId / originalMime — оригінал поряд з PDF (DOCX→PDF).
-      // Nullable, default null. Додано без schema bump (за прецедентом source).
-      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(23);
+    it('містить 28 полів (TASK 0.3.5 v7 додав 5 полів для ECITS)', () => {
+      // 28 = 23 існуючих (canonical document v6.5):
+      //   id, name, originalName, category, author, documentNature, namingStatus, isKey,
+      //   procId, driveId, driveUrl, folder, pageCount, size, icon, date,
+      //   addedAt, updatedAt, addedBy, status, source, originalDriveId, originalMime
+      // + 5 нових з TASK 0.3.5 v7:
+      //   sourceConfidence, extractedAt, ecitsSource, movementCard, alternativeSources
+      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(28);
+    });
+
+    it("має v7 поля: sourceConfidence, extractedAt, ecitsSource, movementCard, alternativeSources", () => {
+      expect(CANONICAL_DOCUMENT_FIELDS.sourceConfidence).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.extractedAt).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.ecitsSource).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.movementCard).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.alternativeSources).toBeDefined();
     });
 
     it('має поля originalDriveId / originalMime (TASK A)', () => {
