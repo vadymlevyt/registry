@@ -82,13 +82,15 @@ export const CANONICAL_DOCUMENT_FIELDS = {
   updatedAt: { type: 'string', required: true, format: 'datetime', description: 'ISO timestamp останнього оновлення' },
 
   // ── Аудит для SaaS ────────────────────────────────────────────────────────
-  // На етапі ембріона зберігається роль/джерело. У майбутньому SaaS-розгортанні
-  // може стати userId або { userId, role } — структуру вже закладено.
+  // addedBy — ХТО/ЩО зробило акт додавання запису в систему (actor).
+  // Не плутати з document.source — там канал ПОХОДЖЕННЯ файлу, не actor.
+  // Розділення формалізовано в TASK 0.3.4 (правило #11 — одне ім'я, один сенс).
   addedBy: {
     type: 'string',
     required: true,
-    enum: ['lawyer_via_dp', 'lawyer_manual', 'agent', 'ecits', 'migration'],
-    description: 'Хто додав документ'
+    enum: ['user', 'agent', 'system'],
+    default: 'user',
+    description: 'ХТО/ЩО зробило акт додавання запису. user = адвокат/помічник вручну (UI або модалка). agent = AI-агент (QI, dossier, document processor). system = системна дія (міграція, автоматична синхронізація з зовнішніх каналів).'
   },
 
   // ── Стан ──────────────────────────────────────────────────────────────────

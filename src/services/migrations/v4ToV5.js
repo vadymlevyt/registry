@@ -152,7 +152,7 @@ export function splitDocumentV4toV5(oldDoc) {
     date: looksLikeIsoDate(oldDoc.date) ? oldDoc.date : null,
     addedAt: oldDoc.addedAt || oldDoc.createdAt || new Date().toISOString(),
     updatedAt: oldDoc.updatedAt || oldDoc.addedAt || oldDoc.createdAt || new Date().toISOString(),
-    addedBy: oldDoc.addedBy || 'migration',
+    addedBy: oldDoc.addedBy || 'system',
     status: oldDoc.status === 'archived' ? 'archived' : 'active',
   });
 

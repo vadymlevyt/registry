@@ -818,7 +818,7 @@ ${filesList}
         procId: caseData.proceedings?.[0]?.id || "proc_main",
         driveId: storageResults[i]?.driveId || null,
         driveUrl: storageResults[i]?.driveUrl || null,
-        addedBy: 'lawyer_via_dp',
+        addedBy: 'user',
         namingStatus: 'auto',
       }));
 
@@ -959,7 +959,7 @@ ${filesList}
           pageCount: r.pageCount,
           folder: "02_ОБРОБЛЕНІ",
           procId: caseData.proceedings?.[0]?.id || "proc_main",
-          addedBy: 'lawyer_via_dp',
+          addedBy: 'user',
           namingStatus: 'auto',
         }));
 

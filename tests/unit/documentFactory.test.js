@@ -1,6 +1,6 @@
 // Юніт-тести фабрики документів.
 // Покриває createDocument / validateDocument / needsReview / getMissingCriticalFields.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   createDocument,
   validateDocument,
@@ -68,13 +68,29 @@ describe('documentFactory', () => {
       expect(createDocument({ name: 'X', category: 'evidence' }).icon).toBe('📑');
     });
 
-    it('addedBy за замовчуванням lawyer_manual', () => {
-      expect(createDocument({ name: 'X' }).addedBy).toBe('lawyer_manual');
+    it("addedBy за замовчуванням 'user' (TASK 0.3.4)", () => {
+      expect(createDocument({ name: 'X' }).addedBy).toBe('user');
     });
 
-    it('зберігає addedBy: migration / lawyer_via_dp без зміни', () => {
-      expect(createDocument({ name: 'X', addedBy: 'migration' }).addedBy).toBe('migration');
-      expect(createDocument({ name: 'X', addedBy: 'lawyer_via_dp' }).addedBy).toBe('lawyer_via_dp');
+    it("normalizeAddedBy: lawyer_via_dp / lawyer_manual → 'user'", () => {
+      expect(createDocument({ name: 'X', addedBy: 'lawyer_via_dp' }).addedBy).toBe('user');
+      expect(createDocument({ name: 'X', addedBy: 'lawyer_manual' }).addedBy).toBe('user');
+    });
+
+    it("normalizeAddedBy: migration / ecits → 'system'", () => {
+      expect(createDocument({ name: 'X', addedBy: 'migration' }).addedBy).toBe('system');
+      expect(createDocument({ name: 'X', addedBy: 'ecits' }).addedBy).toBe('system');
+    });
+
+    it("normalizeAddedBy: agent → 'agent' (без зміни)", () => {
+      expect(createDocument({ name: 'X', addedBy: 'agent' }).addedBy).toBe('agent');
+    });
+
+    it("normalizeAddedBy: невідоме значення → 'user' з warning", () => {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(createDocument({ name: 'X', addedBy: 'garbage_value' }).addedBy).toBe('user');
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('garbage_value'));
+      spy.mockRestore();
     });
 
     it('originalDriveId / originalMime — null за замовчуванням', () => {

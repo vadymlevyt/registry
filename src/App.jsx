@@ -4,11 +4,11 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, migrateToVersion6, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
 import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
 import { createDocument, validateDocument } from './services/documentFactory';
@@ -113,18 +113,18 @@ const INITIAL_CASES = [
     // у канонічну схему — для відображення legacy-демо). Реальний extended
     // notes збережеться у TASK Document Processor v2.
     documents: [
-      createDocument({ id: "doc_seed_branovsky_01", procId: "proc_main", name: "Позовна заява", icon: "📄", category: "pleading", author: "ours", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_02", procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", category: "court_act", author: "court", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_03", procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", category: "court_act", author: "court", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_04", procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", category: "pleading", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_05", procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", category: "motion", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_06", procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", category: "court_act", author: "court", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_07", procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", category: "court_act", author: "court", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_08", procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", category: "pleading", author: "opponent", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_09", procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", category: "other", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_10", procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", category: "pleading", author: "ours", isKey: true, addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_11", procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", category: "pleading", author: "opponent", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
-      createDocument({ id: "doc_seed_branovsky_12", procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", category: "pleading", author: "ours", addedBy: 'migration', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' })
+      createDocument({ id: "doc_seed_branovsky_01", procId: "proc_main", name: "Позовна заява", icon: "📄", category: "pleading", author: "ours", isKey: true, addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_02", procId: "proc_main", name: "Ухвала про відкриття провадження", icon: "📋", category: "court_act", author: "court", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_03", procId: "proc_main", name: "Протокол підготовчого засідання", icon: "📋", category: "court_act", author: "court", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_04", procId: "proc_main", name: "Зустрічна позовна заява", icon: "📄", category: "pleading", author: "opponent", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_05", procId: "proc_main", name: "Клопотання про поновлення строку", icon: "📄", category: "motion", author: "opponent", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_06", procId: "proc_main", name: "Ухвала про відмову у прийнятті зустрічного позову", icon: "📋", category: "court_act", author: "court", isKey: true, addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_07", procId: "proc_main", name: "Ухвала про зупинення провадження", icon: "📋", category: "court_act", author: "court", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_08", procId: "proc_appeal_1", name: "Апеляційна скарга на ухвалу", icon: "📤", category: "pleading", author: "opponent", isKey: true, addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_09", procId: "proc_appeal_1", name: "Квитанція про сплату судового збору", icon: "🧾", category: "other", author: "opponent", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_10", procId: "proc_appeal_1", name: "Відзив на апеляційну скаргу", icon: "📩", category: "pleading", author: "ours", isKey: true, addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_11", procId: "proc_appeal_1", name: "Заперечення на відзив", icon: "↩️", category: "pleading", author: "opponent", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' }),
+      createDocument({ id: "doc_seed_branovsky_12", procId: "proc_appeal_1", name: "Відповідь на заперечення", icon: "↪️", category: "pleading", author: "ours", addedBy: 'system', namingStatus: 'manual', folder: '01_ОРИГІНАЛИ' })
     ]
   },
   { id:'case_5',  name:'Нестеренко',       client:'Нестеренко Г.С.',    category:'criminal', status:'active',  court:'Рівненський апеляційний суд',case_no:'190/887/24',  hearings:mkHearing(15,'Рівненський апеляційний суд'), deadline:null,  deadline_type:null,                          next_action:'Підготувати клопотання',          notes:'', pinnedNoteIds:[] },
@@ -4068,6 +4068,34 @@ function App() {
           }
         }
 
+        // TASK 0.3.4 — pre-v6.5 бекап перед addedBy semantic cleanup, поза ротацією.
+        if (raw != null && (registry.schemaVersion || 6) < 6.5) {
+          const flagV6_5 = localStorage.getItem('levytskyi_pre_v6_5_backup_done');
+          if (!flagV6_5) {
+            const res = await backupRegistryDataPreV6_5(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v6_5_backup_done', '1');
+              console.log(`[TASK 0.3.4] Pre-v6.5 backup: ${res.fileName}`);
+            } else {
+              console.warn('[TASK 0.3.4] Pre-v6.5 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // TASK 0.3.4 — addedBy semantic cleanup (v6 → v6.5).
+        // Розщеплення document.addedBy і document.source. Old lawyer_via_dp/
+        // lawyer_manual/ecits/migration enum → new user/agent/system enum.
+        if ((registry.schemaVersion || 1) < 6.5) {
+          console.log('[TASK 0.3.4] Starting addedBy cleanup migration v6 → v6.5...');
+          const v6_5 = migrateToVersion6_5(registry);
+          if (v6_5.didMigrate) {
+            registry = v6_5.registry;
+            didMigrate = true;
+            toVersion = v6_5.toVersion;
+            console.log(`[TASK 0.3.4] Migration v${v6_5.fromVersion} → v${v6_5.toVersion} done.`);
+          }
+        }
+
         // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
         if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
           try {
@@ -5936,6 +5964,11 @@ function App() {
       if ((registry.schemaVersion || 1) < 6) {
         const v6 = migrateToVersion6(registry);
         if (v6.didMigrate) registry = v6.registry;
+      }
+      // TASK 0.3.4 — addedBy cleanup при відновленні з бекапу (legacy може бути < v6.5).
+      if ((registry.schemaVersion || 1) < 6.5) {
+        const v6_5 = migrateToVersion6_5(registry);
+        if (v6_5.didMigrate) registry = v6_5.registry;
       }
       // Розпаковуємо стейт з бекапу.
       if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));

@@ -1,9 +1,10 @@
-// Юніт-тести міграції v4 → v5 канонічної схеми документів.
-import { describe, it, expect } from 'vitest';
+// Юніт-тести міграції v4 → v5 канонічної схеми документів + v6 → v6.5 (addedBy cleanup).
+import { describe, it, expect, vi } from 'vitest';
 import {
   migrateRegistryV4toV5,
   splitDocumentV4toV5,
 } from '../../src/services/migrations/v4ToV5.js';
+import { migrateToVersion6_5 } from '../../src/services/migrationService.js';
 import { validateDocument } from '../../src/services/documentFactory.js';
 
 describe('v4ToV5 migration', () => {
@@ -68,10 +69,12 @@ describe('v4ToV5 migration', () => {
       expect(extended.customFields.anotherOne).toBe(42);
     });
 
-    it('addedBy за замовчуванням migration', () => {
+    it("addedBy за замовчуванням 'system' (TASK 0.3.4 — migration legacy → system)", () => {
       const old = { id: 'd', name: 'X' };
       const { canonical } = splitDocumentV4toV5(old);
-      expect(canonical.addedBy).toBe('migration');
+      // v4ToV5 передає 'system' як default; createDocument нормалізує legacy
+      // 'migration' теж → 'system' (через ADDEDBY_LEGACY_MAP).
+      expect(canonical.addedBy).toBe('system');
     });
 
     it('extended.notes / annotations / processingHistory зберігаються', () => {
@@ -153,5 +156,142 @@ describe('v4ToV5 migration', () => {
       const { registry } = migrateRegistryV4toV5(reg);
       expect(registry.cases[0].id).toBe('c1');
     });
+  });
+});
+
+// ── TASK 0.3.4: migrateToVersion6_5 (addedBy semantic cleanup) ───────────────
+describe('migrateToVersion6_5 (v6 → v6.5 addedBy cleanup)', () => {
+  it('schemaVersion: 6 → 6.5 + settingsVersion оновлюється', () => {
+    const reg = { schemaVersion: 6, cases: [] };
+    const res = migrateToVersion6_5(reg);
+    expect(res.didMigrate).toBe(true);
+    expect(res.fromVersion).toBe(6);
+    expect(res.toVersion).toBe(6.5);
+    expect(res.registry.schemaVersion).toBe(6.5);
+    expect(res.registry.settingsVersion).toBe('6.5_addedby_cleanup');
+  });
+
+  it('ідемпотентна — повторний запуск з v6.5 не змінює реєстр', () => {
+    const reg = {
+      schemaVersion: 6.5,
+      settingsVersion: '6.5_addedby_cleanup',
+      cases: [],
+    };
+    const res = migrateToVersion6_5(reg);
+    expect(res.didMigrate).toBe(false);
+    expect(res.registry).toBe(reg);
+  });
+
+  it("lawyer_via_dp / lawyer_manual → 'user'", () => {
+    const reg = {
+      schemaVersion: 6,
+      cases: [{
+        id: 'c1',
+        documents: [
+          { id: 'd1', name: 'A', addedBy: 'lawyer_via_dp' },
+          { id: 'd2', name: 'B', addedBy: 'lawyer_manual' },
+        ],
+      }],
+    };
+    const { registry, stats } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].documents[0].addedBy).toBe('user');
+    expect(registry.cases[0].documents[1].addedBy).toBe('user');
+    expect(stats.lawyer_via_dp).toBe(1);
+    expect(stats.lawyer_manual).toBe(1);
+  });
+
+  it("ecits / migration → 'system'", () => {
+    const reg = {
+      schemaVersion: 6,
+      cases: [{
+        id: 'c1',
+        documents: [
+          { id: 'd1', name: 'A', addedBy: 'ecits' },
+          { id: 'd2', name: 'B', addedBy: 'migration' },
+        ],
+      }],
+    };
+    const { registry, stats } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].documents[0].addedBy).toBe('system');
+    expect(registry.cases[0].documents[1].addedBy).toBe('system');
+    expect(stats.ecits).toBe(1);
+    expect(stats.migration).toBe(1);
+  });
+
+  it("agent → agent (без зміни)", () => {
+    const reg = {
+      schemaVersion: 6,
+      cases: [{ id: 'c1', documents: [{ id: 'd1', name: 'A', addedBy: 'agent' }] }],
+    };
+    const { registry, stats } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].documents[0].addedBy).toBe('agent');
+    expect(stats.agent_unchanged).toBe(1);
+  });
+
+  it("null/undefined → 'user'", () => {
+    const reg = {
+      schemaVersion: 6,
+      cases: [{
+        id: 'c1',
+        documents: [
+          { id: 'd1', name: 'A', addedBy: null },
+          { id: 'd2', name: 'B' /* undefined */ },
+        ],
+      }],
+    };
+    const { registry, stats } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].documents[0].addedBy).toBe('user');
+    expect(registry.cases[0].documents[1].addedBy).toBe('user');
+    expect(stats.nullToUser).toBe(2);
+  });
+
+  it("невідоме значення → 'user' з warning", () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reg = {
+      schemaVersion: 6,
+      cases: [{ id: 'c1', documents: [{ id: 'd1', name: 'A', addedBy: 'mystery_value' }] }],
+    };
+    const { registry, stats } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].documents[0].addedBy).toBe('user');
+    expect(stats.unknownToUser).toBe(1);
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('mystery_value'));
+    spy.mockRestore();
+  });
+
+  it("ідемпотентність на рівні значень: user/system/agent вже мігровані → unchanged", () => {
+    const reg = {
+      schemaVersion: 6,
+      cases: [{
+        id: 'c1',
+        documents: [
+          { id: 'd1', name: 'A', addedBy: 'user' },
+          { id: 'd2', name: 'B', addedBy: 'system' },
+          { id: 'd3', name: 'C', addedBy: 'agent' },
+        ],
+      }],
+    };
+    const { registry, stats } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].documents[0].addedBy).toBe('user');
+    expect(registry.cases[0].documents[1].addedBy).toBe('system');
+    expect(registry.cases[0].documents[2].addedBy).toBe('agent');
+    expect(stats.user_unchanged + stats.system_unchanged + stats.agent_unchanged).toBe(3);
+  });
+
+  it("реєстр без cases не падає", () => {
+    expect(() => migrateToVersion6_5({ schemaVersion: 6 })).not.toThrow();
+  });
+
+  it("case без documents — пропускається без шкоди", () => {
+    const reg = { schemaVersion: 6, cases: [{ id: 'c1', name: 'no docs' }] };
+    const { registry } = migrateToVersion6_5(reg);
+    expect(registry.cases[0].id).toBe('c1');
+  });
+
+  it("додає lastMigration з from/to/at", () => {
+    const reg = { schemaVersion: 6, cases: [] };
+    const { registry } = migrateToVersion6_5(reg);
+    expect(registry.lastMigration.from).toBe(6);
+    expect(registry.lastMigration.to).toBe(6.5);
+    expect(typeof registry.lastMigration.at).toBe('string');
   });
 });

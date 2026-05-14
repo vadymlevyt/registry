@@ -2257,7 +2257,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                         originalName: file.name,
                         size: file.size,
                         folder: '01_ОРИГІНАЛИ',
-                        addedBy: 'lawyer_manual',
+                        addedBy: 'user',
                         namingStatus: 'pending',
                         category: null,
                         author: null,
@@ -2944,7 +2944,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   size: newDoc.file?.size || 0,
                   originalName: newDoc.file?.name || null,
                   folder: '01_\u041e\u0420\u0418\u0413\u0406\u041d\u0410\u041b\u0418',
-                  addedBy: 'lawyer_manual',
+                  addedBy: 'user',
                   namingStatus: 'manual',
                 });
                 const updated = [...(caseData.documents || []), doc];
@@ -3111,7 +3111,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             originalDriveId,
             originalMime,
             folder: '01_ОРИГІНАЛИ',
-            addedBy: 'lawyer_manual',
+            addedBy: 'user',
             namingStatus: 'manual',
             documentNature: initialNature,
             source: 'manual_upload',

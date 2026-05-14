@@ -83,13 +83,14 @@ describe('documentSchema', () => {
       expect(CANONICAL_DOCUMENT_FIELDS.namingStatus.enum).toEqual(['auto', 'manual', 'pending']);
     });
 
-    it('addedBy enum включає migration і lawyer_via_dp', () => {
+    it("addedBy enum — user/agent/system (TASK 0.3.4 cleanup, без legacy)", () => {
       const ab = CANONICAL_DOCUMENT_FIELDS.addedBy.enum;
-      expect(ab).toContain('lawyer_manual');
-      expect(ab).toContain('lawyer_via_dp');
-      expect(ab).toContain('migration');
-      expect(ab).toContain('agent');
-      expect(ab).toContain('ecits');
+      expect(ab).toEqual(['user', 'agent', 'system']);
+      // legacy значення прибрано — розщеплено з document.source (правило #11)
+      expect(ab).not.toContain('lawyer_manual');
+      expect(ab).not.toContain('lawyer_via_dp');
+      expect(ab).not.toContain('migration');
+      expect(ab).not.toContain('ecits');
     });
 
     it('folder enum — 6 підпапок з 00_INBOX_СПРАВИ до 05_ЗОВНІШНІ', () => {

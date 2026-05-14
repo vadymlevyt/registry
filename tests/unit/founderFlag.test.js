@@ -121,11 +121,13 @@ describe('migrateToVersion6 (v5 → v6 founder flag)', () => {
 });
 
 describe('CURRENT_SCHEMA_VERSION і MIGRATION_VERSION', () => {
-  it('CURRENT_SCHEMA_VERSION = 6 (повний ланцюг)', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(6);
+  // TASK 0.3.4 — точкова чистка addedBy bumped до 6.5 (між v6 і v7).
+  // Це найвища досяжна версія після повного ланцюга міграцій.
+  it('CURRENT_SCHEMA_VERSION = 6.5 (повний ланцюг після TASK 0.3.4)', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(6.5);
   });
 
-  it("MIGRATION_VERSION = '6.0_founder_flag'", () => {
-    expect(MIGRATION_VERSION).toBe('6.0_founder_flag');
+  it("MIGRATION_VERSION = '6.5_addedby_cleanup'", () => {
+    expect(MIGRATION_VERSION).toBe('6.5_addedby_cleanup');
   });
 });

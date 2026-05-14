@@ -81,7 +81,7 @@ export const ADD_DOCUMENT_TOOL = {
           date: { type: 'string', description: 'Опційне. Дата документа YYYY-MM-DD (НЕ дата запису)' },
           addedAt: { type: 'string', description: 'ISO timestamp' },
           updatedAt: { type: 'string', description: 'ISO timestamp' },
-          addedBy: { type: 'string', enum: ['lawyer_via_dp', 'lawyer_manual', 'agent', 'ecits', 'migration'] },
+          addedBy: { type: 'string', enum: ['user', 'agent', 'system'], description: 'ХТО/ЩО додало запис: user (адвокат вручну), agent (AI-агент), system (міграція/автосинхронізація). Не плутати з document.source (канал походження файлу).' },
           status: { type: 'string', enum: ['active', 'archived'] }
         },
         required: ['name', 'documentNature', 'namingStatus', 'isKey', 'folder', 'size', 'icon', 'addedAt', 'updatedAt', 'addedBy', 'status']

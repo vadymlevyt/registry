@@ -17,6 +17,28 @@ function generateDocumentId() {
   return `doc_${ts}_${rand}`;
 }
 
+// Нормалізація legacy значень addedBy на новий enum (TASK 0.3.4 cleanup).
+// safety net для будь-якої точки коду яка ще передає старе значення.
+// Невідоме значення → 'user' з warning у консоль.
+const ADDEDBY_LEGACY_MAP = {
+  lawyer_via_dp: 'user',
+  lawyer_manual: 'user',
+  agent: 'agent',
+  ecits: 'system',
+  migration: 'system',
+  user: 'user',
+  system: 'system',
+};
+
+function normalizeAddedBy(value) {
+  if (value === undefined || value === null) return 'user';
+  const mapped = ADDEDBY_LEGACY_MAP[value];
+  if (mapped) return mapped;
+  // eslint-disable-next-line no-console
+  console.warn(`[documentFactory] Unknown addedBy value '${value}', falling back to 'user'`);
+  return 'user';
+}
+
 // Створити валідний об'єкт документа з сирих метаданих.
 // Сирі метадані можуть містити legacy-поля (tags, notes, scanned, ...) —
 // ця функція їх ігнорує: важкі поля живуть у documents_extended.json.
@@ -49,7 +71,7 @@ export function createDocument(metadata = {}) {
     addedAt: metadata.addedAt || now,
     updatedAt: metadata.updatedAt || now,
 
-    addedBy: metadata.addedBy || 'lawyer_manual',
+    addedBy: normalizeAddedBy(metadata.addedBy),
     status: metadata.status || 'active',
 
     // source — канал надходження. null означає "невідомо" (старі документи

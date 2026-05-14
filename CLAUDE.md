@@ -1,9 +1,9 @@
 # CLAUDE.md — Legal BMS АБ Левицького
 
-**Версія:** 5.2
-**Останнє оновлення:** 10.05.2026
-**Поточний schemaVersion:** 6
-**Поточний settingsVersion:** "6.0_founder_flag"
+**Версія:** 5.3
+**Останнє оновлення:** 14.05.2026
+**Поточний schemaVersion:** 6.5
+**Поточний settingsVersion:** "6.5_addedby_cleanup"
 
 ---
 
@@ -117,7 +117,7 @@ Blank page = JS помилка яка не перехоплена.
 - Додати міграцію в `migrationService.js` (для базових структур) або окремий файл у `src/services/migrations/` (для специфічної логіки — як `v4ToV5.js`)
 - Міграція має бути **ідемпотентною** (повторні запуски не ламають дані)
 - Перед першою міграцією — обов'язковий бекап `registry_data_backup_pre_<name>_<ts>.json` у `_backups/` поза ротацією
-- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 6` і `MIGRATION_VERSION = '6.0_founder_flag'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — окремий крок через `migrateToVersion6`. Усі три послідовно викликаються в `App.jsx` EFFECT-A.
+- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 6.5` і `MIGRATION_VERSION = '6.5_addedby_cleanup'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — окремий крок через `migrateToVersion6`. addedBy cleanup v6.5 — окремий крок через `migrateToVersion6_5`. Усі чотири послідовно викликаються в `App.jsx` EFFECT-A.
 
 ### №7 — executeAction async
 `executeAction` — **async функція**. Усі callers що читають `.success`/`.error` — мусять `await`.
@@ -661,7 +661,7 @@ Drive:            driveId, driveUrl, folder
 - `documentNature`: searchable | scanned
 - `namingStatus`: auto | manual | pending
 - `folder`: 00_INBOX_СПРАВИ | 01_ОРИГІНАЛИ | 02_ОБРОБЛЕНІ | 03_ФРАГМЕНТИ | 04_ПОЗИЦІЯ | 05_ЗОВНІШНІ
-- `addedBy`: lawyer_via_dp | lawyer_manual | agent | ecits | migration
+- `addedBy`: user | agent | system (актор; з TASK 0.3.4 v6.5 — НЕ плутати з `source`)
 - `status`: active | archived
 
 ### Extended поля (lazy-load з .metadata/documents_extended.json)
@@ -693,13 +693,13 @@ extractedTextSummary, customFields
 
 ### Точки створення документа — об'єднані через createDocument()
 
-| Точка | Файл | addedBy |
-|-------|------|---------|
-| DocumentProcessor основна обробка | `DocumentProcessor:804-822` | `lawyer_via_dp` |
-| DocumentProcessor split PDF | `DocumentProcessor:955-963` | `lawyer_via_dp` |
-| CaseDossier модаль "+ Додати документ" | `CaseDossier:2452-2486` | `lawyer_manual` |
-| CaseDossier drag-n-drop drop queue | `CaseDossier:1940-2010` | `lawyer_manual` (через `executeAction` update_case_field — тимчасово, окремий ACTION у запланованому TASK) |
-| INITIAL_CASES (seed Брановський) | `App.jsx:100-113` | `migration` |
+| Точка | Файл | addedBy (з TASK 0.3.4 v6.5) |
+|-------|------|------------------------------|
+| DocumentProcessor основна обробка | `DocumentProcessor:804-822` | `user` |
+| DocumentProcessor split PDF | `DocumentProcessor:955-963` | `user` |
+| CaseDossier модаль "+ Додати документ" | `CaseDossier:2452-2486` | `user` |
+| CaseDossier drag-n-drop drop queue | `CaseDossier:1940-2010` | `user` (через `executeAction` update_case_field — тимчасово, окремий ACTION у запланованому TASK) |
+| INITIAL_CASES (seed Брановський) | `App.jsx:100-113` | `system` |
 
 ### Міграція v4 → v5
 
@@ -757,6 +757,66 @@ if (isCurrentUserFounder()) {
 - НЕ використовувати `isFounder` для перевірок tenant-доступу — це **глобальна** позначка, не tenant-scoped.
 - НЕ зав'язувати білінгові ліміти на `isFounder` — це окрема відповідальність `tenant.subscription`.
 - НЕ створювати UI для перемикання `isFounder` (наразі — тільки код / міграція).
+
+---
+
+## TASK 0.3.4 — ADDEDBY SEMANTIC CLEANUP v6.5
+
+**Дата:** 2026-05-14
+**schemaVersion:** 6 → 6.5
+**settingsVersion:** "6.5_addedby_cleanup"
+**Тип:** точкова чистка перед TASK 0.3.5 (canonical schema bump v7 для ЄСІТС)
+
+### Призначення
+
+Розщеплення `document.addedBy` і `document.source` як двох незалежних полів за правилом #11 (DEVELOPMENT_PHILOSOPHY.md — одне ім'я, один сенс). До TASK 0.3.4 обидва поля містили значення `'ecits'`, що порушувало однозначність — агент не міг визначити "звідки документ".
+
+### Зміни enum addedBy
+
+Old (5 значень з перекриттям): `['lawyer_via_dp', 'lawyer_manual', 'agent', 'ecits', 'migration']`
+New (3 значення без перекриття): `['user', 'agent', 'system']`
+
+Маппінг при міграції:
+- `lawyer_via_dp`, `lawyer_manual` → `user`
+- `agent` → `agent` (без зміни)
+- `ecits`, `migration` → `system`
+- невідоме значення → `user` з warning у консоль
+
+`documentFactory.createDocument` нормалізує legacy значення через `normalizeAddedBy()` — safety net якщо десь у коді ще залишилось старе значення.
+
+### Number 6.5 як schemaVersion
+
+Точкова чистка не претендує на повний bump v7. Number 6.5 (не string "6.5") працює правильно з `<` порівнянням у App.jsx EFFECT-A. Перевірено: жодне порівняння `=== 6`, жодне `Number.isInteger(schemaVersion)` у коді відсутнє.
+
+### ADDEDBY VS SOURCE — DISAMBIGUATION
+
+Два паралельні поля документа відповідають на РІЗНІ питання:
+
+**`document.addedBy`** — ХТО/ЩО зробило акт додавання запису в систему (actor):
+- `user` — адвокат чи помічник вручну (через UI або модалку)
+- `agent` — AI-агент (QI, Dossier, DocumentProcessor)
+- `system` — системна дія (міграція, автоматична синхронізація)
+
+**`document.source`** — ЗВІДКИ прийшов файл (канал походження). Поки TASK 0.3.5 не пройшов:
+- `manual_upload` — завантажено локально
+- `ecits` — з ЄСІТС-кабінету (нормалізується на `court_sync` у TASK 0.3.5)
+- `telegram` — з Telegram
+- `email` — з email
+- `null` — невідомо
+
+Приклади однозначних комбінацій:
+```
+{ addedBy: 'system',  source: 'ecits' }         — система додала автоматично з ЄСІТС
+{ addedBy: 'user',    source: 'manual_upload' } — адвокат завантажив локально
+{ addedBy: 'agent',   source: 'telegram' }      — агент обробив документ з Telegram
+{ addedBy: 'user',    source: 'email' }         — адвокат вручну зберіг з email
+```
+
+### Заборонено
+
+- НЕ повертати legacy значення `lawyer_via_dp` / `lawyer_manual` / `ecits` / `migration` у новий код. `normalizeAddedBy` їх переведе, але це signal про необхідність ревізії точки створення документа.
+- НЕ використовувати `addedBy` для перевірки "звідки прийшов файл" — для цього є `source`.
+- НЕ розширювати `addedBy` enum без bump'у схеми — це signal про порушення правила #11.
 
 ---
 

@@ -19,6 +19,13 @@
 // schemaVersion 6 — users[].isFounder (глобальна позначка власника продукту).
 //                   Окремий крок — migrateToVersion6 нижче, оркеструється в App.jsx
 //                   після migrateRegistryV4toV5.
+// schemaVersion 6.5 — addedBy semantic cleanup (TASK 0.3.4).
+//                   Розщеплення document.addedBy і document.source як двох незалежних
+//                   полів (правило #11). Old enum lawyer_via_dp/lawyer_manual/agent/
+//                   ecits/migration → new enum user/agent/system. Точкова чистка
+//                   перед TASK 0.3.5 (canonical schema bump v7 для ЄСІТС).
+//                   Number 6.5 (а не 7) — точкова чистка не претендує на повний bump.
+//                   Окремий крок — migrateToVersion6_5 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -41,10 +48,11 @@ import { DEFAULT_TENANT_TIME_STANDARDS } from './timeStandards.js';
 import { MODULES } from './moduleNames.js';
 
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
-// migrateRegistryV4toV5 → migrateToVersion6). Використовується App.jsx для
-// запису нової версії registry і тестами як "це остаточний таргет системи".
-export const CURRENT_SCHEMA_VERSION = 6;
-export const MIGRATION_VERSION = '6.0_founder_flag';
+// migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5). Використовується
+// App.jsx для запису нової версії registry і тестами як "це остаточний таргет системи".
+// Number 6.5 — точкова чистка addedBy enum перед v7 (TASK 0.3.4 → TASK 0.3.5).
+export const CURRENT_SCHEMA_VERSION = 6.5;
+export const MIGRATION_VERSION = '6.5_addedby_cleanup';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -204,6 +212,7 @@ function ensureModuleIntegration(existing) {
 // Повертає settingsVersion-label який відповідає переданій version. Для рідкісного
 // випадку коли registry на Drive має schemaVersion але втратив settingsVersion.
 function labelForVersion(version) {
+  if (version >= 6.5) return '6.5_addedby_cleanup';
   if (version >= 6) return '6.0_founder_flag';
   if (version >= 5) return '5.0_canonical_documents';
   return '4.0_billing_foundation';
@@ -391,7 +400,12 @@ export function migrateToVersion6(registry) {
     registry: {
       ...registry,
       schemaVersion: 6,
-      settingsVersion: MIGRATION_VERSION,
+      // v6 крок ставить v6-label, не таргет повного ланцюга. Подальший крок
+      // migrateToVersion6_5 перепише settingsVersion на '6.5_addedby_cleanup'.
+      // (До TASK 0.3.4 цей крок ставив MIGRATION_VERSION константу — тоді вона
+      // дорівнювала '6.0_founder_flag'. Після bump до 6.5 константа описує
+      // ВЕСЬ ланцюг, тому тут — явне значення для свого рівня.)
+      settingsVersion: '6.0_founder_flag',
       users: usersOut,
       lastMigration: {
         from: fromVersion,
@@ -402,6 +416,116 @@ export function migrateToVersion6(registry) {
     didMigrate: true,
     fromVersion,
     toVersion: 6,
+  };
+}
+
+// ── v6 → v6.5: addedBy semantic cleanup (TASK 0.3.4) ────────────────────────
+// Розщеплення document.addedBy і document.source як двох незалежних полів
+// (правило #11). Old enum lawyer_via_dp/lawyer_manual/agent/ecits/migration →
+// new enum user/agent/system. Точкова чистка перед TASK 0.3.5 (v7 для ЄСІТС).
+//
+// Ідемпотентна: повторний запуск з v6.5+ повертає didMigrate=false і нічого
+// не змінює. Викликається з App.jsx EFFECT-A послідовно після migrateToVersion6.
+//
+// Невідомі значення addedBy → fallback 'user' з warning. Це safety net,
+// у нормальній міграції всі legacy values покриті ADDEDBY_LEGACY_MAP.
+const ADDEDBY_LEGACY_MAP = {
+  lawyer_via_dp: 'user',
+  lawyer_manual: 'user',
+  agent: 'agent',
+  ecits: 'system',
+  migration: 'system',
+  user: 'user',     // ідемпотентність: вже мігроване не чіпаємо
+  system: 'system',
+};
+
+function migrateAddedByValue(oldValue, stats) {
+  if (oldValue === undefined || oldValue === null) {
+    stats.nullToUser++;
+    return 'user';
+  }
+  const mapped = ADDEDBY_LEGACY_MAP[oldValue];
+  if (mapped) {
+    if (oldValue !== mapped) stats[oldValue] = (stats[oldValue] || 0) + 1;
+    else stats[`${oldValue}_unchanged`] = (stats[`${oldValue}_unchanged`] || 0) + 1;
+    return mapped;
+  }
+  // eslint-disable-next-line no-console
+  console.warn(`[TASK 0.3.4] Unknown addedBy value '${oldValue}', defaulting to 'user'`);
+  stats.unknownToUser++;
+  return 'user';
+}
+
+export function migrateToVersion6_5(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 6.5) {
+    return {
+      registry,
+      didMigrate: false,
+      fromVersion,
+      toVersion: fromVersion,
+      stats: null,
+    };
+  }
+
+  const stats = {
+    lawyer_via_dp: 0,
+    lawyer_manual: 0,
+    agent_unchanged: 0,
+    ecits: 0,
+    migration: 0,
+    user_unchanged: 0,
+    system_unchanged: 0,
+    nullToUser: 0,
+    unknownToUser: 0,
+    totalDocs: 0,
+  };
+
+  const cases = Array.isArray(registry?.cases) ? registry.cases : [];
+  const migratedCases = cases.map(caseItem => {
+    if (!caseItem || typeof caseItem !== 'object') return caseItem;
+    if (!Array.isArray(caseItem.documents)) return caseItem;
+    const migratedDocs = caseItem.documents.map(doc => {
+      if (!doc || typeof doc !== 'object') return doc;
+      stats.totalDocs++;
+      const newValue = migrateAddedByValue(doc.addedBy, stats);
+      if (newValue === doc.addedBy) return doc;
+      return { ...doc, addedBy: newValue, updatedAt: new Date().toISOString() };
+    });
+    return { ...caseItem, documents: migratedDocs };
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK 0.3.4] Migrated ${stats.totalDocs} documents addedBy:\n` +
+    `  lawyer_via_dp → user: ${stats.lawyer_via_dp}\n` +
+    `  lawyer_manual → user: ${stats.lawyer_manual}\n` +
+    `  agent → agent (no change): ${stats.agent_unchanged}\n` +
+    `  ecits → system: ${stats.ecits}\n` +
+    `  migration → system: ${stats.migration}\n` +
+    `  user → user (idempotent): ${stats.user_unchanged}\n` +
+    `  system → system (idempotent): ${stats.system_unchanged}\n` +
+    `  null/undefined → user: ${stats.nullToUser}\n` +
+    `  unknown → user (fallback): ${stats.unknownToUser}`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 6.5,
+      settingsVersion: '6.5_addedby_cleanup',
+      cases: migratedCases,
+      lastMigration: {
+        from: fromVersion,
+        to: 6.5,
+        at: new Date().toISOString(),
+      },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 6.5,
+    stats,
   };
 }
 
