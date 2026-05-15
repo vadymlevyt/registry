@@ -9,6 +9,7 @@
 // Кожен тест отримує свій ізольований state.
 import { validateDocument, createDocument } from '../../src/services/documentFactory.js';
 import { deleteExtendedForDocument } from '../../src/services/documentsExtended.js';
+import { canOverwrite, buildAlternativeSourceRecord } from '../../src/services/sourcePolicy.js';
 
 const PERMISSIONS = {
   qi_agent: [
@@ -35,7 +36,7 @@ const PERMISSIONS = {
     'update_processing_context',
   ],
   document_processor_agent: [
-    'add_documents', 'update_processing_context',
+    'add_documents', 'update_processing_context', 'update_document_source',
   ],
   // TASK 0.3.5 v7
   court_sync_agent: [
@@ -44,6 +45,7 @@ const PERMISSIONS = {
     'update_parties', 'update_team', 'update_process_participants',
     'update_proceeding_composition',
     'update_document_movement_card', 'update_alternative_sources',
+    'update_document_source',
   ],
   metadata_extractor_agent: [], // disabled, defined для майбутнього
 };
@@ -464,6 +466,52 @@ export function createHarness({ initialCases = [] } = {}) {
         };
       }));
       return docFound ? { success: true } : { success: false, error: `Документ ${documentId} не знайдено` };
+    },
+
+    // TASK 4 — дзеркало App.jsx update_document_source (без eventBus —
+    // harness не реплікує eventBus, як і для інших v7 source-aware ACTIONS).
+    update_document_source: ({ caseId, documentId, source, sourceConfidence, extractedAt, alternativeSource }) => {
+      if (!caseId || !documentId) return { success: false, error: "caseId і documentId обов'язкові" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      let found = false;
+      let docFound = false;
+      let overwriteSkipped = false;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        return {
+          ...c,
+          documents: (c.documents || []).map(d => {
+            if (d.id !== documentId) return d;
+            docFound = true;
+            const existingSource = d.source ?? null;
+            if (canOverwrite(existingSource, source)) {
+              return {
+                ...d,
+                source,
+                sourceConfidence: sourceConfidence ?? d.sourceConfidence ?? null,
+                extractedAt: extractedAt ?? d.extractedAt ?? null,
+              };
+            }
+            overwriteSkipped = true;
+            if (alternativeSource) {
+              const record = alternativeSource.dataHash
+                ? alternativeSource
+                : buildAlternativeSourceRecord(
+                    alternativeSource.source ?? source,
+                    alternativeSource.sourceConfidence ?? sourceConfidence ?? null,
+                    alternativeSource.data ?? alternativeSource,
+                  );
+              const existing = Array.isArray(d.alternativeSources) ? d.alternativeSources : [];
+              return { ...d, alternativeSources: [...existing, record] };
+            }
+            return d;
+          }),
+        };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      if (!docFound) return { success: false, error: `Документ ${documentId} не знайдено` };
+      return { success: true, overwriteSkipped };
     },
   };
 

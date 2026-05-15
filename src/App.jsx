@@ -259,6 +259,7 @@ const EDIT_ACTIONS_SOURCE_AWARE = new Set([
   'update_proceeding_composition',
   'update_document_movement_card',
   'update_alternative_sources',
+  'update_document_source',
 ]);
 
 function getNextDeadline(caseItem) {
@@ -6114,6 +6115,72 @@ function App() {
       return { success: true };
     },
 
+    // 7. update_document_source — змінити канал походження документа
+    // (source/sourceConfidence/extractedAt) з canOverwrite політикою.
+    // КРОК 0 аудиту: жоден наявний ACTION не міняє document.source
+    // (update_document свідомо виключає; movement_card/alternative_sources
+    // чіпають інші поля). Сценарій «той самий документ другим каналом»
+    // (alternativeSources append) уже покритий update_alternative_sources —
+    // тут той самий механізм переюзується як fallback, не дублюється.
+    // Жодного авто-downgrade: нижчий пріоритет не перезаписує (discussion
+    // §Питання2 — provenance, не silent overwrite).
+    update_document_source: ({ caseId, documentId, source, sourceConfidence, extractedAt, alternativeSource }) => {
+      if (!caseId || !documentId) return { success: false, error: "caseId і documentId обов'язкові" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      const userId = getCurrentUser().userId;
+      const tenantId = getCurrentUser().tenantId;
+      const timestamp = new Date().toISOString();
+      let found = false;
+      let docFound = false;
+      let overwriteSkipped = false;
+      let altPublished = null;
+      setCases(prev => prev.map(c => {
+        if (c.id !== caseId) return c;
+        found = true;
+        const updatedDocs = (c.documents || []).map(d => {
+          if (d.id !== documentId) return d;
+          docFound = true;
+          const existingSource = d.source ?? null;
+          if (canOverwrite(existingSource, source)) {
+            return {
+              ...d,
+              source,
+              sourceConfidence: sourceConfidence ?? d.sourceConfidence ?? null,
+              extractedAt: extractedAt ?? d.extractedAt ?? null,
+              updatedAt: timestamp,
+            };
+          }
+          // Перезапис заборонений політикою пріоритету — source НЕ міняємо.
+          overwriteSkipped = true;
+          if (alternativeSource) {
+            const record = alternativeSource.dataHash
+              ? alternativeSource
+              : buildAlternativeSourceRecord(
+                  alternativeSource.source ?? source,
+                  alternativeSource.sourceConfidence ?? sourceConfidence ?? null,
+                  alternativeSource.data ?? alternativeSource,
+                );
+            altPublished = record;
+            const existing = Array.isArray(d.alternativeSources) ? d.alternativeSources : [];
+            return { ...d, alternativeSources: [...existing, record], updatedAt: timestamp };
+          }
+          return d;
+        });
+        return { ...c, documents: updatedDocs, updatedAt: timestamp };
+      }));
+      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      if (!docFound) return { success: false, error: `Документ ${documentId} не знайдено` };
+      if (altPublished) {
+        try {
+          eventBus.publish(DOCUMENT_ALTERNATIVE_SOURCE_ADDED, {
+            caseId, documentId, tenantId, userId,
+            source: altPublished.source, timestamp,
+          });
+        } catch (e) { console.warn('[update_document_source] eventBus failed:', e); }
+      }
+      return { success: true, overwriteSkipped };
+    },
+
     // ГРУПА 6 — Композитна дія
     batch_update: async ({ operations, agentId }) => {
       const results = [];
@@ -6202,6 +6269,7 @@ function App() {
     document_processor_agent: [
       'add_documents',
       'update_processing_context',
+      'update_document_source',
       'batch_update',
     ],
 
@@ -6218,6 +6286,7 @@ function App() {
       'update_parties', 'update_team', 'update_process_participants',
       'update_proceeding_composition',
       'update_document_movement_card', 'update_alternative_sources',
+      'update_document_source',
     ],
 
     // TASK 0.3.5 v7 — Metadata Extractor agent.
