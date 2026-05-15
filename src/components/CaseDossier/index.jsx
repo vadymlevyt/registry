@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import DocumentProcessor from "../DocumentProcessor/index.jsx";
 import { createCaseStructure, listFolderFiles, findOrCreateFolder, uploadFileToDrive, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
@@ -18,7 +17,7 @@ import { DOSSIER_AGENT_TOOLS } from "../../services/toolDefinitions.js";
 import {
   Bot, FileText, FolderOpen, Folder, Cloud, Link2, Pin,
   Edit, Trash2, Paperclip, Image, GitBranch, ClipboardList,
-  Wrench, Scale, Calendar, Archive, Lightbulb, Check, MessageSquare,
+  Scale, Calendar, Archive, Lightbulb, Check, MessageSquare,
   ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
@@ -2647,7 +2646,6 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   const tabs = [
     { id: "overview",     icon: ClipboardList, label: "Огляд" },
     { id: "materials",    icon: Folder,        label: "Матеріали", badge: documents.length },
-    { id: "docprocessor", icon: Wrench,        label: "Робота з документами" },
     { id: "position",     icon: Scale,         label: "Позиція" },
     { id: "templates",    icon: FileText,      label: "Шаблони" }
   ];
@@ -2711,19 +2709,6 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', minWidth: 0 }}>
           {activeTab === "overview" && renderOverview()}
           {activeTab === "materials" && renderMaterials()}
-          {activeTab === "docprocessor" && (
-            <DocumentProcessor
-              caseData={caseData}
-              cases={cases}
-              updateCase={updateCase}
-              onCreateCase={null}
-              onNavigateToDossier={null}
-              apiKey={localStorage.getItem("claude_api_key")}
-              driveFolderId={storageState?.driveFolderId}
-              driveToken={localStorage.getItem("levytskyi_drive_token")}
-              setAiUsage={setAiUsage}
-            />
-          )}
           {["position", "templates"].includes(activeTab) && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--color-text-3)", gap: 12 }}>
               <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}>{activeTab === "position" ? <Scale size={48} /> : <FileText size={48} />}</div>
