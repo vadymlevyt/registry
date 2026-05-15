@@ -48,6 +48,9 @@ import {
   DOCUMENT_ALTERNATIVE_SOURCE_ADDED,
   V7_EDIT_TOPICS,
   ECITS_TOPICS,
+  DOCUMENT_INGESTED,
+  DOCUMENT_BATCH_PROCESSED,
+  DOCUMENT_TOPICS,
 } from '../../src/services/eventBusTopics.js';
 import { DEFAULT_USER } from '../../src/services/tenantService.js';
 
@@ -449,5 +452,19 @@ describe('eventBusTopics — нові v7 топіки', () => {
     expect(ECITS_TOPICS).toHaveLength(6);
     expect(ECITS_TOPICS).toContain(ECITS_SYNC_COMPLETED);
     expect(ECITS_TOPICS).toContain(ECITS_CASE_STATE_UPDATED);
+  });
+
+  it('експортує 2 document-lifecycle топіки (TASK 3)', () => {
+    expect(DOCUMENT_INGESTED).toBe('document.ingested');
+    expect(DOCUMENT_BATCH_PROCESSED).toBe('document.batch_processed');
+  });
+
+  it('DOCUMENT_TOPICS — frozen array з 4 елементами', () => {
+    expect(Object.isFrozen(DOCUMENT_TOPICS)).toBe(true);
+    expect(DOCUMENT_TOPICS).toHaveLength(4);
+    expect(DOCUMENT_TOPICS).toContain(DOCUMENT_INGESTED);
+    expect(DOCUMENT_TOPICS).toContain(DOCUMENT_BATCH_PROCESSED);
+    expect(DOCUMENT_TOPICS).toContain(DOCUMENT_MOVEMENT_CARD_UPDATED);
+    expect(DOCUMENT_TOPICS).toContain(DOCUMENT_ALTERNATIVE_SOURCE_ADDED);
   });
 });

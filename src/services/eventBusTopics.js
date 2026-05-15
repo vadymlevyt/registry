@@ -8,6 +8,9 @@
 // TASK 0.3.5 v7 — додано 8 топіків що публікуються з нових ACTIONS:
 //   • 2 для sync операцій (sync_completed, case_state_updated)
 //   • 6 для edit-ACTIONS (parties, team, processParticipants, composition, movementCard, alternativeSource)
+// TASK 3 — додано 2 узагальнені document-lifecycle топіки (ingested,
+//   batch_processed) для майбутнього DP v2. Publisher'ів поки немає
+//   (як вхідні ЄСІТС-топіки сьогодні) — це інфраструктура констант.
 //
 // Принцип однозначності (правило #11): окремі топіки для "вхідних" подій
 // (документ прийшов з ЄСІТС, синхронізація відбулась) і "редагування полів"
@@ -40,6 +43,15 @@ export const PROCEEDING_COMPOSITION_UPDATED = 'proceeding.composition_updated';
 export const DOCUMENT_MOVEMENT_CARD_UPDATED = 'document.movement_card_updated';
 export const DOCUMENT_ALTERNATIVE_SOURCE_ADDED = 'document.alternative_source_added';
 
+// ── Document lifecycle events (TASK 3, для DP v2) ──────────────────────────
+// Узагальнені події життєвого циклу документа (НЕ з 6 v7 edit-ACTIONS вище —
+// окремий сенс, тому окрема секція; правило #11). Публікуватиме майбутній
+// DP v2: ingested = документ потрапив у систему, batch_processed = пакет
+// оброблено. Зараз publisher'ів і підписників немає.
+// Підписники (майбутні TASK'и): Dashboard Activity Feed, billing, календар.
+export const DOCUMENT_INGESTED = 'document.ingested';
+export const DOCUMENT_BATCH_PROCESSED = 'document.batch_processed';
+
 export const ECITS_TOPICS = Object.freeze([
   ECITS_DOCUMENTS_RECEIVED,
   ECITS_HEARING_SCHEDULED,
@@ -55,6 +67,16 @@ export const V7_EDIT_TOPICS = Object.freeze([
   CASE_TEAM_UPDATED,
   CASE_PROCESS_PARTICIPANTS_UPDATED,
   PROCEEDING_COMPOSITION_UPDATED,
+  DOCUMENT_MOVEMENT_CARD_UPDATED,
+  DOCUMENT_ALTERNATIVE_SOURCE_ADDED,
+]);
+
+// Усі document-центричні топіки — для тестів і документації. Перетин з
+// V7_EDIT_TOPICS навмисний: movement_card/alternative_source — це і edit-події,
+// і document-події (два незалежні зрізи однієї константи, не дубль сенсу).
+export const DOCUMENT_TOPICS = Object.freeze([
+  DOCUMENT_INGESTED,
+  DOCUMENT_BATCH_PROCESSED,
   DOCUMENT_MOVEMENT_CARD_UPDATED,
   DOCUMENT_ALTERNATIVE_SOURCE_ADDED,
 ]);
