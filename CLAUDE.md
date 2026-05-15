@@ -1,7 +1,7 @@
 # CLAUDE.md — Legal BMS АБ Левицького
 
-**Версія:** 5.4
-**Останнє оновлення:** 14.05.2026
+**Версія:** 5.5
+**Останнє оновлення:** 15.05.2026
 **Поточний schemaVersion:** 7
 **Поточний settingsVersion:** "7.0_ecits_canonical"
 
@@ -73,10 +73,41 @@ registry/
 │       ├── timeEntriesArchiver.js — місячна ротація
 │       ├── timeEntriesQuery.js — getTimeEntries API
 │       └── moduleNames.js     — MODULES enum + categoryForCase()
-├── LESSONS.md                  — інституційна пам'ять
-├── CLAUDE.md                   — цей файл
-└── DEVELOPMENT_PHILOSOPHY.md   — філософія розробки і ДНК-принципи
+├── CLAUDE.md                   — цей файл (root, читається на старті TASK)
+├── DEVELOPMENT_PHILOSOPHY.md   — філософія розробки і ДНК-принципи (root)
+├── LESSONS.md                  — інституційна пам'ять (root)
+├── ARCHITECTURE_HISTORY.md     — хронологія TASK'ів, живий довідник (root)
+├── tracking_debt.md            — реєстр відкладеного боргу, живий (root)
+├── dossier_architecture_decisions.md — рішення по архітектурі досьє (root)
+└── docs/                       — уся інша документація (звіти/аудити/...)
+    ├── tasks/                  — TASK_*.md, micro_task_*.md (специфікації)
+    ├── reports/                — report_*.md (звіти про завершення)
+    ├── audits/                 — audit_*.md (аудити перед/після TASK)
+    ├── diagnostics/            — diagnostic_*.md, DIAGNOSTIC_*.md
+    ├── bugs/                   — bugs_found_during_*.md, discovered_issues_during_*.md
+    └── consultations/          — consultation_*/questions_*/discussion_*/recommended_*.md
 ```
+
+**Конвенція документації — куди писати нові `.md` (ОБОВ'ЯЗКОВО):**
+
+У корені репо лишаються **тільки 6 канонічних файлів** (перелічені вище: `CLAUDE.md`,
+`DEVELOPMENT_PHILOSOPHY.md`, `LESSONS.md`, `ARCHITECTURE_HISTORY.md`, `tracking_debt.md`,
+`dossier_architecture_decisions.md`). **Жоден новий `.md` не створюється в корені.**
+
+Будь-який новий документ у рамках TASK кладеться в `docs/<підпапка>/` за типом:
+
+| Тип документа | Куди | Приклад імені |
+|---------------|------|---------------|
+| Специфікація TASK / micro-task | `docs/tasks/` | `TASK_<id>_<slug>.md` |
+| Звіт про завершення TASK | `docs/reports/` | `report_task_<id>_<slug>.md` |
+| Аудит до/після TASK | `docs/audits/` | `audit_before_<slug>.md` |
+| Діагностика бага/симптому | `docs/diagnostics/` | `diagnostic_<slug>.md` |
+| Знайдені баги / побічні знахідки | `docs/bugs/` | `bugs_found_during_<slug>.md`, `discovered_issues_during_<slug>.md` |
+| Консультація / обговорення / питання | `docs/consultations/` | `consultation_<slug>.md`, `questions_<slug>.md` |
+
+Якщо документ — оновлення живого довідника (`ARCHITECTURE_HISTORY.md`, `tracking_debt.md`),
+редагуй наявний файл у корені, не створюй новий у `docs/`. Якщо тип не вкладається в
+таблицю — обери найближчу підпапку, **не** клади в корінь.
 
 **Білд:** `npm run build` (Vite → dist/)
 **Auto-deploy:** GitHub Actions при push на main
@@ -394,7 +425,7 @@ SaaS v2: кожна нота має `tenantId`, `createdBy`.
 
 ## КАНОНІЧНИЙ СТАН — КОНСОЛІДОВАНИЙ ОПЕРАЦІЙНИЙ ДОВІДНИК
 
-Це чинний контракт системи (станом на schemaVersion 7). **Повна історія, обґрунтування і покрокові міграції кожного пункту** — у `ARCHITECTURE_HISTORY.md` (хронологія TASK'ів) і у відповідних `report_*.md` / `audit_*.md`. Тут — тільки те, що зобов'язує на старті будь-якого TASK.
+Це чинний контракт системи (станом на schemaVersion 7). **Повна історія, обґрунтування і покрокові міграції кожного пункту** — у `ARCHITECTURE_HISTORY.md` (хронологія TASK'ів, у корені) і у відповідних `docs/reports/*.md` / `docs/audits/*.md`. Тут — тільки те, що зобов'язує на старті будь-якого TASK.
 
 ### SaaS Foundation (v2 база + v3 розширення)
 
@@ -573,7 +604,7 @@ Feature flag `CONVERT_DOCX_TO_PDF` (default true, у `converterService.js`, зм
 - Читання: каскад Drive → localStorage → registry
 - Slice: 50 повідомлень у всіх трьох (раніше був баг — 20 в localStorage, виправлено)
 
-Деталі — `diagnostic_agentHistory.md`.
+Деталі — `docs/diagnostics/diagnostic_agentHistory.md`.
 
 ---
 
@@ -723,7 +754,7 @@ CI/CD блокує деплой якщо хоч один тест червони
 ### В роботі / спостереження
 
 - 🔄 Спостереження за реальною роботою Billing Foundation (1-2 тижні)
-- 🔄 Збір накопичених знахідок у `bugs_found_during_billing_foundation.md`
+- 🔄 Збір накопичених знахідок у `docs/bugs/bugs_found_during_billing_foundation.md`
 
 ### Заплановано
 

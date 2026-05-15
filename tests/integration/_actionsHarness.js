@@ -2,7 +2,7 @@
 //
 // ВАЖЛИВО: ACTIONS і PERMISSIONS наразі живуть як closures всередині App.jsx —
 // винести в окремий файл `src/services/actionsRegistry.js` — окремий TASK
-// (див. discovered_issues_during_task4.md). Поки що цей harness повторює
+// (див. docs/bugs/discovered_issues_during_task4.md). Поки що цей harness повторює
 // САМЕ ТУ логіку що в App.jsx — точкові методи які тестують інтеграційні файли.
 //
 // Контракт: createHarness({ initialCases }) → { executeAction, getCases, ... }.
