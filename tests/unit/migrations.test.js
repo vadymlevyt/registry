@@ -4,7 +4,7 @@ import {
   migrateRegistryV4toV5,
   splitDocumentV4toV5,
 } from '../../src/services/migrations/v4ToV5.js';
-import { migrateToVersion6_5 } from '../../src/services/migrationService.js';
+import { migrateToVersion6_5, migrateToVersion8 } from '../../src/services/migrationService.js';
 import { validateDocument } from '../../src/services/documentFactory.js';
 
 describe('v4ToV5 migration', () => {
@@ -293,5 +293,70 @@ describe('migrateToVersion6_5 (v6 → v6.5 addedBy cleanup)', () => {
     expect(registry.lastMigration.from).toBe(6);
     expect(registry.lastMigration.to).toBe(6.5);
     expect(typeof registry.lastMigration.at).toBe('string');
+  });
+});
+
+// ── TASK 2: migrateToVersion8 (time_entry.source → captureMethod) ────────────
+describe('migrateToVersion8 (v7 → v8 time_entry.source → captureMethod)', () => {
+  it('перейменовує source → captureMethod, прибирає source, інші поля цілі', () => {
+    const reg = {
+      schemaVersion: 7,
+      time_entries: [
+        { id: 'te_1', duration: 60, source: 'instrumentation', caseId: 'case_1' },
+        { id: 'te_2', duration: 30, source: 'manual_assign' },
+      ],
+    };
+    const { registry, didMigrate, stats } = migrateToVersion8(reg);
+    expect(didMigrate).toBe(true);
+    expect(registry.schemaVersion).toBe(8);
+    expect(registry.settingsVersion).toBe('8.0_time_entry_capture_method');
+    const [a, b] = registry.time_entries;
+    expect(a.captureMethod).toBe('instrumentation');
+    expect('source' in a).toBe(false);
+    expect(a.duration).toBe(60);
+    expect(a.caseId).toBe('case_1');
+    expect(b.captureMethod).toBe('manual_assign');
+    expect(stats.renamed).toBe(2);
+    expect(registry.lastMigration).toMatchObject({ from: 7, to: 8 });
+  });
+
+  it('ідемпотентна на рівні registry: v8 → didMigrate false', () => {
+    const reg = { schemaVersion: 8, time_entries: [{ id: 'te_1', captureMethod: 'manual' }] };
+    const res = migrateToVersion8(reg);
+    expect(res.didMigrate).toBe(false);
+    expect(res.stats).toBeNull();
+    expect(res.registry).toBe(reg);
+  });
+
+  it('ідемпотентна на рівні запису: вже captureMethod — не чіпає, stray source прибирає', () => {
+    const reg = {
+      schemaVersion: 7,
+      time_entries: [
+        { id: 'te_1', captureMethod: 'timer' },
+        { id: 'te_2', captureMethod: 'manual', source: 'manual' },
+      ],
+    };
+    const { registry, stats } = migrateToVersion8(reg);
+    expect(registry.time_entries[0].captureMethod).toBe('timer');
+    expect('source' in registry.time_entries[1]).toBe(false);
+    expect(registry.time_entries[1].captureMethod).toBe('manual');
+    expect(stats.alreadyCaptureMethod).toBe(2);
+    expect(stats.renamed).toBe(0);
+  });
+
+  it('registry без time_entries не падає, version бампиться', () => {
+    const reg = { schemaVersion: 7, cases: [] };
+    const { registry, didMigrate, stats } = migrateToVersion8(reg);
+    expect(didMigrate).toBe(true);
+    expect(registry.schemaVersion).toBe(8);
+    expect(registry.time_entries).toBeUndefined();
+    expect(stats.total).toBe(0);
+  });
+
+  it('запис без source і без captureMethod лишається як є (noField)', () => {
+    const reg = { schemaVersion: 7, time_entries: [{ id: 'te_x', duration: 10 }] };
+    const { registry, stats } = migrateToVersion8(reg);
+    expect(registry.time_entries[0]).toEqual({ id: 'te_x', duration: 10 });
+    expect(stats.noField).toBe(1);
   });
 });

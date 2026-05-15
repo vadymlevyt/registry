@@ -127,7 +127,7 @@ export function report(eventType, context = {}) {
       subtimerSessionId: context.subtimerSessionId ?? null,
       direction: context.direction ?? null,
       confidence: context.confidence ?? 'high',
-      source: context.source || 'instrumentation',
+      captureMethod: context.captureMethod || 'instrumentation',
       originalDuration: context.originalDuration ?? null,
       actualDuration: context.actualDuration ?? null,
       confirmedDuration: context.confirmedDuration ?? null,
@@ -309,7 +309,7 @@ export function assignOfflinePeriod(period, category, caseId, options = {}) {
       confidence: options.confidence || 'medium',
       exitedVia: 'unexpected_screen_off',
       status: 'user_corrected',
-      source: 'manual_assign',
+      captureMethod: 'manual_assign',
       metadata: { reason: options.reason || 'retroactive' },
     });
   } catch (e) {

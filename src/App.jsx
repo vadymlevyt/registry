@@ -4,11 +4,11 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, migrateToVersion8, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import * as eventBus from './services/eventBus';
 import {
   ECITS_SYNC_COMPLETED, ECITS_CASE_STATE_UPDATED,
@@ -4154,6 +4154,31 @@ function App() {
           }
         }
 
+        // TASK 2 — pre-v8 бекап перед time_entry.source → captureMethod, поза ротацією.
+        if (raw != null && (registry.schemaVersion || 7) < 8) {
+          const flagV8 = localStorage.getItem('levytskyi_pre_v8_backup_done');
+          if (!flagV8) {
+            const res = await backupRegistryDataPreV8(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v8_backup_done', '1');
+              console.log(`[TASK 2] Pre-v8 backup: ${res.fileName}`);
+            } else {
+              console.warn('[TASK 2] Pre-v8 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // TASK 2 — time_entry.source → time_entry.captureMethod (v7 → v8).
+        if ((registry.schemaVersion || 1) < 8) {
+          const v8 = migrateToVersion8(registry);
+          if (v8.didMigrate) {
+            registry = v8.registry;
+            didMigrate = true;
+            toVersion = v8.toVersion;
+            // Console.log усередині migrateToVersion8 — детальний breakdown.
+          }
+        }
+
         // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
         if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
           try {
@@ -5077,7 +5102,7 @@ function App() {
 
     // ГРУПА 4 — Час / Сесія
     // add_time_entry: backwards-compatible — пише в новий time_entries[] через activityTracker.
-    add_time_entry: ({ caseId = null, date, duration, description, category, billable, type = 'manual_entry', source = 'manual' }) => {
+    add_time_entry: ({ caseId = null, date, duration, description, category, billable, type = 'manual_entry', captureMethod = 'manual' }) => {
       const u = getCurrentUser();
       const tenant = getCurrentTenant ? null : null;
       const tenantId = u?.tenantId || DEFAULT_TENANT.tenantId;
@@ -5111,7 +5136,7 @@ function App() {
         parentEventId: null, parentEventType: null,
         parentTimerId: null, subtimerSessionId: null, direction: null,
         confidence: 'high',
-        source: source || 'manual',
+        captureMethod: captureMethod || 'manual',
         originalDuration: null, actualDuration: null, confirmedDuration: durMin,
         exitedVia: null, resumedAt: null,
         metadata: { description: description || '' },
@@ -6389,6 +6414,11 @@ function App() {
       if ((registry.schemaVersion || 1) < 7) {
         const v7 = migrateToVersion7(registry);
         if (v7.didMigrate) registry = v7.registry;
+      }
+      // TASK 2 — time_entry.source → captureMethod при відновленні (legacy < v8).
+      if ((registry.schemaVersion || 1) < 8) {
+        const v8 = migrateToVersion8(registry);
+        if (v8.didMigrate) registry = v8.registry;
       }
       // Розпаковуємо стейт з бекапу.
       if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));

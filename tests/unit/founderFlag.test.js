@@ -121,14 +121,14 @@ describe('migrateToVersion6 (v5 → v6 founder flag)', () => {
 });
 
 describe('CURRENT_SCHEMA_VERSION і MIGRATION_VERSION', () => {
-  // TASK 0.3.5 — canonical schema bump v7 для ЄСІТС-інтеграції.
-  // Це найвища досяжна версія після повного ланцюга міграцій
-  // (v1→v4→v5→v6→v6.5→v7).
-  it('CURRENT_SCHEMA_VERSION = 7 (повний ланцюг після TASK 0.3.5)', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(7);
+  // Найвища досяжна версія після повного ланцюга міграцій
+  // (v1→v4→v5→v6→v6.5→v7→v8). TASK 2 підняв таргет до v8
+  // (time_entry.source → captureMethod).
+  it('CURRENT_SCHEMA_VERSION = 8 (повний ланцюг після TASK 2)', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(8);
   });
 
-  it("MIGRATION_VERSION = '7.0_ecits_canonical'", () => {
-    expect(MIGRATION_VERSION).toBe('7.0_ecits_canonical');
+  it("MIGRATION_VERSION = '8.0_time_entry_capture_method'", () => {
+    expect(MIGRATION_VERSION).toBe('8.0_time_entry_capture_method');
   });
 });

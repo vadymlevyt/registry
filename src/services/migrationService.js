@@ -37,6 +37,12 @@
 //                   ecitsContext, assignedTo, attendedBy.
 //                   user.ecitsCabinetIdentifier для multi-user dedupe.
 //                   Окремий крок — migrateToVersion7 нижче.
+// schemaVersion 8   — time_entry.source → time_entry.captureMethod (TASK 2).
+//                   Перейменування ПОЛЯ (не значень): "source" у системі тепер
+//                   завжди означає "канал походження"; спосіб фіксації часу —
+//                   окреме ім'я captureMethod (правило #11). Архіви не чіпає
+//                   (lazy-on-load нормалізація у timeEntriesArchiver).
+//                   Окремий крок — migrateToVersion8 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -60,10 +66,10 @@ import { MODULES } from './moduleNames.js';
 
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
 // migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5 →
-// migrateToVersion7). Використовується App.jsx для запису нової версії registry
-// і тестами як "це остаточний таргет системи".
-export const CURRENT_SCHEMA_VERSION = 7;
-export const MIGRATION_VERSION = '7.0_ecits_canonical';
+// migrateToVersion7 → migrateToVersion8). Використовується App.jsx для запису
+// нової версії registry і тестами як "це остаточний таргет системи".
+export const CURRENT_SCHEMA_VERSION = 8;
+export const MIGRATION_VERSION = '8.0_time_entry_capture_method';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -758,6 +764,70 @@ export function migrateToVersion7(registry) {
   };
 }
 
+// ── TASK 2: time_entry.source → time_entry.captureMethod (v7 → v8) ──────────
+// Перейменування ПОЛЯ, не значень. document/hearing/parties.source = канал
+// походження; time_entry.source = спосіб фіксації — інший сенс. Після цього
+// кроку слово "source" у системі однозначне (правило #11). Ідемпотентна.
+// Архівні файли НЕ чіпає — стара ротація читається через lazy-on-load
+// нормалізацію в timeEntriesArchiver.normalizeArchivedTimeEntries.
+// Викликається з App.jsx EFFECT-A послідовно після migrateToVersion7.
+export function migrateToVersion8(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 8) {
+    return { registry, didMigrate: false, fromVersion, toVersion: fromVersion, stats: null };
+  }
+
+  const stats = { total: 0, renamed: 0, alreadyCaptureMethod: 0, noField: 0 };
+
+  const hasEntries = Array.isArray(registry?.time_entries);
+  const entriesIn = hasEntries ? registry.time_entries : [];
+  const migratedEntries = entriesIn.map(e => {
+    if (!e || typeof e !== 'object') return e;
+    stats.total++;
+    if ('captureMethod' in e) {
+      stats.alreadyCaptureMethod++;
+      // Ідемпотентність: прибрати дублюючий legacy 'source' якщо лишився.
+      if ('source' in e) {
+        const { source: _legacy, ...rest } = e;
+        return rest;
+      }
+      return e;
+    }
+    if ('source' in e) {
+      const { source, ...rest } = e;
+      stats.renamed++;
+      return { ...rest, captureMethod: source };
+    }
+    stats.noField++;
+    return e;
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK 2] Migration v${fromVersion} → v8 (time_entry.source → captureMethod):\n` +
+    `  total time_entries: ${stats.total}\n` +
+    `  renamed source→captureMethod: ${stats.renamed}\n` +
+    `  already captureMethod (idempotent): ${stats.alreadyCaptureMethod}\n` +
+    `  no field (left as is): ${stats.noField}\n` +
+    `[TASK 2] Migration v${fromVersion} → v8 done.`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 8,
+      settingsVersion: '8.0_time_entry_capture_method',
+      time_entries: hasEntries ? migratedEntries : registry?.time_entries,
+      lastMigration: { from: fromVersion, to: 8, at: new Date().toISOString() },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 8,
+    stats,
+  };
+}
+
 // ── Імпорт legacy levytskyi_timelog → time_entries[] ────────────────────────
 // Викликається з App.jsx один раз при першому запуску v4 (з прапором).
 // Поля legacy запису:
@@ -800,7 +870,7 @@ export function importLegacyTimeLog(legacyEntries) {
       subtimerSessionId: null,
       direction: null,
       confidence: 'medium',
-      source: 'legacy_import',
+      captureMethod: 'legacy_import',
       originalDuration: durMin,
       actualDuration: null,
       confirmedDuration: durMin,

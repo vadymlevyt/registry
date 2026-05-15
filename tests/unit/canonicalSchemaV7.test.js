@@ -56,19 +56,21 @@ import { DEFAULT_USER } from '../../src/services/tenantService.js';
 
 // ── Schema version і label ──────────────────────────────────────────────────
 
-describe('Schema version і label (TASK 0.3.5 v7)', () => {
-  it('CURRENT_SCHEMA_VERSION === 7', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(7);
+// Найвища досяжна версія після повного ланцюга. TASK 2 підняв таргет 7 → 8
+// (time_entry.source → captureMethod). v7-крок далі тестується нижче окремо.
+describe('Schema version і label (повний ланцюг, таргет після TASK 2)', () => {
+  it('CURRENT_SCHEMA_VERSION === 8', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(8);
   });
 
-  it("MIGRATION_VERSION === '7.0_ecits_canonical'", () => {
-    expect(MIGRATION_VERSION).toBe('7.0_ecits_canonical');
+  it("MIGRATION_VERSION === '8.0_time_entry_capture_method'", () => {
+    expect(MIGRATION_VERSION).toBe('8.0_time_entry_capture_method');
   });
 
-  it('buildEmptyRegistry створює одразу v7', () => {
+  it('buildEmptyRegistry створює одразу v8', () => {
     const reg = buildEmptyRegistry();
-    expect(reg.schemaVersion).toBe(7);
-    expect(reg.settingsVersion).toBe('7.0_ecits_canonical');
+    expect(reg.schemaVersion).toBe(8);
+    expect(reg.settingsVersion).toBe('8.0_time_entry_capture_method');
   });
 });
 

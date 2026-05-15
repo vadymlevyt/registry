@@ -13,6 +13,26 @@ import { driveRequest } from './driveAuth.js';
 const ARCHIVE_FOLDER_NAME = '_archives';
 const _archiveCache = new Map();
 
+// TASK 2: жива схема time_entry використовує captureMethod; старі архівні
+// файли (_archives/time_entries_YYYY-MM.json) ще містять legacy 'source'.
+// Архіви НЕ переписуємо (ризиковано, вимагало б прогону всіх за раз) —
+// нормалізуємо на льоту при читанні. Ідемпотентна, чиста функція.
+export function normalizeArchivedTimeEntries(entries) {
+  if (!Array.isArray(entries)) return entries;
+  return entries.map(e => {
+    if (!e || typeof e !== 'object') return e;
+    if ('captureMethod' in e) {
+      if ('source' in e) { const { source: _legacy, ...rest } = e; return rest; }
+      return e;
+    }
+    if ('source' in e) {
+      const { source, ...rest } = e;
+      return { ...rest, captureMethod: source };
+    }
+    return e;
+  });
+}
+
 function formatYYYYMM(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -78,7 +98,7 @@ export async function loadArchive(token, yyyymm) {
       return { success: true, entries: [], fromCache: false };
     }
     const content = await readDriveFile(target.id, token);
-    const entries = JSON.parse(content);
+    const entries = normalizeArchivedTimeEntries(JSON.parse(content));
     _archiveCache.set(yyyymm, entries);
     return { success: true, entries, fromCache: false };
   } catch (e) {
