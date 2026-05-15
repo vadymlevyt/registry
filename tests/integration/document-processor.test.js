@@ -3,7 +3,7 @@
 // атомарність — щоб коли DP мігруватиме на Tool Use, базис був надійний.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createDocument } from '../../src/services/documentFactory.js';
-import { createHarness } from './_actionsHarness.js';
+import { createHarness } from './_actionsTestSetup.js';
 
 describe('document_processor_agent integration', () => {
   let h;
@@ -53,7 +53,10 @@ describe('document_processor_agent integration', () => {
       caseId: 'case_001', documents: [doc],
     });
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/дублікат/i);
+    // Реальний add_documents (actionsRegistry) повертає "…вже існують у справі".
+    // Старий _actionsHarness мав власне формулювання "дублікатів" — TASK 5
+    // перевів тест на справжній ACTION, асерт вирівняно на фактичний текст.
+    expect(result.error).toMatch(/вже існують/i);
   });
 
   it('document_processor_agent заблокований на create_case', async () => {

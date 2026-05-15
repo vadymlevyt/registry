@@ -715,14 +715,15 @@ tests/
 │   ├── toolDefinitions.test.js
 │   └── toolUseRunner.test.js
 └── integration/            — workflow-тести (executeAction + ACTIONS + PERMISSIONS)
-    ├── _actionsHarness.js  — спільний harness (повторює логіку з App.jsx)
+    ├── _actionsTestSetup.js — тонкий адаптер над реальним createActions (0 ACTION-логіки)
     ├── actions.test.js
     ├── drag-n-drop.test.js
     ├── agent-workflow.test.js
+    ├── update_document_source.test.js
     └── document-processor.test.js
 ```
 
-`tests/integration/_actionsHarness.js` — поки ACTIONS і PERMISSIONS живуть закритими в App.jsx, harness повторює мінімум логіки що тестується. Окремий TASK ActionsRegistry refactor винесе ACTIONS у `src/services/actionsRegistry.js` як factory з deps injection — тоді harness видаляється і тести імпортуватимуть `createActions(deps)` напряму. Поки що — синхронізація вручну: при зміні ACTIONS у App.jsx оновлювати harness.
+ACTIONS / PERMISSIONS / executeAction винесено з App.jsx у `src/services/actionsRegistry.js` як factory `createActions(deps)` (TASK 5). App.jsx створює інстанс у тілі компонента (кожен render) і прокидає `executeAction` пропом у Dashboard/CaseDossier — НЕ глобальний сінглтон; спільний стан лишається в App.jsx і приходить у factory через `deps` (`getCases`/`setCases`/…). Контракт `executeAction(agentId, action, params, [userId])` незмінний. `tests/integration/_actionsTestSetup.js` — тонкий адаптер: НУЛЬ дублювання логіки, лише конструює ізольовані deps поверх справжнього `createActions` (старий `_actionsHarness.js`, що дублював ACTIONS вручну, видалено — ручної синхронізації більше немає). Чисті/детерміновані залежності лишаються прямими `import` у `actionsRegistry.js`; стан React, Drive/audit/billing/eventBus сайд-ефекти і permission-заглушки ін'єктуються (App підставляє реальні, тести — стаби).
 
 ### Правило для нових TASK
 

@@ -7,7 +7,7 @@
 //   • eventBusTopics — нові топіки
 //
 // ACTIONS (mark_synced_from_ecits, update_case_ecits_state, 6 edit-ACTIONS)
-// тестуються через _actionsHarness.js в інтеграційних тестах окремо.
+// тестуються через _actionsTestSetup.js в інтеграційних тестах окремо.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {

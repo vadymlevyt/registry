@@ -3,7 +3,7 @@
 //  add_document через executeAction → запис у cases[].documents[] з ⚠ маркером.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createDocument, needsReview } from '../../src/services/documentFactory.js';
-import { createHarness } from './_actionsHarness.js';
+import { createHarness } from './_actionsTestSetup.js';
 
 // Імітуємо логіку drag-n-drop циклу з CaseDossier:1942-1985 — точкова копія
 // без UI, щоб перевірити саме контракт між UI і executeAction.
@@ -120,7 +120,12 @@ describe('drag-n-drop workflow', () => {
       field: 'documents',
       value: [],
     });
-    expect(result.success).toBe(false);
+    // Реальний update_case_field на забороненому полі повертає { error } БЕЗ
+    // success:false (на відміну від сусідніх ACTIONS — латентна неконсистентність,
+    // tracking_debt). Старий _actionsHarness додавав success:false від себе.
+    // TASK 5 (behavior-preserving): ACTION не чіпаємо, асерт вирівняно на
+    // фактичну форму, інтент незмінний (відмова = не-успіх + повідомлення).
+    expect(result.success).toBeFalsy();
     expect(result.error).toMatch(/documents.*не дозволено|не дозволено.*documents/);
   });
 });

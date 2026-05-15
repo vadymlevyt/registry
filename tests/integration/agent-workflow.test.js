@@ -5,7 +5,7 @@
 // Покриває end-to-end логіку TASK 3 + TASK 3 patch (caseId protection).
 import { describe, it, expect, beforeEach } from 'vitest';
 import { runMultiTurnConversation } from '../../src/services/toolUseRunner.js';
-import { createHarness } from './_actionsHarness.js';
+import { createHarness } from './_actionsTestSetup.js';
 
 function scriptedAPI(responses) {
   let i = 0;

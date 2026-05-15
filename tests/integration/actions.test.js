@@ -1,9 +1,9 @@
 // Інтеграційні тести executeAction з реальним PERMISSIONS, UI_ONLY_ACTIONS
-// і ACTIONS-логікою (через _actionsHarness — поки ACTIONS не винесено
-// в окремий модуль).
+// і ACTIONS-логікою — через справжній createActions (src/services/actionsRegistry.js),
+// зведений у _actionsTestSetup.js (ACTIONS винесено з App.jsx, TASK 5).
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createDocument } from '../../src/services/documentFactory.js';
-import { createHarness } from './_actionsHarness.js';
+import { createHarness } from './_actionsTestSetup.js';
 
 describe('executeAction integration', () => {
   let h;

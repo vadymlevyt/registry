@@ -1,10 +1,11 @@
-// TASK 4 — інтеграційні тести update_document_source (через _actionsHarness).
+// TASK 4 — інтеграційні тести update_document_source (через справжній
+// createActions, зведений у _actionsTestSetup.js).
 // Покриває: canOverwrite дозволено/заборонено, alternativeSources fallback,
-// permission gating, валідація. eventBus/billing — поза harness (як і для
+// permission gating, валідація. eventBus/billing — стаби в test-setup (як і для
 // решти v7 source-aware ACTIONS), перевіряється структурним паритетом.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createDocument } from '../../src/services/documentFactory.js';
-import { createHarness } from './_actionsHarness.js';
+import { createHarness } from './_actionsTestSetup.js';
 
 function caseWith(docOverrides) {
   return [{

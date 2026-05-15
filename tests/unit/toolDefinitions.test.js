@@ -157,12 +157,14 @@ describe('toolDefinitions', () => {
     });
   });
 
-  describe('Синхронізація з PERMISSIONS.dossier_agent (App.jsx)', () => {
+  describe('Синхронізація з PERMISSIONS.dossier_agent (actionsRegistry.js)', () => {
     let actionsSet;
     {
+      // TASK 5: ACTIONS/PERMISSIONS винесено з App.jsx у actionsRegistry.js —
+      // парсимо PERMISSIONS.dossier_agent з нового місця (асерти незмінні).
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      const appJsxPath = path.resolve(__dirname, '../../src/App.jsx');
-      const src = fs.readFileSync(appJsxPath, 'utf8');
+      const registryPath = path.resolve(__dirname, '../../src/services/actionsRegistry.js');
+      const src = fs.readFileSync(registryPath, 'utf8');
       const startIdx = src.indexOf('dossier_agent: [');
       const endIdx = src.indexOf('],', startIdx);
       const block = src.slice(startIdx, endIdx + 1);
