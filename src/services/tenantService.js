@@ -89,6 +89,13 @@ export const DEFAULT_TENANT = {
     // v4 Billing Foundation — стандарти часу. Подальше редагування — через
     // окремий адмін-UI у майбутньому. Дефолти живуть в timeStandards.js.
     timeStandards: null,
+    // ecitsAutoProcess — DP-2. ЄДИНИЙ сенс: ХТО ініціює обробку нових файлів
+    // з ЄСІТС-каналу (папка 00_INBOX_СПРАВИ). 'manual' = адвокат бачить
+    // індикатор у досьє і запускає вручну; 'auto' = ecitsInboxWatcher
+    // запускає pipeline у фоні. Дефолт 'manual'. Реєстри без поля читаються
+    // як 'manual' (розширення settings без schema bump — прецедент
+    // recon_history / moduleIntegration.ecits).
+    ecitsAutoProcess: 'manual',
     // TASK 0.2 — налаштування інтеграцій з зовнішніми системами.
     // Кожен модуль інтеграції тримає свою секцію тут. Зараз — лише ecits.
     moduleIntegration: {
@@ -167,4 +174,12 @@ export function getCurrentTenantId() {
 export function isCurrentUserFounder() {
   const user = getCurrentUser();
   return user?.isFounder === true;
+}
+
+// Канонічний доступ до режиму обробки ЄСІТС-INBOX (DP-2). Один сенс, одна
+// точка читання: відсутнє/невідоме значення → 'manual' (безпечний дефолт —
+// нічого не обробляється у фоні без явного вибору адвоката).
+export function getEcitsAutoProcess() {
+  const mode = getCurrentTenant()?.settings?.ecitsAutoProcess;
+  return mode === 'auto' ? 'auto' : 'manual';
 }

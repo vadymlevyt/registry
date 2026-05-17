@@ -52,6 +52,14 @@ export const DOCUMENT_ALTERNATIVE_SOURCE_ADDED = 'document.alternative_source_ad
 export const DOCUMENT_INGESTED = 'document.ingested';
 export const DOCUMENT_BATCH_PROCESSED = 'document.batch_processed';
 
+// ── ECITS INBOX pending indicator (DP-2) ───────────────────────────────────
+// Публікує ecitsInboxWatcher у режимі 'manual': у 00_INBOX_СПРАВИ зʼявились
+// нові файли з ЄСІТС, адвокат має запустити обробку вручну. Один сенс:
+// «є необроблені надходження» (НЕ «синхронізація відбулась» — то
+// ECITS_SYNC_COMPLETED; правило #11). Publisher — лише watcher; підписник
+// (індикатор у досьє) — DP-4. Зараз UI немає, подія behavior-neutral.
+export const ECITS_INBOX_PENDING = 'ecits.inbox_pending';
+
 export const ECITS_TOPICS = Object.freeze([
   ECITS_DOCUMENTS_RECEIVED,
   ECITS_HEARING_SCHEDULED,
