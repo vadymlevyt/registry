@@ -4,6 +4,10 @@ import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
 import { convertToPdf } from "../../services/converter/converterService.js";
+import { createDocumentPipeline } from "../../services/documentPipeline.js";
+import * as eventBus from "../../services/eventBus.js";
+import { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED } from "../../services/eventBusTopics.js";
+import { getCurrentUser } from "../../services/tenantService.js";
 import { inferNatureFromFile, defaultNatureForUI } from "../../services/detectDocumentNature.js";
 import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
 import { toast } from "../../services/toast.js";
@@ -16,7 +20,7 @@ import { runMultiTurnConversation, callAPIWithRetry } from "../../services/toolU
 import { DOSSIER_AGENT_TOOLS } from "../../services/toolDefinitions.js";
 import {
   Bot, FileText, FolderOpen, Folder, Cloud, Link2, Pin,
-  Edit, Trash2, Paperclip, Image, GitBranch, ClipboardList,
+  Edit, Trash2, GitBranch, ClipboardList,
   Scale, Calendar, Archive, Lightbulb, Check, MessageSquare,
   ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2,
 } from "lucide-react";
@@ -435,8 +439,6 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [newProc, setNewProc] = useState({ title: '', court: '', type: 'appeal' });
   const [docModalOpen, setDocModalOpen] = useState(false);
   const [newDoc, setNewDoc] = useState({ name: '', date: '', category: 'court_act', author: 'court', procId: '', tags: [], file: null });
-  const [dropQueue, setDropQueue] = useState([]);
-  const [isDragOver, setIsDragOver] = useState(false);
   const [creatingStructure, setCreatingStructure] = useState(false);
   const [storageState, setStorageState] = useState(caseData.storage || {});
   const [storageMsg, setStorageMsg] = useState('');
@@ -2172,116 +2174,6 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           ))}
         </div>
 
-        {/* Drop zone */}
-        <div
-          onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
-          onDragLeave={() => setIsDragOver(false)}
-          onDrop={e => {
-            e.preventDefault();
-            setIsDragOver(false);
-            const files = Array.from(e.dataTransfer.files);
-            setDropQueue(prev => [...prev, ...files.map(f => ({ file: f, status: "pending" }))]);
-          }}
-          onClick={() => document.getElementById("dossierDropInput").click()}
-          style={{
-            background: isDragOver ? "rgba(79,124,255,.05)" : "var(--color-surface)",
-            border: `2px dashed ${isDragOver ? "var(--color-accent)" : "var(--color-border)"}`,
-            borderRadius: 'var(--radius-md)', padding: 'var(--space-5)', textAlign: "center",
-            cursor: "pointer", transition: "all .2s", marginBottom: 12
-          }}
-        >
-          <div style={{ marginBottom: 8, opacity: .4, display: "flex", justifyContent: "center" }}><Paperclip size={28} /></div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-2)", marginBottom: 4 }}>
-            {isDragOver ? "Відпустіть файли" : "Перетягніть або натисніть"}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--color-text-3)" }}>{"PDF, JPEG, PNG, HEIC, Word, HTML — будь-яка кількість"}</div>
-          <input
-            id="dossierDropInput"
-            type="file"
-            multiple
-            accept=".pdf,.jpeg,.jpg,.png,.heic,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm"
-            style={{ display: "none" }}
-            onChange={e => {
-              const files = Array.from(e.target.files);
-              setDropQueue(prev => [...prev, ...files.map(f => ({ file: f, status: "pending" }))]);
-            }}
-          />
-        </div>
-
-        {/* Черга файлів */}
-        {dropQueue.length > 0 && (
-          <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', overflow: "hidden", marginBottom: 12 }}>
-            {dropQueue.map((item, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--color-border)" }}>
-                <span style={{ fontSize: 13, display: "inline-flex", alignItems: "center" }}>{item.file.name.match(/\.(jpg|jpeg|png|heic)$/i) ? <Image size={ICON_SIZE.sm} /> : <FileText size={ICON_SIZE.sm} />}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.file.name}</div>
-                  <div style={{ fontSize: 10, color: "var(--color-text-3)" }}>{(item.file.size / 1024 / 1024).toFixed(1)} {"МБ"}</div>
-                </div>
-                <span style={{
-                  fontSize: 10, fontWeight: 600,
-                  color: item.status === "done" ? "var(--color-success)" : item.status === "error" ? "var(--color-danger)" : "var(--color-text-2)"
-                }}>
-                  {item.status === "done" ? "\u2713" : item.status === "error" ? "\u2717" : "\u23f3"}
-                </span>
-              </div>
-            ))}
-            <div style={{ padding: 8, display: "flex", gap: 6 }}>
-              <button
-                onClick={() => setDropQueue([])}
-                style={{ flex: 1, background: "none", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11 }}
-              >{"Очистити"}</button>
-              <button
-                onClick={async () => {
-                  // Кожен файл додається через окремий add_document ACTION.
-                  // Race-condition між setState послідовних викликів вирішено
-                  // тим, що executeAction → setCases(prev => ...) використовує
-                  // функціональний апдейт (читає актуальний state).
-                  for (let i = 0; i < dropQueue.length; i++) {
-                    if (dropQueue[i].status === "done") continue;
-                    setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "uploading" } : item));
-                    try {
-                      const file = dropQueue[i].file;
-                      let driveId = null;
-                      if (driveConnected) {
-                        const prepared = await prepareFile(file);
-                        driveId = await uploadFileLocal(prepared, caseData);
-                      }
-                      // category/author/procId = null → маркер ⚠ для подальшої
-                      // ручної класифікації адвокатом (потребує перегляду).
-                      const newDoc = createDocument({
-                        driveId: driveId || null,
-                        driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-                        name: file.name,
-                        originalName: file.name,
-                        size: file.size,
-                        folder: '01_ОРИГІНАЛИ',
-                        addedBy: 'user',
-                        namingStatus: 'pending',
-                        category: null,
-                        author: null,
-                        procId: null,
-                      });
-                      if (onExecuteAction) {
-                        const result = await onExecuteAction('dossier_agent', 'add_document', {
-                          caseId: caseData.id,
-                          document: newDoc,
-                        });
-                        if (!result?.success) throw new Error(result?.error || 'add_document failed');
-                      }
-                      setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "done" } : item));
-                    } catch (err) {
-                      console.warn('[drag-n-drop] add_document failed:', err?.message || err);
-                      setDropQueue(prev => prev.map((item, idx) => idx === i ? { ...item, status: "error" } : item));
-                    }
-                  }
-                }}
-                style={{ flex: 2, background: "var(--color-accent)", border: "none", color: "#fff", padding: "5px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 600 }}
-              >{"\u25b6 Завантажити на Drive"}</button>
-            </div>
-          </div>
-        )}
-
       </div>
     );
   }
@@ -2949,172 +2841,141 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         caseData={{ ...caseData, proceedings }}
         driveConnected={driveConnected}
         onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts }) => {
-          let driveId = null;
-          let originalDriveId = null;
-          let originalMime = null;
-          // uploadedFile — File який реально пішов у Drive як основний (driveId).
-          // Для PDF це сам файл. Для DOCX/HTML/image — конвертований PDF.
-          // Для Drive picker — null (вже на Drive, конвертації не робимо).
-          let uploadedFile = null;
-          // extractedText — plain-текст витягнутий конвертером БЕЗ Document AI.
-          // Заповнений для docxToPdf/htmlToPdf, null для PDF/image/passthrough.
-          // Якщо непорожній — пишемо .txt у 02_ОБРОБЛЕНІ напряму і пропускаємо
-          // runOcrWithRetryUI. converterType фіксує гілку — для імплицитного
-          // вибору natureOverride і skip-OCR логіки нижче.
-          let extractedText = null;
-          let converterType = null;
-          // mergeArtifacts — від ImageMergePanel (TASK B). Містить готові
-          // extractedText + layoutJson з OCR який ВЖЕ був виконаний у multiImageToPdf
-          // pipeline. Тут НЕ запускаємо OCR заново (КРИТИЧНА вимога TASK B —
-          // один OCR на зображення, не на склеєний PDF).
-          let mergeLayoutJson = null;
-          // Дві гілки джерела файла:
-          //   А) Drive picker — файл вже на Drive, маркер _isDriveSource + _driveId.
-          //      Конвертацію не робимо (passthrough), беремо driveId одразу.
-          //      originalMime беремо з MIME який зберіг Drive.
-          //   Б) Device file picker — реальний File. converterService.convertToPdf
-          //      приводить до PDF (DOCX/HTML/image → PDF, PDF passthrough).
-          //      Для DOCX додатково зберігаємо оригінал як originalDriveId.
-          if (file?._isDriveSource && file?._driveId) {
-            driveId = file._driveId;
-            originalMime = file.type || null;
-          } else if (file && driveConnected) {
-            // Конвертація + upload. Помилки кидаємо наверх — модалка лишається
-            // відкритою, документ у реєстрі НЕ створюється, файли на Drive
-            // НЕ пишуться. Це краще ніж створити "пустий" документ з невалідним
-            // вмістом і ховати помилку у toast.
-            let conversion;
-            try {
-              conversion = await convertToPdf(file, {
-                caseId: caseData.id,
-                module: MODULES.CASE_DOSSIER,
-                operation: 'add_document',
-              });
-            } catch (err) {
-              console.error('Conversion error:', err);
-              toast.error('Не вдалось обробити файл', { description: err?.message });
-              throw err; // AddDocumentModal залишається відкритим
-            }
-
-            originalMime = conversion.originalMime;
-            extractedText = conversion.extractedText || null;
-            converterType = conversion.converter;
-
-            // Підготувати File для upload. Конвертований результат завжди PDF;
-            // passthrough може бути PDF або невідомий тип (лишаємо як є,
-            // Drive iframe покаже preview якщо може).
-            const isPdfBlob = conversion.converter !== 'passthrough'
-              || conversion.originalMime === 'application/pdf';
-            uploadedFile = isPdfBlob
-              ? new File([conversion.pdfBlob], `${conversion.pdfName}.pdf`, { type: 'application/pdf' })
-              : file;
-
-            try {
-              driveId = await uploadFileLocal(uploadedFile, caseData);
-            } catch (err) {
-              console.error('Upload error:', err);
-              toast.error('Не вдалось завантажити файл на Drive', { description: err?.message });
-              throw err;
-            }
-
-            // Якщо є originalBlob (DOCX) — завантажити поряд. Не критично:
-            // якщо впаде, PDF уже на Drive і документ створиться без originalDriveId.
-            if (conversion.originalBlob) {
-              try {
-                const origFile = new File(
-                  [conversion.originalBlob],
-                  file.name,
-                  { type: originalMime || file.type }
-                );
-                originalDriveId = await uploadFileLocal(origFile, caseData);
-              } catch (origErr) {
-                console.warn('Original (DOCX) upload failed:', origErr?.message);
-                toast.show('PDF створено, але оригінал DOCX не зберігся на Drive');
-              }
-            }
-
-            if (conversion.warnings && conversion.warnings.length > 0) {
-              console.info('[convertToPdf] warnings:', conversion.warnings);
-              // Якщо є warning про підозріло малий PDF — показуємо адвокату
-              // явним toast'ом замість мовчазного console.info. Інакше адвокат
-              // не побачить що PDF можливо порожній/неповний.
-              const suspiciousWarning = conversion.warnings.find(w => /unusually small|порожн/i.test(w));
-              if (suspiciousWarning) {
-                toast.warning('PDF створено, але може бути неповним', { description: suspiciousWarning });
-              }
-            }
-          }
-
-          // mergeArtifacts (TASK B) — file прийшов як готовий PDF з ImageMergePanel.
-          // OCR уже виконаний на КОЖНОМУ оригінальному зображенні всередині pipeline
-          // (multiImageToPdf.js), результати об'єднані у extractedText + layoutJson.
-          // Тут не запускаємо повторний OCR на склеєному PDF (Розумна економія).
-          if (mergeArtifacts) {
-            extractedText = mergeArtifacts.extractedText || null;
-            mergeLayoutJson = mergeArtifacts.layoutJson || null;
-            converterType = 'multiImageToPdf';
-            // Скан-документ (фото сторінок) — documentNature 'scanned'.
-            // pageStructure у layoutJson забезпечить майбутні модулі (AI Очищення).
-          }
-
+          // ── Інтеграція на documentPipeline (тонкий диригент DP-1) ──────────
+          // Детермінований core (convert → upload → createDocument →
+          // add_document → emit) проходить через диригент. Post-persist OCR-
+          // збагачення (UI-coupled: toasts/systemConfirm/Claude Vision-діалог)
+          // лишається тут — DP-3/DP-4 територія, живиться з виходу pipeline.
+          // Поведінка для адвоката без регресій (TASK A контракт збережено).
           const ICONS = {
-            court_act: '📋', pleading: '📄', motion: '📝',
-            evidence: '📎', contract: '📄', correspondence: '✉️',
-            identification: '🪪', other: '📁',
+            court_act: '\U0001F4CB', pleading: '\U0001F4C4', motion: '\U0001F4DD',
+            evidence: '\U0001F4CE', contract: '\U0001F4C4', correspondence: '✉️',
+            identification: '\U0001FAAA', other: '\U0001F4C1',
+          };
+          const isDriveSource = !!(file?._isDriveSource && file?._driveId);
+
+          // buildDocumentMetadata — ІН'ЄКТОВАНА доменна евристика nature/icon/
+          // source. Лишається у шарі що вже володіє detectDocumentNature —
+          // диригент і persist-стадія domain-free. DP-2 classify-стадія
+          // візьме цю відповідальність на себе без зміни диригента.
+          const buildDocumentMetadata = ({ item, driveId, originalDriveId }) => {
+            const fileForInfer = item.uploadedFile || file;
+            const isTextExtractedConvert =
+              item.converterType === 'docxToPdf' || item.converterType === 'htmlToPdf';
+            const initialNature = isTextExtractedConvert
+              ? 'searchable'
+              : (fileForInfer
+                  ? (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
+                      || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name }))
+                  : 'searchable');
+            return {
+              procId: procId || proceedings[0]?.id || 'proc_main',
+              name,
+              icon: ICONS[category] || '\U0001F4C4',
+              date,
+              category,
+              author,
+              isKey,
+              driveId: driveId || null,
+              driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
+              size: item.uploadedFile?.size || file?.size || 0,
+              originalName: file?.name || null,
+              originalDriveId: originalDriveId || null,
+              originalMime: item.originalMime ?? (isDriveSource ? (file?.type || null) : null),
+              folder: '01_ОРИГІНАЛИ',
+              addedBy: 'user',
+              namingStatus: 'manual',
+              documentNature: initialNature,
+              // source — канал ПОХОДЖЕННЯ: ручне додавання адвокатом. Канонічне
+              // 'manual' (не legacy 'manual_upload' — CLAUDE.md ЗАБОРОНЕНО legacy
+              // у новому коді; factory нормалізує обидва однаково).
+              source: 'manual',
+            };
           };
 
-          // initialNature — природа документа за File API до запуску OCR.
-          // image/* → 'scanned', docx/txt → 'searchable', PDF без deep-перевірки
-          // → 'scanned' (defaultNatureForUI: безпечно бо Drive iframe однаково
-          // покаже PDF). Після OCR коригуємо за тим який провайдер реально витяг
-          // текст: pdfjsLocal → 'searchable', documentAi/claudeVision → 'scanned'.
-          // Для конвертованих DOCX/HTML — явно 'searchable': текст уже витягнуто
-          // через mammoth/innerText, OCR pipeline ми пропускаємо, тому корекції
-          // після OCR не буде. PDF MIME конвертованого uploadedFile сам по собі
-          // дав би defaultNatureForUI='scanned' що неправильно для DOCX/HTML.
-          const fileForInfer = uploadedFile || file;
-          const isTextExtractedConvert = converterType === 'docxToPdf' || converterType === 'htmlToPdf';
-          const initialNature = isTextExtractedConvert
-            ? 'searchable'
-            : (fileForInfer
-                ? (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
-                    || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name }))
-                : 'searchable');
-
-          const doc = createDocument({
-            procId: procId || proceedings[0]?.id || 'proc_main',
-            name,
-            icon: ICONS[category] || '📄',
-            date,
-            category,
-            author,
-            isKey,
-            driveId,
-            driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-            size: uploadedFile?.size || file?.size || 0,
-            originalName: file?.name || null,
-            originalDriveId,
-            originalMime,
-            folder: '01_ОРИГІНАЛИ',
-            addedBy: 'user',
-            namingStatus: 'manual',
-            documentNature: initialNature,
-            source: 'manual_upload',
+          const pipeline = createDocumentPipeline({
+            convertToPdf,
+            uploadFile: uploadFileLocal,
+            createDocument,
+            buildDocumentMetadata,
+            persistDocument: async ({ caseId, document }) => {
+              if (onExecuteAction) {
+                return await onExecuteAction('dossier_agent', 'add_document', { caseId, document });
+              }
+              const updated = [...(caseData.documents || []), document];
+              updateCase && updateCase(caseData.id, 'documents', updated);
+              return { success: true };
+            },
+            eventBus,
+            topics: { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED },
+            getActor: () => {
+              const u = (typeof getCurrentUser === 'function' && getCurrentUser()) || {};
+              return { userId: u.userId ?? null, tenantId: u.tenantId ?? null };
+            },
           });
-          if (onExecuteAction) {
-            const r = await onExecuteAction('dossier_agent', 'add_document', {
-              caseId: caseData.id, document: doc,
-            });
-            if (!r?.success) {
-              toast.error('Не вдалось додати документ', { description: r?.error });
-              throw new Error(r?.error || 'add_document failed');
+
+          const result = await pipeline.run({
+            caseId: caseData.id,
+            caseData,
+            agentId: 'dossier_agent',
+            source: 'manual',
+            addedBy: 'user',
+            module: MODULES.CASE_DOSSIER,
+            operation: 'add_document',
+            conversionContext: {
+              caseId: caseData.id,
+              module: MODULES.CASE_DOSSIER,
+              operation: 'add_document',
+            },
+            files: [{
+              fileId: 'doc',
+              raw: (!isDriveSource && file && driveConnected) ? file : null,
+              isDriveSource,
+              driveId: isDriveSource ? file._driveId : null,
+              name: file?.name || null,
+              size: file?.size || 0,
+              type: file?.type || null,
+              originalMime: isDriveSource ? (file?.type || null) : null,
+              mergeArtifacts: mergeArtifacts || null,
+            }],
+          });
+
+          // Помилки → ТІ САМІ toast'и що були inline (модаль лишається
+          // відкритою, документ не створюється, на Drive нічого — TASK A).
+          if (!result.ok || result.stoppedAt) {
+            const e = (result.errors && result.errors[0]) || {};
+            if (e.code === 'CONVERT_FAILED') {
+              console.error('Conversion error:', e.message);
+              toast.error('Не вдалось обробити файл', { description: e.message });
+            } else if (e.code === 'UPLOAD_FAILED') {
+              console.error('Upload error:', e.message);
+              toast.error('Не вдалось завантажити файл на Drive', { description: e.message });
+            } else {
+              toast.error('Не вдалось додати документ', { description: e.message });
             }
-          } else {
-            const updated = [...(caseData.documents || []), doc];
-            updateCase && updateCase(caseData.id, 'documents', updated);
+            throw new Error(e.message || 'documentPipeline failed');
           }
 
-          // Якщо немає файлу або Drive недоступний — без OCR pipeline.
+          const persistedItem = result.files[0] || {};
+          const doc = result.documents[0];
+          const driveId = persistedItem.driveId || null;
+          const extractedText = persistedItem.extractedText || null;
+          const mergeLayoutJson = persistedItem.mergeLayoutJson || null;
+          const fileForInfer = persistedItem.uploadedFile || file;
+
+          const warns = persistedItem.warnings || [];
+          if (warns.length > 0) console.info('[documentPipeline] warnings:', warns);
+          if (warns.includes('ORIGINAL_UPLOAD_FAILED')) {
+            toast.show('PDF створено, але оригінал DOCX не зберігся на Drive');
+          }
+          const suspiciousWarning = warns.find(
+            w => typeof w === 'string' && /unusually small|порожн/i.test(w)
+          );
+          if (suspiciousWarning) {
+            toast.warning('PDF створено, але може бути неповним', { description: suspiciousWarning });
+          }
+
+          // Post-persist OCR pipeline — точно той самий ланцюг що був inline.
           const subFolders = caseData?.storage?.subFolders;
           const hasOcrTarget = !!fileForInfer && !!driveId && !!subFolders?.['02_ОБРОБЛЕНІ'];
           if (!hasOcrTarget) {
@@ -3129,12 +2990,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             subFolders,
           };
 
-          // Гілка А — текст уже витягнуто конвертером (DOCX через mammoth,
-          // HTML через innerText). Document AI НЕ викликаємо: text у DOCX/HTML
-          // уже структурований і повний, OCR на render-PDF дав би гірший
-          // результат і даремну витрату токенів. Пишемо .txt у 02_ОБРОБЛЕНІ
-          // напряму через ocrService.writeExtractedTextArtifact — та сама назва
-          // (<basename>_<driveId>.txt), тому getCachedText знайде при відкритті.
+          // Гілка А — текст уже витягнуто конвертером (DOCX mammoth / HTML
+          // innerText). Document AI НЕ викликаємо: пишемо .txt у 02_ОБРОБЛЕНІ
+          // напряму (та сама назва — getCachedText знайде при відкритті).
           if (extractedText) {
             toast.success('Документ додано');
             try {
@@ -3147,9 +3005,6 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             } catch (e) {
               console.warn('[writeExtractedTextArtifact] failed:', e?.message || e);
             }
-            // mergeArtifacts: додатково записуємо .layout.json (pageStructure
-            // об'єднана у фінальному порядку всіх сторінок). Це дозволяє
-            // майбутньому AI Очищенню працювати з координатами слів.
             if (mergeLayoutJson) {
               try {
                 await ocrService.writeLayoutArtifact?.(ocrFile, mergeLayoutJson);
@@ -3157,7 +3012,6 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 console.warn('[writeLayoutArtifact merge] failed:', e?.message || e);
               }
             }
-            // lastOcrAt відмічаємо щоб Viewer не намагався запустити re-OCR.
             if (onExecuteAction && doc) {
               try {
                 await onExecuteAction('dossier_agent', 'update_document', {
@@ -3172,17 +3026,14 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             return;
           }
 
-          // Гілка Б — для типу немає OCR провайдера (XLSX, PPTX, Google Docs
-          // напряму, або непідтримуваний passthrough). Viewer покаже оригінал
-          // через iframe Drive.
+          // Гілка Б — немає OCR провайдера (XLSX/PPTX/passthrough). Viewer
+          // покаже оригінал через iframe Drive.
           if (!ocrService.hasOcrSupport(ocrFile)) {
             toast.success('Документ додано');
             return;
           }
 
-          // Гілка В — PDF/image. Запускаємо OCR pipeline. Корекція
-          // documentNature і lastOcrAt — окремим update_document через
-          // runOcrWithRetryUI. Retry і Claude Vision-діалог — узагальнено.
+          // Гілка В — PDF/image. OCR pipeline з retry + Claude Vision-діалог.
           toast.success('Документ додано');
           await runOcrWithRetryUI({
             file: ocrFile,
