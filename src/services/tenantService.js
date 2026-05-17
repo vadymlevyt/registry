@@ -199,3 +199,14 @@ export function getEcitsAutoProcess() {
 export function getSplitterDatasetEnabled() {
   return getCurrentTenant()?.settings?.splitterDatasetEnabled === true;
 }
+
+// Сетер прапора збору датасету (DP-4 UI toggle). Один сенс: записати вибір
+// адвоката у tenant.settings. Поки tenant — singleton-заглушка; у SaaS це
+// піде через persist шар тенанта. Окремий setter (не розширення гетера) —
+// правило #11.
+export function setSplitterDatasetEnabled(enabled) {
+  const t = getCurrentTenant();
+  if (!t.settings) t.settings = {};
+  t.settings.splitterDatasetEnabled = enabled === true;
+  return t.settings.splitterDatasetEnabled;
+}

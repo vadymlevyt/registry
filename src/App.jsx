@@ -6,6 +6,7 @@ import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
 import JobProgressTopbar from './components/JobProgressTopbar';
 import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx';
+import { ECITSRegistryBadge } from './components/ECITSBanner/RegistryBadge.jsx';
 import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
@@ -5061,6 +5062,7 @@ function App() {
               calendarEvents={calendarEvents}
               onExecuteAction={executeAction}
               setAiUsage={setAiUsage}
+              onOpenCase={(id) => { const c = cases.find(x => x.id === id); if (c) setDossierCase(c); }}
             />
           )}
           {!dossierCase && tab === 'cases' && (
@@ -5094,6 +5096,7 @@ function App() {
                 {filteredCases.map(c => (
                   <div key={c.id} style={{position:'relative'}}>
                     <CaseCard c={c} onClick={() => setDossierCase(c)} />
+                    <ECITSRegistryBadge caseId={c.id} />
                     {c.status === 'closed' && (
                       <div style={{position:'absolute', bottom:8, right:8, display:'flex', gap:4}}>
                         <button onClick={(e) => { e.stopPropagation(); restoreCase(c.id); }} style={{

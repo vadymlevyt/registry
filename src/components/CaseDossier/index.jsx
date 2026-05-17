@@ -22,12 +22,14 @@ import {
   Bot, FileText, FolderOpen, Folder, Cloud, Link2, Pin,
   Edit, Trash2, GitBranch, ClipboardList,
   Scale, Calendar, Archive, Lightbulb, Check, MessageSquare,
-  ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2,
+  ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2, Wrench,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
 import { DatePicker, DateTimePicker, Input, Modal, Button } from "../UI";
 import { DocumentViewer } from "../DocumentViewer";
 import { AddDocumentModal } from "./AddDocumentModal.jsx";
+import DocumentProcessorV2 from "../DocumentProcessorV2";
+import { ECITSBanner } from "../ECITSBanner";
 import { DeleteDocumentModal } from "./DeleteDocumentModal.jsx";
 import { ArchiveView } from "./ArchiveView.jsx";
 import "./CaseDossier.css";
@@ -2538,6 +2540,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   const tabs = [
     { id: "overview",     icon: ClipboardList, label: "Огляд" },
     { id: "materials",    icon: Folder,        label: "Матеріали", badge: documents.length },
+    { id: "docwork",      icon: Wrench,        label: "Робота з документами" },
     { id: "position",     icon: Scale,         label: "Позиція" },
     { id: "templates",    icon: FileText,      label: "Шаблони" }
   ];
@@ -2581,6 +2584,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         </div>
       </div>
 
+      {/* ECITS Банер (Точка 1) — нові надходження з Court Sync */}
+      <ECITSBanner
+        caseId={caseData.id}
+        onProcess={() => setActiveTab("docwork")}
+        onViewList={() => setActiveTab("docwork")}
+      />
+
       {/* ВКЛАДКИ */}
       <div style={{ display: "flex", borderBottom: "1px solid var(--color-border)", flexShrink: 0, padding: "0 16px", gap: 2, background: "var(--color-bg)", position: "relative", zIndex: 200 }}>
         {tabs.map(tab => {
@@ -2601,6 +2611,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', minWidth: 0 }}>
           {activeTab === "overview" && renderOverview()}
           {activeTab === "materials" && renderMaterials()}
+          {activeTab === "docwork" && (
+            <DocumentProcessorV2
+              caseData={caseData}
+              onExecuteAction={onExecuteAction}
+              driveConnected={driveConnected}
+            />
+          )}
           {["position", "templates"].includes(activeTab) && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--color-text-3)", gap: 12 }}>
               <div style={{ opacity: .2, display: "flex", justifyContent: "center" }}>{activeTab === "position" ? <Scale size={48} /> : <FileText size={48} />}</div>

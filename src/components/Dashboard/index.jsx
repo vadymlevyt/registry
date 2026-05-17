@@ -4,6 +4,7 @@ import { logAiUsage } from "../../services/aiUsageService";
 import { resolveModel } from "../../services/modelResolver";
 import * as activityTracker from "../../services/activityTracker";
 import { MODULES, categoryForCase } from "../../services/moduleNames.js";
+import { ECITSDashboardSection } from "../ECITSBanner/DashboardSection.jsx";
 
 const MONTHS_UK = [
   "Січень","Лютий","Березень","Квітень","Травень","Червень",
@@ -1007,7 +1008,7 @@ const vBtnActive = {
   color: "#fff"
 };
 
-export default function Dashboard({ cases, calendarEvents, onExecuteAction, setAiUsage }) {
+export default function Dashboard({ cases, calendarEvents, onExecuteAction, setAiUsage, onOpenCase }) {
   const [curMonth, setCurMonth] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState(todayStr());
   const [calView, setCalView] = useState("month");
@@ -1801,7 +1802,10 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
   const weekDays = calView === "week" ? getWeekDays(selectedDay) : [];
 
   return (
-    <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden", height: "100%" }}>
+      {/* DP-4 · ECITS Точка 3 — рендериться лише коли є справи з INBOX */}
+      <ECITSDashboardSection cases={cases} onOpenCase={onOpenCase} />
+      <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
 
       {/* ── ACTIVITY FEED ── */}
       <div style={{ flex: 1, borderRight: "1px solid var(--border, #2e3148)", display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
@@ -2700,6 +2704,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
           </div>
         </div>
       )}
+    </div>
     </div>
   );
 }
