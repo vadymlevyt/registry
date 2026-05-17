@@ -5,6 +5,7 @@ import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
 import JobProgressTopbar from './components/JobProgressTopbar';
+import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx';
 import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
@@ -5003,6 +5004,7 @@ function App() {
   }
 
   return (
+    <DocumentPipelineProvider executeAction={executeAction}>
     <div className="app">
       {/* TOPBAR */}
       <div className="topbar">
@@ -5243,6 +5245,7 @@ function App() {
       <SystemModalRoot />
       <ToastContainer />
     </div>
+    </DocumentPipelineProvider>
   );
 }
 
