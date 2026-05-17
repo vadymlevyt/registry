@@ -461,11 +461,12 @@ describe('eventBusTopics — нові v7 топіки', () => {
     expect(DOCUMENT_BATCH_PROCESSED).toBe('document.batch_processed');
   });
 
-  it('DOCUMENT_TOPICS — frozen array з 4 елементами', () => {
+  it('DOCUMENT_TOPICS — frozen array з 5 елементами (DP-3 +fragment_saved)', () => {
     expect(Object.isFrozen(DOCUMENT_TOPICS)).toBe(true);
-    expect(DOCUMENT_TOPICS).toHaveLength(4);
+    expect(DOCUMENT_TOPICS).toHaveLength(5);
     expect(DOCUMENT_TOPICS).toContain(DOCUMENT_INGESTED);
     expect(DOCUMENT_TOPICS).toContain(DOCUMENT_BATCH_PROCESSED);
+    expect(DOCUMENT_TOPICS).toContain('document.fragment_saved');
     expect(DOCUMENT_TOPICS).toContain(DOCUMENT_MOVEMENT_CARD_UPDATED);
     expect(DOCUMENT_TOPICS).toContain(DOCUMENT_ALTERNATIVE_SOURCE_ADDED);
   });

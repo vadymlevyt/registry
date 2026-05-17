@@ -4,6 +4,7 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
+import JobProgressTopbar from './components/JobProgressTopbar';
 import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
@@ -5006,6 +5007,9 @@ function App() {
       {/* TOPBAR */}
       <div className="topbar">
         <div className="topbar-logo">АБ <span>Левицького</span></div>
+        {/* DP-3 — фоновий прогрес. Сам зникає коли немає активних jobs
+            (jobProgressStore). Слот між логотипом і «збережено». */}
+        <JobProgressTopbar />
         <div className="topbar-right" style={{display:'flex',gap:8,alignItems:'center'}}>
           {lastSaved && <span style={{fontSize:10,color:'var(--text3)',letterSpacing:'0.04em'}}>збережено {lastSaved}</span>}
           <button className="btn-sm btn-ghost" onClick={async () => {

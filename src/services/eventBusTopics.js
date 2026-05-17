@@ -52,6 +52,15 @@ export const DOCUMENT_ALTERNATIVE_SOURCE_ADDED = 'document.alternative_source_ad
 export const DOCUMENT_INGESTED = 'document.ingested';
 export const DOCUMENT_BATCH_PROCESSED = 'document.batch_processed';
 
+// ── Document fragment saved (DP-3) ─────────────────────────────────────────
+// Публікує стадія saveFragments коли невикористана сторінка (порожня між
+// документами, обривок без контексту, неприналежна сторінка) збережена у
+// 03_ФРАГМЕНТИ/. Один сенс: «не визначена як документ сторінка збережена
+// окремо» (НЕ document.ingested — фрагмент свідомо НЕ канонічний документ;
+// правило #11). Publisher — лише saveFragments; підписник (UI вибору
+// зберегти/видалити) — DP-4. Зараз UI немає, подія behavior-neutral.
+export const DOCUMENT_FRAGMENT_SAVED = 'document.fragment_saved';
+
 // ── ECITS INBOX pending indicator (DP-2) ───────────────────────────────────
 // Публікує ecitsInboxWatcher у режимі 'manual': у 00_INBOX_СПРАВИ зʼявились
 // нові файли з ЄСІТС, адвокат має запустити обробку вручну. Один сенс:
@@ -85,6 +94,7 @@ export const V7_EDIT_TOPICS = Object.freeze([
 export const DOCUMENT_TOPICS = Object.freeze([
   DOCUMENT_INGESTED,
   DOCUMENT_BATCH_PROCESSED,
+  DOCUMENT_FRAGMENT_SAVED,
   DOCUMENT_MOVEMENT_CARD_UPDATED,
   DOCUMENT_ALTERNATIVE_SOURCE_ADDED,
 ]);

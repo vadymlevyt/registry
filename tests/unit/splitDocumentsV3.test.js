@@ -1,0 +1,153 @@
+// DP-3 — splitDocumentsV3 (persist override): реальний split + saveFragments
+// + datasetCollector. Контракт стадії DP-1 збережено.
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createSplitDocumentsV3 } from '../../src/services/documentPipeline/stages/splitDocumentsV3.js';
+import { createWorkerClient } from '../../src/services/documentPipeline/workerClient.js';
+import { createMemDrivePort } from '../_memDrivePort.js';
+import { makePdfBytes } from '../_pdfFixture.js';
+
+const wc = createWorkerClient({ forceInProcess: true });
+
+async function seedSource(port, fileId, pages) {
+  const folder = await port.getOrCreateFolder('_temp', null);
+  const bytes = await makePdfBytes(pages);
+  const up = await port.uploadBytes(folder.id, `orig_${fileId}.pdf`, bytes, 'application/pdf');
+  return up.id;
+}
+
+function baseCtx(port, { plan, files, unusedPages = [] }) {
+  return {
+    job: {
+      caseId: 'c1', jobId: 'j1', addedBy: 'system', source: 'manual',
+      caseData: { id: 'c1', storage: { subFolders: {} } },
+    },
+    files, documents: [], decisions: [], events: [],
+    reconstructionPlan: plan, unusedPages,
+  };
+}
+
+describe('splitDocumentsV3 — A. plan-based split', () => {
+  let port, persistDocument, created;
+  beforeEach(() => {
+    port = createMemDrivePort();
+    created = [];
+    persistDocument = vi.fn(async ({ document }) => { created.push(document); return { success: true }; });
+  });
+
+  it('мультифайловий документ: фрагменти з 2 файлів → 1 PDF, 1 canonical запис', async () => {
+    const d1 = await seedSource(port, 'f1', 6);
+    const d2 = await seedSource(port, 'f2', 4);
+    const plan = {
+      confirmed: true,
+      documents: [{
+        documentId: 'doc1', name: 'Позов', type: 'pleading', category: 'pleading',
+        fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }, { fileId: 'f2', startPage: 1, endPage: 2 }],
+      }],
+      unusedPages: [],
+    };
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: vi.fn(async () => 'final_drive_1'),
+      createDocument: (m) => ({ id: 'docx1', ...m }),
+      persistDocument,
+    });
+    const ctx = baseCtx(port, {
+      plan,
+      files: [
+        { fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} },
+        { fileId: 'f2', driveId: d2, skipped: false, metadataTemplate: {} },
+      ],
+    });
+    const res = await stage(ctx);
+    expect(res.ok).toBe(true);
+    expect(res.ctx.documents).toHaveLength(1);
+    expect(persistDocument).toHaveBeenCalledTimes(1);
+    expect(created[0].name).toBe('Позов.pdf');
+    expect(created[0].category).toBe('pleading');
+  });
+
+  it('persistDocument fail → PERSIST_FAILED fatal (контракт DP-1)', async () => {
+    const d1 = await seedSource(port, 'f1', 4);
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'x',
+      createDocument: (m) => ({ id: 'd', ...m }),
+      persistDocument: async () => ({ success: false, error: 'dup id' }),
+    });
+    const res = await stage(baseCtx(port, {
+      plan: { confirmed: true, documents: [{ documentId: 'd1', name: 'A', fragments: [{ fileId: 'f1', startPage: 1, endPage: 2 }] }] },
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+    }));
+    expect(res.ok).toBe(false);
+    expect(res.error.code).toBe('PERSIST_FAILED');
+    expect(res.error.fatal).toBe(true);
+  });
+});
+
+describe('splitDocumentsV3 — B. fallback (нема плану, behavior-preserving)', () => {
+  it('один файл без плану → persist як один документ', async () => {
+    const port = createMemDrivePort();
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'd1', ...m }),
+      persistDocument,
+    });
+    const res = await stage(baseCtx(port, {
+      plan: null,
+      files: [{ fileId: 'f0', uploadedFile: { name: 'a.pdf', arrayBuffer: async () => new ArrayBuffer(8) }, skipped: false, metadataTemplate: {} }],
+    }));
+    expect(res.ok).toBe(true);
+    expect(res.ctx.documents).toHaveLength(1);
+    expect(persistDocument).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('splitDocumentsV3 — saveFragments + dataset', () => {
+  it('unusedPages → 03_ФРАГМЕНТИ + подія DOCUMENT_FRAGMENT_SAVED', async () => {
+    const port = createMemDrivePort();
+    const d1 = await seedSource(port, 'f1', 8);
+    const fragFolder = await port.getOrCreateFolder('03_ФРАГМЕНТИ', null);
+    const published = [];
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'd1', ...m }),
+      persistDocument: async () => ({ success: true }),
+      eventBus: { publish: (t, p) => published.push({ t, p }) },
+      topics: { DOCUMENT_FRAGMENT_SAVED: 'document.fragment_saved' },
+    });
+    const ctx = baseCtx(port, {
+      plan: { confirmed: true, documents: [{ documentId: 'd1', name: 'A', fragments: [{ fileId: 'f1', startPage: 1, endPage: 4 }] }] },
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+      unusedPages: [{ fileId: 'f1', startPage: 7, endPage: 7, reason: 'порожня сторінка' }],
+    });
+    ctx.job.caseData.storage.subFolders['03_ФРАГМЕНТИ'] = fragFolder.id;
+    const res = await stage(ctx);
+    expect(res.ok).toBe(true);
+    expect(res.decisions.some((d) => d.type === 'fragments_saved' && d.count === 1)).toBe(true);
+    expect(port._allNames().some((n) => /^fragment_001\.pdf$/.test(n))).toBe(true);
+    expect(port._allNames()).toContain('fragments_log.json');
+    expect(published.some((e) => e.t === 'document.fragment_saved')).toBe(true);
+  });
+
+  it('datasetCollector викликається лише коли gated toggle on', async () => {
+    const port = createMemDrivePort();
+    const d1 = await seedSource(port, 'f1', 3);
+    const collect = vi.fn(async () => ({ written: true, exampleCount: 1 }));
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'd1', ...m }),
+      persistDocument: async () => ({ success: true }),
+      datasetCollector: { collect },
+    });
+    const res = await stage(baseCtx(port, {
+      plan: { confirmed: true, documents: [{ documentId: 'd1', name: 'A', fragments: [{ fileId: 'f1', startPage: 1, endPage: 2 }] }], unusedPages: [] },
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+    }));
+    expect(collect).toHaveBeenCalledTimes(1);
+    expect(res.decisions.some((d) => d.type === 'dataset_collected')).toBe(true);
+  });
+});

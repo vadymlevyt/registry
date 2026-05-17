@@ -96,6 +96,15 @@ export const DEFAULT_TENANT = {
     // як 'manual' (розширення settings без schema bump — прецедент
     // recon_history / moduleIntegration.ecits).
     ecitsAutoProcess: 'manual',
+    // splitterDatasetEnabled — DP-3. ЄДИНИЙ сенс: чи зберігати корисні дані
+    // для майбутнього тренування власного спліттера (межі/типи документів,
+    // layout.json метадані, OCR-текст, thumbnails критичних сторінок) після
+    // стадії confirm. true = datasetCollector пише у _datasets/; false =
+    // нічого не пише. Дефолт false. Без технічної анонімізації — натомість
+    // дисклеймер про адвокатську таємницю в UI (DP-4). Реєстри без поля
+    // читаються як false (розширення settings без schema bump — той самий
+    // прецедент що ecitsAutoProcess / recon_history).
+    splitterDatasetEnabled: false,
     // TASK 0.2 — налаштування інтеграцій з зовнішніми системами.
     // Кожен модуль інтеграції тримає свою секцію тут. Зараз — лише ecits.
     moduleIntegration: {
@@ -182,4 +191,11 @@ export function isCurrentUserFounder() {
 export function getEcitsAutoProcess() {
   const mode = getCurrentTenant()?.settings?.ecitsAutoProcess;
   return mode === 'auto' ? 'auto' : 'manual';
+}
+
+// Канонічний доступ до прапора збору датасету спліттера (DP-3). Один сенс,
+// одна точка читання: відсутнє/не-true значення → false (безпечний дефолт —
+// без явного вибору адвоката нічого не збирається).
+export function getSplitterDatasetEnabled() {
+  return getCurrentTenant()?.settings?.splitterDatasetEnabled === true;
 }

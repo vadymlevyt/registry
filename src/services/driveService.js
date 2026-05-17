@@ -502,6 +502,64 @@ export async function deleteOcrCacheForDocument(caseData, doc) {
   return deletedAny;
 }
 
+// DP-3 §4.11 — вільне місце на Drive перед стартом великого пакета.
+// about.get повертає storageQuota { limit, usage }. Деякі акаунти (Workspace
+// pooled / unlimited) не мають limit — тоді трактуємо як «місця досить»
+// (limitless: true), не блокуємо. Кидати не можна — перевірка не критична.
+export async function getDriveQuota() {
+  try {
+    const res = await driveRequest(
+      'https://www.googleapis.com/drive/v3/about?fields=storageQuota'
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const q = data?.storageQuota || {};
+    const usage = Number(q.usage);
+    const limit = q.limit != null ? Number(q.limit) : null;
+    if (!Number.isFinite(usage)) return null;
+    if (limit == null || !Number.isFinite(limit)) {
+      return { usage, limit: null, free: Infinity, limitless: true };
+    }
+    return { usage, limit, free: Math.max(0, limit - usage), limitless: false };
+  } catch {
+    return null;
+  }
+}
+
+export async function uploadBytesToDrive(folderId, fileName, bytes, mimeType = 'application/octet-stream') {
+  const metadata = { name: fileName, parents: [folderId] };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', new Blob([bytes], { type: mimeType }));
+  const res = await driveRequest(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+    { method: 'POST', body: form }
+  );
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`uploadBytesToDrive ${res.status}: ${t.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+export async function readDriveFileBytes(fileId) {
+  const res = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
+  );
+  if (!res.ok) throw new Error(`readDriveFileBytes ${res.status}`);
+  return res.arrayBuffer();
+}
+
+export async function listFolderWithModified(folderId) {
+  const q = `'${folderId}' in parents and trashed=false`;
+  const res = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,modifiedTime,size)&pageSize=1000`
+  );
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.files || [];
+}
+
 export async function updateDriveFile(fileId, content, token) {
   const res = await driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
     method: 'PATCH',
