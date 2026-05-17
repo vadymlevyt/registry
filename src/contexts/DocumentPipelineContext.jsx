@@ -47,7 +47,9 @@ import {
   DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED, DOCUMENT_FRAGMENT_SAVED,
 } from '../services/eventBusTopics.js';
 
-const DocumentPipelineContext = createContext(null);
+// Експортуємо контекст — тестовий seam: UI-тести підставляють fake value
+// без реального executor (Drive/OCR/AI) і перевіряють UI→pipeline контракт.
+export const DocumentPipelineContext = createContext(null);
 
 export function useDocumentPipeline() {
   return useContext(DocumentPipelineContext);

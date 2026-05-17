@@ -1,0 +1,73 @@
+// @vitest-environment jsdom
+// DP-4 — DocumentProcessorV2: 4 зони, 8 перемикачів, дисклеймер датасету,
+// кнопка «Розпочати» вимкнена без файлів. Контекст — fake value (seam).
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+vi.mock('../../src/services/ocrService.js', () => ({
+  extractText: vi.fn(async () => ({ text: '', pageStructure: null })),
+  localizeOcrError: () => 'помилка',
+  writeExtractedTextArtifact: vi.fn(async () => true),
+  writeLayoutArtifact: vi.fn(async () => true),
+  getCachedText: vi.fn(async () => null),
+  hasOcrSupport: () => true,
+  extractTextBatch: vi.fn(async () => []),
+}));
+import { render, screen } from '@testing-library/react';
+import { DocumentPipelineContext } from '../../src/contexts/DocumentPipelineContext.jsx';
+import DocumentProcessorV2 from '../../src/components/DocumentProcessorV2/index.jsx';
+import * as store from '../../src/services/documentPipeline/jobProgressStore.js';
+
+const CTX = { run: vi.fn(), cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+const CASE = { id: 'case_t', name: 'Тест', storage: { subFolders: {} } };
+
+function renderDP() {
+  return render(
+    <DocumentPipelineContext.Provider value={CTX}>
+      <DocumentProcessorV2 caseData={CASE} onExecuteAction={vi.fn()} driveConnected={false} />
+    </DocumentPipelineContext.Provider>,
+  );
+}
+
+describe('DocumentProcessorV2', () => {
+  beforeEach(() => store._resetForTests());
+
+  it('header: назва + 2 швидкі функції', () => {
+    renderDP();
+    expect(screen.getByText('Робота з документами')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Розпізнати текст/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Стиснути файл/ })).toBeInTheDocument();
+  });
+
+  it('4 зони присутні', () => {
+    renderDP();
+    expect(screen.getByText(/Зона 1 · Вхідна/)).toBeInTheDocument();
+    expect(screen.getByText(/Зона 2 · Налаштування/)).toBeInTheDocument();
+    expect(screen.getByText(/Зона 3 · Аналіз і результат/)).toBeInTheDocument();
+  });
+
+  it('8 перемикачів обробки з правильними назвами', () => {
+    renderDP();
+    for (const lbl of [
+      'Розкласти по провадженнях',
+      'Перевірка цілісності перед обробкою',
+      'Очистити для читання',
+      'Згенерувати короткий зміст',
+      'Стиснути всі файли пакета',
+      'Запропонувати дедлайни з документів',
+      'Оновити case_context.md',
+      'Заповнити картку справи з документів',
+    ]) {
+      expect(screen.getByText(lbl)).toBeInTheDocument();
+    }
+  });
+
+  it('дисклеймер датасету присутній', () => {
+    renderDP();
+    expect(screen.getByText(/Технічної анонімізації не виконується/)).toBeInTheDocument();
+  });
+
+  it('«Розпочати» вимкнена коли немає файлів', () => {
+    renderDP();
+    const btn = screen.getByRole('button', { name: /Розпочати обробку/ });
+    expect(btn).toBeDisabled();
+  });
+});
