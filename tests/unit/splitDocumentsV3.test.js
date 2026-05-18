@@ -104,6 +104,86 @@ describe('splitDocumentsV3 — B. fallback (нема плану, behavior-preser
   });
 });
 
+describe('splitDocumentsV3 — DP-4 bugfix (Bug 6/7 + класифікація)', () => {
+  let port;
+  beforeEach(() => { port = createMemDrivePort(); });
+
+  it('Bug 7: fallback без плану — байти з _temp driveId перезаливаються через uploadFile (не reuse temp id)', async () => {
+    const temp = await seedSource(port, 'f1', 4);          // лежить у _temp
+    const uploadFile = vi.fn(async () => 'persistent_01');
+    const created = [];
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port, uploadFile,
+      createDocument: (m) => ({ id: 'd1', ...m }),
+      persistDocument: async ({ document }) => { created.push(document); return { success: true }; },
+    });
+    const res = await stage(baseCtx(port, {
+      plan: null,
+      files: [{ fileId: 'f1', name: 'Скан.pdf', driveId: temp, skipped: false, metadataTemplate: {} }],
+    }));
+    expect(res.ok).toBe(true);
+    expect(uploadFile).toHaveBeenCalledTimes(1);            // перезалив, не reuse
+    expect(created[0].driveId).toBe('persistent_01');       // персистентний, не temp
+    expect(created[0].driveId).not.toBe(temp);
+  });
+
+  it('Bug 6: точний дублікат (назва+pageCount) → пропуск + decision duplicate_skipped', async () => {
+    const d1 = await seedSource(port, 'f1', 3);
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: vi.fn(async () => 'drv'),
+      createDocument: (m) => ({ id: 'dX', ...m }),
+      persistDocument,
+    });
+    const ctx = baseCtx(port, {
+      plan: { confirmed: true, documents: [{ documentId: 'd1', name: 'Позов', type: 'pleading', fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }] }], unusedPages: [] },
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+    });
+    ctx.job.caseData.documents = [{ id: 'old', name: 'Позов.pdf', pageCount: 3 }];
+    const res = await stage(ctx);
+    expect(res.ok).toBe(true);
+    expect(persistDocument).not.toHaveBeenCalled();
+    expect(res.decisions.some((x) => x.type === 'duplicate_skipped')).toBe(true);
+  });
+
+  it('Bug 6: схожа назва, інший pageCount → додається + decision duplicate_review', async () => {
+    const d1 = await seedSource(port, 'f1', 3);
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: vi.fn(async () => 'drv'),
+      createDocument: (m) => ({ id: 'dX', ...m }),
+      persistDocument,
+    });
+    const ctx = baseCtx(port, {
+      plan: { confirmed: true, documents: [{ documentId: 'd1', name: 'Позов', type: 'pleading', fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }] }], unusedPages: [] },
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+    });
+    ctx.job.caseData.documents = [{ id: 'old', name: 'Позов.pdf', pageCount: 99 }];
+    const res = await stage(ctx);
+    expect(persistDocument).toHaveBeenCalledTimes(1);
+    expect(res.decisions.some((x) => x.type === 'duplicate_review')).toBe(true);
+  });
+
+  it('класифікація: category виводиться з doc.type коли doc.category відсутня', async () => {
+    const d1 = await seedSource(port, 'f1', 2);
+    const created = [];
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: vi.fn(async () => 'drv'),
+      createDocument: (m) => ({ id: 'dX', ...m }),
+      persistDocument: async ({ document }) => { created.push(document); return { success: true }; },
+    });
+    const res = await stage(baseCtx(port, {
+      plan: { confirmed: true, documents: [{ documentId: 'd1', name: 'Ухвала', type: 'court_act', fragments: [{ fileId: 'f1', startPage: 1, endPage: 2 }] }], unusedPages: [] },
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+    }));
+    expect(res.ok).toBe(true);
+    expect(created[0].category).toBe('court_act');
+  });
+});
+
 describe('splitDocumentsV3 — saveFragments + dataset', () => {
   it('unusedPages → 03_ФРАГМЕНТИ + подія DOCUMENT_FRAGMENT_SAVED', async () => {
     const port = createMemDrivePort();

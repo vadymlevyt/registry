@@ -18,8 +18,6 @@ import { driveRequest } from '../../services/driveAuth.js';
 import { readDriveFileBytes } from '../../services/driveService.js';
 import { getSplitterDatasetEnabled, setSplitterDatasetEnabled } from '../../services/tenantService.js';
 import { useDocumentPipeline } from '../../contexts/DocumentPipelineContext.jsx';
-import { useJobProgress } from './useJobProgress.js';
-import { ProgressFullScreen } from './ProgressFullScreen.jsx';
 import { DrivePicker } from './DrivePicker.jsx';
 import { RecognizeTextModal } from './modals/RecognizeTextModal.jsx';
 import { CompressFilesModal } from './modals/CompressFilesModal.jsx';
@@ -52,11 +50,6 @@ function humanSize(b) {
 
 export default function DocumentProcessorV2({ caseData, onExecuteAction, driveConnected }) {
   const pipeline = useDocumentPipeline();
-  const jobs = useJobProgress();
-  const activeJob = useMemo(
-    () => jobs.find((j) => j.caseId === caseData?.id) || null,
-    [jobs, caseData],
-  );
 
   const [selected, setSelected] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -64,7 +57,6 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   const [result, setResult] = useState(null);
   const [resultTab, setResultTab] = useState('tree');
   const [dragOver, setDragOver] = useState(false);
-  const [minimized, setMinimized] = useState(false);
 
   const [inboxFiles, setInboxFiles] = useState([]);
   const [inboxChecked, setInboxChecked] = useState(() => new Set());
@@ -194,7 +186,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     }
     setRunning(true);
     setResult(null);
-    setMinimized(false);
+    pipeline.expandProgress?.();        // новий run → повноекранний прогрес (не топбар)
     try {
       const input = await buildRunInput();
       if (input.files.length === 0) { toast.warning('Немає файлів для обробки'); setRunning(false); return; }
@@ -239,8 +231,6 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     setTimeout(() => startProcessing(), 0);
   };
 
-  const onCancelJob = (jobId) => { pipeline.cancel(jobId); };
-
   const finishCancel = async (mode) => {
     const info = cancelInfo;
     setCancelInfo(null);
@@ -262,10 +252,9 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     const d = decisions.find((x) => Array.isArray(x.unusedPages) && x.unusedPages.length > 0);
     return d?.unusedPages || [];
   }, [decisions]);
-  const attentionCount = errors.length
-    + decisions.filter((d) => d.type === 'text_clean_failed' || d.type === 'document_split_skipped').length;
-
-  const showProgress = (running || activeJob) && !minimized;
+  const ATTENTION_TYPES = ['text_clean_failed', 'document_split_skipped', 'duplicate_skipped', 'duplicate_review'];
+  const attentionDecisions = decisions.filter((d) => ATTENTION_TYPES.includes(d.type));
+  const attentionCount = errors.length + attentionDecisions.length;
 
   return (
     <div className="dpv2">
@@ -402,8 +391,8 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           <div className="dpv2-preview">
             <span>
               {estimate
-                ? `~${estimate.minMin}-${estimate.maxMin} хвилин`
-                : 'Оберіть файли для оцінки'}
+                ? `Оцінка обробки: ~${estimate.minMin}-${estimate.maxMin} хвилин`
+                : 'Оцінка часу та вартості зʼявиться після вибору файлів у Зоні 1'}
             </span>
             {estimate && <strong>~${estimate.cost}</strong>}
           </div>
@@ -488,14 +477,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
               <>
                 <div className="dpv2-attention-group">
                   <div className="dpv2-section-label">Питання</div>
-                  {decisions.filter((d) => d.type === 'text_clean_failed' || d.type === 'document_split_skipped').length === 0 && (
+                  {attentionDecisions.length === 0 && (
                     <div className="dpv2-muted">Питань немає.</div>
                   )}
-                  {decisions
-                    .filter((d) => d.type === 'text_clean_failed' || d.type === 'document_split_skipped')
-                    .map((d, i) => (
-                      <div key={i} className="dpv2-attention-card">{d.message}</div>
-                    ))}
+                  {attentionDecisions.map((d, i) => (
+                    <div key={i} className="dpv2-attention-card">{d.message}</div>
+                  ))}
                 </div>
                 <div className="dpv2-attention-group">
                   <div className="dpv2-section-label">Помилки</div>
@@ -518,15 +505,9 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
         </section>
       </div>
 
-      {/* ── Зона 4 · Повноекранний прогрес ───────────────────────────────── */}
-      {showProgress && (
-        <ProgressFullScreen
-          job={activeJob || { jobId: 'pending', caseId: caseData?.id, title: 'Підготовка…', done: 0, total: 0, ratio: 0, status: 'running' }}
-          caseData={caseData}
-          onCancel={onCancelJob}
-          onMinimize={() => setMinimized(true)}
-        />
-      )}
+      {/* Зона 4 · Повноекранний прогрес — рендериться глобально
+          (GlobalProgressScreen у App, керується DocumentPipelineContext),
+          щоб топбар і повний екран не дублювались (Bug 2/3). */}
 
       <DrivePicker
         isOpen={drivePickerOpen}

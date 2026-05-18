@@ -106,47 +106,5 @@
   .job-topbar { flex: 0 0 auto; margin: 0 6px; }
 }
 
-/* Заглушка повноекранного прогресу (повний UI — DP-4). */
-.job-topbar-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  z-index: 1000;
-  padding-top: 80px;
-}
-
-.job-topbar-modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 16px;
-  min-width: 320px;
-  max-width: 90vw;
-  max-height: 70vh;
-  overflow: auto;
-}
-
-.job-topbar-modal-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.job-topbar-modal-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  border-top: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-
-.job-topbar-modal-note {
-  margin-top: 12px;
-  font-size: 11px;
-  color: var(--text2);
-}
+/* Повноекранний прогрес — окремий компонент ProgressFullScreen
+   (GlobalProgressScreen). Топбар лише згорнутий індикатор (Bug 2/3). */

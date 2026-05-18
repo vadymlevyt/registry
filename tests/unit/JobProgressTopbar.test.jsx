@@ -30,14 +30,15 @@ describe('JobProgressTopbar', () => {
     expect(screen.getByText(/A \(\+1\)/)).toBeInTheDocument();
   });
 
-  it('Розгорнути → заглушка-модалка з тими ж даними + нота DP-4', () => {
+  it('Розгорнути → викликає onExpand (повний екран — окремий компонент)', () => {
     store.startJob({ jobId: 'j1', title: 'Том 250 стор', total: 10 });
     store.updateJob('j1', { done: 5 });
-    render(<JobProgressTopbar />);
+    const onExpand = vi.fn();
+    render(<JobProgressTopbar onExpand={onExpand} />);
     fireEvent.click(screen.getByText('Розгорнути'));
-    expect(screen.getByText('Фонова обробка')).toBeInTheDocument();
-    expect(screen.getByText(/5\/10/)).toBeInTheDocument();
-    expect(screen.getByText(/DP-4/)).toBeInTheDocument();
+    expect(onExpand).toHaveBeenCalled();
+    // Стара заглушка-модалка більше не існує (Bug 2/3).
+    expect(screen.queryByText('Фонова обробка')).toBeNull();
   });
 
   it('onCancel рендериться лише коли передано; клік передає jobId', () => {

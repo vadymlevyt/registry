@@ -33,6 +33,28 @@ describe('detectBoundariesV3', () => {
     expect(res.ctx).toBeUndefined(); // <=1 документ → passthrough як DP-1
   });
 
+  it('Bug 1: один файл + shouldReconstruct (DP-4 Provider) → реконструкція дає план (PDF нарізається)', async () => {
+    // Справа Брановського: один скан-PDF з кількома документами. Дефолтний
+    // gate `>1` лишав його цілим; DP-4 Provider передає shouldReconstruct
+    // який дозволяє реконструкцію і для одного файла.
+    const analyzeFile = vi.fn(async () => ({
+      documents: [
+        { documentId: 'd1', name: 'Позовна заява', type: 'pleading', startPage: 1, endPage: 8, open: false },
+        { documentId: 'd2', name: 'Ухвала', type: 'court_act', startPage: 9, endPage: 12, open: false },
+      ],
+      unusedPages: [],
+    }));
+    const stage = createDetectBoundariesV3({
+      analyzeFile,
+      shouldReconstruct: (ctx) => ctx.files.filter((f) => !f.skipped).length >= 1,
+    });
+    const res = await stage(ctxOf([{ fileId: 'big', extractedText: 'позов...ухвала...' }]));
+    expect(res.ok).toBe(true);
+    expect(res.ctx.reconstructionPlan.documents).toHaveLength(2);
+    expect(res.decisions[0].type).toBe('document_boundaries');
+    expect(analyzeFile).toHaveBeenCalledTimes(1);
+  });
+
   it('помилка AI на файлах — НЕ фатально: 0 документів, сторінки у unusedPages', async () => {
     const analyzeFile = vi.fn(async () => { throw new Error('AI down'); });
     const stage = createDetectBoundariesV3({ analyzeFile });

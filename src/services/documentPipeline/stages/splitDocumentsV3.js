@@ -19,6 +19,41 @@
 //      шлях для не-склейки; той самий контракт що дефолтний persistStage).
 //   Потім завжди: saveFragments(unusedPages) + datasetCollector(gated).
 
+import { categoryFromBoundaryType } from './classifyV2.js';
+
+// Категорія документа з плану реконструкції. План несе `type` (груба рубрика
+// нарізки від AI); `category` лишається null доки немає окремої класифікації.
+// Раніше splitDocumentsV3 читав ЛИШЕ doc.category → усі нарізані документи
+// зберігались з category=null (маркер ⚠). Виводимо канонічну category з type
+// (та сама мапа що classifyV2) — класифікація реконструкції не губиться (#11).
+function resolveCategory(doc) {
+  if (doc?.category) return doc.category;
+  if (doc?.type) return categoryFromBoundaryType(doc.type);
+  return null;
+}
+
+// Bug 6 (DP-4 bugfix) — евристична перевірка дублікатів БЕЗ хеша/schema-bump
+// (рішення адвоката: metadata-евристика, не контент-хеш). Реальний канал:
+// «адвокат завантажив той самий PDF двічі → два однакові записи». Збіг назви
+// в межах справи (+ підтвердження pageCount/розміром коли відомі) → точний
+// дублікат, повторно НЕ додаємо (автозаміна = наявний лишається). Лише назва
+// збіглась, решта різна → новий варіант: додаємо + decision у «Потребує
+// уваги» (інтерактивне «замінити/новий варіант» — DP-6).
+function findDuplicate(caseData, name, pageCount, size) {
+  const docs = Array.isArray(caseData?.documents) ? caseData.documents : [];
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/\.pdf$/i, '');
+  const sameName = docs.filter((d) => norm(d.name) === norm(name));
+  if (sameName.length === 0) return null;
+  const exact = sameName.find((d) => {
+    if (d.pageCount != null && pageCount != null) return d.pageCount === pageCount;
+    const a = d.size || 0;
+    const b = size || 0;
+    if (a > 0 && b > 0) return Math.abs(a - b) / Math.max(a, b) <= 0.05;
+    return true;                       // лише назва відома — той самий документ
+  });
+  return { kind: exact ? 'exact' : 'variant', existing: exact || sameName[0] };
+}
+
 function defaultBuildMetadata({ item, driveId, originalDriveId, job, name, pageCount }) {
   return {
     ...(item.metadataTemplate || {}),
@@ -115,6 +150,21 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           continue;
         }
         const docName = `${doc.name || doc.documentId}.pdf`;
+        const slicePageCount = (doc.fragments || []).reduce(
+          (s, fr) => s + (fr.endPage != null && fr.startPage != null ? (fr.endPage - fr.startPage + 1) : 0), 0,
+        ) || null;
+        const sliceSize = pdfBytes.byteLength || pdfBytes.length || 0;
+
+        // Bug 6 — дублікат перед upload (не марнуємо Drive на повторний файл).
+        const dup = findDuplicate(ctx.job.caseData, docName, slicePageCount, sliceSize);
+        if (dup?.kind === 'exact') {
+          decisions.push({ type: 'duplicate_skipped', documentName: docName, message: `Документ "${docName}" уже є у справі — повторне додавання пропущено (точний дублікат).` });
+          continue;
+        }
+        if (dup?.kind === 'variant') {
+          decisions.push({ type: 'duplicate_review', documentName: docName, message: `Документ "${docName}" схожий на наявний у справі — додано як новий варіант, перевірте.` });
+        }
+
         let driveId;
         try {
           const file = makeFileLike(docName, pdfBytes);
@@ -123,20 +173,23 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           return { ok: false, error: { code: 'UPLOAD_FAILED', message: err?.message || 'upload документа', file_skipped: true } };
         }
         const srcItem = live.find((f) => f.fileId === doc.fragments[0]?.fileId) || live[0] || {};
-        // План документа несе category/name — вливаємо у metadataTemplate
-        // ОДНАКОВО для обох шляхів (buildMeta DI-seam і дефолтний шаблон),
-        // інакше класифікація реконструкції губиться (правило #11: один сенс).
+        // План документа несе type/name — виводимо канонічну category з type
+        // (resolveCategory) і вливаємо у metadataTemplate ОДНАКОВО для обох
+        // шляхів (buildMeta DI-seam і дефолтний шаблон), інакше класифікація
+        // реконструкції губиться (правило #11: один сенс).
+        const planCategory = resolveCategory(doc);
         const planItem = {
           ...srcItem,
           name: docName,
+          pageCount: slicePageCount,
           metadataTemplate: {
             ...(srcItem.metadataTemplate || {}),
-            ...(doc.category ? { category: doc.category } : {}),
+            ...(planCategory ? { category: planCategory } : {}),
           },
         };
         const meta = buildMeta
           ? buildMeta({ item: planItem, driveId, originalDriveId: null, job: ctx.job })
-          : defaultBuildMetadata({ item: planItem, driveId, originalDriveId: null, job: ctx.job, name: docName });
+          : defaultBuildMetadata({ item: planItem, driveId, originalDriveId: null, job: ctx.job, name: docName, pageCount: slicePageCount });
         const document = createDocument(meta);
         const res = await persistDocument({ caseId: ctx.job.caseId, document });
         if (!res?.success) {
@@ -149,11 +202,42 @@ export function createSplitDocumentsV3(stageDeps = {}) {
       }
     } else {
       // ── B. Fallback persist (behavior-preserving, без плану) ─────────────
+      // Bug 7 — у streaming-шляху item.driveId вказує на РОБОЧУ КОПІЮ у
+      // _temp/<job>/, яку streamingExecutor видаляє у clearState після успіху
+      // → v'юер отримував HTTP 404. Фінальний документ ЗАВЖДИ має лежати у
+      // 01_ОРИГІНАЛИ (персистентно), як гілка A. Тому матеріалізуємо байти
+      // джерела і завантажуємо через uploadFile (той самий seam що гілка A),
+      // НЕ переюзовуємо тимчасовий driveId.
       for (const item of live) {
-        let driveId = item.driveId || null;
-        if (!driveId && item.uploadedFile) {
-          try { driveId = await uploadFile(item.uploadedFile, ctx.job.caseData); }
-          catch (err) { return { ok: false, error: { code: 'UPLOAD_FAILED', message: err?.message || 'upload', file_skipped: true, fileId: item.fileId } }; }
+        let bytes = null;
+        try {
+          const b = await sourceBytes(item);
+          if (b) bytes = b instanceof Uint8Array ? b : new Uint8Array(b);
+        } catch { /* джерело недоступне — нижче UPLOAD_FAILED */ }
+        if (item.uploadedFile && !bytes) {
+          try { bytes = new Uint8Array(await item.uploadedFile.arrayBuffer()); }
+          catch { /* fallback нижче */ }
+        }
+        if (!bytes) {
+          return { ok: false, error: { code: 'UPLOAD_FAILED', message: 'Немає байтів джерела для збереження у 01_ОРИГІНАЛИ', file_skipped: true, fileId: item.fileId } };
+        }
+        const docName = item.name || `${item.fileId}.pdf`;
+
+        // Bug 6 — дублікат перед upload.
+        const dup = findDuplicate(ctx.job.caseData, docName, item.pageCount || null, bytes.byteLength);
+        if (dup?.kind === 'exact') {
+          decisions.push({ type: 'duplicate_skipped', documentName: docName, message: `Документ "${docName}" уже є у справі — повторне додавання пропущено (точний дублікат).` });
+          continue;
+        }
+        if (dup?.kind === 'variant') {
+          decisions.push({ type: 'duplicate_review', documentName: docName, message: `Документ "${docName}" схожий на наявний у справі — додано як новий варіант, перевірте.` });
+        }
+
+        let driveId;
+        try {
+          driveId = await uploadFile(makeFileLike(docName, bytes), ctx.job.caseData);
+        } catch (err) {
+          return { ok: false, error: { code: 'UPLOAD_FAILED', message: err?.message || 'upload', file_skipped: true, fileId: item.fileId } };
         }
         const meta = buildMeta
           ? buildMeta({ item, driveId, originalDriveId: item.originalDriveId || null, job: ctx.job })

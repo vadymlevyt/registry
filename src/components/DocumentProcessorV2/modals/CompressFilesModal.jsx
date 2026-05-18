@@ -38,12 +38,7 @@ export function CompressFilesModal({ isOpen, onClose, caseData }) {
         : {};
       const res = await compressor.compress(files, { target, options: opts });
       setReports(res.reports);
-      const stub = res.reports.find((r) => r.reason === 'not_implemented');
-      if (stub) {
-        toast.warning('Ще не реалізовано', { description: 'Надсилання email/messenger буде в наступному TASK.' });
-      } else {
-        toast.success(`Стиснуто файлів: ${res.count}`);
-      }
+      toast.success(`Стиснуто файлів: ${res.count}`);
     } catch (e) {
       toast.error('Не вдалось стиснути', { description: e?.message });
     } finally {
@@ -86,10 +81,10 @@ export function CompressFilesModal({ isOpen, onClose, caseData }) {
         <Button variant="secondary" disabled={files.length === 0 || busy} icon={<Download size={ICON_SIZE.sm} />} onClick={() => run('download')}>
           На пристрій (downloads)
         </Button>
-        <Button variant="ghost" disabled={files.length === 0 || busy} onClick={() => run('email')}>
+        <Button variant="ghost" disabled title="Буде доступно у майбутньому">
           Надіслати email
         </Button>
-        <Button variant="ghost" disabled={files.length === 0 || busy} onClick={() => run('messenger')}>
+        <Button variant="ghost" disabled title="Буде доступно у майбутньому">
           Надіслати в messenger
         </Button>
       </div>

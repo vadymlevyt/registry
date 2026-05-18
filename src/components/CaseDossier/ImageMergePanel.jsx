@@ -2104,6 +2104,14 @@ function PreviewPopup({
   // НЕ ставлять lock → effect виконується.
   const popupRotationLockRef = useRef(false);
 
+  // Bug 9 — userRotation, ЗАПЕЧЕНИЙ у поточний displayUrl-blob. Поки cropper
+  // НЕ змонтований (view-only, cropApplied) ↻ раніше регенерував baked-blob і
+  // міняв <img src> → стрибок без анімації (а з рамкою cropper анімував сам →
+  // «інколи плавно, інколи стрибок»). Тепер у view-only обертання — CSS
+  // transform delta (userRotation - baked), blob НЕ регенерується (лок), як
+  // і в thumbnail-стратегії «user rotation — CSS-only».
+  const bakedUserRotationRef = useRef(userRotation);
+
   // Природні розміри оригіналу — для конверсії coords ↔ rotated space.
   const [naturalDims, setNaturalDims] = useState(null);
   useEffect(() => {
@@ -2181,6 +2189,9 @@ function PreviewPopup({
           }
         );
         if (cancelled) return;
+        // Blob перегенеровано саме під цей userRotation → стає новим baseline
+        // для CSS-delta (поки lock не пропустить наступний ↻ у view-only).
+        bakedUserRotationRef.current = userRotation;
         if (blob) {
           createdUrl = URL.createObjectURL(blob);
           setDisplayUrl(createdUrl);
@@ -2189,7 +2200,7 @@ function PreviewPopup({
         }
       } catch (e) {
         console.warn('[PreviewPopup] displayUrl render failed:', e);
-        if (!cancelled) setDisplayUrl(url);
+        if (!cancelled) { bakedUserRotationRef.current = userRotation; setDisplayUrl(url); }
       }
     })();
     return () => {
@@ -2288,10 +2299,12 @@ function PreviewPopup({
       // наступному запуску ефекту.
       try { cropperRef.current.rotateImage(90); } catch {}
       popupRotationLockRef.current = true;
+    } else {
+      // Cropper НЕ mounted (cropApplied → frameVisible=false → plain img):
+      // лочимо регенерацію blob, обертання покаже CSS transform delta на
+      // <img> (плавно, з transition) — без стрибка-підміни src (Bug 9).
+      popupRotationLockRef.current = true;
     }
-    // Якщо cropper НЕ mounted (cropApplied=true → frameVisible=false → plain
-    // img), пропускаємо lock. displayUrl effect повинен регенерувати blob
-    // з новим userRotation, інакше ↻ візуально нічого не дасть.
     onRotate();
   }, [onRotate]);
 
@@ -2605,13 +2618,19 @@ function CropperHost({ cropperRef, displayUrl, initialCoords, frameVisible, onCh
   }, [cropperLib]);
 
   if (!frameVisible) {
-    // View-only: image fit-to-container (object-fit: contain), без рамки
+    // View-only: image fit-to-container (object-fit: contain), без рамки.
+    // Bug 9 — обертання як CSS transform delta (поточний userRotation мінус
+    // запечений у blob), нормалізований у [-180,180] для короткої анімації;
+    // CSS transition робить її плавною ЗАВЖДИ (не «інколи»).
+    let rotDelta = ((userRotation - bakedUserRotationRef.current) % 360 + 360) % 360;
+    if (rotDelta > 180) rotDelta -= 360;
     return (
       <div className="image-merge-panel__popup-canvas">
         <img
           src={displayUrl}
           alt="Перегляд сторінки"
           className="image-merge-panel__popup-fitimg"
+          style={{ transform: `translate(-50%, -50%) rotate(${rotDelta}deg)` }}
           draggable={false}
         />
       </div>

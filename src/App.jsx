@@ -5,6 +5,7 @@ import mammoth from 'mammoth';
 import Dashboard from './components/Dashboard';
 import CaseDossier from './components/CaseDossier';
 import JobProgressTopbar from './components/JobProgressTopbar';
+import GlobalProgressScreen from './components/DocumentProcessorV2/GlobalProgressScreen.jsx';
 import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx';
 import { ECITSRegistryBadge } from './components/ECITSBanner/RegistryBadge.jsx';
 import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
@@ -5245,6 +5246,9 @@ function App() {
           setShowUniversalPanel(true);
         }}
       >⚡</button>}
+      {/* Повноекранний прогрес DP v2 — глобально, взаємовиключно з топбаром
+          (Bug 2/3). Фіксований оверлей: позиція в DOM не важлива. */}
+      <GlobalProgressScreen cases={cases} />
       <SystemModalRoot />
       <ToastContainer />
     </div>

@@ -2865,9 +2865,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // лишається тут — DP-3/DP-4 територія, живиться з виходу pipeline.
           // Поведінка для адвоката без регресій (TASK A контракт збережено).
           const ICONS = {
-            court_act: '\U0001F4CB', pleading: '\U0001F4C4', motion: '\U0001F4DD',
-            evidence: '\U0001F4CE', contract: '\U0001F4C4', correspondence: '✉️',
-            identification: '\U0001FAAA', other: '\U0001F4C1',
+            court_act: "📋", pleading: "📄", motion: "📝",
+            evidence: "📎", contract: "📄", correspondence: "✉️",
+            identification: "🪪", other: "📁",
           };
           const isDriveSource = !!(file?._isDriveSource && file?._driveId);
 
@@ -2888,7 +2888,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             return {
               procId: procId || proceedings[0]?.id || 'proc_main',
               name,
-              icon: ICONS[category] || '\U0001F4C4',
+              icon: ICONS[category] || "📄",
               date,
               category,
               author,

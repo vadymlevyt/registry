@@ -17,8 +17,15 @@
 // 'manual' → watcher лише оновлює лічильники, нічого не запускає.
 
 import React, {
-  createContext, useContext, useMemo, useRef, useEffect, useState, useCallback,
+  useMemo, useRef, useEffect, useState, useCallback,
 } from 'react';
+
+// Контекст і хук винесено у lightweight-модуль (без важких імпортів) — щоб
+// JobProgressTopbar/GlobalProgressScreen не тягнули весь executor-ланцюг.
+// Реекспортуємо для зворотної сумісності існуючих імпортів з .jsx (тести).
+import { DocumentPipelineContext, useDocumentPipeline } from './documentPipelineContextCore.js';
+
+export { DocumentPipelineContext, useDocumentPipeline };
 
 import { createStreamingExecutor } from '../services/documentPipeline/streamingExecutor.js';
 import { createDefaultDrivePort } from '../services/documentPipeline/drivePort.js';
@@ -46,14 +53,6 @@ import {
   ECITS_DOCUMENTS_RECEIVED, ECITS_INBOX_PENDING,
   DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED, DOCUMENT_FRAGMENT_SAVED,
 } from '../services/eventBusTopics.js';
-
-// Експортуємо контекст — тестовий seam: UI-тести підставляють fake value
-// без реального executor (Drive/OCR/AI) і перевіряють UI→pipeline контракт.
-export const DocumentPipelineContext = createContext(null);
-
-export function useDocumentPipeline() {
-  return useContext(DocumentPipelineContext);
-}
 
 // ── AI helpers (graceful degradation) ───────────────────────────────────────
 // analyzeFile / cleanText кидають якщо нема ключа або мережі — V3-стадії
@@ -172,6 +171,13 @@ export function DocumentPipelineProvider({ executeAction, children }) {
           detectBoundaries: createDetectBoundariesV3({
             analyzeFile: aiReconstructFile,
             getStreamedText,
+            // Активуємо реконструкцію і для одного файла: у DP v2 адвокат
+            // ЯВНО натиснув «Розпочати обробку», а справа Брановського — це
+            // саме один скан-PDF з кількома документами що треба нарізати.
+            // Дефолтний gate `>1` (DP-3, no-AI-cost на тихому single-add) тут
+            // помилково лишав 65-сторінковий PDF цілим. Після OCR усе = текст
+            // (§4.4), reconstructAcrossFiles коректно обробляє «пакет з 1».
+            shouldReconstruct: (ctx) => ctx.files.filter((f) => !f.skipped).length >= 1,
           }),
           extract: createExtractV3({
             cleanForReading: opt.cleanForReading === true,
@@ -249,6 +255,15 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   const keepPartial = useCallback((caseId, jobId) => executor.keepPartial(caseId, jobId), [executor]);
   const discardAll = useCallback((caseId, jobId) => executor.discardAll(caseId, jobId), [executor]);
 
+  // ── Прогрес-екран ↔ топбар (Bug 2/3) ──────────────────────────────────────
+  // Єдине джерело правди «згорнуто/розгорнуто» — тут, а не локальний state
+  // DocumentProcessorV2 (бо топбар живе в App, а повний екран — у вкладці;
+  // раніше вони не знали один про одного → дублювання + неможливо повернутись).
+  // Повноекранний прогрес і топбар ВЗАЄМОВИКЛЮЧНІ: один сенс на прапор (#11).
+  const [progressMinimized, setProgressMinimized] = useState(false);
+  const minimizeProgress = useCallback(() => setProgressMinimized(true), []);
+  const expandProgress = useCallback(() => setProgressMinimized(false), []);
+
   // ── ECITS pending state (3 точки індикації UI) ────────────────────────────
   // Map<caseId, count> з події ECITS_INBOX_PENDING (watcher manual-режим).
   const [ecitsPending, setEcitsPending] = useState(() => ({}));
@@ -298,7 +313,11 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   const value = useMemo(() => ({
     run, resume, cancel, keepPartial, discardAll,
     ecitsPending, clearEcitsPending,
-  }), [run, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending]);
+    progressMinimized, minimizeProgress, expandProgress,
+  }), [
+    run, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
+    progressMinimized, minimizeProgress, expandProgress,
+  ]);
 
   return (
     <DocumentPipelineContext.Provider value={value}>
