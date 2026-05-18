@@ -33,10 +33,14 @@ describe('detectBoundariesV3', () => {
     expect(res.ctx).toBeUndefined(); // <=1 документ → passthrough як DP-1
   });
 
-  it('Bug 1: один файл + shouldReconstruct (DP-4 Provider) → реконструкція дає план (PDF нарізається)', async () => {
-    // Справа Брановського: один скан-PDF з кількома документами. Дефолтний
-    // gate `>1` лишав його цілим; DP-4 Provider передає shouldReconstruct
-    // який дозволяє реконструкцію і для одного файла.
+  it('контракт стадії: інжектований shouldReconstruct шанується (gate — відповідальність caller-а, не стадії)', async () => {
+    // Стадія НЕ вирішує сама коли реконструювати — це робить інжектований
+    // gate. Перевіряємо саме DI-контракт: якщо caller передав gate що
+    // дозволяє 1 файл, стадія реконструює і будує план. (DP-4 BUGFIX, де
+    // Provider інжектував `>=1` для single-file, ВІДКОЧЕНО revert-partial;
+    // single-file нарізку повертає Smart Triage, ревізія 1.1. Тест
+    // лишається бо перевіряє НЕ Provider, а DI-контракт стадії — Triage
+    // теж інжектуватиме власний gate.)
     const analyzeFile = vi.fn(async () => ({
       documents: [
         { documentId: 'd1', name: 'Позовна заява', type: 'pleading', startPage: 1, endPage: 8, open: false },

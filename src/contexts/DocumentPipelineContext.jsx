@@ -171,13 +171,16 @@ export function DocumentPipelineProvider({ executeAction, children }) {
           detectBoundaries: createDetectBoundariesV3({
             analyzeFile: aiReconstructFile,
             getStreamedText,
-            // Активуємо реконструкцію і для одного файла: у DP v2 адвокат
-            // ЯВНО натиснув «Розпочати обробку», а справа Брановського — це
-            // саме один скан-PDF з кількома документами що треба нарізати.
-            // Дефолтний gate `>1` (DP-3, no-AI-cost на тихому single-add) тут
-            // помилково лишав 65-сторінковий PDF цілим. Після OCR усе = текст
-            // (§4.4), reconstructAcrossFiles коректно обробляє «пакет з 1».
-            shouldReconstruct: (ctx) => ctx.files.filter((f) => !f.skipped).length >= 1,
+            // REVERT-PARTIAL DP-4 BUGFIX (`shouldReconstruct: >=1`): Provider
+            // більше НЕ форсує реконструкцію для одного файла. Стадія падає
+            // на свій документований дефолт `>1` не-skipped файл (справжній
+            // multi-file пакет). Один PDF з кількома документами НЕ женеться
+            // у multi-file реконструктор — його промпт «пакет/хвости», не
+            // «наріж цей PDF»; разом із `fetch` без timeout це й спричиняло
+            // зависання DP. Коректна single-file нарізка повертається окремо
+            // через Smart Triage (text-first, ревізія 1.1 консультації
+            // docs/consultations/consultation_dp_triage_architecture.md) —
+            // це Крок 2, поза цим revert.
           }),
           extract: createExtractV3({
             cleanForReading: opt.cleanForReading === true,
