@@ -258,6 +258,20 @@ export function createStreamingExecutor(deps = {}) {
           try { progressStore.updateJob(jobId, { timings: { ...stageTimings } }); }
           catch { /* progress ізольований */ }
         },
+        // bug 6: під-прогрес ДОВГОЇ стадії (PERSIST per-document — тиха
+        // 30+-хв зона після OCR, де бар фризнув на 100%). Один сенс,
+        // окремий від chunk-ratio (правило #11): subDone/subTotal — «крок
+        // у поточній стадії», ratio лишається загальним OCR-прогресом.
+        onSubProgress: ({ done, total, label } = {}) => {
+          const d = Number(done) || 0;
+          const t = Number(total) || 0;
+          try {
+            progressStore.updateJob(jobId, {
+              subDone: d, subTotal: t,
+              detail: t > 0 ? `${label || 'Крок'} ${d} з ${t}` : (label || null),
+            });
+          } catch { /* progress ізольований */ }
+        },
       };
       const pipeline = deps.createPipeline(pipeDeps);
       const result = await pipeline.run({

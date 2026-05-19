@@ -121,4 +121,20 @@ describe('G1 Provider-integration — TXT 02_ОБРОБЛЕНІ зрізаний
     expect(uhvala.text).toContain('ТЕКСТ-СТОРІНКИ-6');
     expect(uhvala.text).not.toContain('ТЕКСТ-СТОРІНКИ-1');   // не змішаний (корінь bug 2)
   });
+
+  it('G2 (bug 6): PERSIST штовхає під-прогрес «Документ i з N» наскрізь', async () => {
+    const snaps = [];
+    progressStore.subscribe((s) => { if (s[0]) snaps.push({ ...s[0] }); });
+    stubTriageFetch({ documents: [
+      { documentId: 'd1', name: 'Позов', type: 'pleading', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 3 }] },
+      { documentId: 'd2', name: 'Ухвала', type: 'court_act', route: 'slice', fragments: [{ fileId: 'big', startPage: 4, endPage: 6 }] },
+    ], unusedPages: [] });
+    const res = await run([await file('big', 6)]);
+    expect(res.ok).toBe(true);
+    const subSeq = snaps.filter((s) => s.subTotal === 2).map((s) => s.subDone);
+    expect(subSeq).toContain(1);
+    expect(subSeq).toContain(2);
+    expect(snaps.some((s) => s.detail === 'Документ 1 з 2')).toBe(true);
+    expect(snaps.some((s) => s.detail === 'Документ 2 з 2')).toBe(true);
+  });
 });

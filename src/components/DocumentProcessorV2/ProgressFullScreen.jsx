@@ -59,6 +59,17 @@ export function ProgressFullScreen({ job, caseData, onCancel, onMinimize }) {
           <div className="dpv2-bar" aria-hidden="true">
             <span className="dpv2-bar-fill" style={{ width: `${pct}%` }} />
           </div>
+          {/* bug 6: під-прогрес довгої стадії (PERSIST per-document) —
+              окремий тонкий бар, бо головний (chunk-ratio) після OCR=100%
+              і не рухався увесь час нарізки. */}
+          {!finished && job.subTotal > 0 && (
+            <div className="dpv2-bar dpv2-bar-sub" aria-hidden="true">
+              <span
+                className="dpv2-bar-fill"
+                style={{ width: `${Math.round(((job.subDone || 0) / job.subTotal) * 100)}%` }}
+              />
+            </div>
+          )}
         </div>
 
         <div className="dpv2-filelist">

@@ -125,7 +125,15 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     return new Uint8Array(buffer);
   }
 
-  return async function splitDocumentsV3(ctx) {
+  return async function splitDocumentsV3(ctx, deps) {
+    // bug 6: під-прогрес PERSIST (тиха 30+-хв зона після OCR). Ін'єктований
+    // executor'ом через диригент (deps 2-й арг); відсутній → no-op (тести/
+    // не-streaming behavior-preserving). Один сенс: «який документ зараз».
+    const reportSub = (done, total) => {
+      if (typeof deps?.onSubProgress === 'function') {
+        try { deps.onSubProgress({ done, total, label: 'Документ' }); } catch { /* ізольовано */ }
+      }
+    };
     const live = ctx.files.filter((f) => !f.skipped && !f.document);
     const plan = ctx.reconstructionPlan;
     const decisions = [];
@@ -142,7 +150,10 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const b = await sourceBytes(f);
         if (b) byFile.set(f.fileId, b instanceof Uint8Array ? (b.buffer || b) : b);
       }
+      const planTotal = plan.documents.length;
+      let planIdx = 0;
       for (const doc of plan.documents) {
+        reportSub(++planIdx, planTotal);            // bug 6: «Документ i з N»
         // ── Ф3 диспетч за .route (один сенс на маршрут, правило #11) ───────
         const route = doc.route || 'add_as_is';
         const label = doc.name || doc.documentId;
@@ -253,7 +264,9 @@ export function createSplitDocumentsV3(stageDeps = {}) {
       // 01_ОРИГІНАЛИ (персистентно), як гілка A. Тому матеріалізуємо байти
       // джерела і завантажуємо через uploadFile (той самий seam що гілка A),
       // НЕ переюзовуємо тимчасовий driveId.
+      let fbIdx = 0;
       for (const item of live) {
+        reportSub(++fbIdx, live.length);            // bug 6: під-прогрес fallback
         let bytes = null;
         try {
           const b = await sourceBytes(item);

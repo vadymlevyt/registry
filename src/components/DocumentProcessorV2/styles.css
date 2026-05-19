@@ -234,6 +234,11 @@
   background: var(--color-accent);
   transition: width var(--transition-slow);
 }
+.dpv2-bar-sub {
+  height: 4px;
+  margin-top: var(--space-2);
+  opacity: 0.7;
+}
 .dpv2-progress-overall {
   display: flex;
   justify-content: space-between;

@@ -247,3 +247,39 @@ describe('splitDocumentsV3 G1 — page-precise текст/layout 02_ОБРОБЛ
     expect(res.decisions.some((x) => x.type === 'text_slice_fallback')).toBe(true);
   });
 });
+
+// G2 (bug 6): PERSIST емітить під-прогрес «Документ i з N» через
+// ін'єктований deps.onSubProgress (2-й арг диригента). Без нього — no-op
+// (behavior-preserving: усі наявні stage(ctx)-виклики не падають).
+describe('splitDocumentsV3 G2 — під-прогрес персисту (bug 6)', () => {
+  it('branch A: onSubProgress по документу плану (1..N, total=N)', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'big', 6);
+    const onSubProgress = vi.fn();
+    const stage = mkStage(port, {
+      persistDocument: vi.fn(async () => ({ success: true })),
+      uploadFile: vi.fn(async (f) => `drv_${f.name}`),
+      deps: { writeText02: async () => {} },
+    });
+    const ctx = ctxOf(port, { documents: [
+      { documentId: 'd1', name: 'A', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 3 }] },
+      { documentId: 'd2', name: 'B', route: 'slice', fragments: [{ fileId: 'big', startPage: 4, endPage: 6 }] },
+    ] }, [{ fileId: 'big', driveId: d, skipped: false, pageCount: 6, layoutJson: { schemaVersion: 1, pages: Array.from({ length: 6 }, (_, i) => ({ _text: `p${i + 1}` })) } }]);
+    const res = await stage(ctx, { onSubProgress });
+    expect(res.ok).toBe(true);
+    expect(onSubProgress.mock.calls.map((c) => c[0])).toEqual([
+      { done: 1, total: 2, label: 'Документ' },
+      { done: 2, total: 2, label: 'Документ' },
+    ]);
+  });
+
+  it('відсутній deps.onSubProgress → no-op (наявні stage(ctx)-виклики цілі)', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'f0', 2);
+    const stage = mkStage(port, { persistDocument: vi.fn(async () => ({ success: true })) });
+    const res = await stage(ctxOf(port,
+      { documents: [{ documentId: 'd1', name: 'X', route: 'add_as_is', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] }] },
+      [{ fileId: 'f0', driveId: d, skipped: false }]));   // 2-й арг навмисно відсутній
+    expect(res.ok).toBe(true);
+  });
+});
