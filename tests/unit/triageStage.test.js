@@ -97,3 +97,72 @@ describe('createTriageStage — passport-вхід (вартісна модель
     expect(seen[0].origin).toBe('pdf');
   });
 });
+
+// G3 (bug 1) — plan-level дедуп перекритих діапазонів. Корінь bug 1: Triage
+// над-сегментував (квитанція 3 назвами / «Позовна заява» двічі) → дублі у
+// реєстрі. Критерій якості: якщо хтось прибере resolveOverlaps — червоний.
+describe('createTriageStage — G3 дедуп перекритих діапазонів (bug 1)', () => {
+  it('3 документи з тих самих сторінок (різні назви) → лишається 1, dropped=2', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [
+        { documentId: 'd1', name: 'Квитанція про оплату судового збору', route: 'add_as_is', fragments: [{ fileId: 'f0', startPage: 12, endPage: 13 }] },
+        { documentId: 'd2', name: 'Платіжна інструкція', route: 'add_as_is', fragments: [{ fileId: 'f0', startPage: 12, endPage: 13 }] },
+        { documentId: 'd3', name: 'Платіжна інструкція (судовий збір)', route: 'add_as_is', fragments: [{ fileId: 'f0', startPage: 13, endPage: 13 }] },
+      ],
+      unusedPages: [],
+    }));
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([{ fileId: 'f0', name: 'big.pdf', originalMime: 'application/pdf', pageCount: 20 }]));
+    expect(res.ctx.reconstructionPlan.documents).toHaveLength(1);
+    expect(res.ctx.reconstructionPlan.documents[0].documentId).toBe('d1');
+    expect(res.decisions[0].dedupDropped).toBe(2);
+    expect(res.decisions[0].message).toContain('Зведено 2');
+  });
+
+  it('анти-тиха-втрата: реальний документ перемагає to_fragments на перекритті', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [
+        { documentId: 'cover', name: 'Обкладинка', route: 'to_fragments', fragments: [{ fileId: 'f0', startPage: 1, endPage: 1 }] },
+        { documentId: 'real', name: 'Позовна заява', route: 'slice', fragments: [{ fileId: 'f0', startPage: 1, endPage: 5 }] },
+      ],
+      unusedPages: [],
+    }));
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([{ fileId: 'f0', name: 'big.pdf', originalMime: 'application/pdf', pageCount: 5 }]));
+    const docs = res.ctx.reconstructionPlan.documents;
+    expect(docs).toHaveLength(1);
+    expect(docs[0].documentId).toBe('real');
+    expect(docs[0].route).toBe('slice');
+  });
+
+  it('сусідні НЕ перекриті документи лишаються (нормальна нарізка не страждає)', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [
+        { documentId: 'd1', name: 'Позов', route: 'slice', fragments: [{ fileId: 'f0', startPage: 1, endPage: 3 }] },
+        { documentId: 'd2', name: 'Ухвала', route: 'slice', fragments: [{ fileId: 'f0', startPage: 4, endPage: 6 }] },
+      ],
+      unusedPages: [],
+    }));
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([{ fileId: 'f0', name: 'big.pdf', originalMime: 'application/pdf', pageCount: 6 }]));
+    expect(res.ctx.reconstructionPlan.documents).toHaveLength(2);
+    expect(res.decisions[0].dedupDropped).toBe(0);
+    expect(res.decisions[0].message).not.toContain('Зведено');
+  });
+
+  it('перекриття у РІЗНИХ файлах не зводиться (різні фізичні сторінки)', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [
+        { documentId: 'd1', name: 'A', route: 'slice', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] },
+        { documentId: 'd2', name: 'B', route: 'slice', fragments: [{ fileId: 'f1', startPage: 1, endPage: 2 }] },
+      ],
+      unusedPages: [],
+    }));
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([
+      { fileId: 'f0', name: 'a.pdf', originalMime: 'application/pdf', pageCount: 2 },
+      { fileId: 'f1', name: 'b.pdf', originalMime: 'application/pdf', pageCount: 2 },
+    ]));
+    expect(res.ctx.reconstructionPlan.documents).toHaveLength(2);
+  });
+});

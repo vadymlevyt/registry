@@ -40,8 +40,12 @@ function resolveCategory(doc) {
 // дублікат, повторно НЕ додаємо (автозаміна = наявний лишається). Лише назва
 // збіглась, решта різна → новий варіант: додаємо + decision у «Потребує
 // уваги» (інтерактивне «замінити/новий варіант» — DP-6).
-function findDuplicate(caseData, name, pageCount, size) {
-  const docs = Array.isArray(caseData?.documents) ? caseData.documents : [];
+// G3 (bug 1) — приймає СПИСОК документів (не caseData-знімок). Корінь bug 1:
+// читався лише ctx.job.caseData (заморожений на старті job) → документи,
+// збережені РАНІШЕ в цьому ж job, були невидимі, дедуп їх не ловив. Caller
+// передає об'єднання знімок-реєстру ∪ вже-збережені-в-цьому-job.
+function findDuplicate(docs, name, pageCount, size) {
+  if (!Array.isArray(docs) || docs.length === 0) return null;
   const norm = (s) => String(s || '').trim().toLowerCase().replace(/\.pdf$/i, '');
   const sameName = docs.filter((d) => norm(d.name) === norm(name));
   if (sameName.length === 0) return null;
@@ -138,6 +142,13 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     const plan = ctx.reconstructionPlan;
     const decisions = [];
     const newDocuments = [];
+    // G3 (bug 1): дедуп бачить знімок-реєстр ∪ вже-збережені-в-ЦЬОМУ-job
+    // (newDocuments росте по ходу). Раніше — лише заморожений знімок →
+    // повтори в межах одного job не ловились.
+    const registryView = () => [
+      ...(Array.isArray(ctx.job.caseData?.documents) ? ctx.job.caseData.documents : []),
+      ...newDocuments,
+    ];
     // route to_fragments → ці сторінки йдуть у 03_ФРАГМЕНТИ (saveFragments),
     // НЕ канонічні документи (об'єднуються з ctx.unusedPages нижче).
     const routedToFragments = [];
@@ -212,7 +223,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const sliceSize = pdfBytes.byteLength || pdfBytes.length || 0;
 
         // Bug 6 — дублікат перед upload (не марнуємо Drive на повторний файл).
-        const dup = findDuplicate(ctx.job.caseData, docName, slicePageCount, sliceSize);
+        const dup = findDuplicate(registryView(), docName, slicePageCount, sliceSize);
         if (dup?.kind === 'exact') {
           decisions.push({ type: 'duplicate_skipped', documentName: docName, message: `Документ "${docName}" уже є у справі — повторне додавання пропущено (точний дублікат).` });
           continue;
@@ -282,7 +293,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const docName = item.name || `${item.fileId}.pdf`;
 
         // Bug 6 — дублікат перед upload.
-        const dup = findDuplicate(ctx.job.caseData, docName, item.pageCount || null, bytes.byteLength);
+        const dup = findDuplicate(registryView(), docName, item.pageCount || null, bytes.byteLength);
         if (dup?.kind === 'exact') {
           decisions.push({ type: 'duplicate_skipped', documentName: docName, message: `Документ "${docName}" уже є у справі — повторне додавання пропущено (точний дублікат).` });
           continue;

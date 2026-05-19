@@ -283,3 +283,44 @@ describe('splitDocumentsV3 G2 — під-прогрес персисту (bug 6)
     expect(res.ok).toBe(true);
   });
 });
+
+// G3 (bug 1) — дедуп бачить документи, збережені РАНІШЕ в ЦЬОМУ Ж job.
+// Корінь: findDuplicate читав лише заморожений знімок ctx.job.caseData →
+// повтори в межах одного прогону не ловились (дублі у реєстрі).
+describe('splitDocumentsV3 G3 — same-job дедуп (bug 1)', () => {
+  it('два однойменні документи однакового pageCount у ОДНОМУ job → 2-й exact-skip', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'big', 6);
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const stage = mkStage(port, {
+      persistDocument,
+      uploadFile: vi.fn(async (f) => `drv_${f.name}`),
+      deps: { writeText02: async () => {} },
+    });
+    // План (повз triageStage → resolveOverlaps тут не діє): однакова назва+
+    // pageCount, РІЗНІ непересічні сторінки. caseData ПОРОЖНІЙ — раніше обидва
+    // персистились; тепер 2-й бачить 1-й через registryView ∪ newDocuments.
+    const ctx = ctxOf(port, { documents: [
+      { documentId: 'd1', name: 'Ухвала', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 3 }] },
+      { documentId: 'd2', name: 'Ухвала', route: 'slice', fragments: [{ fileId: 'big', startPage: 4, endPage: 6 }] },
+    ] }, [{ fileId: 'big', driveId: d, skipped: false, pageCount: 6 }]);
+    const res = await stage(ctx, {});
+    expect(res.ok).toBe(true);
+    expect(persistDocument).toHaveBeenCalledTimes(1);                 // не двічі
+    expect(res.decisions.some((x) => x.type === 'duplicate_skipped')).toBe(true);
+  });
+
+  it('наявний у реєстрі (знімок) документ так само ловиться (поведінка збережена)', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'f0', 2);
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const stage = mkStage(port, { persistDocument, uploadFile: vi.fn(async () => 'drv'), deps: { writeText02: async () => {} } });
+    const ctx = ctxOf(port, { documents: [
+      { documentId: 'd1', name: 'Позов', route: 'add_as_is', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] },
+    ] }, [{ fileId: 'f0', driveId: d, skipped: false, pageCount: 2 }]);
+    ctx.job.caseData.documents = [{ id: 'old', name: 'Позов.pdf', pageCount: 2 }];  // вже у справі
+    const res = await stage(ctx, {});
+    expect(persistDocument).not.toHaveBeenCalled();
+    expect(res.decisions.some((x) => x.type === 'duplicate_skipped')).toBe(true);
+  });
+});

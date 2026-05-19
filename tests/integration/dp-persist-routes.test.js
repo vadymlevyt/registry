@@ -155,4 +155,20 @@ describe('Ф3 Provider-integration — PERSIST виконує кожен route',
     expect(docs()).toHaveLength(1);
     expect(docs().some((d) => /Сміття/.test(d.name))).toBe(false);
   });
+
+  it('G3 (bug 1): над-сегментація Triage (квитанція 3 назвами) → реєстр без дублів', async () => {
+    stubTriageFetch({ documents: [
+      { documentId: 'd1', name: 'Позовна заява', type: 'pleading', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 5 }] },
+      // Та сама квитанція трьома назвами з тих самих сторінок (корінь bug 1).
+      { documentId: 'd2', name: 'Квитанція про оплату судового збору', type: 'court_act', route: 'add_as_is', fragments: [{ fileId: 'big', startPage: 6, endPage: 6 }] },
+      { documentId: 'd3', name: 'Платіжна інструкція', type: 'court_act', route: 'add_as_is', fragments: [{ fileId: 'big', startPage: 6, endPage: 6 }] },
+      { documentId: 'd4', name: 'Платіжна інструкція (судовий збір)', type: 'court_act', route: 'add_as_is', fragments: [{ fileId: 'big', startPage: 6, endPage: 6 }] },
+    ], unusedPages: [] });
+    const res = await run([await file('big', 6)]);
+    expect(res.ok).toBe(true);
+    // Було б 4 (корінь bug 1) — стало 2: позов + 1 квитанція (3 зведено).
+    expect(docs()).toHaveLength(2);
+    const names = docs().map((d) => d.name).sort();
+    expect(names).toEqual(['Квитанція про оплату судового збору.pdf', 'Позовна заява.pdf']);
+  });
 });

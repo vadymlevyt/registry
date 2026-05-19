@@ -76,6 +76,52 @@ function trivialImagePlan(live) {
   };
 }
 
+// ── G3 (bug 1) · plan-level dedup перекритих діапазонів ─────────────────────
+// Корінь bug 1: Triage над-сегментував — той самий фізичний діапазон сторінок
+// віддавався кількома документами (квитанція з 3 назвами; «Позовна заява»
+// двічі). PERSIST матеріалізував кожен → дублі у реєстрі. Детерміновано
+// зводимо: документи з перекритими [fileId,startPage..endPage] — це одні й ті
+// самі сторінки.
+//
+// Анти-«тиха втрата» (явна вимога адвоката): пріоритет route — реальний
+// документ > службове(to_fragments/signature) > discard. Розглядаємо за
+// пріоритетом (рівні — за порядком AI), лишаємо неконфліктний; тому реальний
+// документ НІКОЛИ не програє обкладинці на перекритті. Порядок виходу —
+// вихідний (стабільність плану). dropped рахуємо для видимого decision (не
+// мовчки).
+const ROUTE_PRIORITY = {
+  add_as_is: 3, slice: 3, image_merge: 3, fragment_reconstruct: 3,
+  signature_sidecar: 2, to_fragments: 2, discard: 1,
+};
+
+function fragsOverlap(a, b) {
+  for (const fa of a.fragments) {
+    for (const fb of b.fragments) {
+      if (fa.fileId === fb.fileId
+        && fa.startPage <= fb.endPage && fb.startPage <= fa.endPage) return true;
+    }
+  }
+  return false;
+}
+
+function resolveOverlaps(documents) {
+  const order = documents.map((d, i) => ({ d, i }));
+  const ranked = [...order].sort((x, y) =>
+    ((ROUTE_PRIORITY[y.d.route] ?? 3) - (ROUTE_PRIORITY[x.d.route] ?? 3)) || (x.i - y.i));
+  const kept = [];
+  const droppedIdx = new Set();
+  for (const node of ranked) {
+    if (node.d.fragments.length === 0) { kept.push(node); continue; } // discard без діапазону — не конфлікт
+    const clash = kept.some((k) => k.d.fragments.length > 0 && fragsOverlap(k.d, node.d));
+    if (clash) droppedIdx.add(node.i);
+    else kept.push(node);
+  }
+  return {
+    documents: order.filter(({ i }) => !droppedIdx.has(i)).map(({ d }) => d),
+    droppedCount: droppedIdx.size,
+  };
+}
+
 // Нормалізувати AI-план у канонічний транзитний формат плану.
 function normalizePlan(raw) {
   const docs = Array.isArray(raw?.documents) ? raw.documents : [];
@@ -97,6 +143,7 @@ function normalizePlan(raw) {
       open: d?.open === true,
     };
   }).filter((d) => d.fragments.length > 0 || d.route === 'discard');
+  const { documents: deduped, droppedCount } = resolveOverlaps(documents);
   const unusedPages = Array.isArray(raw?.unusedPages)
     ? raw.unusedPages.map((u) => ({
         fileId: u.fileId || null,
@@ -105,7 +152,7 @@ function normalizePlan(raw) {
         reason: u.reason || 'не визначено тип сторінки',
       }))
     : [];
-  return { documents, unusedPages };
+  return { documents: deduped, unusedPages, dedupDropped: droppedCount };
 }
 
 // stageDeps:
@@ -172,7 +219,12 @@ export function createTriageStage(stageDeps = {}) {
           documentId: d.documentId, name: d.name, type: d.type, route: d.route, fragments: d.fragments,
         })),
         unusedPages: plan.unusedPages,
-        message: `Triage: ${live.length} файлів → ${plan.documents.length} логічних документів. Підтвердьте план обробки перед нарізкою.`,
+        dedupDropped: plan.dedupDropped || 0,
+        message: `Triage: ${live.length} файлів → ${plan.documents.length} логічних документів.`
+          + (plan.dedupDropped > 0
+            ? ` Зведено ${plan.dedupDropped} дублюючих пропозицій з тих самих сторінок (анти-дубль реєстру).`
+            : '')
+          + ' Підтвердьте план обробки перед нарізкою.',
       }],
     };
   };
