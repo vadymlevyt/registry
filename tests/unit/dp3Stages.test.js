@@ -118,6 +118,31 @@ describe('detectBoundariesV3', () => {
     expect(seenText).toBe('ПОВНИЙ-OCR-ТЕКСТ-БЕЗ-LAYOUT');
     expect(seenText).not.toContain('=== СТОРІНКА');
   });
+
+  // Ф0: структурний паспорт (дайджест меж) реально доходить до транспорту
+  // через ті самі Provider-shape deps — вартісна модель §6 text-first.
+  it('Ф0: структурований layout → analyzeFile отримує дайджест паспорта', async () => {
+    let seenText = '';
+    const analyzeFile = vi.fn(async ({ text }) => {
+      seenText = text;
+      return { documents: [{ documentId: 'd1', name: 'А', type: 'court_act', startPage: 1, endPage: 2, open: false }], unusedPages: [] };
+    });
+    const layout = { schemaVersion: 1, pages: [
+      { _text: 'Документ А\n12', dimension: { width: 595, height: 842 }, tables: [{}] },
+      { _text: 'Документ Б\n1' },
+    ] };
+    const stage = createDetectBoundariesV3({
+      analyzeFile,
+      getStreamedText: () => 'PLAIN',
+      getStreamedLayout: () => layout,
+      shouldReconstruct: () => true,
+    });
+    await stage(ctxOf([{ fileId: 'big', pageCount: 2 }]));
+    expect(seenText).toContain('формат:портрет');
+    expect(seenText).toContain('таблиці');
+    expect(seenText).toContain('СКИДАННЯ-НУМЕРАЦІЇ');
+    expect(seenText).not.toContain('PLAIN');
+  });
 });
 
 describe('confirmBoundaries', () => {

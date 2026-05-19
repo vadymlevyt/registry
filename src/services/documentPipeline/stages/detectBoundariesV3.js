@@ -19,7 +19,7 @@
 // Реальний split — splitDocumentsV3 ПІСЛЯ confirm. AI-помилка НЕ фатальна.
 
 import { reconstructAcrossFiles } from '../../documentBoundary/multiFileReconstructor.js';
-import { buildPagedText } from '../pageMarkers.js';
+import { buildStructuralPassport, buildPagedText } from '../pageMarkers.js';
 
 // Текст файла. У streaming-шляху makeContext диригента НЕ переносить
 // extractedText, а convert обнуляє його для Drive-source — тому потоковий
@@ -30,14 +30,18 @@ function textOf(item, getStreamedText) {
   return (streamed || item.extractedText || item.ocrText || '').toString();
 }
 
-// Текст для ПОШУКУ МЕЖ: посторінково-маркований (=== СТОРІНКА N ===) зі
-// збереженого OCR-layout коли він повний; інакше — plain OCR-текст (на
-// resume layout може бути неповним). НЕ обрізається (50K-truncation у
-// buildReconstructionPrompt прибрано — AI бачить усю справу).
+// Текст для ПОШУКУ МЕЖ (вартісна модель §6 — text-first, нуль image-токенів):
+// 1) структурний паспорт зі збереженого pageStructure (маркери + дайджест
+//    геометрії/orientation/dimension/нумерації) — найкращий сигнал меж;
+// 2) інакше — просто посторінково-маркований текст;
+// 3) інакше (resume / нема структури) — plain OCR-текст.
+// НЕ обрізається (50K-truncation прибрано — AI бачить усю справу).
 function boundaryTextOf(item, getStreamedText, getStreamedLayout) {
   const layout = typeof getStreamedLayout === 'function' ? getStreamedLayout(item.fileId) : null;
-  const paged = buildPagedText(layout, item.pageCount || null);
-  return paged || textOf(item, getStreamedText);
+  const expected = item.pageCount || null;
+  return buildStructuralPassport(layout, expected)
+    || buildPagedText(layout, expected)
+    || textOf(item, getStreamedText);
 }
 
 // Нормалізувати одно-файловий результат детектора (DP-2 формат
