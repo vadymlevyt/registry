@@ -160,3 +160,90 @@ describe('splitDocumentsV3 .route — змішаний план + невідом
     expect(persistDocument).toHaveBeenCalledTimes(1);
   });
 });
+
+// G1 (bug 2): артефакт 02_ОБРОБЛЕНІ зрізається за діапазоном сторінок
+// документа, НЕ пишеться текст усього файла. Критерій якості: якщо хтось
+// через 3 міс поверне whole-file у writeProcessedArtifacts — цей тест
+// червоний (адвокат бачив змішаний текст саме через це).
+describe('splitDocumentsV3 G1 — page-precise текст/layout 02_ОБРОБЛЕНІ', () => {
+  function layout6() {
+    return { schemaVersion: 1, pages: Array.from({ length: 6 }, (_, i) => ({ _text: `ТЕКСТ-СТОРІНКИ-${i + 1}` })) };
+  }
+
+  it('slice 1 файл → 2 документи: кожен TXT лише свій діапазон сторінок', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'big', 6);
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const writeText02 = vi.fn(async () => {});
+    const writeLayout02 = vi.fn(async () => {});
+    const stage = mkStage(port, {
+      persistDocument,
+      uploadFile: vi.fn(async (file) => `drv_${file.name}`),
+      deps: { writeText02, writeLayout02 },
+    });
+    const res = await stage(ctxOf(port, {
+      documents: [
+        { documentId: 'd1', name: 'Позов', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 3 }] },
+        { documentId: 'd2', name: 'Ухвала', route: 'slice', fragments: [{ fileId: 'big', startPage: 4, endPage: 6 }] },
+      ],
+    }, [{ fileId: 'big', driveId: d, skipped: false, layoutJson: layout6(), pageCount: 6, processedText: 'ВЕСЬ-ФАЙЛ-65-СТОРІНОК' }]));
+
+    expect(res.ok).toBe(true);
+    expect(writeText02).toHaveBeenCalledTimes(2);
+    const [c1, c2] = writeText02.mock.calls.map((c) => c[0]);
+    // d1 = стор 1-3, БЕЗ тексту стор 4-6 і БЕЗ whole-file.
+    expect(c1.text).toContain('ТЕКСТ-СТОРІНКИ-1');
+    expect(c1.text).toContain('ТЕКСТ-СТОРІНКИ-3');
+    expect(c1.text).not.toContain('ТЕКСТ-СТОРІНКИ-4');
+    expect(c1.text).not.toContain('ВЕСЬ-ФАЙЛ-65');
+    // d2 = стор 4-6, БЕЗ стор 1-3.
+    expect(c2.text).toContain('ТЕКСТ-СТОРІНКИ-4');
+    expect(c2.text).toContain('ТЕКСТ-СТОРІНКИ-6');
+    expect(c2.text).not.toContain('ТЕКСТ-СТОРІНКИ-3');
+    // layout зрізаний паралельно (3 сторінки на документ).
+    expect(writeLayout02.mock.calls[0][0].layoutJson.pages).toHaveLength(3);
+    expect((res.decisions || []).some((x) => x.type === 'text_slice_fallback')).toBe(false);
+  });
+
+  it('multi-fragment (fragment_reconstruct по 2 файлах) → текст конкатиться у порядку фрагментів', async () => {
+    const port = createMemDrivePort();
+    const a = await seedSource(port, 'f0', 3);
+    const b = await seedSource(port, 'f1', 2);
+    const writeText02 = vi.fn(async () => {});
+    const stage = mkStage(port, {
+      persistDocument: vi.fn(async () => ({ success: true })),
+      uploadFile: vi.fn(async () => 'drv'),
+      deps: { writeText02 },
+    });
+    const res = await stage(ctxOf(port, {
+      documents: [{ documentId: 'd1', name: 'Експертиза', route: 'fragment_reconstruct', fragments: [
+        { fileId: 'f0', startPage: 2, endPage: 3 }, { fileId: 'f1', startPage: 1, endPage: 1 },
+      ] }],
+    }, [
+      { fileId: 'f0', driveId: a, skipped: false, pageCount: 3, layoutJson: { schemaVersion: 1, pages: [{ _text: 'A1' }, { _text: 'A2' }, { _text: 'A3' }] } },
+      { fileId: 'f1', driveId: b, skipped: false, pageCount: 2, layoutJson: { schemaVersion: 1, pages: [{ _text: 'B1' }, { _text: 'B2' }] } },
+    ]));
+    expect(res.ok).toBe(true);
+    const t = writeText02.mock.calls[0][0].text;
+    expect(t).toContain('A2'); expect(t).toContain('A3'); expect(t).toContain('B1');
+    expect(t).not.toContain('A1'); expect(t).not.toContain('B2');
+    expect(t.indexOf('A2')).toBeLessThan(t.indexOf('B1'));   // порядок фрагментів
+  });
+
+  it('layout неповний (resume) → цілий текст + decision text_slice_fallback (не тихо хибно)', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'big', 6);
+    const writeText02 = vi.fn(async () => {});
+    const stage = mkStage(port, {
+      persistDocument: vi.fn(async () => ({ success: true })),
+      uploadFile: vi.fn(async () => 'drv'),
+      deps: { writeText02 },
+    });
+    const res = await stage(ctxOf(port, {
+      documents: [{ documentId: 'd1', name: 'Позов', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 3 }] }],
+    }, [{ fileId: 'big', driveId: d, skipped: false, pageCount: 6, layoutJson: { schemaVersion: 1, pages: [{ _text: 'лише1' }] }, processedText: 'ЦІЛИЙ-OCR' }]));
+    expect(res.ok).toBe(true);
+    expect(writeText02.mock.calls[0][0].text).toBe('ЦІЛИЙ-OCR');
+    expect(res.decisions.some((x) => x.type === 'text_slice_fallback')).toBe(true);
+  });
+});

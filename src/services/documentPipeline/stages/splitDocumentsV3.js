@@ -20,6 +20,7 @@
 //   Потім завжди: saveFragments(unusedPages) + datasetCollector(gated).
 
 import { categoryFromBoundaryType } from './classifyV2.js';
+import { isPagedLayout } from '../pageMarkers.js';
 
 // Категорія документа з плану реконструкції. План несе `type` (груба рубрика
 // нарізки від AI); `category` лишається null доки немає окремої класифікації.
@@ -241,7 +242,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         }
         // 02_ОБРОБЛЕНІ — текст/layout (з фрагментних джерел; 80%-precise,
         // page-precise slicing — DP-4, зафіксовано у звіті).
-        await writeProcessedArtifacts(stageDeps, ctx, document, doc, live);
+        await writeProcessedArtifacts(stageDeps, ctx, document, doc, live, decisions);
         newDocuments.push(document);
       }
     } else {
@@ -422,22 +423,81 @@ function publishFragment(stageDeps, ctx, frag) {
   } catch { /* publish ізольований */ }
 }
 
-async function writeProcessedArtifacts(stageDeps, ctx, document, planDoc, live) {
-  const src = live.find((f) => f.fileId === planDoc.fragments?.[0]?.fileId);
-  const text = src?.processedText || src?.extractedText || null;
+// ── G1 (bug 2) · page-precise зріз тексту/layout документа ──────────────────
+// Корінь bug 2: writeProcessedArtifacts писав src.processedText (текст УСЬОГО
+// 65-стор. файла) у КОЖЕН зрізаний документ → адвокат бачив у TXT змішаний
+// текст усіх документів. PDF ріжеться правильно (buildDocumentPdf за
+// startPage/endPage), а текст не ріжеться взагалі.
+//
+// Виправлення детерміноване, без AI: documentAi виставляє per-page `_text`
+// (chunk-safe — pageMarkers.js / documentAi.js), streamingExecutor конкатить
+// per-chunk pageStructure у layoutJson.pages у порядку сторінок. Беремо
+// pages[startPage-1 .. endPage-1]._text по КОЖНОМУ фрагменту документа
+// (multi-fragment: slice з пропусками / fragment_reconstruct по файлах) і
+// зрізаємо паралельний layout так само — артефакти 02_ОБРОБЛЕНІ тепер
+// відповідають САМЕ цьому документу.
+//
+// Гейт isPagedLayout(layout, pageCount): якщо посторінкова розмітка неповна
+// (resume / chunk-misalign) — НЕ ріжемо тихо хибно: пишемо цілий текст
+// джерела + decision у «Потребує уваги» (юрсистема: краще видимий warning
+// ніж мовчазно неправильний текст).
+//
+// Чистка для читання (cleanForReading → processedText = Haiku-MD без меж
+// сторінок) свідомо НЕ застосовується до зрізаних: для slice беремо сирий
+// per-page _text. Інтеграція чистки з нарізкою — окреме рішення адвоката
+// (Варіант 1/2/3), відкладено доки сирий slicing не підтверджено на справі.
+function sliceProcessedArtifacts(planDoc, live) {
+  const textParts = [];
+  const layoutPages = [];
+  let usedFallback = false;
+  let anyPaged = false;
+  for (const fr of planDoc.fragments || []) {
+    const src = live.find((f) => f.fileId === fr.fileId);
+    if (!src) continue;
+    const layout = src.layoutJson || null;
+    const pc = src.pageCount
+      ?? (Array.isArray(layout?.pages) ? layout.pages.length : null);
+    if (isPagedLayout(layout, pc)) {
+      anyPaged = true;
+      const s = Math.max(1, Number(fr.startPage) || 1);
+      const e = Math.min(layout.pages.length, Number(fr.endPage) || s);
+      for (let p = s; p <= e; p++) {
+        const page = layout.pages[p - 1];
+        textParts.push((page && page._text) || '');
+        if (page) layoutPages.push(page);
+      }
+    } else {
+      // Неповний layout — цілий текст джерела (видимо позначаємо).
+      const whole = src.processedText || src.extractedText || '';
+      if (whole) { textParts.push(String(whole)); usedFallback = true; }
+    }
+  }
+  const text = textParts.join('\n\n').trim() || null;
+  const layoutJson = layoutPages.length > 0 ? { schemaVersion: 1, pages: layoutPages } : null;
+  return { text, layoutJson, usedFallback, anyPaged };
+}
+
+async function writeProcessedArtifacts(stageDeps, ctx, document, planDoc, live, decisions) {
+  const { text, layoutJson, usedFallback } = sliceProcessedArtifacts(planDoc, live);
   if (text && typeof stageDeps.writeText02 === 'function') {
     try {
       await stageDeps.writeText02({
         caseData: ctx.job.caseData, driveId: document.driveId,
-        name: document.name, text, format: src?.textFormat || 'txt',
+        name: document.name, text, format: 'txt',
       });
     } catch { /* кеш тексту не критичний */ }
   }
-  const layout = src?.layoutJson || null;
-  if (layout && typeof stageDeps.writeLayout02 === 'function') {
+  if (layoutJson && typeof stageDeps.writeLayout02 === 'function') {
     try {
-      await stageDeps.writeLayout02({ caseData: ctx.job.caseData, driveId: document.driveId, name: document.name, layoutJson: layout });
+      await stageDeps.writeLayout02({ caseData: ctx.job.caseData, driveId: document.driveId, name: document.name, layoutJson });
     } catch { /* layout кеш не критичний */ }
+  }
+  if (usedFallback && Array.isArray(decisions)) {
+    decisions.push({
+      type: 'text_slice_fallback',
+      documentName: document.name,
+      message: `Текст "${document.name}" збережено цілим файлом — посторінкова розмітка неповна (можливо resume після збою). Перевірте 02_ОБРОБЛЕНІ.`,
+    });
   }
 }
 
