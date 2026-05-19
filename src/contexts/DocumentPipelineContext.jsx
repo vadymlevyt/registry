@@ -202,6 +202,13 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             uploadFile: uploadToOriginals,
             createDocument,
             persistDocument: persistDocuments,
+            // Ф3 виконавець route image_merge: композиція наявних
+            // sortation/converter/worker (lazy import — поза critical path
+            // ingest, як інші важкі залежності Provider).
+            mergeImagesToPdf: async ({ images }) => {
+              const { renderImageMergeToPdf } = await import('../services/sortation/imageMergeRenderer.js');
+              return renderImageMergeToPdf({ images, runInWorker: workerClient.runInWorker });
+            },
             writeText02: async ({ caseData, driveId, name, text, format }) => {
               try {
                 await ocrService.writeExtractedTextArtifact(

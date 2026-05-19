@@ -129,6 +129,9 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     const plan = ctx.reconstructionPlan;
     const decisions = [];
     const newDocuments = [];
+    // route to_fragments → ці сторінки йдуть у 03_ФРАГМЕНТИ (saveFragments),
+    // НЕ канонічні документи (об'єднуються з ctx.unusedPages нижче).
+    const routedToFragments = [];
 
     // ── A. Plan-based split ───────────────────────────────────────────────
     if (plan && plan.confirmed && Array.isArray(plan.documents) && plan.documents.length > 0) {
@@ -139,14 +142,55 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         if (b) byFile.set(f.fileId, b instanceof Uint8Array ? (b.buffer || b) : b);
       }
       for (const doc of plan.documents) {
+        // ── Ф3 диспетч за .route (один сенс на маршрут, правило #11) ───────
+        const route = doc.route || 'add_as_is';
+        const label = doc.name || doc.documentId;
+
+        if (route === 'discard') {
+          decisions.push({ type: 'document_discarded', documentId: doc.documentId, documentName: label, message: `"${label}" відкинуто за маршрутом Triage (discard) — на Drive нічого.` });
+          continue;
+        }
+        if (route === 'signature_sidecar') {
+          decisions.push({ type: 'signature_sidecar_skipped', documentId: doc.documentId, message: `"${label}" — підпис/сертифікат, оброблено на розпакуванні (sidecar), окремий документ не створюється.` });
+          continue;
+        }
+        if (route === 'to_fragments') {
+          for (const fr of doc.fragments || []) {
+            routedToFragments.push({ fileId: fr.fileId, startPage: fr.startPage, endPage: fr.endPage, reason: `службова сторінка (route to_fragments: ${label})` });
+          }
+          decisions.push({ type: 'routed_to_fragments', documentId: doc.documentId, count: (doc.fragments || []).length, message: `"${label}" → 03_ФРАГМЕНТИ (route to_fragments), не канонічний документ.` });
+          continue;
+        }
+
         let pdfBytes;
-        try {
-          pdfBytes = await buildDocumentPdf(doc, byFile);
-        } catch (err) {
-          return { ok: false, error: { code: 'SPLIT_FAILED', message: `Нарізка "${doc.name || doc.documentId}": ${err?.message || err}`, fatal: true } };
+        if (route === 'image_merge') {
+          if (typeof stageDeps.mergeImagesToPdf !== 'function') {
+            decisions.push({ type: 'image_merge_unavailable', documentId: doc.documentId, message: `"${label}" — image_merge виконавець не підключено, документ пропущено.` });
+            continue;
+          }
+          const images = [];
+          for (const fr of doc.fragments || []) {
+            const src = live.find((f) => f.fileId === fr.fileId);
+            const raw = byFile.get(fr.fileId);
+            if (!src || !raw) continue;
+            images.push({ bytes: raw, mime: src.originalMime || 'image/jpeg', name: src.name || fr.fileId });
+          }
+          try {
+            pdfBytes = await stageDeps.mergeImagesToPdf({ images, docName: label });
+          } catch (err) {
+            return { ok: false, error: { code: 'IMAGE_MERGE_FAILED', message: `image_merge "${label}": ${err?.message || err}`, fatal: true } };
+          }
+        } else {
+          // add_as_is | slice | fragment_reconstruct | (невідомий → як є):
+          // межі вже від Triage (рішення адвоката Ф3 — без 2-го AI-виклику).
+          try {
+            pdfBytes = await buildDocumentPdf(doc, byFile);
+          } catch (err) {
+            return { ok: false, error: { code: 'SPLIT_FAILED', message: `Нарізка "${label}": ${err?.message || err}`, fatal: true } };
+          }
         }
         if (!pdfBytes) {
-          decisions.push({ type: 'document_split_skipped', documentId: doc.documentId, message: `Документ "${doc.name || doc.documentId}" — немає байтів фрагментів` });
+          decisions.push({ type: 'document_split_skipped', documentId: doc.documentId, message: `Документ "${label}" — немає байтів фрагментів` });
           continue;
         }
         const docName = `${doc.name || doc.documentId}.pdf`;
@@ -252,7 +296,12 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     }
 
     // ── saveFragments (sub-стадія): невикористані сторінки → 03_ФРАГМЕНТИ ──
-    const fragDecisions = await saveFragments(stageDeps, ctx, fragmentsMode);
+    // route to_fragments додає свої сторінки до unusedPages плану (один потік
+    // збереження фрагментів — не дублюємо логіку, правило #11).
+    const ctxFrag = routedToFragments.length > 0
+      ? { ...ctx, unusedPages: [...(Array.isArray(ctx.unusedPages) ? ctx.unusedPages : []), ...routedToFragments] }
+      : ctx;
+    const fragDecisions = await saveFragments(stageDeps, ctxFrag, fragmentsMode);
     decisions.push(...fragDecisions);
 
     // ── datasetCollector (sub-стадія, gated toggle) ──────────────────────
