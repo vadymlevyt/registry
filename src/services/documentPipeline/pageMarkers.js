@@ -177,17 +177,174 @@ export function buildStructuralPassport(layoutJson, expectedPageCount = null) {
     .join('\n\n');
 }
 
+// ── ФД-0 · КОМПАКТНИЙ ПАСПОРТ МЕЖ (для Triage на томах 200-250 стор.) ────────
+// buildCompactTriagePassport — паспорт МЕЖ для Triage: на сторінку лише
+// сукупність дорадчих сигналів (дайджест структури + краї тексту), які AI
+// зважує РАЗОМ. Жоден сигнал не вирішує сам, жоден не жорстке правило.
+// НЕ повний readable-текст (той — окремий потік, 02_ОБРОБЛЕНІ).
+// Один сенс: «мінімальна достатня сукупність сигналів меж для AI».
+//
+// Чому окрема функція, а не прапор `compact` на buildStructuralPassport:
+// це був би другий сенс на одне ім'я (баг-патерн skipCache, філософія
+// «Однозначність»). buildStructuralPassport / buildPagedText / isPagedLayout
+// / pageDigest — недоторкані (їх контракт може споживати щось інше; філософія
+// «додати, не переписати»). Збагачений дайджест — окремий compactDigest.
+//
+// Корінь (спека §0): попередній паспорт вкладав ПОВНИЙ _text кожної сторінки
+// → на 200-250 стор. промпт Triage переповнював вікно Haiku → тихий
+// passthrough (уся справа одним нерізаним документом). Краї тексту замість
+// тіла + дайджест сигналів ≈ ~200-280 ток/стор. (проти ~1000-2000).
+
+const QUALITY_JUMP = 0.25;   // |Δ qualityScore| ≥ → ймовірна зміна джерела/документа (стартова точка)
+const SPARSE_BLOCKS = 2;     // ≤ стільки текстових блоків — кандидат «розрідженої» сторінки
+const SPARSE_CHARS = 200;    // … і ≤ стільки символів _text → «розріджена» (обкладинка/квитанція/штамп)
+
+// Налаштовуваний ручник (спека §3.2; дефолти — стартові точки, не остаточні).
+const COMPACT_DEFAULTS = Object.freeze({
+  headLines: 3,               // перших непорожніх рядків сторінки
+  tailLines: 2,               // останніх непорожніх рядків
+  headChars: 400,             // cap на head-фрагмент
+  tailChars: 200,             // cap на tail-фрагмент
+  fullTextIfNoSignal: true,   // дайджест порожній І сторінка коротка → повний _text (вузький fallback)
+  ambiguousMaxChars: 1200,    // межа «короткої» для fallback вище
+});
+
+// Document AI imageQualityScores.qualityScore ∈ [0,1] (вище = чіткіше скан).
+function qualityScore(page) {
+  const q = Number(page?.imageQualityScores?.qualityScore);
+  return Number.isFinite(q) ? q : null;
+}
+
+// Перша визначена мова сторінки (Document AI detectedLanguages — впорядковані
+// за confidence; беремо першу). Слабкий сигнал зміни документа.
+function primaryLanguage(page) {
+  const dl = page?.detectedLanguages;
+  if (Array.isArray(dl) && dl.length) {
+    const code = dl[0]?.languageCode;
+    return code ? String(code) : null;
+  }
+  return null;
+}
+
+// Дайджест компактного паспорта = сукупність ДОРАДЧИХ сигналів межі (§3.2).
+// Жоден сигнал не детермінований гейт — їх зважує AI РАЗОМ. prev — носій
+// крос-сторінкового стану (попередній футер/якість/формат/орієнтація/мова)
+// для дельта-сигналів. Усі поля Document AI — зовнішні, читаємо захищено
+// (відсутність поля = сигнал просто не додається, паспорт не падає).
+function compactDigest(page, prev) {
+  const tags = [];
+  // — наявні сигнали (ті самі чисті хелпери що й структурний паспорт; БЕЗ
+  //   мутації спільного pageDigest — buildStructuralPassport недоторканий) —
+  const ori = extractPageOrientation(page);
+  if (ori) tags.push(`орієнтація:${ori}°`);
+  const fmt = formatTag(page);
+  if (fmt) tags.push(fmt);
+  if (Array.isArray(page?.tables) && page.tables.length) tags.push('таблиці');
+  if (Array.isArray(page?.formFields) && page.formFields.length) tags.push('поля-форми');
+  const heading = headingSignal(page);
+  if (heading) tags.push(`заголовок:"${heading}"`);
+  const fnum = footerNumber(page);
+  if (fnum != null) {
+    tags.push(`футер-№:${fnum}`);
+    if (prev.footer != null && fnum <= prev.footer) tags.push('СКИДАННЯ-НУМЕРАЦІЇ');
+  }
+  // — нові дорадчі сигнали меж (ФД-0) —
+  const ve = Array.isArray(page?.visualElements) ? page.visualElements : [];
+  if (ve.length) {
+    const types = [...new Set(ve.map((v) => v && v.type).filter(Boolean))];
+    tags.push(`печатка/підпис${types.length ? `:${types.join(',')}` : ''}`);
+  }
+  const q = qualityScore(page);
+  if (q != null && prev.quality != null && Math.abs(q - prev.quality) >= QUALITY_JUMP) {
+    tags.push(`стрибок-якості:Δ${Math.abs(q - prev.quality).toFixed(2)}`);
+  }
+  const blocks = orderedBlocks(page).length;
+  const textLen = String(page?._text || '').trim().length;
+  if (blocks <= SPARSE_BLOCKS && textLen <= SPARSE_CHARS) tags.push('розріджена');
+  if (prev.format != null && fmt != null && fmt !== prev.format) tags.push('зміна-формату');
+  if (prev.orientation != null && ori !== prev.orientation) tags.push('зміна-орієнтації');
+  const lang = primaryLanguage(page);
+  if (lang && prev.lang && lang !== prev.lang) tags.push(`зміна-мови:${prev.lang}→${lang}`);
+
+  return {
+    line: tags.length ? `[${tags.join(' | ')}]` : '',
+    next: {
+      footer: fnum != null ? fnum : prev.footer,
+      quality: q != null ? q : prev.quality,
+      format: fmt != null ? fmt : prev.format,
+      orientation: ori || prev.orientation,
+      lang: lang || prev.lang,
+    },
+  };
+}
+
+// Краї тексту сторінки: перші headLines / останні tailLines непорожніх
+// рядків, кожен край обрізаний по headChars/tailChars. Тіло між ними —
+// викинуте (Triage шукає МЕЖІ, не читає зміст; повний текст — окремий потік
+// 02_ОБРОБЛЕНІ). Якщо рядків мало (вкладаються у head+tail) — віддаємо їх
+// суцільно без розриву (дублювати край безглуздо).
+function edgeText(text, o) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return '';
+  if (lines.length <= o.headLines + o.tailLines) {
+    return lines.join('\n').slice(0, o.headChars + o.tailChars);
+  }
+  const head = lines.slice(0, o.headLines).join('\n').slice(0, o.headChars);
+  const tail = lines.slice(-o.tailLines).join('\n').slice(-o.tailChars);
+  return `${head}\n⟨…⟩\n${tail}`;
+}
+
 /**
- * Єдина точка вибору тексту для пошуку меж / Triage (вартісна модель §6):
- * структурний паспорт → посторінковий текст → plain. Один сенс — «найкращий
- * наявний text-first сигнал меж для цього артефакту».
+ * Зібрати КОМПАКТНИЙ паспорт меж для Triage (спека §3). Той самий контракт
+ * порожнечі що buildPagedText/buildStructuralPassport (непридатний layout →
+ * "" → caller лишається на plain тексті). Чиста функція: без Drive/AI/React,
+ * без спільного мутабельного стану між викликами (ідемпотентна).
+ * @param {object|null} layoutJson — { schemaVersion, pages:[pageStructure] }
+ * @param {number|null} [expectedPageCount]
+ * @param {object} [opts] — перевизначення COMPACT_DEFAULTS (§3.2)
+ * @returns {string}
+ */
+export function buildCompactTriagePassport(layoutJson, expectedPageCount = null, opts = {}) {
+  if (!isPagedLayout(layoutJson, expectedPageCount)) return '';
+  const o = { ...COMPACT_DEFAULTS, ...(opts || {}) };
+  let prev = { footer: null, quality: null, format: null, orientation: null, lang: null };
+  return layoutJson.pages
+    .map((page, i) => {
+      const p = page || {};
+      const { line, next } = compactDigest(p, prev);
+      prev = next;
+      const text = String(p._text || '');
+      let body;
+      if (!line && o.fullTextIfNoSignal && text.trim().length <= o.ambiguousMaxChars) {
+        // Вузький fallback: ані сигналу, ані довгого тексту — не ризикуємо
+        // втратити коротку неоднозначну сторінку, віддаємо її повністю.
+        body = text.trim();
+      } else {
+        body = edgeText(text, o);
+      }
+      const headLine = `=== СТОРІНКА ${i + 1} ===${line ? `\n${line}` : ''}`;
+      return body ? `${headLine}\n${body}` : headLine;
+    })
+    .join('\n\n');
+}
+
+/**
+ * Єдина точка вибору тексту для пошуку меж / Triage (вартісна модель §6 +
+ * масштаб §3.3): КОМПАКТНИЙ паспорт меж → посторінковий текст → plain. Один
+ * сенс — «найкращий наявний text-first сигнал меж для цього артефакту».
+ *
+ * ФД-1: buildStructuralPassport ПРИБРАНО з цього ланцюга (вкладав повний
+ * _text кожної сторінки → переповнення вікна Haiku на 200-250 стор. →
+ * тихий passthrough, спека §0). Лишається експортованою і недоторканою
+ * (grep підтвердив: жодного іншого live-споживача — detectBoundariesV3 не
+ * ін'єктується Provider'ом, у слоті DETECT_BOUNDARIES — createTriageStage).
  * @param {object|null} layoutJson
  * @param {number|null} expectedPageCount
  * @param {string} plainText — fallback (OCR-текст без структури / resume)
  * @returns {string}
  */
 export function resolveBoundaryText(layoutJson, expectedPageCount, plainText) {
-  return buildStructuralPassport(layoutJson, expectedPageCount)
+  return buildCompactTriagePassport(layoutJson, expectedPageCount)
     || buildPagedText(layoutJson, expectedPageCount)
     || String(plainText || '');
 }

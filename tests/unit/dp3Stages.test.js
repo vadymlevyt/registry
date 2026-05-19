@@ -74,12 +74,17 @@ describe('detectBoundariesV3', () => {
     expect(res).toEqual({ ok: true });
   });
 
-  // Ф1: межевий текст іде з посторінковими маркерами (=== СТОРІНКА N ===) і
-  // НЕ обрізається. Тест ганяє стадію з ТИМИ deps які ін'єктує Provider
+  // Ф1+ФД-1: межевий текст іде з посторінковими маркерами (=== СТОРІНКА N ===)
+  // для УСІХ сторінок. Тест ганяє стадію з ТИМИ deps які ін'єктує Provider
   // (analyzeFile + getStreamedText + getStreamedLayout) — закриває gap DP-4
   // (стадія зелена ізольовано, а Provider не дав deps → тихий злам).
-  it('getStreamedLayout ін\'єктований → analyzeFile отримує маркований повний текст', async () => {
-    const longPage = (n) => `сторінка ${n} `.repeat(2000); // ~65 стор. >> 50K
+  // ФД-1: resolveBoundaryText тепер КОМПАКТНИЙ (краї замість тіла) — стара
+  // гарантія «повний текст >50K» свідомо знята доповненням (§0: повний _text
+  // кожної сторінки переповнював вікно Haiku на 200-250 стор.). Перевіряємо
+  // новий контракт: усі сторінки видимі маркерами, layout пріоритетніший за
+  // plain, паспорт у рази менший за сирий повний OCR.
+  it('getStreamedLayout ін\'єктований → analyzeFile отримує КОМПАКТНИЙ паспорт усіх сторінок', async () => {
+    const longPage = (n) => `сторінка ${n} `.repeat(2000); // ~65 стор. великого обсягу
     const layoutMap = {
       big: { schemaVersion: 1, pages: Array.from({ length: 65 }, (_, i) => ({ _text: longPage(i + 1) })) },
     };
@@ -98,7 +103,9 @@ describe('detectBoundariesV3', () => {
     expect(res.ok).toBe(true);
     expect(seenText).toContain('=== СТОРІНКА 1 ===');
     expect(seenText).toContain('=== СТОРІНКА 65 ===');
-    expect(seenText.length).toBeGreaterThan(50000); // 50K-обрізки більше нема
+    expect((seenText.match(/=== СТОРІНКА \d+ ===/g) || []).length).toBe(65); // усі сторінки видимі AI
+    const rawFullLen = 65 * longPage(1).length;
+    expect(seenText.length).toBeLessThan(rawFullLen / 10); // компактний: краї, не тіло (ФД-1)
     expect(seenText).not.toContain('PLAIN-БЕЗ-МАРКЕРІВ'); // layout має пріоритет
   });
 
