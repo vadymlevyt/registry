@@ -22,6 +22,12 @@
 import { categoryFromBoundaryType } from './classifyV2.js';
 import { isPagedLayout } from '../pageMarkers.js';
 
+// G4 — маршрути що НЕ йдуть через buildDocumentPdf (обробляються окремими
+// гілками диспетчу до нарізки): пре-нарізка джерела їх не включає.
+const BUILD_PDF_ROUTES_SKIP = new Set([
+  'discard', 'signature_sidecar', 'to_fragments', 'image_merge',
+]);
+
 // Категорія документа з плану реконструкції. План несе `type` (груба рубрика
 // нарізки від AI); `category` лишається null доки немає окремої класифікації.
 // Раніше splitDocumentsV3 читав ЛИШЕ doc.category → усі нарізані документи
@@ -110,19 +116,51 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     return null;
   }
 
-  // Зібрати PDF логічного документа з його фрагментів (1 файл — splitPdf;
-  // N файлів — splitPdf кожен + mergePdf). Повертає Uint8Array або null.
-  async function buildDocumentPdf(doc, byFile) {
-    const parts = [];
-    for (const frag of doc.fragments) {
-      const buf = byFile.get(frag.fileId);
-      if (!buf) continue;
-      const { parts: cut } = await runInWorker('splitPdf', {
-        buffer: buf,
-        ranges: [{ name: doc.documentId, type: doc.type || 'document', startPage: frag.startPage, endPage: frag.endPage }],
+  // ── G4 (bug 3) · нарізати джерело ОДИН раз з усіма діапазонами ───────────
+  // Корінь 46 хв: buildDocumentPdf слав ПОВНИЙ буфер джерела у splitPdf
+  // ОКРЕМО на кожен документ → pdf-lib re-parse 21МБ ~25-30 разів (домінантний
+  // кост). splitPdf парсить буфер ОДИН раз для N діапазонів (splitPdf.js:26).
+  // Тому ріжемо кожен файл-джерело ОДИН раз з діапазонами ВСІХ його
+  // документів; результат по-діапазонно БІТ-У-БІТ той самий (та сама
+  // load/copyPages/save) — поведінка збережена, лише без N-1 re-parse.
+  // key = `${planIdx}#${fragIdx}` (planIdx 1-based, унікальний на ітерацію
+  // циклу персисту — без колізій навіть при дублі documentId від AI).
+  async function precutSources(planDocuments, byFile) {
+    const rangesByFile = new Map();
+    let di = 0;
+    for (const doc of planDocuments) {
+      di += 1;                                   // інкремент для КОЖНОГО (як planIdx)
+      const route = doc.route || 'add_as_is';
+      if (BUILD_PDF_ROUTES_SKIP.has(route)) continue;
+      (doc.fragments || []).forEach((fr, fi) => {
+        if (!byFile.has(fr.fileId)) return;
+        if (!rangesByFile.has(fr.fileId)) rangesByFile.set(fr.fileId, []);
+        rangesByFile.get(fr.fileId).push({
+          name: `${di}#${fi}`,
+          type: doc.type || 'document',
+          startPage: fr.startPage,
+          endPage: fr.endPage,
+        });
       });
-      if (cut && cut[0]) parts.push(cut[0].buffer);
     }
+    const cutByKey = new Map();
+    for (const [fileId, ranges] of rangesByFile) {
+      const { parts } = await runInWorker('splitPdf', { buffer: byFile.get(fileId), ranges });
+      for (const p of parts || []) cutByKey.set(p.name, p.buffer);
+    }
+    return cutByKey;
+  }
+
+  // Зібрати PDF логічного документа з пре-нарізаних частин (G4). 1 частина —
+  // як є; N (multi-fragment / fragment_reconstruct по файлах) — mergePdf.
+  // Відсутній ключ (range out-of-bounds → splitPdf пропустив) → фрагмент
+  // пропускається (та сама поведінка що стара gілка `if (!cut[0]) continue`).
+  async function buildDocumentPdf(doc, planIdx, cutByKey) {
+    const parts = [];
+    (doc.fragments || []).forEach((fr, fi) => {
+      const buf = cutByKey.get(`${planIdx}#${fi}`);
+      if (buf) parts.push(buf);
+    });
     if (parts.length === 0) return null;
     if (parts.length === 1) return new Uint8Array(parts[0]);
     const { buffer } = await runInWorker('mergePdf', { buffers: parts });
@@ -161,6 +199,9 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const b = await sourceBytes(f);
         if (b) byFile.set(f.fileId, b instanceof Uint8Array ? (b.buffer || b) : b);
       }
+      // G4: нарізати кожне джерело ОДИН раз (усі діапазони всіх документів),
+      // замість повного re-parse 21МБ на кожен документ (корінь 46 хв).
+      const cutByKey = await precutSources(plan.documents, byFile);
       const planTotal = plan.documents.length;
       let planIdx = 0;
       for (const doc of plan.documents) {
@@ -207,7 +248,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           // add_as_is | slice | fragment_reconstruct | (невідомий → як є):
           // межі вже від Triage (рішення адвоката Ф3 — без 2-го AI-виклику).
           try {
-            pdfBytes = await buildDocumentPdf(doc, byFile);
+            pdfBytes = await buildDocumentPdf(doc, planIdx, cutByKey);
           } catch (err) {
             return { ok: false, error: { code: 'SPLIT_FAILED', message: `Нарізка "${label}": ${err?.message || err}`, fatal: true } };
           }

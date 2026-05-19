@@ -324,3 +324,59 @@ describe('splitDocumentsV3 G3 — same-job дедуп (bug 1)', () => {
     expect(res.decisions.some((x) => x.type === 'duplicate_skipped')).toBe(true);
   });
 });
+
+// G4 (bug 3) — джерело ріжеться ОДИН раз з усіма діапазонами, не повний
+// re-parse 21МБ на кожен документ (корінь 46 хв). Критерій якості: якщо
+// хтось поверне per-document splitPdf — splitPdfCalls зросте, тест червоний.
+describe('splitDocumentsV3 G4 — splitPdf один раз на джерело (bug 3)', () => {
+  function countingWorker(counter) {
+    return (op, payload, transfer) => {
+      counter[op] = (counter[op] || 0) + 1;
+      return wc.runInWorker(op, payload, transfer);
+    };
+  }
+
+  it('3 документи з ОДНОГО файла → splitPdf 1 раз (було 3), 3 персисти', async () => {
+    const port = createMemDrivePort();
+    const d = await seedSource(port, 'big', 6);
+    const counter = {};
+    const persistDocument = vi.fn(async () => ({ success: true }));
+    const stage = mkStage(port, {
+      persistDocument,
+      uploadFile: vi.fn(async (f) => `drv_${f.name}`),
+      deps: { runInWorker: countingWorker(counter), writeText02: async () => {} },
+    });
+    const res = await stage(ctxOf(port, { documents: [
+      { documentId: 'a', name: 'Позов', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 2 }] },
+      { documentId: 'b', name: 'Ухвала', route: 'slice', fragments: [{ fileId: 'big', startPage: 3, endPage: 4 }] },
+      { documentId: 'c', name: 'Довідка', route: 'slice', fragments: [{ fileId: 'big', startPage: 5, endPage: 6 }] },
+    ] }, [{ fileId: 'big', driveId: d, skipped: false, pageCount: 6 }]));
+    expect(res.ok).toBe(true);
+    expect(persistDocument).toHaveBeenCalledTimes(3);
+    expect(counter.splitPdf).toBe(1);                  // ОДИН парс джерела
+    expect(counter.mergePdf || 0).toBe(0);             // single-fragment — без merge
+  });
+
+  it('fragment_reconstruct по 2 файлах → splitPdf 2 (по файлу), mergePdf 1', async () => {
+    const port = createMemDrivePort();
+    const a = await seedSource(port, 'f0', 3);
+    const b = await seedSource(port, 'f1', 2);
+    const counter = {};
+    const stage = mkStage(port, {
+      persistDocument: vi.fn(async () => ({ success: true })),
+      uploadFile: vi.fn(async () => 'drv'),
+      deps: { runInWorker: countingWorker(counter), writeText02: async () => {} },
+    });
+    const res = await stage(ctxOf(port, { documents: [
+      { documentId: 'd1', name: 'Експертиза', route: 'fragment_reconstruct', fragments: [
+        { fileId: 'f0', startPage: 1, endPage: 3 }, { fileId: 'f1', startPage: 1, endPage: 2 },
+      ] },
+    ] }, [
+      { fileId: 'f0', driveId: a, skipped: false, pageCount: 3 },
+      { fileId: 'f1', driveId: b, skipped: false, pageCount: 2 },
+    ]));
+    expect(res.ok).toBe(true);
+    expect(counter.splitPdf).toBe(2);                  // раз на КОЖЕН файл-джерело
+    expect(counter.mergePdf).toBe(1);                  // 2 фрагменти → склейка
+  });
+});
