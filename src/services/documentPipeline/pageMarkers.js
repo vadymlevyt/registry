@@ -176,3 +176,18 @@ export function buildStructuralPassport(layoutJson, expectedPageCount = null) {
     })
     .join('\n\n');
 }
+
+/**
+ * Єдина точка вибору тексту для пошуку меж / Triage (вартісна модель §6):
+ * структурний паспорт → посторінковий текст → plain. Один сенс — «найкращий
+ * наявний text-first сигнал меж для цього артефакту».
+ * @param {object|null} layoutJson
+ * @param {number|null} expectedPageCount
+ * @param {string} plainText — fallback (OCR-текст без структури / resume)
+ * @returns {string}
+ */
+export function resolveBoundaryText(layoutJson, expectedPageCount, plainText) {
+  return buildStructuralPassport(layoutJson, expectedPageCount)
+    || buildPagedText(layoutJson, expectedPageCount)
+    || String(plainText || '');
+}

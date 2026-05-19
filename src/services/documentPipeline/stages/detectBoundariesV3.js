@@ -19,7 +19,7 @@
 // Реальний split — splitDocumentsV3 ПІСЛЯ confirm. AI-помилка НЕ фатальна.
 
 import { reconstructAcrossFiles } from '../../documentBoundary/multiFileReconstructor.js';
-import { buildStructuralPassport, buildPagedText } from '../pageMarkers.js';
+import { resolveBoundaryText } from '../pageMarkers.js';
 
 // Текст файла. У streaming-шляху makeContext диригента НЕ переносить
 // extractedText, а convert обнуляє його для Drive-source — тому потоковий
@@ -38,10 +38,7 @@ function textOf(item, getStreamedText) {
 // НЕ обрізається (50K-truncation прибрано — AI бачить усю справу).
 function boundaryTextOf(item, getStreamedText, getStreamedLayout) {
   const layout = typeof getStreamedLayout === 'function' ? getStreamedLayout(item.fileId) : null;
-  const expected = item.pageCount || null;
-  return buildStructuralPassport(layout, expected)
-    || buildPagedText(layout, expected)
-    || textOf(item, getStreamedText);
+  return resolveBoundaryText(layout, item.pageCount || null, textOf(item, getStreamedText));
 }
 
 // Нормалізувати одно-файловий результат детектора (DP-2 формат

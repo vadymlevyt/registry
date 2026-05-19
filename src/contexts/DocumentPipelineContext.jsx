@@ -31,7 +31,7 @@ import { createStreamingExecutor } from '../services/documentPipeline/streamingE
 import { createDefaultDrivePort } from '../services/documentPipeline/drivePort.js';
 import { createWorkerClient } from '../services/documentPipeline/workerClient.js';
 import { createDocumentPipeline } from '../services/documentPipeline.js';
-import { createDetectBoundariesV3 } from '../services/documentPipeline/stages/detectBoundariesV3.js';
+import { createTriageStage } from '../services/documentPipeline/stages/triageStage.js';
 import { createExtractV3 } from '../services/documentPipeline/stages/extractV3.js';
 import { createConfirmBoundaries } from '../services/documentPipeline/stages/confirmBoundaries.js';
 import { createSplitDocumentsV3 } from '../services/documentPipeline/stages/splitDocumentsV3.js';
@@ -89,6 +89,17 @@ async function aiReconstructFile({ fileName, text, openTails, userHint }) {
   const parsed = extractJson(typeof out === 'string' ? out : '');
   if (!parsed) throw new Error('Реконструкція повернула не-JSON');
   return { documents: parsed.documents || [], unusedPages: parsed.unusedPages || [] };
+}
+
+// Ф2 Triage-транспорт. Тонка обгортка над analyzeTriageViaToolUse (Haiku,
+// білінг §12 всередині модуля). Нема ключа → кидає; createTriageStage
+// трактує НЕ фатально (passthrough). aiUsageSink не передаємо — React-точка
+// логує через дефолтний sink (як analyzeViaToolUse у Provider-контексті).
+async function aiTriage({ artifacts, userHint, caseId }) {
+  const apiKey = getApiKey();
+  if (!apiKey) throw new Error('Немає API ключа для Triage');
+  const { analyzeTriageViaToolUse } = await import('../services/documentBoundary/analyzeTriageViaToolUse.js');
+  return analyzeTriageViaToolUse({ artifacts, userHint, caseId, apiKey });
 }
 
 async function aiCleanText(text, { fileName } = {}) {
@@ -168,20 +179,15 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       const opt = runOptionsRef.current || {};
       return {
         stageOverrides: {
-          detectBoundaries: createDetectBoundariesV3({
-            analyzeFile: aiReconstructFile,
+          // Ф2 Smart Triage — НОВЕ ЯДРО у слоті DETECT_BOUNDARIES (диригент
+          // незмінний). Один AI-диспетч (Haiku, паспорт-вхід) → ЄДИНИЙ план
+          // з .route. detectBoundariesV3 / reconstructAcrossFiles НЕ видалені
+          // — стануть виконавцями маршрутів у PERSIST (Ф3). Текст-аксесори ті
+          // самі що раніше (потоковий OCR + per-page layout для паспорта).
+          detectBoundaries: createTriageStage({
+            triage: aiTriage,
             getStreamedText,
             getStreamedLayout,
-            // REVERT-PARTIAL DP-4 BUGFIX (`shouldReconstruct: >=1`): Provider
-            // більше НЕ форсує реконструкцію для одного файла. Стадія падає
-            // на свій документований дефолт `>1` не-skipped файл (справжній
-            // multi-file пакет). Один PDF з кількома документами НЕ женеться
-            // у multi-file реконструктор — його промпт «пакет/хвости», не
-            // «наріж цей PDF»; разом із `fetch` без timeout це й спричиняло
-            // зависання DP. Коректна single-file нарізка повертається окремо
-            // через Smart Triage (text-first, ревізія 1.1 консультації
-            // docs/consultations/consultation_dp_triage_architecture.md) —
-            // це Крок 2, поза цим revert.
           }),
           extract: createExtractV3({
             cleanForReading: opt.cleanForReading === true,

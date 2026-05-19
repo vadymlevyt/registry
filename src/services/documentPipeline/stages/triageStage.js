@@ -1,0 +1,179 @@
+// ── Ф2 STAGE · SMART TRIAGE (override DETECT_BOUNDARIES) ────────────────────
+// Нове ЯДРО: один AI-диспетчер дивиться на ВЕСЬ змішаний вхід і будує ЄДИНИЙ
+// план з .route на кожен документ. Підключається через
+// deps.stageOverrides[STAGE.DETECT_BOUNDARIES] у Provider (заміна
+// detectBoundariesV3 у цьому слоті). Диригент documentPipeline.js НЕ
+// змінюється. detectBoundariesV3 / reconstructAcrossFiles /
+// documentBoundary.detectBoundaries НЕ видаляються — стають виконавцями
+// маршрутів у PERSIST (Ф3).
+//
+// КОНТРАКТ propose→confirm: лише ПРОПОНУЄ (ctx.reconstructionPlan + .route +
+// ctx.unusedPages + decisions[]). Нічого не ріже/не пише. Реальний диспетч —
+// splitDocumentsV3 ПІСЛЯ confirm (Ф3/Ф4).
+//
+// Маршрут вирішує AI (§2.3): жодних count-гейтів як логіки маршруту.
+// Детермінована сітка — ЛИШЕ абсолютно однозначне дешеве (тривіальне 1 фото
+// = 1 сторінка) як невидима пре-фільтрація, НЕ режим/кнопка. .p7s/.sig і
+// ZIP уже оброблені stage unpack (INTAKE) — Triage їх не торкає.
+//
+// Чистий модуль: AI-транспорт (triage) ін'єктується. AI-помилка / нема
+// ключа → НЕ фатально: passthrough (ingest не блокуємо, як detectBoundariesV3).
+
+import { resolveBoundaryText } from '../pageMarkers.js';
+
+// Текст артефакту для Triage: structural passport → posторінковий → plain.
+function passportOf(item, getStreamedText, getStreamedLayout) {
+  const streamed = typeof getStreamedText === 'function' ? getStreamedText(item.fileId) : '';
+  const plain = (streamed || item.extractedText || item.ocrText || '').toString();
+  const layout = typeof getStreamedLayout === 'function' ? getStreamedLayout(item.fileId) : null;
+  return resolveBoundaryText(layout, item.pageCount || null, plain);
+}
+
+// Походження файла для контексту промпта (pdf / was-image / was-docx).
+function originOf(item) {
+  const m = (item.originalMime || '').toLowerCase();
+  if (m.startsWith('image/')) return 'was-image';
+  if (m.includes('word') || m.includes('officedocument') || m.includes('msword')) return 'was-docx';
+  if (m.includes('html')) return 'was-html';
+  return 'pdf';
+}
+
+// Контекст від court_sync (як detectBoundariesV3.buildUserHint — той самий
+// сенс «підказка з ЄСІТС-метаданих»; локально щоб Triage не залежав від
+// старої стадії).
+function buildUserHint(ctx) {
+  if (ctx.metadataSidecar?.source !== 'court_sync') return '';
+  const ec = ctx.metadataSidecar?.ecitsContext || {};
+  const bits = [];
+  if (ec.caseType) bits.push(`тип справи: ${ec.caseType}`);
+  if (ec.notificationType) bits.push(`тип повідомлення: ${ec.notificationType}`);
+  if (ec.court) bits.push(`суд: ${ec.court}`);
+  return bits.join('; ');
+}
+
+const ROUTES = new Set([
+  'add_as_is', 'slice', 'image_merge', 'fragment_reconstruct',
+  'signature_sidecar', 'to_fragments', 'discard',
+]);
+
+// Тривіальний 1 файл-image 1 сторінка без сусідів → image_merge (без AI).
+function trivialImagePlan(live) {
+  if (live.length !== 1) return null;
+  const f = live[0];
+  const isImg = (f.originalMime || '').toLowerCase().startsWith('image/');
+  const pc = f.pageCount == null ? 1 : f.pageCount;
+  if (!isImg || pc > 1) return null;
+  return {
+    documents: [{
+      documentId: 'd1',
+      name: f.name || null,
+      type: null,
+      route: 'image_merge',
+      fragments: [{ fileId: f.fileId, startPage: 1, endPage: 1 }],
+      open: false,
+    }],
+    unusedPages: [],
+  };
+}
+
+// Нормалізувати AI-план у канонічний транзитний формат плану.
+function normalizePlan(raw) {
+  const docs = Array.isArray(raw?.documents) ? raw.documents : [];
+  const documents = docs.map((d, i) => {
+    const route = ROUTES.has(d?.route) ? d.route : 'add_as_is';
+    const fragments = Array.isArray(d?.fragments)
+      ? d.fragments.map((fr) => ({
+          fileId: fr.fileId,
+          startPage: Number(fr.startPage) || 1,
+          endPage: Number(fr.endPage) || Number(fr.startPage) || 1,
+        }))
+      : [];
+    return {
+      documentId: d?.documentId || `doc_${i + 1}`,
+      name: d?.name || null,
+      type: d?.type || null,
+      route,
+      fragments,
+      open: d?.open === true,
+    };
+  }).filter((d) => d.fragments.length > 0 || d.route === 'discard');
+  const unusedPages = Array.isArray(raw?.unusedPages)
+    ? raw.unusedPages.map((u) => ({
+        fileId: u.fileId || null,
+        startPage: Number(u.startPage) || 1,
+        endPage: Number(u.endPage) || Number(u.startPage) || 1,
+        reason: u.reason || 'не визначено тип сторінки',
+      }))
+    : [];
+  return { documents, unusedPages };
+}
+
+// stageDeps:
+//   triage({artifacts,userHint,caseId}) → {documents,unusedPages} — AI-хід
+//     Triage (Haiku, поверх toolUseRunner; ін'єкт). Обов'язковий для актив.
+//   getStreamedText(fileId) / getStreamedLayout(fileId) — потоковий OCR
+//     текст / per-page layout (executor-accessor; як detectBoundariesV3).
+export function createTriageStage(stageDeps = {}) {
+  const { triage, getStreamedText, getStreamedLayout } = stageDeps;
+
+  return async function triageStage(ctx) {
+    const live = ctx.files.filter((f) => !f.skipped);
+    if (live.length === 0) return { ok: true };
+
+    // ── Детермінована сітка (без AI, лише однозначне) ────────────────────
+    const trivial = trivialImagePlan(live);
+    if (trivial) {
+      return {
+        ok: true,
+        ctx: { ...ctx, reconstructionPlan: trivial, unusedPages: trivial.unusedPages },
+        decisions: [{
+          type: 'document_boundaries',
+          scope: 'triage',
+          deterministic: true,
+          documentCount: 1,
+          proposals: trivial.documents,
+          unusedPages: [],
+          message: 'Одне зображення = один документ (детермінована сітка).',
+        }],
+      };
+    }
+
+    // ── AI Triage ────────────────────────────────────────────────────────
+    if (typeof triage !== 'function') return { ok: true };   // нема транспорту → passthrough
+    const artifacts = live.map((f) => ({
+      fileId: f.fileId,
+      name: f.name,
+      origin: originOf(f),
+      pageCount: f.pageCount || null,
+      passport: passportOf(f, getStreamedText, getStreamedLayout),
+    }));
+    let plan;
+    try {
+      const raw = await triage({ artifacts, userHint: buildUserHint(ctx), caseId: ctx.job.caseId });
+      plan = normalizePlan(raw);
+    } catch (err) {
+      // НЕ фатально — пакет ingest-иться без плану (адвокат у DP-4 UI).
+      return {
+        ok: true,
+        ctx: { ...ctx, files: ctx.files.map((f) => ({ ...f, warnings: [...(f.warnings || []), `triage: ${err?.message || err}`] })) },
+      };
+    }
+    if (plan.documents.length === 0) return { ok: true };     // нічого не виділено → passthrough
+
+    return {
+      ok: true,
+      ctx: { ...ctx, reconstructionPlan: plan, unusedPages: plan.unusedPages },
+      decisions: [{
+        type: 'document_boundaries',
+        scope: 'triage',
+        deterministic: false,
+        documentCount: plan.documents.length,
+        proposals: plan.documents.map((d) => ({
+          documentId: d.documentId, name: d.name, type: d.type, route: d.route, fragments: d.fragments,
+        })),
+        unusedPages: plan.unusedPages,
+        message: `Triage: ${live.length} файлів → ${plan.documents.length} логічних документів. Підтвердьте план обробки перед нарізкою.`,
+      }],
+    };
+  };
+}

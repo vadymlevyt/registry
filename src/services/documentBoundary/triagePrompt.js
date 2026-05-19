@@ -1,0 +1,68 @@
+// ── DOCUMENT BOUNDARY · TRIAGE PROMPT (Ф2 Smart Triage) ─────────────────────
+// Єдиний промпт-диспетчер: AI дивиться на ВЕСЬ змішаний вхід (після
+// unpack+convert+OCR) і будує ОДИН план з маршрутом (.route) на кожен
+// логічний документ. Вхід — text-first структурний паспорт (Ф0), нуль
+// image-токенів (вартісна модель §6). Чистий білдер рядка; транспорт
+// (Haiku через toolUseRunner) ін'єктується у стадію окремо.
+//
+// Правила тексту: україномовний — подвійні лапки / шаблони (правило #5);
+// без емодзі (§2.9). Структурний тест (НЕ verbatim-снапшот — промпт новий).
+
+// route enum + однозначні визначення. Кожен документ плану — РІВНО один route.
+const ROUTE_DOC = `Маршрути (route) — для КОЖНОГО документа рівно один:
+- "add_as_is": готовий самодостатній PDF-документ (типово з е-суду) — береться як є.
+- "slice": один файл містить КІЛЬКА документів — наріж за межами сторінок.
+- "image_merge": група фото/зображень = сторінки ОДНОГО документа — зібрати в один.
+- "fragment_reconstruct": один документ розрізаний по КІЛЬКОХ файлах — звести.
+- "to_fragments": обкладинка/штамп/порожня/службова сторінка — у фрагменти.
+- "discard": сміття без цінності — відкинути (вкажи reason).`;
+
+/**
+ * Зібрати промпт Triage.
+ * @param {object} args
+ * @param {Array<{fileId,name,origin?,pageCount?,passport:string}>} args.artifacts
+ *        — артефакти після нормалізації; passport = текст зі структурними
+ *        маркерами "=== СТОРІНКА N ===" (Ф0).
+ * @param {string} [args.userHint] — контекст від адвоката / court_sync
+ * @returns {string}
+ */
+export function buildTriagePrompt({ artifacts = [], userHint = '' } = {}) {
+  const head = `Це набір файлів судової справи (фото, скани, PDF, фрагменти — разом).${userHint ? ` Контекст: ${userHint}` : ''}
+
+Подивись на ВЕСЬ набір і визнач, що з кожним зробити. Поверни ЄДИНИЙ план:
+які логічні документи присутні, з яких файлів/сторінок кожен складається,
+і який маршрут (route) для кожного.
+
+${ROUTE_DOC}
+
+Сигнали: рядок у дужках [...] після маркера сторінки — структурні підказки
+(заголовок, футер-№, СКИДАННЯ-НУМЕРАЦІЇ, орієнтація, формат, таблиці).
+startPage/endPage визначай ВИКЛЮЧНО за маркерами "=== СТОРІНКА N ===".
+Послідовні імена файлів-фото (IMG_001..) або спільний формат-фото — сигнал
+image_merge. Обрив тексту в кінці одного файла і продовження на початку
+іншого — сигнал fragment_reconstruct.
+
+Поверни ТІЛЬКИ JSON без тексту до/після:
+{
+  "documents": [
+    {"documentId":"d1","name":"Позовна заява","type":"pleading","route":"slice","fragments":[{"fileId":"f0","startPage":1,"endPage":8}],"open":false}
+  ],
+  "unusedPages": [{"fileId":"f0","startPage":9,"endPage":9,"reason":"порожня сторінка"}]
+}
+
+Типи (type): pleading, court_act, evidence, certificate, contract,
+court_cover, correspondence, other.
+ВАЖЛИВО: межі і маршрути — лише за реальним вмістом. Не вигадуй документи.`;
+
+  const lines = [head, '', `Файлів у наборі: ${artifacts.length}`, '', 'ФАЙЛИ:'];
+  for (const a of artifacts) {
+    lines.push('---');
+    lines.push(`fileId: ${a.fileId}`);
+    if (a.name) lines.push(`name: ${a.name}`);
+    if (a.origin) lines.push(`origin: ${a.origin}`);
+    if (Number.isFinite(a.pageCount)) lines.push(`pageCount: ${a.pageCount}`);
+    lines.push('passport:');
+    lines.push(a.passport || '(порожній — файл без розпізнаного тексту/структури)');
+  }
+  return lines.join('\n');
+}
