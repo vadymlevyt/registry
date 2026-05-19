@@ -88,4 +88,17 @@ describe('multiFileReconstructor — buildReconstructionPrompt', () => {
     expect(p).toContain('Позов');
     expect(p).toContain('Контекст: цивільна');
   });
+
+  it('Ф1: інструкція про маркери === СТОРІНКА N === присутня', () => {
+    const p = buildReconstructionPrompt({ fileName: 'a.pdf', text: '=== СТОРІНКА 1 ===\nтекст' });
+    expect(p).toContain('=== СТОРІНКА N ===');
+    expect(p).toMatch(/ВИКЛЮЧНО за цими маркерами/);
+  });
+
+  it('Ф1: текст НЕ обрізається на 50000 (велика справа видима повністю)', () => {
+    const big = '=== СТОРІНКА 1 ===\n' + 'x'.repeat(120000);
+    const p = buildReconstructionPrompt({ fileName: 'b.pdf', text: big });
+    expect(p).toContain(big);              // увесь текст у промпті
+    expect(p.length).toBeGreaterThan(120000);
+  });
 });

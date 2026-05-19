@@ -337,6 +337,11 @@ export async function callAPIWithRetry(params, options = {}) {
     maxRetries = 5,
     initialDelayMs = 1500,
     maxDelayMs = 20000,
+    // requestTimeoutMs — макс. час очікування ОДНІЄЇ HTTP-спроби. Перевищення →
+    // controller.abort() → fetch кидає AbortError → той самий catch що й
+    // мережева помилка → транзитивно → backoff+retry. Без цього присипляння
+    // вкладки/флап мережі підвішували весь pipeline назавжди (корінь DP-4).
+    requestTimeoutMs = 120000,
   } = options;
 
   if (!apiKey) {
@@ -348,6 +353,8 @@ export async function callAPIWithRetry(params, options = {}) {
   let lastError = null;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let response;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       response = await fetch(apiUrl, {
         method: 'POST',
@@ -357,10 +364,12 @@ export async function callAPIWithRetry(params, options = {}) {
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true'
         },
-        body: JSON.stringify(params)
+        body: JSON.stringify(params),
+        signal: controller.signal
       });
     } catch (networkErr) {
-      // Мережа — fetch кинув. Транзитивна помилка, retry.
+      // Мережа кинула АБО спрацював timeout (AbortError). Обидва — транзитивні
+      // → backoff+retry (timeout не виправиться без повторної спроби).
       lastError = networkErr;
       console.warn(`[callAPIWithRetry] network error attempt ${attempt + 1}/${maxRetries}:`, networkErr?.message);
       if (attempt === maxRetries - 1) {
@@ -371,6 +380,10 @@ export async function callAPIWithRetry(params, options = {}) {
       }
       await sleep(backoffDelay(attempt, initialDelayMs, maxDelayMs));
       continue;
+    } finally {
+      // Завжди знімаємо timer (успіх / continue / throw) — інакше висячий
+      // setTimeout тримав би abort на вже завершеній спробі.
+      clearTimeout(timeoutId);
     }
 
     if (response.ok) {

@@ -73,6 +73,51 @@ describe('detectBoundariesV3', () => {
     const res = await createDetectBoundariesV3({})(ctxOf([{ extractedText: 'a' }, { extractedText: 'b' }]));
     expect(res).toEqual({ ok: true });
   });
+
+  // Ф1: межевий текст іде з посторінковими маркерами (=== СТОРІНКА N ===) і
+  // НЕ обрізається. Тест ганяє стадію з ТИМИ deps які ін'єктує Provider
+  // (analyzeFile + getStreamedText + getStreamedLayout) — закриває gap DP-4
+  // (стадія зелена ізольовано, а Provider не дав deps → тихий злам).
+  it('getStreamedLayout ін\'єктований → analyzeFile отримує маркований повний текст', async () => {
+    const longPage = (n) => `сторінка ${n} `.repeat(2000); // ~65 стор. >> 50K
+    const layoutMap = {
+      big: { schemaVersion: 1, pages: Array.from({ length: 65 }, (_, i) => ({ _text: longPage(i + 1) })) },
+    };
+    let seenText = '';
+    const analyzeFile = vi.fn(async ({ text }) => {
+      seenText = text;
+      return { documents: [{ documentId: 'd1', name: 'A', type: 'pleading', startPage: 1, endPage: 65, open: false }], unusedPages: [] };
+    });
+    const stage = createDetectBoundariesV3({
+      analyzeFile,
+      getStreamedText: () => 'PLAIN-БЕЗ-МАРКЕРІВ',
+      getStreamedLayout: (id) => layoutMap[id] || null,
+      shouldReconstruct: () => true,
+    });
+    const res = await stage(ctxOf([{ fileId: 'big', pageCount: 65 }]));
+    expect(res.ok).toBe(true);
+    expect(seenText).toContain('=== СТОРІНКА 1 ===');
+    expect(seenText).toContain('=== СТОРІНКА 65 ===');
+    expect(seenText.length).toBeGreaterThan(50000); // 50K-обрізки більше нема
+    expect(seenText).not.toContain('PLAIN-БЕЗ-МАРКЕРІВ'); // layout має пріоритет
+  });
+
+  it('layout неповний (resume) → fallback на plain getStreamedText, без маркерів', async () => {
+    let seenText = '';
+    const analyzeFile = vi.fn(async ({ text }) => {
+      seenText = text;
+      return { documents: [], unusedPages: [] };
+    });
+    const stage = createDetectBoundariesV3({
+      analyzeFile,
+      getStreamedText: () => 'ПОВНИЙ-OCR-ТЕКСТ-БЕЗ-LAYOUT',
+      getStreamedLayout: () => ({ schemaVersion: 1, pages: [{ _text: 'p1' }] }), // 1 != pageCount
+      shouldReconstruct: () => true,
+    });
+    await stage(ctxOf([{ fileId: 'big', pageCount: 65 }]));
+    expect(seenText).toBe('ПОВНИЙ-OCR-ТЕКСТ-БЕЗ-LAYOUT');
+    expect(seenText).not.toContain('=== СТОРІНКА');
+  });
 });
 
 describe('confirmBoundaries', () => {

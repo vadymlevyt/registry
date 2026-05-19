@@ -438,4 +438,36 @@ describe('callAPIWithRetry', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  // Ф1 (корінь зависання DP-4): висячий fetch (вкладка присипляється / флап
+  // мережі) має зрізатись timeout-ом → AbortError → той самий network-catch →
+  // retry → після maxRetries дружня помилка. БЕЗ цього весь pipeline вішався
+  // назавжди (await fetch ніколи не резолвиться).
+  it('висячий fetch → requestTimeoutMs abort → retry → userMessage (НЕ вічне зависання)', async () => {
+    // fetch що сам ніколи не резолвиться, лише реджектиться по signal.abort().
+    const fetchMock = vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {
+      if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(callAPIWithRetry({}, {
+      apiKey: 'k', maxRetries: 2, initialDelayMs: 10, maxDelayMs: 50, requestTimeoutMs: 20,
+    })).rejects.toMatchObject({
+      userMessage: expect.stringMatching(/інтернет|зв'язатись/),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2); // abort трактується як транзитивна → retry
+  });
+
+  it('успіх до timeout → таймер знятий, без abort', async () => {
+    const fetchMock = vi.fn((_url, { signal }) => {
+      expect(signal).toBeInstanceOf(AbortSignal); // signal реально передається
+      return Promise.resolve(new Response(JSON.stringify({ id: 'ok' }), { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await callAPIWithRetry({}, { apiKey: 'k', requestTimeoutMs: 50 });
+    expect(result.id).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

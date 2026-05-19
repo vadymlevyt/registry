@@ -171,6 +171,7 @@ export function DocumentPipelineProvider({ executeAction, children }) {
           detectBoundaries: createDetectBoundariesV3({
             analyzeFile: aiReconstructFile,
             getStreamedText,
+            getStreamedLayout,
             // REVERT-PARTIAL DP-4 BUGFIX (`shouldReconstruct: >=1`): Provider
             // більше НЕ форсує реконструкцію для одного файла. Стадія падає
             // на свій документований дефолт `>1` не-skipped файл (справжній

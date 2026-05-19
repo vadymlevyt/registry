@@ -19,6 +19,7 @@
 // Реальний split — splitDocumentsV3 ПІСЛЯ confirm. AI-помилка НЕ фатальна.
 
 import { reconstructAcrossFiles } from '../../documentBoundary/multiFileReconstructor.js';
+import { buildPagedText } from '../pageMarkers.js';
 
 // Текст файла. У streaming-шляху makeContext диригента НЕ переносить
 // extractedText, а convert обнуляє його для Drive-source — тому потоковий
@@ -27,6 +28,16 @@ import { reconstructAcrossFiles } from '../../documentBoundary/multiFileReconstr
 function textOf(item, getStreamedText) {
   const streamed = typeof getStreamedText === 'function' ? getStreamedText(item.fileId) : '';
   return (streamed || item.extractedText || item.ocrText || '').toString();
+}
+
+// Текст для ПОШУКУ МЕЖ: посторінково-маркований (=== СТОРІНКА N ===) зі
+// збереженого OCR-layout коли він повний; інакше — plain OCR-текст (на
+// resume layout може бути неповним). НЕ обрізається (50K-truncation у
+// buildReconstructionPrompt прибрано — AI бачить усю справу).
+function boundaryTextOf(item, getStreamedText, getStreamedLayout) {
+  const layout = typeof getStreamedLayout === 'function' ? getStreamedLayout(item.fileId) : null;
+  const paged = buildPagedText(layout, item.pageCount || null);
+  return paged || textOf(item, getStreamedText);
 }
 
 // Нормалізувати одно-файловий результат детектора (DP-2 формат
@@ -54,10 +65,13 @@ function singleToPlan(fileId, detected) {
 //     файловий детектор DP-2 (опц.; якщо нема — single-file passthrough).
 //   shouldReconstruct(ctx) — override gate (default: >1 не-skipped файл).
 //   readArrayBuffer(item) — для detectSingle на PDF (опц.).
+//   getStreamedLayout(fileId) — per-page OCR-layout для посторінкових
+//     маркерів межевого тексту (опц.; нема → plain текст).
 export function createDetectBoundariesV3(stageDeps = {}) {
   const shouldReconstruct = stageDeps.shouldReconstruct
     || ((ctx) => ctx.files.filter((f) => !f.skipped).length > 1);
   const getStreamedText = stageDeps.getStreamedText;
+  const getStreamedLayout = stageDeps.getStreamedLayout;
 
   return async function detectBoundariesV3(ctx) {
     const live = ctx.files.filter((f) => !f.skipped);
@@ -68,7 +82,7 @@ export function createDetectBoundariesV3(stageDeps = {}) {
       const files = live.map((f) => ({
         fileId: f.fileId,
         name: f.name,
-        text: textOf(f, getStreamedText),
+        text: boundaryTextOf(f, getStreamedText, getStreamedLayout),
         pageCount: f.pageCount || null,
       }));
       const userHint = ctx.metadataSidecar?.source === 'court_sync'
