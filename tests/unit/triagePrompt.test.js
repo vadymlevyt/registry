@@ -40,4 +40,20 @@ describe('buildTriagePrompt', () => {
     const p = buildTriagePrompt({ artifacts: [{ fileId: 'f0', name: 'x', passport: '' }] });
     expect(p).toContain('(порожній');
   });
+
+  // G5 (bug 4): квитанція судового збору приклеювалась до титулу/позову.
+  // Промпт явно інструктує її як окремий документ + посилює сигнали меж.
+  it('G5: інструкція про квитанцію судового збору як окремий документ', () => {
+    const p = buildTriagePrompt({ artifacts });
+    expect(p).toMatch(/судов(ого|ий) збор/i);
+    expect(p).toMatch(/ОКРЕМИЙ документ/);
+    expect(p).toMatch(/НІКОЛИ не приклеюй/);
+    expect(p).toContain('СКИДАННЯ-НУМЕРАЦІЇ');
+    expect(p).toMatch(/to_fragments/);
+  });
+
+  it('G5: нова інструкція без емодзі (§2.9)', () => {
+    const p = buildTriagePrompt({ artifacts });
+    expect(p).not.toMatch(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+  });
 });
