@@ -444,6 +444,15 @@ export function createDocumentPipeline(deps = {}) {
       const impl = stageImpl[name];
       if (typeof impl !== 'function') continue;
 
+      // G0 — діагностика/UX (OCP: deps-хук, НЕ зміна STAGE/порядку/freeze).
+      // onStage — «зараз почалась стадія N» (bug 7: людський підпис у UI).
+      // onStageEnd — тривалість стадії (bug 3: вимір 46-хв гарячого шляху).
+      // Ізольовані: збій телеметрії НЕ валить pipeline (юрсистема).
+      if (typeof deps.onStage === 'function') {
+        try { deps.onStage(name); } catch { /* телеметрія ізольована */ }
+      }
+      const stageT0 = Date.now();
+
       let result;
       try {
         result = await impl(ctx, deps);
@@ -457,6 +466,10 @@ export function createDocumentPipeline(deps = {}) {
             stage: name,
           },
         };
+      }
+
+      if (typeof deps.onStageEnd === 'function') {
+        try { deps.onStageEnd(name, Date.now() - stageT0); } catch { /* ізольовано */ }
       }
 
       const disposition = classifyDisposition(result);

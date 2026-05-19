@@ -216,3 +216,54 @@ describe('documentPipeline — диригент без domain-if', () => {
     expect(r1.stoppedAt).toBe(r2.stoppedAt);
   });
 });
+
+describe('documentPipeline — G0 onStage/onStageEnd телеметрія (OCP)', () => {
+  it('onStage кличеться для кожної пройденої стадії у DEFAULT_STAGE_ORDER', async () => {
+    const seen = [];
+    const { deps } = makeDeps({ onStage: (n) => seen.push(n) });
+    await createDocumentPipeline(deps).run(baseInput());
+    // Усі заглушки/реалізації проходять (single-file успіх) — увесь порядок.
+    expect(seen).toEqual([...DEFAULT_STAGE_ORDER]);
+  });
+
+  it('onStageEnd кличеться з числовою тривалістю після КОЖНОЇ стадії', async () => {
+    const ended = [];
+    const { deps } = makeDeps({ onStageEnd: (n, ms) => ended.push([n, ms]) });
+    await createDocumentPipeline(deps).run(baseInput());
+    expect(ended.map((e) => e[0])).toEqual([...DEFAULT_STAGE_ORDER]);
+    for (const [, ms] of ended) {
+      expect(typeof ms).toBe('number');
+      expect(ms).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('onStageEnd фіксується НАВІТЬ коли стадія fatal (вимір гарячого шляху)', async () => {
+    const ended = [];
+    const { deps } = makeDeps({
+      onStageEnd: (n, ms) => ended.push(n),
+      stageOverrides: { extract: async () => ({ ok: false, error: { code: 'X', fatal: true } }) },
+    });
+    const res = await createDocumentPipeline(deps).run(baseInput());
+    expect(res.stoppedAt).toBe(STAGE.EXTRACT);
+    // extract провалився, але його тривалість усе одно зміряна (до break).
+    expect(ended).toContain(STAGE.EXTRACT);
+    expect(ended).not.toContain(STAGE.PERSIST);   // зупинились — далі не йшли
+  });
+
+  it('збій onStage/onStageEnd ізольований — pipeline не падає (юрсистема)', async () => {
+    const { deps } = makeDeps({
+      onStage: () => { throw new Error('telemetry boom'); },
+      onStageEnd: () => { throw new Error('timing boom'); },
+    });
+    const res = await createDocumentPipeline(deps).run(baseInput());
+    expect(res.ok).toBe(true);
+    expect(res.documents).toHaveLength(1);
+  });
+
+  it('відсутні onStage/onStageEnd — behavior-preserving (deps опційні)', async () => {
+    const { deps } = makeDeps();
+    delete deps.onStage; delete deps.onStageEnd;
+    const res = await createDocumentPipeline(deps).run(baseInput());
+    expect(res.ok).toBe(true);
+  });
+});

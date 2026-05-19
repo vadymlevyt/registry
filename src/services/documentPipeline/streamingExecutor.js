@@ -31,6 +31,7 @@ import {
   createJobStateStore, makeInitialJobState, jobProgress, estimateRemainingMs, JOB_STATUS,
 } from './jobState.js';
 import * as progressStore from './jobProgressStore.js';
+import { stageLabel } from './stageLabels.js';
 
 const ONE_GB = 1024 * 1024 * 1024;
 
@@ -76,7 +77,14 @@ export function createStreamingExecutor(deps = {}) {
   function reportProgress(jobId, state) {
     const { done, total } = jobProgress(state);
     const etaMs = estimateRemainingMs(state);
-    progressStore.updateJob(jobId, { done, total, etaMs, stage: state.stoppedAt || 'processing' });
+    // bug 7: OCR — псевдо-стадія перед диригентом (chunk-OCR у streamFile).
+    // Людський підпис + «блок X з Y» замість буквального 'processing'.
+    progressStore.updateJob(jobId, {
+      done, total, etaMs,
+      stage: 'ocr',
+      stageLabel: stageLabel('ocr'),
+      detail: total > 0 ? `блок ${done} з ${total}` : null,
+    });
     if (typeof deps.onProgress === 'function') {
       try { deps.onProgress({ jobId, done, total, etaMs }); } catch { /* ізольовано */ }
     }
@@ -225,9 +233,32 @@ export function createStreamingExecutor(deps = {}) {
         getStreamedText: (id) => textMap.get(id) || '',
         getStreamedLayout: (id) => layoutMap.get(id) || null,
       };
-      const pipeDeps = typeof deps.buildPipelineDeps === 'function'
+      const builtDeps = typeof deps.buildPipelineDeps === 'function'
         ? deps.buildPipelineDeps(accessors)
         : { ...deps.pipelineDeps, stageOverrides: { ...(deps.pipelineDeps?.stageOverrides || {}) } };
+      // G0 — прогрес/таймінг належить executor (як reportProgress): диригент
+      // кличе deps.onStage/onStageEnd, Provider buildPipelineDeps НЕ чіпаємо.
+      // bug 7: людський підпис стадії у jobProgressStore (UI). bug 3:
+      // per-stage таймінг у консоль + накопичений у снапшот для діагностики
+      // 46-хв шляху. Обидва ізольовані — телеметрія не валить job.
+      const stageTimings = {};
+      const pipeDeps = {
+        ...builtDeps,
+        onStage: (name) => {
+          try { progressStore.updateJob(jobId, { stage: name, stageLabel: stageLabel(name), detail: null }); }
+          catch { /* progress ізольований */ }
+        },
+        onStageEnd: (name, ms) => {
+          stageTimings[name] = (stageTimings[name] || 0) + (Number(ms) || 0);
+          try {
+            if (typeof console !== 'undefined' && console.info) {
+              console.info(`[DP timing] ${name}: ${Math.round(Number(ms) || 0)}ms`);
+            }
+          } catch { /* лог ізольований */ }
+          try { progressStore.updateJob(jobId, { timings: { ...stageTimings } }); }
+          catch { /* progress ізольований */ }
+        },
+      };
       const pipeline = deps.createPipeline(pipeDeps);
       const result = await pipeline.run({
         jobId,

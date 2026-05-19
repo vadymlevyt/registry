@@ -21,7 +21,10 @@ export function ProgressFullScreen({ job, caseData, onCancel, onMinimize }) {
   if (!job) return null;
   const pct = Math.round((job.ratio || 0) * 100);
   const eta = fmtEta(job.etaMs);
-  const stage = job.stage || 'processing';
+  // bug 7: людський підпис стадії (stageLabel) замість технічного 'processing'.
+  // detail — «блок X з Y» (OCR) або під-прогрес персисту (G2).
+  const stage = job.stageLabel || job.stage || 'Обробка';
+  const detail = job.detail || null;
   const finished = job.status !== 'running';
 
   return (
@@ -73,7 +76,7 @@ export function ProgressFullScreen({ job, caseData, onCancel, onMinimize }) {
         </div>
 
         <div className="dpv2-progress-chunk">
-          Стадія: {stage}
+          {finished ? 'Готово' : stage}{detail && !finished ? ` · ${detail}` : ''}
         </div>
 
         <div className="dpv2-progress-actions">
