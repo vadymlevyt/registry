@@ -661,3 +661,73 @@ pageStructure у пам'яті залишається повним. Очікув
 - НЕ змінювати `CONVERT_DOCX_TO_PDF` через UI — це константа коду, зміна потребує деплою.
 - НЕ викликати Document AI на конвертованому з DOCX/HTML PDF — текст уже витягнуто mammoth/innerText, OCR на render-PDF дав би гірший результат і даремну витрату токенів.
 - НЕ продовжувати pipeline (`createDocument` + `add_document`) якщо `convertToPdf` кинув — модалка лишається відкритою, документ не створюється.
+
+---
+
+## SMART TRIAGE BUGFIX (G0–G6) — 2026-05-19
+
+Після Ф0–Ф3 реальний прогон Брановського (1×65-стор. скан-PDF, 21МБ, ~46 хв)
+виявив 7 знахідок. Ручний аудит коду (не тести) → фази зі STOP. Деталі —
+`docs/reports/report_smart_triage_bugfix.md`.
+
+### Корені (по коду)
+
+- **bug 2** (TXT змішаний): `writeProcessedArtifacts` писав текст УСЬОГО
+  файла у кожен зріз — текст не різався взагалі (PDF різався правильно).
+- **bug 1** (дублі реєстру): `findDuplicate` бачив лише заморожений
+  `ctx.job.caseData` (same-job повтори невидимі) + Triage над-сегментував
+  ті самі сторінки кількома документами; дедуп лише за назвою.
+- **bug 6/7** (прогрес фризнув / «Стадія: processing»): `reportProgress`
+  лише в chunk-OCR + хардкод `stage:'processing'`; пост-OCR (Triage+PERSIST,
+  30+ хв) прогрес не емітив.
+- **bug 3** (46 хв): `buildDocumentPdf` слав повний 21МБ буфер у `splitPdf`
+  окремо на кожен документ → pdf-lib re-parse ~25-30×.
+- **bug 4**: generic-промпт Triage без українських судових патернів.
+
+### Принцип фіксів
+
+Диригент заморожений — розширення лише через `deps`-хуки (OCP):
+`onStage`/`onStageEnd`/`onSubProgress` додані в наявний цикл диригента,
+**STAGE/`DEFAULT_STAGE_ORDER`/Object.freeze незмінні, нова стадія НЕ
+додавалась**. Схема документа без bump: `route`/план — транзит у `ctx`;
+`stageLabel`/`subDone`/`timings` — transient UI-стор `jobProgressStore`
+(як eventBus, поза App SSOT).
+
+### Ключові зміни
+
+- `src/services/documentPipeline/stageLabels.js` — НОВИЙ чистий примітив:
+  технічна назва стадії → людський підпис (frozen).
+- `documentPipeline.js` — `deps.onStage(name)` перед стадією +
+  `deps.onStageEnd(name, ms)` після (ізольовані try/catch).
+- `streamingExecutor.js` — інжектує onStage/onStageEnd/onSubProgress у
+  pipeDeps (executor володіє прогресом, як `reportProgress`); OCR-фаза →
+  «Розпізнавання тексту · блок X з Y».
+- `splitDocumentsV3.js`:
+  - **page-precise**: `sliceProcessedArtifacts` ріже `pages[..]._text` +
+    layout по фрагментах документа; гейт `isPagedLayout` → інакше цілий
+    текст + `text_slice_fallback` decision.
+  - **same-job дедуп**: `registryView()` = знімок-реєстр ∪ `newDocuments`.
+  - **G4 hot path**: `precutSources` — `splitPdf` ОДИН раз на джерело з
+    усіма діапазонами (вихід по-діапазонно байт-еквівалентний).
+- `triageStage.js` `normalizePlan` — `resolveOverlaps`: детермінований
+  дедуп перекритих `[fileId,start..end]`, пріоритет route (реальний
+  документ > службове > discard — анти-«тиха втрата»), `dedupDropped` у
+  decision.
+- `triagePrompt.js` — українські судові патерни (квитанція судового збору
+  ЗАВЖДИ окремий документ; обкладинка→to_fragments; СКИДАННЯ-НУМЕРАЦІЇ =
+  сильна межа). Структурний тест, НЕ snapshot `documentBoundary/prompt.js`.
+- `ProgressFullScreen.jsx` — людський підпис + окремий тонкий під-бар.
+
+### Тести / інваріанти
+
+101 файл / 1349 зелених, build зелений. Кожен маршрут/фікс —
+Provider-integration через справжній заморожений диригент (обмеження
+§2.1). `documentBoundary/prompt.js`-снапшот не дрейфував.
+
+### Поза скоупом → `tracking_debt.md`
+
+Bug 5 (перемикач PDF/Текст у в'юері CaseDossier — окрема UI-задача);
+інтеграція `cleanForReading` зі slice (Варіант 1/2/3 — відкладене рішення
+адвоката, зараз slice бере сирий per-page `_text`). Орфан-PDF попередніх
+спроб у `01_ОРИГІНАЛИ` — одноразове ручне прибирання перед наступним
+прогоном (pipeline їх не імпортує — операційна нотатка у звіті, не борг).
