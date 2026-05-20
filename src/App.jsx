@@ -25,7 +25,6 @@ import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
 import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
 import { createDocument, validateDocument } from './services/documentFactory';
 import { createActions } from './services/actionsRegistry';
-import { createDebouncedSave } from './services/debouncedSave';
 import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/documentSchema';
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
@@ -4308,120 +4307,79 @@ function App() {
     })();
   }, [driveConnected, hydrationTrigger]); // eslint-disable-line
 
-  // P2 (Фаза B, 20.05.2026) — Auto-save через trailing-debounce 800мс.
-  // Тригер: будь-яка зміна cases/tenants/users/auditLog/... Раніше кожна
-  // мутація (їх ~150 за DP-run на 25 нарізаних) → синхронні localStorage +
-  // Drive POST. Тепер: останній виклик у вікні тиші 800мс пише ОДИН раз
-  // (актуальний снапшот через свіже замикання у trigger). Економія на
-  // Брановського: ~150 fires → ~3-5 saves = ~10-15 сек localStorage+Drive.
-  //
-  // Критичні дії (destroy_case, close_case, restore_case) обходять дебаунс
-  // через requestImmediateSave() → debouncedSaveRef.flush() — окрема гілка
-  // правила #11 (один сенс кожного шляху: trailing vs immediate).
-  //
-  // Захист від race condition: якщо driveConnected=true але !driveHydrated —
-  // НЕ ПИШЕМО, інакше пустий/INITIAL state може перезаписати реальні дані
-  // на Drive (V2). Перевірка лишається у самому saveFn.
-  const debouncedSaveRef = useRef(null);
-  if (debouncedSaveRef.current === null) {
-    debouncedSaveRef.current = createDebouncedSave(() => {}, 800);
-  }
-  // requestImmediateSave — точка для критичних дій, які НЕ можна втрачати
-  // навіть на 800мс. Виклик не сам пише, а змушує дебаунсер виконати
-  // pending зразу (зведене замикання має актуальний снапшот стану).
-  const requestImmediateSave = () => {
-    try { debouncedSaveRef.current?.flush(); } catch { /* ізольовано */ }
-  };
+  // Auto-save to localStorage (always) and Drive (if connected AND hydrated).
+  // Тригер: будь-яка зміна cases/tenants/users/auditLog/structuralUnits/ai_usage/caseAccess.
+  // Захист від race condition: якщо driveConnected=true але !driveHydrated — НЕ ПИШЕМО,
+  // інакше пустий/INITIAL state може перезаписати реальні дані на Drive (V2).
   useEffect(() => {
-    const saveFn = () => {
-      try {
-        localStorage.setItem('levytskyi_cases', JSON.stringify(cases));
-        localStorage.setItem('levytskyi_tenants', JSON.stringify(tenants));
-        localStorage.setItem('levytskyi_users', JSON.stringify(users));
-        localStorage.setItem('levytskyi_audit_log', JSON.stringify(auditLog));
-        localStorage.setItem('levytskyi_structural_units', JSON.stringify(structuralUnits));
-        localStorage.setItem('levytskyi_ai_usage', JSON.stringify(aiUsage));
-        localStorage.setItem('levytskyi_case_access', JSON.stringify(caseAccess));
-        // v4 Billing Foundation
-        localStorage.setItem('levytskyi_time_entries', JSON.stringify(timeEntries));
-        localStorage.setItem('levytskyi_master_timer_state', JSON.stringify(masterTimerState));
-        localStorage.setItem('levytskyi_billing_meta', JSON.stringify(billingMeta));
-        setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
-      } catch(e) {}
-      if (driveConnected) {
-        // КРИТИЧНО: блокуємо запис на Drive до завершення hydration.
-        // Без цього EFFECT-B випереджає EFFECT-A і затирає реальні дані.
-        if (!driveHydrated) return;
-        const token = driveService.getToken();
-        if (token) {
-          setDriveSyncStatus('syncing');
-          const registry = {
-            schemaVersion: CURRENT_SCHEMA_VERSION,
-            settingsVersion: MIGRATION_VERSION,
-            tenants,
-            users,
-            auditLog,
-            structuralUnits,
-            ai_usage: aiUsage,
-            caseAccess,
-            cases,
-            // v4 Billing Foundation
-            time_entries: timeEntries,
-            master_timer_state: masterTimerState,
-            billing_meta: billingMeta,
-          };
-          // Бекап раз на добу перед sync (зберігаємо повний registry-об'єкт)
-          const lastBackup = localStorage.getItem('levytskyi_last_backup') || '';
-          const todayStr = new Date().toISOString().split('T')[0];
-          if (lastBackup !== todayStr) {
-            backupRegistryData(token, registry).then(res => {
-              if (res.success) localStorage.setItem('levytskyi_last_backup', todayStr);
-            }).catch(() => {});
-          }
-          driveService.writeRegistry(token, registry)
-            .then(res => {
-              if (res?.ok) {
-                setDriveSyncStatus('synced');
-              } else {
-                // Write-guard заблокував запис або сталася помилка — показуємо в UI.
-                setDriveSyncStatus('error');
-                if (res?.status === 'guard_blocked') {
-                  console.error('[Drive] Запис заблоковано write-guard:', res.reason);
-                } else if (res?.status === 'creation_not_allowed') {
-                  console.error('[Drive] Створення файлу не дозволено без явного consent.');
-                } else if (res?.status === 'file_missing') {
-                  // Файл зник під час сесії — показуємо splash для перевірки бекапів.
-                  setDriveStatus('file_not_found');
-                  setDriveHydrated(false);
-                  setDriveErrorMessage('Файл registry_data.json зник з Drive під час сесії.');
-                  driveService.findBackups().then(setDriveBackups);
-                }
-              }
-            })
-            .catch(() => setDriveSyncStatus('error'));
+    try {
+      localStorage.setItem('levytskyi_cases', JSON.stringify(cases));
+      localStorage.setItem('levytskyi_tenants', JSON.stringify(tenants));
+      localStorage.setItem('levytskyi_users', JSON.stringify(users));
+      localStorage.setItem('levytskyi_audit_log', JSON.stringify(auditLog));
+      localStorage.setItem('levytskyi_structural_units', JSON.stringify(structuralUnits));
+      localStorage.setItem('levytskyi_ai_usage', JSON.stringify(aiUsage));
+      localStorage.setItem('levytskyi_case_access', JSON.stringify(caseAccess));
+      // v4 Billing Foundation
+      localStorage.setItem('levytskyi_time_entries', JSON.stringify(timeEntries));
+      localStorage.setItem('levytskyi_master_timer_state', JSON.stringify(masterTimerState));
+      localStorage.setItem('levytskyi_billing_meta', JSON.stringify(billingMeta));
+      setLastSaved(new Date().toLocaleTimeString('uk-UA', {hour:'2-digit', minute:'2-digit'}));
+    } catch(e) {}
+    if (driveConnected) {
+      // КРИТИЧНО: блокуємо запис на Drive до завершення hydration.
+      // Без цього EFFECT-B випереджає EFFECT-A і затирає реальні дані.
+      if (!driveHydrated) return;
+      const token = driveService.getToken();
+      if (token) {
+        setDriveSyncStatus('syncing');
+        const registry = {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          settingsVersion: MIGRATION_VERSION,
+          tenants,
+          users,
+          auditLog,
+          structuralUnits,
+          ai_usage: aiUsage,
+          caseAccess,
+          cases,
+          // v4 Billing Foundation
+          time_entries: timeEntries,
+          master_timer_state: masterTimerState,
+          billing_meta: billingMeta,
+        };
+        // Бекап раз на добу перед sync (зберігаємо повний registry-об'єкт)
+        const lastBackup = localStorage.getItem('levytskyi_last_backup') || '';
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (lastBackup !== todayStr) {
+          backupRegistryData(token, registry).then(res => {
+            if (res.success) localStorage.setItem('levytskyi_last_backup', todayStr);
+          }).catch(() => {});
         }
+        driveService.writeRegistry(token, registry)
+          .then(res => {
+            if (res?.ok) {
+              setDriveSyncStatus('synced');
+            } else {
+              // Write-guard заблокував запис або сталася помилка — показуємо в UI.
+              setDriveSyncStatus('error');
+              if (res?.status === 'guard_blocked') {
+                console.error('[Drive] Запис заблоковано write-guard:', res.reason);
+              } else if (res?.status === 'creation_not_allowed') {
+                console.error('[Drive] Створення файлу не дозволено без явного consent.');
+              } else if (res?.status === 'file_missing') {
+                // Файл зник під час сесії — показуємо splash для перевірки бекапів.
+                setDriveStatus('file_not_found');
+                setDriveHydrated(false);
+                setDriveErrorMessage('Файл registry_data.json зник з Drive під час сесії.');
+                driveService.findBackups().then(setDriveBackups);
+              }
+            }
+          })
+          .catch(() => setDriveSyncStatus('error'));
       }
-    };
-    // Перезводимо таймер на актуальне замикання saveFn (свіжий снапшот стану).
-    debouncedSaveRef.current?.trigger(saveFn);
-    return () => { /* cleanup не чистимо — debouncer переживає re-render */ };
+    }
   }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, timeEntries, masterTimerState, billingMeta, driveConnected, driveHydrated]);
-
-  // На unmount або зміну видимості вкладки — flush pending save. Захист від
-  // втрати останніх 800мс змін при закритті вкладки. Окремий useEffect зі
-  // власним cleanup, бо основний effect перетриггерюється на кожній мутації.
-  useEffect(() => {
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') {
-        try { debouncedSaveRef.current?.flush(); } catch { /* ізольовано */ }
-      }
-    };
-    document.addEventListener('visibilitychange', onHide);
-    return () => {
-      document.removeEventListener('visibilitychange', onHide);
-      try { debouncedSaveRef.current?.flush(); } catch { /* ізольовано */ }
-    };
-  }, []);
 
   // ── timeLog persistence — DEPRECATED у v4. Старий ключ видаляється під час
   // одноразового імпорту в time_entries[] (див. flag levytskyi_timelog_imported_v4).
@@ -4754,9 +4712,6 @@ function App() {
         console.log("driveFolderId not found, skipping Drive deletion");
       }
       setCases(prev => prev.filter(c => c.id !== caseItem.id));
-      // P2: destroy_case — критична, без 800мс debounce-вікна. Видалення
-      // справи з ауд-логом 'done' має лежати на Drive одразу.
-      requestImmediateSave();
       if (dossierCase?.id === caseItem.id) {
         setDossierCase(null);
       }
@@ -4804,9 +4759,6 @@ function App() {
     deleteDriveFile,
     deleteOcrCacheForDocument,
     deleteExtendedForDocument,
-    // P2: критичні дії (close_case/restore_case) обходять trailing-debounce —
-    // зміни лежать у localStorage та Drive одразу, без 800мс вікна тиші.
-    requestImmediateSave,
   });
 
   // ── DRIVE-FIRST SPLASH ─────────────────────────────────────────────────────
