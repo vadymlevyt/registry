@@ -79,7 +79,7 @@ vi.mock('../../src/services/ocr/claudeVision.js', () => makeProvider('claudeVisi
 vi.mock('../../src/services/ocr/pdfjsLocal.js', () => makeProvider('pdfjsLocal'));
 
 // Імпорт ПІСЛЯ моків (vi.mock hoisting працює, але явність кращ для читача)
-const { extractText, writeExtractedTextArtifact } = await import('../../src/services/ocrService.js');
+const { extractText, writeExtractedTextArtifact, writeLayoutArtifact } = await import('../../src/services/ocrService.js');
 
 function fileFixture(overrides = {}) {
   return {
@@ -399,5 +399,104 @@ describe('writeExtractedTextArtifact — запис .txt БЕЗ виклику O
     expect(await writeExtractedTextArtifact(file, '   ')).toBe(false);
     expect(await writeExtractedTextArtifact(file, null)).toBe(false);
     expect(driveState.uploads).toHaveLength(0);
+  });
+});
+
+// ── B1 · writeLayoutArtifact: object-only вхід, strip image/tokens завжди ────
+// Корінь bug B1 (15.05.2026): DocumentPipelineContext.writeLayout02 робив
+// JSON.stringify(layoutJson) ПЕРЕД writeLayoutArtifact — strip не запрацював
+// на string → 14МБ файли в 02_ОБРОБЛЕНІ замість ~400КБ. Контракт після B1:
+// writeLayoutArtifact приймає лише object і САМА робить strip+serialize.
+// Якщо хтось через 3 місяці поверне "приймемо й string для зворотної
+// сумісності" — цей набір тестів червоний (один сенс на функцію, #11).
+describe('writeLayoutArtifact — strip важких полів (B1)', () => {
+  function makeFakePageStructure() {
+    // Реалістична сторінка Document AI: image (~5КБ base64), tokens (500 шт.),
+    // легкі корисні поля (paragraphs, blocks, dimension).
+    const fakeImage = 'data:image/png;base64,' + 'A'.repeat(5000);
+    const fakeTokens = Array.from({ length: 500 }, (_, i) => ({
+      detectedBreak: null,
+      layout: { textAnchor: { textSegments: [{ startIndex: i, endIndex: i + 1 }] } },
+    }));
+    return [{
+      pageNumber: 1,
+      image: fakeImage,
+      tokens: fakeTokens,
+      paragraphs: [{ layout: { textAnchor: { textSegments: [{ startIndex: 0, endIndex: 5 }] } } }],
+      blocks: [{ confidence: 0.99 }],
+      dimension: { width: 1240, height: 1754 },
+      detectedLanguages: [{ languageCode: 'uk' }],
+      _text: 'Стор 1',
+    }];
+  }
+
+  it('object {pages:[]} → пише .layout.json БЕЗ полів image/tokens', async () => {
+    const file = fileFixture({ name: 'scan.pdf', id: 'drv_b1' });
+    const layout = { schemaVersion: 1, pages: makeFakePageStructure() };
+
+    const ok = await writeLayoutArtifact(file, layout);
+    expect(ok).toBe(true);
+
+    const upload = driveState.uploads.find((u) => u.name === 'scan_drv_b1.layout.json');
+    expect(upload).toBeDefined();
+    // Контракт серіалізації: рядок НЕ містить підрядка "image" і "tokens" як
+    // ключів сторінки. Просте substring-перевірка ловить регресії типу
+    // «strip забули, але JSON випадково валідний» (корінь B1 саме такий).
+    expect(upload.content).not.toContain('"image"');
+    expect(upload.content).not.toContain('"tokens"');
+    // ЗАЛИШЕНО (легкі корисні поля)
+    const parsed = JSON.parse(upload.content);
+    expect(parsed.pages[0].image).toBeUndefined();
+    expect(parsed.pages[0].tokens).toBeUndefined();
+    expect(parsed.pages[0]._text).toBe('Стор 1');
+    expect(parsed.pages[0].paragraphs).toBeDefined();
+    expect(parsed.pages[0].blocks).toBeDefined();
+    expect(parsed.pages[0].dimension).toBeDefined();
+  });
+
+  it('розмір записаного файла значно менший за сирий JSON.stringify(layout)', async () => {
+    const file = fileFixture({ name: 'scan.pdf', id: 'drv_size' });
+    const layout = { schemaVersion: 1, pages: makeFakePageStructure() };
+    const rawSize = JSON.stringify(layout).length;          // з image/tokens
+
+    await writeLayoutArtifact(file, layout);
+    const upload = driveState.uploads.find((u) => u.name === 'scan_drv_size.layout.json');
+    expect(upload).toBeDefined();
+
+    // Фактичний контракт: strip викидає image (~5000) + tokens (~500 × N) —
+    // записаний файл має бути радикально меншим. Числовий поріг свідомо
+    // ослаблений (1/3) щоб не зловити шум серіалізації; ціль — зловити
+    // регресію де strip взагалі не працює.
+    expect(upload.content.length).toBeLessThan(rawSize / 3);
+  });
+
+  it('null/undefined → false, нічого не пише (один сенс — "записати наявний layout")', async () => {
+    const file = fileFixture({ name: 'x.pdf', id: 'drv_n' });
+    expect(await writeLayoutArtifact(file, null)).toBe(false);
+    expect(await writeLayoutArtifact(file, undefined)).toBe(false);
+    expect(driveState.uploads).toHaveLength(0);
+  });
+
+  it('object без поля pages → пише {schemaVersion,provider,generatedAt,pages:[]} без падіння', async () => {
+    const file = fileFixture({ name: 'x.pdf', id: 'drv_empty' });
+    const ok = await writeLayoutArtifact(file, { schemaVersion: 1, pages: [] });
+    expect(ok).toBe(true);
+    const upload = driveState.uploads.find((u) => u.name === 'x_drv_empty.layout.json');
+    expect(upload).toBeDefined();
+    const parsed = JSON.parse(upload.content);
+    expect(Array.isArray(parsed.pages)).toBe(true);
+    expect(parsed.pages).toHaveLength(0);
+  });
+
+  it('object з provider → provider пробрасується у JSON', async () => {
+    const file = fileFixture({ name: 'x.pdf', id: 'drv_prov' });
+    await writeLayoutArtifact(file, {
+      schemaVersion: 1,
+      provider: 'documentAi',
+      pages: makeFakePageStructure(),
+    });
+    const upload = driveState.uploads.find((u) => u.name === 'x_drv_prov.layout.json');
+    const parsed = JSON.parse(upload.content);
+    expect(parsed.provider).toBe('documentAi');
   });
 });

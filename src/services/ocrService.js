@@ -193,16 +193,37 @@ export async function writeExtractedTextArtifact(file, text) {
   return await writeArtifact(file, textCacheFileName(file), text, 'text/plain');
 }
 
-// writeLayoutArtifact — публічний запис .layout.json для caller'а який
-// отримав структуровану розмітку БЕЗ запуску OCR на склеєному PDF (TASK B
-// multiImageToPdf — OCR виконано на кожному оригінальному зображенні,
-// результати об'єднані у layoutJson). Це повторне OCR на merged PDF —
-// порушення Розумної економії.
+// writeLayoutArtifact — публічний запис .layout.json для caller'а який зібрав
+// pageStructure поза стандартним extractText (TASK B multiImageToPdf, DP-3
+// split/persist по нарізаних документах). Приймає ОБ'ЄКТ і САМА робить
+// strip важких полів (image, tokens) + serialize у JSON-рядок. Це єдиний
+// шлях запису layout-артефакту через Drive — strip є частиною контракту
+// функції, а не відповідальністю caller'а.
 //
-// Один сенс: «записати готовий layout.json як ніби це результат OCR».
-export async function writeLayoutArtifact(file, layoutJson) {
-  if (!layoutJson) return false;
-  return await writeArtifact(file, layoutCacheFileName(file), layoutJson, 'application/json');
+// Один сенс (правило #11): «записати об'єкт layout у Drive .layout.json,
+// викинувши важкі поля image/tokens». Якщо caller передає string — ми НЕ
+// приймаємо: це двозначність (caller міг забути strip — тоді на Drive
+// потрапляють 14МБ замість 400КБ; саме корінь bug B1, 15.05.2026). Тести
+// у tests/unit/ocrService.test.js фіксують контракт.
+//
+// Параметри:
+//   file — { id (driveId), name, subFolders: { '02_ОБРОБЛЕНІ': folderId } }
+//   layout — { pages:[], schemaVersion?, provider?, generatedAt? } або null
+//
+// Повертає: true якщо записано, false якщо немає subFolder / помилка / null.
+export async function writeLayoutArtifact(file, layout) {
+  if (!layout) return false;
+  if (typeof layout === 'string') {
+    // Зворотна сумісність — НЕ приймаємо: string обходить strip. Caller
+    // повинен передати об'єкт (CLAUDE.md правило #11 — один сенс на ім'я).
+    // eslint-disable-next-line no-console
+    console.warn('[ocrService.writeLayoutArtifact] string input rejected — caller must pass object');
+    return false;
+  }
+  const provider = layout.provider || 'unknown';
+  const pages = Array.isArray(layout.pages) ? layout.pages : [];
+  const serialized = serializeLayout({ provider, pageStructure: pages });
+  return await writeArtifact(file, layoutCacheFileName(file), serialized, 'application/json');
 }
 
 // hasOcrSupport — чи існує хоч один OCR-провайдер для цього типу файла.

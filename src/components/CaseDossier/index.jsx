@@ -3024,7 +3024,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             }
             if (mergeLayoutJson) {
               try {
-                await ocrService.writeLayoutArtifact?.(ocrFile, mergeLayoutJson);
+                // B1 (20.05.2026): writeLayoutArtifact приймає лише object —
+                // string проходить strip-перевірку повз. mergeLayoutJson —
+                // string з multiImageToPdf (strip уже зроблено там),
+                // парсимо у об'єкт перед записом. Подвійний strip
+                // (multiImageToPdf + writeLayoutArtifact) ідемпотентний.
+                const layoutObj = typeof mergeLayoutJson === 'string'
+                  ? JSON.parse(mergeLayoutJson)
+                  : mergeLayoutJson;
+                await ocrService.writeLayoutArtifact?.(ocrFile, layoutObj);
               } catch (e) {
                 console.warn('[writeLayoutArtifact merge] failed:', e?.message || e);
               }

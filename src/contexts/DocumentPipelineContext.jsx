@@ -218,9 +218,17 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             },
             writeLayout02: async ({ caseData, driveId, name, layoutJson }) => {
               try {
+                // B1 (20.05.2026): передаємо ОБ'ЄКТ, не string. Стара версія
+                // робила JSON.stringify(layoutJson) ДО writeLayoutArtifact —
+                // strip image/tokens не запрацював, файли на Drive виходили
+                // 14МБ замість ~400КБ (форензика на справі Брановського).
+                // writeLayoutArtifact САМА робить strip+serialize.
+                const layoutObj = typeof layoutJson === 'string'
+                  ? JSON.parse(layoutJson)
+                  : layoutJson;
                 await ocrService.writeLayoutArtifact(
                   { id: driveId, name, subFolders: caseData?.storage?.subFolders },
-                  typeof layoutJson === 'string' ? layoutJson : JSON.stringify(layoutJson),
+                  layoutObj,
                 );
               } catch { /* layout кеш не критичний */ }
             },
