@@ -95,7 +95,17 @@ export function createActions(deps) {
     deleteDriveFile,
     deleteOcrCacheForDocument,
     deleteExtendedForDocument,
+    requestImmediateSave,                          // P2: для критичних дій
   } = deps;
+
+  // P2 (Фаза B) — flush trailing-debounce save для критичних дій.
+  // Один сенс (правило #11): "зміна не може чекати 800мс — записати на
+  // Drive ASAP". Виклик noop якщо dep не передано (тести без App.jsx).
+  const flushSave = () => {
+    if (typeof requestImmediateSave === 'function') {
+      try { requestImmediateSave(); } catch { /* ізольовано */ }
+    }
+  };
 
   // ── ACTIONS — єдиний реєстр дій системи ──────────────────────────────────
   const ACTIONS = {
@@ -123,6 +133,7 @@ export function createActions(deps) {
           ? { ...c, status: 'closed', updatedAt: new Date().toISOString() }
           : c
       ));
+      flushSave();                                 // P2: критична — без debounce
       return { success: true };
     },
 
@@ -132,6 +143,7 @@ export function createActions(deps) {
           ? { ...c, status: 'active', updatedAt: new Date().toISOString() }
           : c
       ));
+      flushSave();                                 // P2: критична — без debounce
       return { success: true };
     },
 
