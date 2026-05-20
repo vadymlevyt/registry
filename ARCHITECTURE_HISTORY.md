@@ -794,3 +794,62 @@ debounce registry-save, Drive API explicit timeout, jobState throttle) —
 спека у тому ж файлі `TASK_dp_layout_leak_and_speed_fixes.md` §4. Для
 великих 200-250-сторінкових томів з очисткою/стисненням майбутнього
 функціоналу. Окрема сесія.
+
+---
+
+## DP layout-leak + speed fixes Phase B → REVERT (regression, 2026-05-20)
+
+**Стан:** Phase B було реалізовано (гілка `claude/optimize-dp-pipeline-phase-b-Sw2NH`,
+коміти `be5c944`/`5280fcd`/`fa3839e`/`eca8f9e`/`7491b92`), пройшло 1423/1423
+тестів, запушено в main FF (`dd4569d..7491b92`), задеплоено на Pages.
+
+**Регресія на планшеті адвоката:** нарізка пішла у passthrough — уся
+65-сторінкова справа лягла одним документом, перемикач Скан/Текст
+зник (`documentNature=null` бо нарізка не виконалась). Швидкість при цьому
+дала виграш ×2 (2-3 хв замість 5-6).
+
+**Revert:** 5 revert-комітів (`b6b8e62`/`2a70949`/`495ec56`/`de12853`/`88ddd09`)
+повернули main на функціональний стан `dd4569d` (Phase A). Тести 1392/1392
+зелені після revert (точне число до Phase B). Адвокат підтвердив прогон на
+планшеті: нарізка повернулась, **якість виросла відносно попередніх
+прогонів** (28 у плані → 26 у реєстрі; 1 — decision дедупу через
+`findDuplicate`; 1 — ймовірно image_merge_failed graceful skip; 5 хв).
+
+**Гілка Phase B збережена на origin** недоторкана (`7491b92`) — для
+майбутнього forward-fix і пост-mortem діагностики.
+
+### Гіпотеза кореня (поки не верифікована)
+
+Найімовірніший винуватець — **P1** (єдиний з P1-P4, що суттєво змінив
+логіку нарізки `splitDocumentsV3.js`). Дві окремі гіпотези, треба
+розрізнити Provider-integration тестом з реалістичним 25-doc планом:
+
+1. **Dedup-race у двофазному PERSIST.** P1 розбив plan-loop на CPU-prep
+   серіально + Drive I/O паралельно, з новим `registryView() ∪ pendingInBatch`
+   дедупом. Гіпотеза: дедуп помилково ловить нарізані документи як
+   дублікати (можливо через спільні базові імена чи pageCount-збіг
+   усередині одного джерела), CPU-prep скіпає усі, branch A повертає
+   `ok:true` з 0 documents, нижче спрацьовує passthrough fallback.
+2. **Зміна error-contract.** Старий код повертав `{ok:false, error}` з
+   throw напряму → стадія FAIL → pipeline terminate. Новий код агрегує
+   `stageError` через `runWithConcurrency` `__error` протокол, потім
+   `if (stageError) return {ok:false, error}`. Можливо десь у тракті
+   `stageError` не виставився при якомусь edge-case, branch A повернула
+   `ok:true` без створених documents, pipeline продовжився до branch B.
+
+### Чому 1423 тестів не зловили
+
+Інституційне обмеження №1 батьківського TASK_smart_triage прямо
+попереджало: «стадія в ізоляції зелена, реальний Provider тихо падає у
+passthrough — точка зламу DP-4». Інтеграційний тест P1 (`tests/integration/
+dp-persist-concurrency.test.js`) перевіряв concurrency-ліміт (пік ≤5
+одночасних upload), але **не перевіряв якісно** «після Provider-DP run з
+реалістичним 25-doc планом — усі 25 документів справді створені і не
+зведені у passthrough». Forward-fix Phase B v2 ОБОВ'ЯЗКОВО має такий тест.
+
+### Поза скоупом → `tracking_debt.md` #20
+
+Phase B forward-fix (P1 dedup race / error-contract діагностика +
+forward-fix + Provider-integration тест 25-doc плану). Тригер активації —
+коли потрібна додаткова швидкість на великих томах і є час на діагностику
+з реалістичним Provider-integration тестом.
