@@ -21,6 +21,13 @@
 
 import { categoryFromBoundaryType } from './classifyV2.js';
 import { isPagedLayout } from '../pageMarkers.js';
+import { runWithConcurrency } from '../../concurrency.js';
+
+// P1 (Фаза B, 20.05.2026) — concurrency PERSIST Drive-uploads.
+// Один сенс (правило #11): "максимум N паралельних Drive-операцій у польоті
+// для PERSIST-стадії". 5 = реалістична межа на мобільному (~6 HTTP per host).
+// При N=1 поведінка біт-у-біт серіальна (тест P1.fallback покриває).
+const PERSIST_CONCURRENCY = 5;
 
 // G4 — маршрути що НЕ йдуть через buildDocumentPdf (обробляються окремими
 // гілками диспетчу до нарізки): пре-нарізка джерела їх не включає.
@@ -227,9 +234,19 @@ export function createSplitDocumentsV3(stageDeps = {}) {
       // замість повного re-parse 21МБ на кожен документ (корінь 46 хв).
       const cutByKey = await precutSources(plan.documents, byFile);
       const planTotal = plan.documents.length;
+      // P1 (Фаза B) — фаза 1: CPU-prep і дедуп серіально. Фаза 2: Drive I/O
+      // паралельно з PERSIST_CONCURRENCY. Дедуп лишається серіальним щоб
+      // findDuplicate бачив накопичений набір імен у межах ЦЬОГО job
+      // (правило #11: registryView — один сенс, без race).
+      const uploadTasks = [];                       // {planIdx, doc, label, pdfBytes, docName, slicePageCount}
+      // pendingInBatch — імена/page/size що пішли на upload у цій фазі. Дедуп
+      // у фазі prep враховує і їх (інакше дві однакові назви плану обидві
+      // пройшли б повз find перевірку, бо newDocuments росте тільки після
+      // persist; race "доклеїть" обидві).
+      const pendingInBatch = [];
       let planIdx = 0;
       for (const doc of plan.documents) {
-        reportSub(++planIdx, planTotal);            // bug 6: «Документ i з N»
+        ++planIdx;
         // ── Ф3 диспетч за .route (один сенс на маршрут, правило #11) ───────
         const route = doc.route || 'add_as_is';
         const label = doc.name || doc.documentId;
@@ -300,7 +317,13 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const sliceSize = pdfBytes.byteLength || pdfBytes.length || 0;
 
         // Bug 6 — дублікат перед upload (не марнуємо Drive на повторний файл).
-        const dup = findDuplicate(registryView(), docName, slicePageCount, sliceSize);
+        // P1: дедуп бачить registryView() ∪ pendingInBatch (інакше дві
+        // однакові назви плану обидві пройдуть, бо newDocuments росте лише
+        // після persist).
+        const dup = findDuplicate(
+          [...registryView(), ...pendingInBatch],
+          docName, slicePageCount, sliceSize,
+        );
         if (dup?.kind === 'exact') {
           decisions.push({ type: 'duplicate_skipped', documentName: docName, message: `Документ "${docName}" уже є у справі — повторне додавання пропущено (точний дублікат).` });
           continue;
@@ -309,12 +332,29 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           decisions.push({ type: 'duplicate_review', documentName: docName, message: `Документ "${docName}" схожий на наявний у справі — додано як новий варіант, перевірте.` });
         }
 
+        // Прийнято на upload — реєструємо у batch для подальшого дедупу.
+        pendingInBatch.push({ name: docName, pageCount: slicePageCount, size: sliceSize });
+        uploadTasks.push({ planIdx, doc, label, pdfBytes, docName, slicePageCount });
+      }
+
+      // ── P1 Фаза 2: паралельні upload+persist+writeArtifacts ─────────────
+      // Контракт помилок збережено: UPLOAD_FAILED → file_skipped (стадія
+      // повертає помилку); PERSIST_FAILED → fatal. Документи, що УСПІШНО
+      // persisted до моменту виявлення помилки, лишаються у newDocuments
+      // (cases[]) — їх не "відкатуємо", це не транзакційний шар. Раніше
+      // при серіальному обході persisted залишались живими так само.
+      let stageError = null;
+      const persistResults = await runWithConcurrency(uploadTasks, async (task) => {
+        if (stageError) return { skipped: true };
+        const { doc, label, pdfBytes, docName, slicePageCount } = task;
         let driveId;
         try {
           const file = makeFileLike(docName, pdfBytes);
           driveId = await uploadFile(file, ctx.job.caseData);
         } catch (err) {
-          return { ok: false, error: { code: 'UPLOAD_FAILED', message: err?.message || 'upload документа', file_skipped: true } };
+          const e = { code: 'UPLOAD_FAILED', message: err?.message || 'upload документа', file_skipped: true };
+          if (!stageError) stageError = e;
+          return { error: e };
         }
         const srcItem = live.find((f) => f.fileId === doc.fragments[0]?.fileId) || live[0] || {};
         // План документа несе type/name — виводимо канонічну category з type
@@ -343,13 +383,36 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const document = createDocument(meta);
         const res = await persistDocument({ caseId: ctx.job.caseId, document });
         if (!res?.success) {
-          return { ok: false, error: { code: 'PERSIST_FAILED', message: res?.error || 'add_document failed', fatal: true } };
+          const e = { code: 'PERSIST_FAILED', message: res?.error || 'add_document failed', fatal: true };
+          if (!stageError) stageError = e;
+          return { error: e };
         }
         // 02_ОБРОБЛЕНІ — текст/layout (з фрагментних джерел; 80%-precise,
-        // page-precise slicing — DP-4, зафіксовано у звіті).
-        await writeProcessedArtifacts(stageDeps, ctx, document, doc, live, decisions);
-        newDocuments.push(document);
+        // page-precise slicing — DP-4, зафіксовано у звіті). Локальні
+        // decisions акумулюємо тут і вливаємо у глобальний масив у
+        // post-фазі (порядок stable).
+        const localDecisions = [];
+        await writeProcessedArtifacts(stageDeps, ctx, document, doc, live, localDecisions);
+        return { document, localDecisions };
+      }, PERSIST_CONCURRENCY, (done, _total) => reportSub(done, planTotal));
+
+      // Збираємо результати у plan-order (порядок uploadTasks). Документи
+      // та локальні decisions ліпимо у глобальні масиви послідовно, помилку
+      // — перша знайдена в plan-order.
+      for (const r of persistResults) {
+        if (!r || r.skipped) continue;
+        if (r.__error) {                                  // catch у runWithConcurrency
+          const wrapped = { code: 'PERSIST_FAILED', message: r.__error?.message || String(r.__error), fatal: true };
+          if (!stageError) stageError = wrapped;
+          continue;
+        }
+        if (r.error) continue;                            // вже у stageError
+        if (r.document) {
+          newDocuments.push(r.document);
+          if (Array.isArray(r.localDecisions)) decisions.push(...r.localDecisions);
+        }
       }
+      if (stageError) return { ok: false, error: stageError };
     } else {
       // ── B. Fallback persist (behavior-preserving, без плану) ─────────────
       // Bug 7 — у streaming-шляху item.driveId вказує на РОБОЧУ КОПІЮ у
@@ -358,9 +421,13 @@ export function createSplitDocumentsV3(stageDeps = {}) {
       // 01_ОРИГІНАЛИ (персистентно), як гілка A. Тому матеріалізуємо байти
       // джерела і завантажуємо через uploadFile (той самий seam що гілка A),
       // НЕ переюзовуємо тимчасовий driveId.
-      let fbIdx = 0;
+      //
+      // P1 (Фаза B) — фаза 1: sourceBytes + дедуп серіально (бо registryView
+      // має один сенс — без race). Фаза 2: uploadFile+persistDocument
+      // паралельно з PERSIST_CONCURRENCY.
+      const fbUploadTasks = [];                    // {item, bytes, docName}
+      const fbPendingNames = [];
       for (const item of live) {
-        reportSub(++fbIdx, live.length);            // bug 6: під-прогрес fallback
         let bytes = null;
         try {
           const b = await sourceBytes(item);
@@ -375,8 +442,12 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         }
         const docName = item.name || `${item.fileId}.pdf`;
 
-        // Bug 6 — дублікат перед upload.
-        const dup = findDuplicate(registryView(), docName, item.pageCount || null, bytes.byteLength);
+        // Bug 6 — дублікат перед upload. Дивимось і у вже-зплановані-у-batch
+        // імена (правило #11: один сенс registryView у межах job).
+        const dup = findDuplicate(
+          [...registryView(), ...fbPendingNames],
+          docName, item.pageCount || null, bytes.byteLength,
+        );
         if (dup?.kind === 'exact') {
           decisions.push({ type: 'duplicate_skipped', documentName: docName, message: `Документ "${docName}" уже є у справі — повторне додавання пропущено (точний дублікат).` });
           continue;
@@ -385,11 +456,21 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           decisions.push({ type: 'duplicate_review', documentName: docName, message: `Документ "${docName}" схожий на наявний у справі — додано як новий варіант, перевірте.` });
         }
 
+        fbPendingNames.push({ name: docName, pageCount: item.pageCount || null, size: bytes.byteLength });
+        fbUploadTasks.push({ item, bytes, docName });
+      }
+
+      let fbError = null;
+      const fbResults = await runWithConcurrency(fbUploadTasks, async (task) => {
+        if (fbError) return { skipped: true };
+        const { item, bytes, docName } = task;
         let driveId;
         try {
           driveId = await uploadFile(makeFileLike(docName, bytes), ctx.job.caseData);
         } catch (err) {
-          return { ok: false, error: { code: 'UPLOAD_FAILED', message: err?.message || 'upload', file_skipped: true, fileId: item.fileId } };
+          const e = { code: 'UPLOAD_FAILED', message: err?.message || 'upload', file_skipped: true, fileId: item.fileId };
+          if (!fbError) fbError = e;
+          return { error: e };
         }
         const meta = buildMeta
           ? buildMeta({ item, driveId, originalDriveId: item.originalDriveId || null, job: ctx.job })
@@ -397,10 +478,24 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const document = createDocument(meta);
         const res = await persistDocument({ caseId: ctx.job.caseId, document });
         if (!res?.success) {
-          return { ok: false, error: { code: 'PERSIST_FAILED', message: res?.error || 'add_document failed', fatal: true, fileId: item.fileId } };
+          const e = { code: 'PERSIST_FAILED', message: res?.error || 'add_document failed', fatal: true, fileId: item.fileId };
+          if (!fbError) fbError = e;
+          return { error: e };
         }
-        newDocuments.push(document);
+        return { document };
+      }, PERSIST_CONCURRENCY, (done, _total) => reportSub(done, live.length));
+
+      for (const r of fbResults) {
+        if (!r || r.skipped) continue;
+        if (r.__error) {
+          const wrapped = { code: 'PERSIST_FAILED', message: r.__error?.message || String(r.__error), fatal: true };
+          if (!fbError) fbError = wrapped;
+          continue;
+        }
+        if (r.error) continue;
+        if (r.document) newDocuments.push(r.document);
       }
+      if (fbError) return { ok: false, error: fbError };
     }
 
     // ── saveFragments (sub-стадія): невикористані сторінки → 03_ФРАГМЕНТИ ──
@@ -458,9 +553,14 @@ async function saveFragments(stageDeps, ctx, fragmentsMode) {
   const jobFolder = await drivePort.getOrCreateFolder(`${dateStr}_${ctx.job.jobId}`, fragRootId);
   const log = [];
   const saved = [];
-  let idx = 1;
   const combinedBuffers = [];
+  // P1 (Фаза B) — фаза 1: splitPdf через runInWorker (worker single-threaded,
+  // паралелити не виграє). Фаза 2: drivePort.uploadBytes у separate-mode
+  // паралельно з PERSIST_CONCURRENCY (combined-mode — окремий merge).
+  const slicedParts = [];                           // {u, idx, part} у початковому порядку
+  let idx = 0;
   for (const u of unused) {
+    idx++;
     const src = byFile.get(u.fileId);
     if (!src) { log.push({ ...u, saved: false, reason: u.reason + ' (джерело недоступне)' }); continue; }
     let part;
@@ -475,21 +575,38 @@ async function saveFragments(stageDeps, ctx, fragmentsMode) {
       continue;
     }
     if (!part) { log.push({ ...u, saved: false }); continue; }
-    if (fragmentsMode === 'combined') {
+    slicedParts.push({ u, idx, part });
+  }
+  if (fragmentsMode === 'combined') {
+    for (const { part, u, idx: i } of slicedParts) {
       combinedBuffers.push(part.buffer);
-      log.push({ ...u, fragmentIndex: idx, saved: true });
-    } else {
-      const name = `fragment_${String(idx).padStart(3, '0')}.pdf`;
+      log.push({ ...u, fragmentIndex: i, saved: true });
+    }
+  } else {
+    // Паралельні uploads — кожен фрагмент незалежний, помилка локальна.
+    const uploadResults = await runWithConcurrency(slicedParts, async ({ u, idx: i, part }) => {
+      const name = `fragment_${String(i).padStart(3, '0')}.pdf`;
       try {
         const up = await drivePort.uploadBytes(jobFolder.id, name, new Uint8Array(part.buffer), 'application/pdf');
-        saved.push({ name, driveId: up.id, ...u });
-        log.push({ file: name, fileId: u.fileId, startPage: u.startPage, endPage: u.endPage, reason: u.reason, driveId: up.id, saved: true });
-        publishFragment(stageDeps, ctx, { name, driveId: up.id, reason: u.reason });
+        return { ok: true, name, up, u };
       } catch (e) {
-        log.push({ ...u, saved: false, reason: `${u.reason} (upload: ${e?.message || e})` });
+        return { ok: false, name, u, error: e };
+      }
+    }, PERSIST_CONCURRENCY);
+    for (const r of uploadResults) {
+      if (!r) continue;
+      if (r.__error) {
+        log.push({ saved: false, reason: `upload помилка: ${r.__error?.message || r.__error}` });
+        continue;
+      }
+      if (r.ok) {
+        saved.push({ name: r.name, driveId: r.up.id, ...r.u });
+        log.push({ file: r.name, fileId: r.u.fileId, startPage: r.u.startPage, endPage: r.u.endPage, reason: r.u.reason, driveId: r.up.id, saved: true });
+        publishFragment(stageDeps, ctx, { name: r.name, driveId: r.up.id, reason: r.u.reason });
+      } else {
+        log.push({ ...r.u, saved: false, reason: `${r.u.reason} (upload: ${r.error?.message || r.error})` });
       }
     }
-    idx++;
   }
   if (fragmentsMode === 'combined' && combinedBuffers.length > 0) {
     try {
