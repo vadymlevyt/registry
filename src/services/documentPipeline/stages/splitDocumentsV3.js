@@ -266,7 +266,19 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           try {
             pdfBytes = await stageDeps.mergeImagesToPdf({ images, docName: label });
           } catch (err) {
-            return { ok: false, error: { code: 'IMAGE_MERGE_FAILED', message: `image_merge "${label}": ${err?.message || err}`, fatal: true } };
+            // B3 (20.05.2026) — НЕ fatal. Кривий байт-документ (HEIC що
+            // canvas не декодує, corrupted bytes, тощо) має бути ЛОКАЛЬНОЮ
+            // помилкою конкретного документа, а не вбивати весь job.
+            // Раніше {fatal:true} → жоден з N документів не зберігався.
+            // Реальний кейс: «Копія паспорту громадянина» в наборі з 25
+            // документів адвоката валив pipeline на 25-му за чергою.
+            decisions.push({
+              type: 'image_merge_failed',
+              documentId: doc.documentId,
+              documentName: label,
+              message: `image_merge "${label}": ${err?.message || err}`,
+            });
+            continue;
           }
         } else {
           // add_as_is | slice | fragment_reconstruct | (невідомий → як є):

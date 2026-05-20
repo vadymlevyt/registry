@@ -125,6 +125,56 @@ describe('splitDocumentsV3 .route — image_merge', () => {
     expect(persistDocument).not.toHaveBeenCalled();
     expect(res.decisions.some((x) => x.type === 'image_merge_unavailable')).toBe(true);
   });
+
+  // B3 (20.05.2026) — корінь: один кривий байт-документ у image_merge валив
+  // ВЕСЬ pipeline через {fatal: true}. Реальний симптом (скріншот адвоката
+  // 17:28): "HTMLImage→createImageBitmap decode failed" на конкретному
+  // паспорті → жоден з 25 документів не зберігся через fatal-flag.
+  it('mergeImagesToPdf кидає → decision image_merge_failed, інші документи продовжуються', async () => {
+    const a = await seedSource(port, 'img_a', 1, 'image/jpeg');
+    const b = await seedSource(port, 'img_b', 1, 'image/jpeg');
+    const c = await seedSource(port, 'img_c', 1, 'image/jpeg');
+    // mergeImagesToPdf кидає для документа 'Паспорт', успішно для 'Договір'.
+    const mergeImagesToPdf = vi.fn(async ({ docName }) => {
+      if (docName === 'Паспорт') throw new Error('decode failed: source image could not be decoded');
+      return new Uint8Array([1, 2, 3]);
+    });
+    const stage = mkStage(port, { persistDocument, uploadFile, deps: { mergeImagesToPdf } });
+    const res = await stage(ctxOf(port,
+      { documents: [
+        { documentId: 'd1', name: 'Паспорт', route: 'image_merge', fragments: [{ fileId: 'img_a', startPage: 1, endPage: 1 }] },
+        { documentId: 'd2', name: 'Договір', route: 'image_merge', fragments: [{ fileId: 'img_b', startPage: 1, endPage: 1 }, { fileId: 'img_c', startPage: 1, endPage: 1 }] },
+      ] },
+      [
+        { fileId: 'img_a', driveId: a, skipped: false, originalMime: 'image/jpeg', name: 'paspot.jpg' },
+        { fileId: 'img_b', driveId: b, skipped: false, originalMime: 'image/jpeg', name: 'dog_1.jpg' },
+        { fileId: 'img_c', driveId: c, skipped: false, originalMime: 'image/jpeg', name: 'dog_2.jpg' },
+      ]));
+    // Pipeline ok:true (НЕ fatal).
+    expect(res.ok).toBe(true);
+    // 1 невдалий → decision image_merge_failed з documentName.
+    const failed = res.decisions.find((x) => x.type === 'image_merge_failed');
+    expect(failed).toBeDefined();
+    expect(failed.documentName).toBe('Паспорт');
+    expect(failed.message).toMatch(/decode failed/);
+    // 1 успішний → persistDocument викликано РАЗ (не двічі — паспорт пропущено).
+    expect(persistDocument).toHaveBeenCalledTimes(1);
+    expect(persistDocument.mock.calls[0][0].document.name).toBe('Договір.pdf');
+  });
+
+  it('mergeImagesToPdf повертає null/empty → decision, інші продовжуються', async () => {
+    // Граничний кейс — функція не кинула, але повернула null (нема валідних
+    // зображень). Уже зашитий path "document_split_skipped" — лишається.
+    const a = await seedSource(port, 'img_a', 1, 'image/jpeg');
+    const mergeImagesToPdf = vi.fn(async () => null);
+    const stage = mkStage(port, { persistDocument, uploadFile, deps: { mergeImagesToPdf } });
+    const res = await stage(ctxOf(port,
+      { documents: [{ documentId: 'd1', name: 'Пусто', route: 'image_merge', fragments: [{ fileId: 'img_a', startPage: 1, endPage: 1 }] }] },
+      [{ fileId: 'img_a', driveId: a, skipped: false, originalMime: 'image/jpeg', name: 'A.jpg' }]));
+    expect(res.ok).toBe(true);
+    expect(persistDocument).not.toHaveBeenCalled();
+    expect(res.decisions.some((x) => x.type === 'document_split_skipped')).toBe(true);
+  });
 });
 
 describe('splitDocumentsV3 .route — змішаний план + невідомий route', () => {
