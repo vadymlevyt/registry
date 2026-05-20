@@ -340,20 +340,59 @@ describe('pageMarkers.buildCompactTriagePassport (ФД-0)', () => {
 // великий том знову переповнить вікно Haiku (тихий passthrough). Цей тест
 // ловить регрес: resolveBoundaryText мусить бути компактним, не повнотекстовим.
 describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
-  it('структурований layout → КОМПАКТНИЙ паспорт (не повнотекстовий структурний)', () => {
-    // Реалістична багаторядкова OCR-сторінка (Document AI _text з \n).
-    const big = { schemaVersion: 1, pages: Array.from({ length: 20 }, (_, p) => ({
+  it('великий том (>100 стор.) → стартовий мінімум: у рази менший за структурний', () => {
+    // 120 стор. — вище RICH_PASSPORT_MAX_PAGES → дефолти компактного паспорта
+    // (без зайвої тіла-тексту, безпечно для вікна Haiku).
+    const big = { schemaVersion: 1, pages: Array.from({ length: 120 }, (_, p) => ({
       _text: Array.from({ length: 45 }, (_, k) =>
         `Сторінка ${p + 1} рядок ${k + 1} реального обсягу абзацу судового документа`).join('\n'),
     })) };
     const out = resolveBoundaryText(big, null, 'PLAIN-FALLBACK');
     expect(out).toContain('=== СТОРІНКА 1 ===');
-    expect(out).toContain('=== СТОРІНКА 20 ===');
-    expect(out).not.toContain('PLAIN-FALLBACK');                 // layout пріоритетніший
-    // Компактний у рази менший за структурний на тому самому вході (доказ
-    // що buildStructuralPassport ПРИБРАНО з ланцюга).
-    expect(out).toBe(buildCompactTriagePassport(big));
+    expect(out).toContain('=== СТОРІНКА 120 ===');
+    expect(out).not.toContain('PLAIN-FALLBACK');
+    expect(out).toBe(buildCompactTriagePassport(big));            // дефолти на великому
     expect(out.length).toBeLessThan(buildStructuralPassport(big).length / 5);
+  });
+
+  it('малий том (≤100 стор.) → rich profile: head 10 + tail 10 (Брановський-зрізає)', () => {
+    // Реалістична багаторядкова OCR-сторінка (Document AI _text з \n).
+    // 65 стор. ≤ RICH_PASSPORT_MAX_PAGES → активується rich profile: head/tail
+    // 10/10 по 1500 симв. На сторінці з 30 рядками rich покриває 1-10 + 21-30
+    // (20 з 30), середина 11-20 елідується ⟨…⟩. Дефолтний компактний покривав
+    // би лише 1-3 + 29-30 (5 з 30) — у 4x менше тексту для дискримінації меж.
+    // dimension забезпечує непорожній дайджест (fullTextIfNoSignal не лізе).
+    const small = { schemaVersion: 1, pages: Array.from({ length: 65 }, (_, p) => ({
+      _text: Array.from({ length: 30 }, (_, k) =>
+        `Сторінка ${p + 1} рядок ${k + 1} реального обсягу абзацу судового документа`).join('\n'),
+      dimension: { width: 595, height: 842 },
+    })) };
+    const adaptive = resolveBoundaryText(small, null, 'PLAIN-FALLBACK');
+    const pureDefault = buildCompactTriagePassport(small);
+    expect(adaptive).toContain('=== СТОРІНКА 1 ===');
+    expect(adaptive).toContain('=== СТОРІНКА 65 ===');
+    // Rich значно щільніший за дефолтний компактний (відновлення якості).
+    expect(adaptive.length).toBeGreaterThan(pureDefault.length * 2);
+    // Rich на 30-рядковій сторінці покриває рядки 1-10 і 21-30.
+    expect(adaptive).toContain('рядок 10 реального');                // tail head'у
+    expect(adaptive).toContain('рядок 21 реального');                // початок tail'у
+    expect(adaptive).toContain('⟨…⟩');                               // середина елідована
+    // Дефолтний компактний таких рядків НЕ дав би (head 3 + tail 2).
+    expect(pureDefault).not.toContain('рядок 10 реального');
+    expect(pureDefault).not.toContain('рядок 21 реального');
+  });
+
+  it('поріг переходу: 100 → rich, 101 → дефолти (один сенс — за обсягом)', () => {
+    // dimension → непорожній дайджест → fullTextIfNoSignal не плутає тест.
+    const make = (n) => ({ schemaVersion: 1, pages: Array.from({ length: n }, () => ({
+      _text: Array.from({ length: 30 }, (_, k) => `рядок ${k + 1} достатньо інформативний для тесту`).join('\n'),
+      dimension: { width: 595, height: 842 },
+    })) });
+    const at100 = resolveBoundaryText(make(100), null, '');
+    const at101 = resolveBoundaryText(make(101), null, '');
+    // Розмір на сторінку: rich значно більший за дефолтний (близько 4x при
+    // 30 рядках per page; беремо безпечний поріг 2x).
+    expect(at100.length / 100).toBeGreaterThan(at101.length / 101 * 2);
   });
 
   it('layout непридатний → fallback на plain текст цілий', () => {

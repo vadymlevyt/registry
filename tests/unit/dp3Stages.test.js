@@ -105,8 +105,8 @@ describe('detectBoundariesV3', () => {
     expect(seenText).toContain('=== СТОРІНКА 65 ===');
     expect((seenText.match(/=== СТОРІНКА \d+ ===/g) || []).length).toBe(65); // усі сторінки видимі AI
     const rawFullLen = 65 * longPage(1).length;
-    expect(seenText.length).toBeLessThan(rawFullLen / 10); // компактний: краї, не тіло (ФД-1)
-    expect(seenText).not.toContain('PLAIN-БЕЗ-МАРКЕРІВ'); // layout має пріоритет
+    expect(seenText.length).toBeLessThan(rawFullLen / 5);   // компактний: краї, не тіло (ФД-1/1.1 rich)
+    expect(seenText).not.toContain('PLAIN-БЕЗ-МАРКЕРІВ');   // layout має пріоритет
   });
 
   it('layout неповний (resume) → fallback на plain getStreamedText, без маркерів', async () => {

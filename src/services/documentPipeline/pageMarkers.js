@@ -338,13 +338,39 @@ export function buildCompactTriagePassport(layoutJson, expectedPageCount = null,
  * тихий passthrough, спека §0). Лишається експортованою і недоторканою
  * (grep підтвердив: жодного іншого live-споживача — detectBoundariesV3 не
  * ін'єктується Provider'ом, у слоті DETECT_BOUNDARIES — createTriageStage).
+ *
+ * ФД-1.1 (валідація адвокатом на Брановському): чисто компактний паспорт
+ * втрачав ТІЛО тексту, з якого AI дискримінує межі за змістом фраз. На
+ * малому томі це збіднення зайве — вікно Haiku вистачає. Тому щільність
+ * адаптивна за обсягом: ≤RICH_PASSPORT_MAX_PAGES стор. → rich profile
+ * (head/tail у рази більші, фактично повне тіло короткої OCR-сторінки);
+ * вище → стартовий мінімум (краї, не переповнюючи 250-стор. тома).
+ * Брановський (65 стор.) повертається до старої точності, 200-250 стор.
+ * лишаються в зоні якості.
  * @param {object|null} layoutJson
  * @param {number|null} expectedPageCount
  * @param {string} plainText — fallback (OCR-текст без структури / resume)
  * @returns {string}
  */
 export function resolveBoundaryText(layoutJson, expectedPageCount, plainText) {
-  return buildCompactTriagePassport(layoutJson, expectedPageCount)
+  const pages = (layoutJson && Array.isArray(layoutJson.pages) ? layoutJson.pages.length : 0)
+    || expectedPageCount || 0;
+  return buildCompactTriagePassport(layoutJson, expectedPageCount, passportOptsForBudget(pages))
     || buildPagedText(layoutJson, expectedPageCount)
     || String(plainText || '');
+}
+
+// Один сенс: «обрати щільність паспорта залежно від обсягу — більше тексту
+// коли є бюджет вікна (малий том), стартовий мінімум коли загроза переповнення
+// (великий том)». Цифра 100 — стартова точка, обґрунтована: реалістична OCR-
+// сторінка ~1500-2500 симв., 100 стор. × 2500 ≈ ~125K токенів (зона якості
+// Haiku ≤~150K, при 200K-вікні). Вище — стартовий мінімум обов'язковий.
+const RICH_PASSPORT_MAX_PAGES = 100;
+const RICH_PASSPORT_OPTS = Object.freeze({
+  headLines: 10, tailLines: 10,
+  headChars: 1500, tailChars: 1500,
+  fullTextIfNoSignal: true, ambiguousMaxChars: 1200,
+});
+function passportOptsForBudget(pageCount) {
+  return pageCount > 0 && pageCount <= RICH_PASSPORT_MAX_PAGES ? RICH_PASSPORT_OPTS : {};
 }
