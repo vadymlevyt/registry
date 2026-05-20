@@ -125,75 +125,23 @@ export function forceConsentRefresh() {
   });
 }
 
-// P3 (Фаза B, 20.05.2026) — explicit timeout усіх Drive-запитів.
-// Один сенс (правило #11): "fetch до Drive НЕ висить довше DRIVE_TIMEOUT_MS;
-// якщо мережа втратила пакет — AbortError, видима помилка нагору".
-//
-// Корінь: жоден з ~50 driveRequest викликів у системі (uploadBytes/readBytes/
-// writeRegistry/...) не мав explicit timeout. На повільній або нестабільній
-// мережі це означало невидимі багатогодинні зависання (наприклад, при втраті
-// з'єднання на планшеті браузер тримає сокет до десятків хвилин).
-//
-// 60с — стандарт для Drive multipart upload (одне фінальне завантаження
-// ~MB). Caller може override через options.timeoutMs (наприклад, для дуже
-// великих файлів) або options.signal (зовнішній контроль скасування —
-// signal має пріоритет, timeoutMs ігнорується).
-export const DRIVE_TIMEOUT_MS = 60_000;
-
-function buildTimeoutSignal(timeoutMs) {
-  if (typeof AbortController !== 'function') return { signal: null, clear: () => {} };
-  const ctrl = new AbortController();
-  const id = setTimeout(() => {
-    try {
-      ctrl.abort(new DOMException('Drive request timeout', 'AbortError'));
-    } catch {
-      ctrl.abort();                                 // fallback для старих браузерів
-    }
-  }, timeoutMs);
-  return { signal: ctrl.signal, clear: () => clearTimeout(id) };
-}
-
 // Єдиний wrapper для всіх запитів до Google Drive API.
 // На 401 — автоматично оновлює токен і повторює запит один раз.
 export async function driveRequest(url, options = {}) {
   let token = getDriveToken();
-  const timeoutMs = options.timeoutMs ?? DRIVE_TIMEOUT_MS;
 
-  // makeRequest повертає {response, clear} — clear скасовує внутрішній
-  // timeout-таймер після завершення (успіх чи помилка fetch). Якщо caller
-  // дав свій signal — clear = no-op (caller сам відповідає за life-cycle).
-  const makeRequest = async (t) => {
+  const makeRequest = (t) => {
     const headers = { ...(options.headers || {}) };
     if (t) headers.Authorization = `Bearer ${t}`;
-    let signal = options.signal;
-    let clear = () => {};
-    if (!signal) {
-      const built = buildTimeoutSignal(timeoutMs);
-      signal = built.signal;
-      clear = built.clear;
-    }
-    const opts = { ...options, headers };
-    if (signal) opts.signal = signal;
-    delete opts.timeoutMs;                          // не передавати у fetch
-    try {
-      const response = await fetch(url, opts);
-      return { response, clear };
-    } catch (err) {
-      clear();                                      // cleanup на throw
-      throw err;
-    }
+    return fetch(url, { ...options, headers });
   };
 
-  let r = await makeRequest(token);
-  let response = r.response;
-  r.clear();                                        // успіх — таймер геть
+  let response = await makeRequest(token);
 
   if (response.status === 401) {
     const fresh = await refreshDriveToken();
     if (!fresh) return response;
-    r = await makeRequest(fresh);
-    response = r.response;
-    r.clear();
+    response = await makeRequest(fresh);
   }
 
   return response;
