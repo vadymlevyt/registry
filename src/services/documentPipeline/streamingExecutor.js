@@ -107,8 +107,7 @@ export function createStreamingExecutor(deps = {}) {
         state.chunks.push({ fileId: fileEntry.fileId, index: c.index, startPage: c.startPage, endPage: c.endPage, driveId: null, status: 'pending', text: null });
       }
     }
-    // P4: реєстрація chunks — НЕ критична (тільки прогрес resume).
-    await jobStore.saveStateThrottled(state);
+    await jobStore.saveState(state);
 
     let merged = [];
     let layout = [];
@@ -137,10 +136,7 @@ export function createStreamingExecutor(deps = {}) {
       merged.push({ startPage: c.startPage, text: res?.text || '' });
       if (Array.isArray(res?.layout)) layout = layout.concat(res.layout);
       state.chunkDurationsMs.push(Date.now() - t0);
-      // P4: per-chunk save — НЕ критично для resume. Throttle до 1/10с;
-      // якщо процес впаде, resume бачить ≤10с давніший стан (один chunk
-      // максимум перерозпізнається, ~5-30 сек, прийнятно).
-      await jobStore.saveStateThrottled(state);
+      await jobStore.saveState(state);
       reportProgress(state.jobId, state);
     }
 
@@ -194,26 +190,20 @@ export function createStreamingExecutor(deps = {}) {
           tempOriginal = await drivePort.uploadBytes(tempFolderId, `orig_${f.fileId}.pdf`, new Uint8Array(ab), 'application/pdf');
         } catch (err) {
           state.status = JOB_STATUS.STOPPED; state.stoppedAt = 'upload_original'; state.error = { code: 'UPLOAD_FAILED', message: err?.message || 'upload original' };
-          // P4: terminal — immediate, після flush щоб throttled не пере-
-          // писав terminal-стан старіше пізніше.
-          await jobStore.flushPendingSave();
           await jobStore.saveState(state);
           return { ok: false, jobId, resumable: true, error: state.error };
         }
         fe.originalDriveId = tempOriginal.id;
         fe.sizeBytes = f.size || ab.byteLength || 0;
         fe.status = 'processing';
-        // P4: file status → processing — НЕ критичний для resume.
-        await jobStore.saveStateThrottled(state);
+        await jobStore.saveState(state);
 
         // 2-4. потокова OCR по chunk'ах.
         const streamed = await streamFile(state, fe, ab);
         ab = null;                                    // GC: оригінал з RAM геть
         if (streamed?.cancelled) return finishCancelled(state, pipelineFiles);
         fe.status = 'done';
-        // P4: file done — НЕ критично (resume може повторити останні chunks
-        // одного файла, але це дешевше ніж зайвий Drive POST на кожний файл).
-        await jobStore.saveStateThrottled(state);
+        await jobStore.saveState(state);
 
         pipelineFiles.push({
           fileId: f.fileId,
@@ -310,8 +300,6 @@ export function createStreamingExecutor(deps = {}) {
       state.status = JOB_STATUS.STOPPED;
       state.stoppedAt = result.stoppedAt || 'pipeline';
       state.error = result.errors?.[result.errors.length - 1] || null;
-      // P4: terminal — flush + immediate, щоб throttled не перетер terminal.
-      await jobStore.flushPendingSave();
       await jobStore.saveState(state);
       progressStore.finishJob(jobId, { status: 'stopped', graceMs: 0 });
       progressStore.reconcilePolling();
@@ -320,9 +308,6 @@ export function createStreamingExecutor(deps = {}) {
       state.status = JOB_STATUS.STOPPED;
       state.stoppedAt = state.stoppedAt || 'exception';
       state.error = { code: 'EXECUTOR_THREW', message: err?.message || String(err) };
-      // P4: terminal EXCEPTION — flush + immediate (всередині try/catch, бо
-      // стан міг не зберегтись через ту саму помилку).
-      try { await jobStore.flushPendingSave(); } catch { /* noop */ }
       try { await jobStore.saveState(state); } catch { /* стан міг не зберегтись */ }
       progressStore.finishJob(jobId, { status: 'stopped' });
       progressStore.reconcilePolling();
@@ -335,9 +320,6 @@ export function createStreamingExecutor(deps = {}) {
   async function finishCancelled(state, pipelineFiles) {
     state.status = JOB_STATUS.STOPPED;
     state.stoppedAt = 'cancelled';
-    // P4: cancellation — flush + immediate (правило #11: окрема гілка
-    // critical, не throttle).
-    await jobStore.flushPendingSave();
     await jobStore.saveState(state);
     progressStore.finishJob(state.jobId, { status: 'cancelled' });
     progressStore.reconcilePolling();
