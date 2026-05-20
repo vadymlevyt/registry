@@ -731,3 +731,66 @@ Bug 5 (перемикач PDF/Текст у в'юері CaseDossier — окре
 адвоката, зараз slice бере сирий per-page `_text`). Орфан-PDF попередніх
 спроб у `01_ОРИГІНАЛИ` — одноразове ручне прибирання перед наступним
 прогоном (pipeline їх не імпортує — операційна нотатка у звіті, не борг).
+
+---
+
+## DP layout-leak + speed fixes (Phase A) — B1 / B2 / B3 (2026-05-20)
+
+**Корінь з реальних даних:** форензичний аналіз `.layout.json` адвоката
+(справа Брановського, тест на планшеті 17:14-17:28) показав файл 14 MB
+замість очікуваних ~400 KB: `image` 80.7% + `tokens` 16.4% = 97% марного
+баласту проходить strip. На 25 документів = **~350 МБ серіальних Drive
+uploads** = 5-15 хв «висить на 100% майже готово» з тихим catch.
+
+**Точна точка обходу:** `DocumentPipelineContext.jsx:219-227` робив
+`JSON.stringify(layoutJson)` ПЕРЕД `ocrService.writeLayoutArtifact`, який
+очікує **об'єкт** для проходу `STRIPPED_LAYOUT_FIELDS=['image','tokens']`.
+На string strip не запрацював.
+
+### Зроблено (Фаза A)
+
+- **B1 — layout-strip leak** (комiт `2af822f`): `writeLayoutArtifact` тепер
+  приймає тільки об'єкт і САМА робить strip+serialize; string-вхід
+  відхиляється з warning. Прибрано `JSON.stringify` у Provider-injectorі.
+  `CaseDossier:3025-3037` парсить `mergeLayoutJson` string у об'єкт.
+- **B2 — `documentNature='scanned'` на нарізаних** (`8bc53b9`): нова
+  `inferDocumentNatureFromSource` у `splitDocumentsV3` — якщо джерело має
+  непорожній `layoutJson.pages` (OCR відбувся) → `documentNature:'scanned'`.
+  Пробрасується через `metadataTemplate`. Пріоритети: explicit > layout
+  signal > null fallback. Корінь зниклого перемикача Скан/Текст.
+- **B3 — image_merge graceful failure** (`345f034`): throw у image_merge
+  маршруті → `decisions.push({type:'image_merge_failed', documentName, message})`
+  + `continue`. Більше НЕ валить інші документи. `splitDocumentsV3.js:266-280`.
+
+### Тести / інваріанти
+
+1392 / 1392 зелені (було 1374, +18 нових — 11 unit + 7 integration). Кожен
+баг покрито Provider-integration тестом через справжній
+`DocumentPipelineProvider` (інституційне обмеження TASK_smart_triage §2.1).
+Компактний паспорт, моделі, Triage, OCR, диригент, схема — НЕ змінені.
+
+### Підтверджено на реальних даних (Брановський, планшет, два прогони)
+
+| Метрика | До | Після | Множник |
+|---|---|---|---|
+| Розмір `.layout.json` / стор. | ~1800 KB | ~37 KB | ×48 |
+| Розмір файлу на 8 стор. | 14 MB | 300 KB | ×47 |
+| Зависання «100% майже готово» | 5-15 хв | ~10 сек | — |
+| End-to-end на 65 стор. → 25 docs | ~15-50 хв | **5-6 хв** | ×3-10 |
+| Якість нарізки (за оцінкою адвоката) | — | 85-90% | — |
+
+### Поза скоупом → `tracking_debt.md`
+
+#17 HEIC→JPEG передобробка перед image_merge (тригер: ≥2 повторних
+`image_merge_failed` на HEIC/PDF image-only). #18 Подвійна риска
+прогрес-бару у `GlobalProgressScreen.jsx` (UI cosmetic, наступне суттєве
+редагування файла). #19 Збагачений дайджест паспорта D1 (тригер: якщо
+після Фази B + ФД-4 propose→confirm якість лишається <90%).
+
+### Phase B — НЕ розпочата
+
+Перформанс-оптимізації P1-P4 (паралельний PERSIST через `Promise.all`,
+debounce registry-save, Drive API explicit timeout, jobState throttle) —
+спека у тому ж файлі `TASK_dp_layout_leak_and_speed_fixes.md` §4. Для
+великих 200-250-сторінкових томів з очисткою/стисненням майбутнього
+функціоналу. Окрема сесія.
