@@ -82,6 +82,17 @@ export function estimateRemainingMs(state) {
   return Math.round(avg * remaining);
 }
 
+// P4 (Фаза B, 20.05.2026) — throttle saveState (один сенс, правило #11):
+// "у normal-режимі не частіше ніж раз на N мс; saveStateImmediate і
+// flushPendingSave — окремі гілки для критичних подій (init/terminal/error)".
+// Дефолт 10_000 мс = 10 с (P4 acceptance: ≤1 upload/10 сек).
+//
+// Корінь: ~120 saveState/DP run × ~100-200мс Drive write = ~12-24 сек
+// прихованої роботи. Більшість — per-chunk OCR completion (L139 у
+// streamingExecutor). Per-chunk прогрес НЕ критичний для resume (resume
+// бачить ≤ JOBSTATE_THROTTLE_MS давніший стан — прийнятно).
+export const JOBSTATE_THROTTLE_MS = 10_000;
+
 // ── Фабрика стора (DI Drive-порт) ───────────────────────────────────────────
 // drivePort:
 //   getOrCreateFolder(name, parentId|null) → { id }
@@ -89,8 +100,10 @@ export function estimateRemainingMs(state) {
 //   uploadText(folderId, name, content, mime?) → { id }
 //   readText(fileId) → string
 //   deleteFile(fileId) → void
-export function createJobStateStore(drivePort) {
+export function createJobStateStore(drivePort, options = {}) {
   if (!drivePort) throw new Error('createJobStateStore: drivePort обовʼязковий');
+  const throttleMs = Number.isFinite(options.throttleMs)
+    ? Math.max(0, options.throttleMs) : JOBSTATE_THROTTLE_MS;
 
   // Папка _temp/<caseId>_<jobId>/. Кеш id у межах інстансу — нуль зайвих
   // Drive-lookup'ів на кожен save.
@@ -111,8 +124,10 @@ export function createJobStateStore(drivePort) {
       .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')));
   }
 
-  // saveState — crash-safe: пишемо новий, потім прибираємо попередні.
-  async function saveState(state) {
+  // Фактичний crash-safe запис на Drive — спільний для saveState
+  // (immediate) і саме-таймера throttled. Один сенс: "положити свіжий
+  // JOB_STATE_FILE на Drive, прибрати попередні дублі".
+  async function _writeState(state) {
     const next = { ...state, updatedAt: new Date().toISOString() };
     const folderId = await jobFolderId(next.caseId, next.jobId);
     const existing = await listStateFiles(folderId);
@@ -123,6 +138,70 @@ export function createJobStateStore(drivePort) {
       try { await drivePort.deleteFile(old.id); } catch { /* старий дубль — не критично */ }
     }
     return next;
+  }
+
+  // Стан throttle (per-store-instance, тобто per-job через createStreaming).
+  let throttleTimer = null;
+  let pendingState = null;
+  let lastSaveAt = 0;
+
+  function _cancelPending() {
+    if (throttleTimer !== null) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
+    pendingState = null;
+  }
+
+  // saveState — IMMEDIATE. Контракт DP-3 збережено (тести). Скасовує
+  // pending throttled (immediate перебиває старіший стан що чекав).
+  async function saveState(state) {
+    _cancelPending();
+    lastSaveAt = Date.now();
+    return _writeState(state);
+  }
+
+  // saveStateThrottled — leading-edge throttle: перший виклик у вікні
+  // throttleMs — одразу; наступні в вікні — об'єднуються у відкладений
+  // trailing-save з НАЙСВІЖІШИМ pendingState. Acceptance P4 (30 saves
+  // у 5 сек → ≤2 uploads, останній має найсвіжіший стан) виконується.
+  async function saveStateThrottled(state) {
+    pendingState = state;
+    const now = Date.now();
+    const sinceLast = now - lastSaveAt;
+    if (sinceLast >= throttleMs) {
+      // Leading edge — пишемо одразу.
+      if (throttleTimer !== null) { clearTimeout(throttleTimer); throttleTimer = null; }
+      lastSaveAt = now;
+      const s = pendingState;
+      pendingState = null;
+      return _writeState(s);
+    }
+    if (throttleTimer !== null) return;             // вже scheduled trailing
+    const delay = throttleMs - sinceLast;
+    throttleTimer = setTimeout(async () => {
+      throttleTimer = null;
+      const s = pendingState;
+      pendingState = null;
+      lastSaveAt = Date.now();
+      try { await _writeState(s); } catch { /* throttled save — побічна, не валимо */ }
+    }, delay);
+  }
+
+  // flushPendingSave — викликати ПЕРЕД terminal saveState щоб гарантувати
+  // що відкладений throttled-save не перезапише terminal стан пізніше.
+  // Якщо нічого pending — no-op.
+  async function flushPendingSave() {
+    if (throttleTimer !== null) {
+      clearTimeout(throttleTimer);
+      throttleTimer = null;
+    }
+    if (pendingState) {
+      const s = pendingState;
+      pendingState = null;
+      lastSaveAt = Date.now();
+      return _writeState(s);
+    }
   }
 
   // loadState — найсвіжіший стан або null. Прибирає старі дублі по дорозі.
@@ -143,8 +222,11 @@ export function createJobStateStore(drivePort) {
   }
 
   // clearState — після успіху (або «видалити все» при скасуванні). Видаляє
-  // ВЕСЬ вміст _temp/<caseId>_<jobId>/ (job_state + chunk-байти).
+  // ВЕСЬ вміст _temp/<caseId>_<jobId>/ (job_state + chunk-байти). КРИТИЧНО:
+  // скасовує throttled-timer ПЕРЕД видаленням, інакше відкладений save
+  // спрацює пізніше і відновить job_state.json після clearState (leak).
   async function clearState(caseId, jobId) {
+    _cancelPending();
     const folderId = await jobFolderId(caseId, jobId);
     const files = await drivePort.listFolder(folderId);
     for (const f of files || []) {
@@ -162,6 +244,8 @@ export function createJobStateStore(drivePort) {
 
   return {
     saveState,
+    saveStateThrottled,
+    flushPendingSave,
     loadState,
     clearState,
     hasResumableJob,
