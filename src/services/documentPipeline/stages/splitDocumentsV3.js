@@ -39,6 +39,30 @@ function resolveCategory(doc) {
   return null;
 }
 
+// B2 (20.05.2026) — documentNature нарізаного документа з джерела.
+// Один сенс (правило #11): "якщо джерело потребувало OCR (має непорожній
+// layoutJson.pages) — це 'scanned'; інакше — let detectNature вирішує
+// (повертаємо null, createDocument викличе detectNature)".
+//
+// Корінь bug: DocumentViewer показує перемикач Скан/Текст лише коли
+// documentNature==='scanned' (DocumentViewerFooter:22). Раніше нарізані з
+// 65-стор. скана отримували 'searchable' через detectNature(.pdf) →
+// перемикач зникав, текст з OCR недоступний для копіювання.
+//
+// Пріоритети:
+//   1. metadataTemplate.documentNature — явне (convert-стадія DOCX/HTML).
+//   2. layoutJson.pages з реальним вмістом — OCR відбувся → 'scanned'.
+//   3. null → fallback на detectNature у createDocument.
+function inferDocumentNatureFromSource(srcItem) {
+  const explicit = srcItem?.metadataTemplate?.documentNature;
+  if (explicit === 'scanned' || explicit === 'searchable') return explicit;
+  const layout = srcItem?.layoutJson;
+  if (layout && Array.isArray(layout.pages) && layout.pages.length > 0) {
+    return 'scanned';
+  }
+  return null;
+}
+
 // Bug 6 (DP-4 bugfix) — евристична перевірка дублікатів БЕЗ хеша/schema-bump
 // (рішення адвоката: metadata-евристика, не контент-хеш). Реальний канал:
 // «адвокат завантажив той самий PDF двічі → два однакові записи». Збіг назви
@@ -286,6 +310,11 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         // шляхів (buildMeta DI-seam і дефолтний шаблон), інакше класифікація
         // реконструкції губиться (правило #11: один сенс).
         const planCategory = resolveCategory(doc);
+        // B2 — documentNature нарізаного документа з джерела (див.
+        // inferDocumentNatureFromSource вище). Перемикач Скан/Текст у
+        // DocumentViewer вмикається лише за 'scanned'; нарізані з 65-стор.
+        // скана раніше падали у 'searchable' (дефолт detectNature .pdf).
+        const planNature = inferDocumentNatureFromSource(srcItem);
         const planItem = {
           ...srcItem,
           name: docName,
@@ -293,6 +322,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           metadataTemplate: {
             ...(srcItem.metadataTemplate || {}),
             ...(planCategory ? { category: planCategory } : {}),
+            ...(planNature ? { documentNature: planNature } : {}),
           },
         };
         const meta = buildMeta
