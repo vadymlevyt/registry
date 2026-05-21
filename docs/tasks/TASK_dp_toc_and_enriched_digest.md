@@ -211,19 +211,35 @@ if (ve.length > 0) {
 }
 ```
 
-**STRIP-СТРАЖ (критично — захист від регресії B1).** Поточний
-`STRIPPED_LAYOUT_FIELDS = ['image', 'tokens']` у `ocrService.js` видаляє
-важкі поля з кожної `page`. `visualElements` за самою специфікацією
-Google Document AI — це text-only структури (`type` + `boundingPoly`
-координати у normalized vertices), **без base64**. Тому вони пишуться у
-layout.json легко (~1-2 KB на сторінку максимум).
+**STRIP-СТРАЖ (критично — захист від регресії B1).** Перевірено офіційну
+схему Google Document AI Document.Page (через protobuf):
+- `visualElements` за специфікацією — це **`type` (string) + `layout` +
+  `detected_languages`**, **БЕЗ image bytes / base64**. Легке поле (~1-2 KB
+  на сторінку максимум). Безпечно зберігати.
+- АЛЕ є **3 інших важких поля Page** які ми зараз НЕ стрипаємо:
+  - **`symbols[]`** — per-character деталі, ще важчі ніж `tokens` (зараз
+    стрипано). Не використовується ні для меж, ні для форматування. Стрипати.
+  - **`detected_barcodes[]`** — деталі баркодів. Не використовується.
+    Опційно стрипати (зазвичай малі, але про всяк випадок).
+  - **`transforms[]`** — трансформаційні матриці застосовані до original.
+    Не використовується. Стрипати.
 
-**АЛЕ ЯКЩО в майбутньому Google розширить `visualElement`** (наприклад,
-додасть `image` поле з rendered crop печатки) — це може повторити баг
-B1. Профілактика: у фазі ФД-D1 додати в `stripHeavyFields` ще один прохід
-по кожній `page.visualElements[i]` зі списком `STRIPPED_VE_FIELDS = ['image']`
-як placeholder (тригер коли Google додасть). Регрес-тест: layout.json після
-запису має бути ≤100KB на сторінку.
+**Розширити `STRIPPED_LAYOUT_FIELDS` у `src/services/ocrService.js`:**
+```js
+const STRIPPED_LAYOUT_FIELDS = [
+  'image',             // base64 PNG рендер (стрипано раніше, баг B1)
+  'tokens',            // per-token координати (стрипано раніше)
+  'symbols',           // per-character деталі (НОВЕ — не використовуємо)
+  'detected_barcodes', // НОВЕ — не використовуємо
+  'transforms',        // НОВЕ — не використовуємо
+];
+```
+
+**Профілактика на майбутнє:** якщо Google розширить `visualElement` ще
+полем-важким (наприклад rendered crop печатки) — додати у `stripHeavyFields`
+ще один прохід по `page.visualElements[i]` з `STRIPPED_VE_FIELDS = ['image']`
+як placeholder. Регрес-тест: layout.json після запису має бути ≤100KB на
+сторінку.
 
 **4.1.2 Стрибок якості (imageQualityScores дельта vs попередня)**
 ```js
@@ -369,6 +385,128 @@ if (dn) {
 
 «ПОЧАТОК-ДОКУМЕНТА» і «КІНЕЦЬ-ДОКУМЕНТА» — **сильні** сигнали меж (не дорадчі).
 
+### 4.5 Сигнал семантичної безперервності (евристика адвоката)
+
+Адвокат описав свій спосіб виявлення меж: на стику двох сусідніх
+сторінок дивитись **останній абзац попередньої** і **перший абзац
+наступної**. Якщо текст продовжується смислово — той самий документ;
+якщо ні — можлива межа.
+
+**Реалізація — між-сторінковий сигнал**, обчислюється для пари (n, n+1):
+
+```js
+function paragraphAtY(page, anchor) {
+  // anchor = 'top' (мінімальний topY) або 'bottom' (максимальний bottomY)
+  const ps = Array.isArray(page?.paragraphs) ? page.paragraphs : [];
+  let target = null, extreme = anchor === 'top' ? Infinity : -Infinity;
+  for (const p of ps) {
+    const v = p?.layout?.boundingPoly?.normalizedVertices;
+    if (!Array.isArray(v) || v.length < 4) continue;
+    const top = Math.min(...v.map(pt => Number(pt.y) || 0));
+    const bot = Math.max(...v.map(pt => Number(pt.y) || 0));
+    const key = anchor === 'top' ? top : bot;
+    if (anchor === 'top' ? key < extreme : key > extreme) {
+      extreme = key;
+      target = p;
+    }
+  }
+  if (!target) return null;
+  // Extract text from textAnchor offsets у документі — або скористатись page._text +
+  // знанням block-розташування. Для першої ітерації — взяти останнє/перше речення
+  // page._text відповідно.
+  return extractParagraphText(target, page);
+}
+
+function semanticContinuity(prevPage, nextPage) {
+  const lastPar = paragraphAtY(prevPage, 'bottom');
+  const firstPar = paragraphAtY(nextPage, 'top');
+  if (!lastPar || !firstPar) return null;
+
+  const prevEnd = lastPar.trim().slice(-1);
+  const nextStart = firstPar.trim().charAt(0);
+  if (!prevEnd || !nextStart) return null;
+
+  // ПРОДОВЖЕННЯ: попередня НЕ закінчена крапкою + наступна починається з МАЛОЇ літери
+  const endsSentence = /[.!?…»)]$/.test(lastPar.trim());
+  const startsLower = /[a-zа-яіїєґ]/.test(nextStart) && nextStart === nextStart.toLowerCase();
+  const startsUpper = /[A-ZА-ЯІЇЄҐ]/.test(nextStart) && nextStart === nextStart.toUpperCase();
+
+  if (!endsSentence && startsLower) return 'continues';      // тримай разом
+  if (endsSentence && startsUpper) return 'possible_break';  // можлива межа (дорадчий)
+  return null;  // нейтрально
+}
+```
+
+У compactDigest — це **сигнал між сторінками**, не на сторінці. Додаємо
+тег до сторінки **n+1**:
+
+```js
+// при обході сторінок, з prevPage у замиканні
+const cont = semanticContinuity(prevPage, page);
+if (cont === 'continues')      tags.push('продовження-абзацу');  // СИЛЬНИЙ сигнал «не межа»
+if (cont === 'possible_break') tags.push('можливий-абзацний-розрив');  // дорадчий
+```
+
+«продовження-абзацу» — **сильний сигнал ПРОТИ межі**. Triage має
+поважати: якщо тут стоїть, не ставити boundary між цими сторінками
+**навіть якщо інші дорадчі сигнали підказують межу**. Це той самий
+експертний підхід що адвокат застосовує читаючи власні справи.
+
+### 4.6 Сигнал стрибка дефектів сканування
+
+Document AI повертає `image_quality_scores.detected_defects[]` з типами
+`quality/defect_blurry`, `quality/defect_noise`, `quality/defect_dark`,
+`quality/defect_faint`, `quality/defect_text_too_small`,
+`quality/defect_document_cutoff`, `quality/defect_text_cutoff`,
+`quality/defect_glare`.
+
+Зміна **набору defects** між сусідніми сторінками — сильніший сигнал ніж
+лише `qualityScore` дельта (нова сесія сканування — інша камера, інше
+освітлення, інші типи дефектів).
+
+```js
+function defectSet(page) {
+  const defects = page?.imageQualityScores?.detectedDefects;
+  if (!Array.isArray(defects)) return new Set();
+  return new Set(defects.map(d => d?.type).filter(Boolean));
+}
+
+// у compactDigest, з prev у замиканні:
+const cur = defectSet(page);
+if (prevDefects && (cur.size !== prevDefects.size ||
+    [...cur].some(t => !prevDefects.has(t)))) {
+  tags.push('дефекти-зміна');
+}
+prevDefects = cur;
+```
+
+«дефекти-зміна» — дорадчий сигнал, **сильніше** чистого `qualityScore`
+delta. Може поєднуватись з `якість-стрибок:0.XX` коли обидва спрацьовують.
+
+### 4.7 Сигнал OCR-якості сторінки
+
+Document AI дає `Layout.confidence` на КОЖНОМУ елементі (Block, Paragraph,
+Line). Можна взяти **середній `paragraph.layout.confidence`** як «середню
+впевненість OCR на сторінці».
+
+```js
+function avgParagraphConfidence(page) {
+  const ps = Array.isArray(page?.paragraphs) ? page.paragraphs : [];
+  if (ps.length === 0) return null;
+  const confs = ps.map(p => Number(p?.layout?.confidence)).filter(Number.isFinite);
+  if (confs.length === 0) return null;
+  return confs.reduce((a, b) => a + b, 0) / confs.length;
+}
+
+// у compactDigest:
+const conf = avgParagraphConfidence(page);
+if (conf != null && conf < 0.7) tags.push(`OCR-низька:${conf.toFixed(2)}`);
+```
+
+«OCR-низька» — НЕ сигнал межі, а **попередження Triage**: на цій сторінці
+вміст ненадійний, не створюй новий короткий «документ» через слабкі
+сигнали — імовірніше це шум OCR.
+
 ---
 
 ## 5. Промпт Triage — оновлення
@@ -376,37 +514,58 @@ if (dn) {
 `src/services/documentBoundary/triagePrompt.js` — додати інструкції про новi сигнали і про **сукупність** (не жорсткі гейти):
 
 ```
-Сигнали меж (зважуй РАЗОМ, жоден дорадчий не вирішує сам):
-
-ДОРАДЧІ (одного недостатньо, шукай комбінацію 2+):
-- "vis:stamp" / "vis:signature" — печатка/підпис на сторінці (часто на
-  останній сторінці документа). УВАГА: Document AI не завжди їх повертає
-  — на скан-PDF з планшета спостерігалась повна відсутність.
-- "якість-стрибок:0.XX" — різка зміна якості скану (нова скан-сесія,
-  ймовірно інший документ)
-- "розріджена" — мало тексту, мало блоків (обкладинка, розділювач,
-  титулка нового документа)
-- "формат-зміна:..." / "орієнтація-зміна:..." — зміна паттерна між
-  сторінками = можлива межа
-- "мова-зміна:..." — переключення мови (додаток іншою мовою)
-- "док-стор:N/M" — внутрішня нумерація документа з його загальною
-  довжиною
-- "таблиця-домінує:XX%" — велика таблиця займає >40% сторінки → кандидат
-  сторінки-реєстру/змісту
+Сигнали меж (зважуй РАЗОМ):
 
 СИЛЬНІ (одного достатньо для висновку про межу):
 - "ПОЧАТОК-ДОКУМЕНТА" / "КІНЕЦЬ-ДОКУМЕНТА" — з внутрішньої нумерації
   «1 з N» / «N з N»
-- "СКИДАННЯ-НУМЕРАЦІЇ" — раніший сигнал по футеру тома
+- "СКИДАННЯ-НУМЕРАЦІЇ" — за футером тома (число впало назад)
 - "ЯКІР-ДОКУМЕНТА" — заголовок зверху сторінки містить типове слово
   українських юр. документів (ПОСТАНОВА, УХВАЛА, ВИСНОВОК, ПРОТОКОЛ,
   АКТ, ЗАЯВА, РІШЕННЯ, ВИРОК, ДОВІДКА, СВІДОЦТВО, ДЕКЛАРАЦІЯ, ДОГОВІР,
   ОРДЕР, КЛОПОТАННЯ, СКАРГА, ВИМОГА, ПОВІДОМЛЕННЯ, ВИТЯГ, ЛИСТ).
+  Перелік невичерпний — якщо бачиш інший очевидний заголовок, кваліфікуй
+  його теж як якір нового документа.
+
+СИЛЬНІ-АНТИ (одного достатньо щоб НЕ ставити межу — поважай!):
+- "продовження-абзацу" — на стику двох сторінок: попередня НЕ закінчена
+  крапкою + наступна починається з малої літери. Це той самий документ,
+  не ставити boundary навіть якщо дорадчі підказують межу. (Евристика
+  адвоката для читання справ.)
+
+ДОРАДЧІ (одного недостатньо, шукай комбінацію 2+):
+- "vis:stamp" / "vis:signature" — печатка/підпис на сторінці. УВАГА:
+  не універсальний маркер — часом печатка/підпис є на кожній сторінці
+  документа (наприклад на нумерованих документах експертизи), не лише
+  на останній. Поєднуй з іншими сигналами. Document AI також не завжди
+  їх повертає — на скан-PDF з планшета спостерігалась повна відсутність.
+- "якість-стрибок:0.XX" — різка зміна qualityScore (нова скан-сесія)
+- "дефекти-зміна" — змінився набір detected_defects[] vs попередня
+  (інша камера / освітлення / умови сканування). Сильніше за один лиш
+  qualityScore.
+- "розріджена" — мало тексту, мало блоків (обкладинка, розділювач,
+  титулка нового документа)
+- "формат-зміна:..." / "орієнтація-зміна:..." — зміна dimension/orientation
+  vs попередня
+- "мова-зміна:..." — переключення detectedLanguages[0]
+- "док-стор:N/M" — внутрішня нумерація документа з його загальною
+  довжиною (підказує реальну довжину поточного документа)
+- "таблиця-домінує:XX%" — велика таблиця займає >40% сторінки → кандидат
+  сторінки-реєстру/змicst (Гілка A)
+- "можливий-абзацний-розрив" — на стику: попередня закінчена крапкою +
+  наступна починається з великої літери. Слабкий — підсилюється
+  іншими сигналами.
+
+МЕТАІНФОРМАЦІЯ (НЕ сигнал межі — попередження):
+- "OCR-низька:0.XX" — середня confidence paragraphs <0.7. Не довіряй
+  тонким сигналам на цій сторінці, не створюй короткий "документ"
+  лише через слабкі підказки на ній — це може бути шум OCR.
 
 Українська судова практика — короткі документи бувають часто:
 вимоги в кримінальних справах (1-2 стор.), постанови (1-3 стор.),
 протоколи (2-5 стор.), довідки (1 стор.). НЕ зливай їх в один документ
 тільки тому що сусідні. Сильний сигнал між ними = майже точно межа.
+Сильний-АНТИ сигнал ("продовження-абзацу") = майже точно НЕ межа.
 ```
 
 **ВАЖЛИВО:** не дрейфувати snapshot `documentBoundary/prompt.js` (старий single-PDF slice prompt) — він заморожений у батьківському TASK обмеження №2 «не дрейфувати snapshot без свідомого рішення». Цей TASK редагує `triagePrompt.js` (новий, для Triage), а `prompt.js` залишається без змін.
@@ -419,6 +578,8 @@ if (dn) {
 - **ФД-T2 — Інтеграція tocDetector у `triageStage`** як препроцесор. Provider-integration тест з 30-doc реєстром. *STOP.*
 - **ФД-D1 — Збагачення `compactDigest`** п'ятьма дорадчими сигналами (печатка, якість, розрідженість, дельта формату/орієнтації, мова). Unit-тести на кожен сигнал. *STOP.*
 - **ФД-D2 — Table-coverage + ЯКІР-ДОКУМЕНТА + внутрішня нумерація документа.** Unit-тести. *STOP.*
+- **ФД-D2.5 — Семантична безперервність (евристика адвоката) + defects-зміна + OCR-confidence.** Unit-тести на пари сторінок (continues / possible_break / neutral). *STOP.*
+- **ФД-D2.6 — Розширення STRIPPED_LAYOUT_FIELDS** (symbols, detected_barcodes, transforms) + регрес-тест dp-layout-size.test.js. Один файл `ocrService.js`, ~3 рядки. *STOP.*
 - **ФД-D3 — Оновлення `triagePrompt.js`** з інструкціями. Структурний тест (не snapshot). *STOP.*
 - **ФД-I — Інтеграційний тест на реалістичних мок-сценаріях:**
   - Брановський-like (без реєстру): D1+watermark має дати ≥85% (поточний baseline) або вище
