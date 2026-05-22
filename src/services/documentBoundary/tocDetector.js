@@ -144,13 +144,27 @@ function reportUsage(data, model, caseId, operation, aiUsageSink) {
 
 // Один Haiku-виклик + JSON-парс. callAPI ін'єкція дозволяє тестам не мокати
 // global fetch. На failure повертає {ok:false, reason}, ніколи не throw.
+//
+// ЛІНІЯ 1 захисту від зависання preprocessor'а: власні retry/timeout-опції
+// для callAPI. Дефолти callAPIWithRetry (maxRetries:5, requestTimeoutMs:120s)
+// адекватні для chat/Triage, але для tocDetector worst-case = 5×120с×2 ≈ 20хв
+// «висне на 0%» при тимчасовій недоступності API. ToC — НЕОБОВ'ЯЗКОВИЙ
+// preprocessor (caller fallback'не на AI Triage), тож обмежуємо worst-case
+// одного виклику до ~95с (2×45 + backoff), сумарно два кроки ≈ 3хв.
+const TOC_API_OPTIONS = Object.freeze({
+  maxRetries: 2,
+  requestTimeoutMs: 45000,
+  initialDelayMs: 1500,
+  maxDelayMs: 5000,
+});
+
 async function askHaiku({ prompt, apiKey, callAPI, model, maxTokens }) {
   try {
     const data = await callAPI({
       model,
       max_tokens: maxTokens || 1500,
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-    }, { apiKey });
+    }, { apiKey, ...TOC_API_OPTIONS });
     if (data?.error) return { ok: false, reason: `api_error:${data.error?.message || 'unknown'}` };
     const out = data?.content?.[0]?.text;
     const parsed = extractJson(typeof out === 'string' ? out : '');

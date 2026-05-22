@@ -248,3 +248,98 @@ describe('ФД-T2 Provider-integration — ToC препроцесор маршр
     expect(triageDecisions[0].message).toMatch(/Реєстр матеріалів/);
   });
 });
+
+// ── ЛІНІЇ 1+2 захисту від зависання — Provider-INTEGRATION ──────────────────
+// Корінь регресії Нестеренко 273pp: tocDetector був на дефолтних опціях
+// callAPIWithRetry (5 спроб × 120с timeout) → worst-case 20хв «висне на 0%».
+// Тест перевіряє наскрізну поведінку: ПЕРШИЙ Haiku-виклик (toc_detect)
+// зависає (fetch ніколи не резолвиться, лише AbortError на signal) → ЛІНІЯ 1
+// (TOC_API_OPTIONS у tocDetector) спрацьовує через AbortController у
+// callAPIWithRetry → askHaiku повертає {ok:false} → tocDetect повертає
+// {isToc:false} → fallback на AI Triage → план будується звичайною Гілкою B.
+describe('ЛІНІЇ 1+2 — Provider-INT fallback при зависанні tocDetect', () => {
+  let port, captured;
+  beforeEach(() => {
+    progressStore._resetForTests();
+    port = createMemDrivePort();
+    captured = {};
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  // fetch що hang-ить, поки не abort'нуть через signal. Це коректна імітація
+  // реальної повільної мережі / зависання API: callAPIWithRetry викликає
+  // controller.abort() через TOC_API_OPTIONS.requestTimeoutMs → fetch reject
+  // AbortError → транзитивна помилка → backoff → next attempt.
+  function stubFetchHangingTocDetect({ triageResp }) {
+    const callLog = [];
+    const fetchMock = vi.fn((_url, opts) => {
+      const body = JSON.parse(opts.body);
+      const text = body.messages?.[0]?.content?.[0]?.text || '';
+      // toc_detect: hang (відповідає abort) — нічого не резолвимо.
+      if (text.includes('isRegistry')) {
+        callLog.push('toc_detect_hang');
+        return new Promise((_resolve, reject) => {
+          if (opts.signal) {
+            opts.signal.addEventListener('abort', () => {
+              const err = new Error('aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }
+        });
+      }
+      // triage: миттєво.
+      if (text.includes('Маршрути (route)')) {
+        callLog.push('triage');
+        return Promise.resolve(new Response(JSON.stringify({
+          content: [{ type: 'text', text: JSON.stringify(triageResp) }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }), { status: 200 }));
+      }
+      callLog.push('unknown');
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { fetchMock, callLog };
+  }
+
+  it('toc_detect зависає → ЛІНІЯ 1 spрацьовує → fallback на AI Triage; pipeline завершується за <3хв тестового часу', async () => {
+    const triageResp = {
+      documents: [
+        { documentId: 'd1', name: 'Документ з Triage', type: 'pleading', route: 'slice', fragments: [{ fileId: 'hanging_file', startPage: 1, endPage: 15 }] },
+        { documentId: 'd2', name: 'Інший', type: 'other', route: 'slice', fragments: [{ fileId: 'hanging_file', startPage: 16, endPage: 33 }] },
+      ],
+      unusedPages: [],
+    };
+    const { fetchMock, callLog } = stubFetchHangingTocDetect({ triageResp });
+
+    const exec = buildExecutor(port, captured);
+    const file = await makeFile('hanging_file', 33);
+    const runPromise = exec.run({
+      caseId: 'case_toc', caseData: structuredClone(CASE),
+      agentId: 'document_processor_agent', source: 'manual', addedBy: 'user', files: [file],
+    });
+
+    // Прокручуємо час: ЛІНІЯ 1 worst-case ~95с (2×45с timeout + 1×backoff).
+    // <3хв = 180с — з запасом покриває обидві спроби callAPIWithRetry + триаж.
+    await vi.advanceTimersByTimeAsync(180000);
+    const res = await runPromise;
+
+    expect(res.ok).toBe(true);
+    // План будується звичайною Гілкою B (через AI Triage).
+    expect(captured.plan).toBeDefined();
+    expect(captured.plan.source).toBeUndefined();
+    expect(captured.plan.documents).toHaveLength(2);
+    expect(captured.plan.documents[0].documentId).toBe('d1');
+    // toc_detect мав хоча б 1 спробу через ЛІНІЮ 1 (maxRetries:2) — далі
+    // фактична кількість залежить від internals callAPIWithRetry; жорстко не
+    // фіксуємо щоб не плутати ЛІНІЮ 1 з налаштуваннями retry-loop.
+    expect(callLog.filter((c) => c === 'toc_detect_hang').length).toBeGreaterThanOrEqual(1);
+    expect(callLog).toContain('triage');
+    expect(fetchMock).toHaveBeenCalled();
+  }, /* test timeout ms */ 30000);
+});

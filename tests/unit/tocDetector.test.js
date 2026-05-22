@@ -420,6 +420,94 @@ describe('detectTableOfContents — 2-кроковий AI-flow', () => {
     expect(parseText).not.toContain('doc4');
   });
 
+  // ── ЛІНІЯ 1 захисту від зависання (Варіант A) ─────────────────────────────
+  // Корінь регресії на Нестеренко 273pp: callAPIWithRetry дефолти (5 спроб ×
+  // 120с timeout) дають worst-case 10хв на ОДИН Haiku-виклик, ×2 виклики =
+  // 20хв «висне на 0%». tocDetector — необов'язковий preprocessor → обмежуємо
+  // власними опціями (maxRetries:2, requestTimeoutMs:45000) → worst-case
+  // одного виклику ~95с, двох ~3 хв. Далі fallback на AI Triage.
+  describe('ЛІНІЯ 1 — власні retry/timeout опції у callAPI', () => {
+    it('передає maxRetries:2 і requestTimeoutMs:45000 у callAPI options', async () => {
+      const callAPI = makeCallAPI([{ isRegistry: false, registryPages: [], firstDocumentPage: null }]);
+      await detectTableOfContents({
+        fileId: 'f',
+        layoutJson: layoutOf(Array.from({ length: 12 }, () => 'page text')),
+        totalPages: 12,
+        apiKey: 'k',
+        callAPI,
+      });
+      expect(callAPI).toHaveBeenCalledTimes(1);
+      const opts = callAPI.mock.calls[0][1];
+      expect(opts.apiKey).toBe('k');
+      expect(opts.maxRetries).toBe(2);
+      expect(opts.requestTimeoutMs).toBe(45000);
+      expect(opts.initialDelayMs).toBe(1500);
+      expect(opts.maxDelayMs).toBe(5000);
+    });
+
+    it('callAPI що ніколи не резолвиться (симуляція timeout) → askHaiku виходить через transport reason, НЕ throw', async () => {
+      vi.useFakeTimers();
+      // callAPI який РЕСПЕКТУЄ opts.requestTimeoutMs (як це робить
+      // callAPIWithRetry через AbortController) — кидає AbortError через
+      // зазначений час.
+      const callAPI = vi.fn((_p, opts) => new Promise((_resolve, reject) => {
+        setTimeout(() => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        }, opts.requestTimeoutMs);
+      }));
+      const promise = detectTableOfContents({
+        fileId: 'f',
+        layoutJson: layoutOf(Array.from({ length: 12 }, () => 'page text')),
+        totalPages: 12,
+        apiKey: 'k',
+        callAPI,
+      });
+      // 50с > 45с timeout — askHaiku має reject-нути всередині try/catch.
+      await vi.advanceTimersByTimeAsync(50000);
+      const out = await promise;
+      expect(out.isToc).toBe(false);
+      expect(out.reason).toMatch(/^detect_transport:/);
+      vi.useRealTimers();
+    });
+
+    it('1 transport-помилка + 2-й виклик OK через callAPI → проходить (askHaiku тонкий, retry робить callAPI)', async () => {
+      // Симулюємо callAPI який САМ робить retry (як callAPIWithRetry):
+      // 1 спроба кидає network error, 2 спроба повертає валідний JSON.
+      // askHaiku не має власного retry — отже бачить ТІЛЬКИ фінальний
+      // результат. НЕ 5 спроб бо maxRetries:2 пробрасується нижче.
+      let internalAttempt = 0;
+      const callAPI = vi.fn(async (_p, opts) => {
+        // Документуємо що maxRetries=2 пробрасується (без цього був би 5).
+        expect(opts.maxRetries).toBe(2);
+        // Симулюємо callAPIWithRetry: внутрішньо до maxRetries спроб.
+        while (internalAttempt < opts.maxRetries) {
+          internalAttempt++;
+          if (internalAttempt === 1) continue; // 1-а внутрішня спроба «впала»
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ isRegistry: false, registryPages: [], firstDocumentPage: null }) }],
+            usage: { input_tokens: 10, output_tokens: 5 },
+          };
+        }
+        throw new Error('all retries exhausted');
+      });
+      const out = await detectTableOfContents({
+        fileId: 'f',
+        layoutJson: layoutOf(Array.from({ length: 12 }, () => 'page text')),
+        totalPages: 12,
+        apiKey: 'k',
+        callAPI,
+      });
+      expect(out.isToc).toBe(false);
+      expect(out.reason).toBe('no_registry_detected');
+      // НЕ 5 спроб усередині callAPI — лише 2 (max).
+      expect(internalAttempt).toBe(2);
+      // askHaiku не робить власних retry — callAPI викликається лише раз.
+      expect(callAPI).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('білінг: aiUsageSink викликається для toc_detect і toc_parse окремими operation', async () => {
     const sink = vi.fn();
     const callAPI = makeCallAPI([
