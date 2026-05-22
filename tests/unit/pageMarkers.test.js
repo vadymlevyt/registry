@@ -333,6 +333,177 @@ describe('pageMarkers.buildCompactTriagePassport (ФД-0)', () => {
     expect(out).toContain('=== СТОРІНКА 1 ===');
     expect(out).toContain('довільний текст');
   });
+
+  // ── ФД-D2 § 4.2-4.4 — нові сильні сигнали меж ──────────────────────────────
+  describe('ФД-D2 § 4.2 — table-coverage (кандидат сторінки-реєстру)', () => {
+    const tableFull = (cover) => ({
+      layout: { boundingPoly: { normalizedVertices: [
+        { x: 0, y: 0 }, { x: cover, y: 0 }, { x: cover, y: cover }, { x: 0, y: cover },
+      ] } },
+    });
+
+    it('таблиця займає ≥40% площі → "таблиця-домінює:XX%"', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'РЕЄСТР МАТЕРІАЛІВ\nN | Назва | Аркуші',
+        tables: [tableFull(0.8)],   // 0.8*0.8 = 64%
+      }] });
+      expect(out).toContain('таблиця-домінює:64%');
+    });
+
+    it('таблиця <40% площі → НЕ "таблиця-домінює" (але "таблиці" наявне)', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'звичайний документ з малою таблицею',
+        tables: [tableFull(0.5)],   // 0.5*0.5 = 25%
+      }] });
+      expect(out).toContain('таблиці');
+      expect(out).not.toContain('таблиця-домінює');
+    });
+
+    it('кілька таблиць сумарно ≥40% → сумарне покриття у %', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'сторінка з кількома таблицями',
+        tables: [tableFull(0.5), tableFull(0.5)], // 25% + 25% = 50%
+      }] });
+      expect(out).toContain('таблиця-домінює:50%');
+    });
+
+    it('відсутні tables / порожній bbox → НЕ "таблиця-домінює", не падає', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{ _text: 'нема таблиць' }] });
+      expect(out).not.toContain('таблиця-домінює');
+      const out2 = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'таблиця без bbox', tables: [{ layout: {} }],
+      }] });
+      expect(out2).toContain('таблиці');                  // прапор «є таблиці» (наявний)
+      expect(out2).not.toContain('таблиця-домінює');      // але coverage не порахувалось
+    });
+  });
+
+  describe('ФД-D2 § 4.3 — ЯКІР-ДОКУМЕНТА (заголовок з типового списку юр. документів)', () => {
+    it('заголовок "ПОСТАНОВА" → ЯКІР-ДОКУМЕНТА', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'ПОСТАНОВА\nпро порушення кримінальної справи',
+        blocks: [centeredTopBlock(), wideBlock()],
+      }] });
+      expect(out).toMatch(/заголовок:"ПОСТАНОВА"/);
+      expect(out).toContain('ЯКІР-ДОКУМЕНТА');
+    });
+
+    it('заголовок "Позовна заява" (з нижнім регістром у тексті) → ЯКІР-ДОКУМЕНТА', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'Позовна заява\nпро стягнення',
+        blocks: [centeredTopBlock(), wideBlock()],
+      }] });
+      expect(out).toContain('ЯКІР-ДОКУМЕНТА');
+    });
+
+    it('заголовок "ВИМОГА" (важливий для кримінальних) → ЯКІР-ДОКУМЕНТА', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'ВИМОГА слідчого\nпро надання документів',
+        blocks: [centeredTopBlock(), wideBlock()],
+      }] });
+      expect(out).toContain('ЯКІР-ДОКУМЕНТА');
+    });
+
+    it('заголовок без типового слова → лише "заголовок:...", БЕЗ ЯКОРЯ', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'Зміст справи\nДодатковий пункт',
+        blocks: [centeredTopBlock(), wideBlock()],
+      }] });
+      expect(out).toMatch(/заголовок:"Зміст справи"/);
+      expect(out).not.toContain('ЯКІР-ДОКУМЕНТА');
+    });
+
+    it('нема heading (нема центрованого блоку) → НЕ ЯКІР, навіть якщо у _text є типове слово', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'ВИРОК у середині абзацу не може бути якорем без heading-блоку',
+        blocks: [wideBlock()],
+      }] });
+      expect(out).not.toContain('ЯКІР-ДОКУМЕНТА');
+    });
+  });
+
+  describe('ФД-D2 § 4.4 — внутрішня нумерація документа («1 з 9», «1/9», «Page 1 of 9»)', () => {
+    it('«1 з 9» у футері → "док-стор:1/9" + ПОЧАТОК-ДОКУМЕНТА', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'Висновок експерта № 66\n1 з 9',
+      }] });
+      expect(out).toContain('док-стор:1/9');
+      expect(out).toContain('ПОЧАТОК-ДОКУМЕНТА');
+    });
+
+    it('«9 з 9» у футері → "док-стор:9/9" + КІНЕЦЬ-ДОКУМЕНТА', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'Дослідна частина експертизи\n9 з 9',
+      }] });
+      expect(out).toContain('док-стор:9/9');
+      expect(out).toContain('КІНЕЦЬ-ДОКУМЕНТА');
+      expect(out).not.toContain('ПОЧАТОК-ДОКУМЕНТА');
+    });
+
+    it('середня сторінка («5 з 9») → "док-стор" без ПОЧАТОК/КІНЕЦЬ', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'продовження експертизи\n5 з 9',
+      }] });
+      expect(out).toContain('док-стор:5/9');
+      expect(out).not.toContain('ПОЧАТОК-ДОКУМЕНТА');
+      expect(out).not.toContain('КІНЕЦЬ-ДОКУМЕНТА');
+    });
+
+    it('«1/9» (слеш-формат) теж ловиться', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{ _text: 'початок\n1/9' }] });
+      expect(out).toContain('док-стор:1/9');
+      expect(out).toContain('ПОЧАТОК-ДОКУМЕНТА');
+    });
+
+    it('«Page 1 of 9» (англомовний) теж ловиться', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{ _text: 'english document\nPage 1 of 9' }] });
+      expect(out).toContain('док-стор:1/9');
+      expect(out).toContain('ПОЧАТОК-ДОКУМЕНТА');
+    });
+
+    it('«-1-» (тире-формат) → "док-стор:1" без total, з ПОЧАТОК-ДОКУМЕНТА', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{ _text: 'старший формат сторінки\n-1-' }] });
+      expect(out).toContain('док-стор:1');
+      expect(out).toContain('ПОЧАТОК-ДОКУМЕНТА');
+    });
+
+    it('нема внутрішньої нумерації → НЕ "док-стор", тільки footerNumber (футер-№)', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{ _text: 'звичайна сторінка\n5' }] });
+      expect(out).not.toContain('док-стор');
+      expect(out).toContain('футер-№:5');                  // не плутаємо з внутрішньою
+    });
+  });
+
+  describe('ФД-D2 — сукупність нових сигналів на одній сторінці (сценарій реєстру)', () => {
+    it('квитанція судового збору з печаткою: ЯКІР + табл-домінює + стрибок-якості + розріджена', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'тіло позовної заяви '.repeat(40), dimension: { width: 595, height: 842 }, imageQualityScores: { qualityScore: 0.95 }, blocks: [wideBlock()] },
+        {
+          _text: 'КВИТАНЦІЯ\nсудовий збір\n1 з 1',
+          blocks: [centeredTopBlock()],
+          dimension: { width: 1000, height: 1000 },
+          imageQualityScores: { qualityScore: 0.55 },
+          visualElements: [{ type: 'stamp' }],
+          tables: [{ layout: { boundingPoly: { normalizedVertices: [
+            { x: 0, y: 0 }, { x: 0.9, y: 0 }, { x: 0.9, y: 0.9 }, { x: 0, y: 0.9 },
+          ] } } }],
+        },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      const digest = p2.split('\n')[1];
+      expect(digest).toContain('заголовок:"КВИТАНЦІЯ"');
+      expect(digest).toContain('таблиця-домінює');
+      expect(digest).toContain('печатка/підпис:stamp');
+      expect(digest).toContain('стрибок-якості');
+      expect(digest).toContain('зміна-формату');
+      // КВИТАНЦІЯ не у UA_DOC_HEADERS (це не "ПОСТАНОВА"/"УХВАЛА"...) — без ЯКОРЯ
+      // (свідома мета: ЯКІР тільки для типових юр. документів, не квитанцій).
+      expect(digest).not.toContain('ЯКІР-ДОКУМЕНТА');
+      expect(digest).toContain('док-стор:1/1');
+      expect(digest).toContain('ПОЧАТОК-ДОКУМЕНТА');
+      expect(digest).toContain('КІНЕЦЬ-ДОКУМЕНТА');
+    });
+  });
 });
 
 // ── ФД-1 · resolveBoundaryText → компактний (єдина точка входу Triage) ──────

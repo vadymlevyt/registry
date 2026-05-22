@@ -198,6 +198,35 @@ export function buildStructuralPassport(layoutJson, expectedPageCount = null) {
 const QUALITY_JUMP = 0.25;   // |Δ qualityScore| ≥ → ймовірна зміна джерела/документа (стартова точка)
 const SPARSE_BLOCKS = 2;     // ≤ стільки текстових блоків — кандидат «розрідженої» сторінки
 const SPARSE_CHARS = 200;    // … і ≤ стільки символів _text → «розріджена» (обкладинка/квитанція/штамп)
+const TABLE_COVERAGE_DOMINANT = 0.40;  // ФД-D2 §4.2: ≥40% площі під таблицями → кандидат сторінки-реєстру
+
+// ФД-D2 §4.3 — якорі-заголовки української юридичної практики. Підсилюють
+// наявний headingSignal(), коли заголовок зверху містить типове слово
+// судового документа. Шорт-список покриває ~85% типів; редагується як
+// звичайна константа без зміни схеми (це не enum SCHEMA). Один сенс:
+// «слова, які майже гарантовано вказують на початок нового документа».
+const UA_DOC_HEADERS = [
+  'ПОСТАНОВА',
+  'УХВАЛА',
+  'РІШЕННЯ',
+  'ВИРОК',
+  'ВИСНОВОК',
+  'ПРОТОКОЛ',
+  'АКТ',
+  'ЗАЯВА',
+  'ПОЗОВНА',
+  'ДОВІДКА',
+  'СВІДОЦТВО',
+  'ДЕКЛАРАЦІЯ',
+  'ДОГОВІР',
+  'ОРДЕР',
+  'КЛОПОТАННЯ',
+  'СКАРГА',
+  'ВИМОГА',
+  'ПОВІДОМЛЕННЯ',
+  'ВИТЯГ',
+  'ЛИСТ',
+];
 
 // Налаштовуваний ручник (спека §3.2; дефолти — стартові точки, не остаточні).
 const COMPACT_DEFAULTS = Object.freeze({
@@ -213,6 +242,44 @@ const COMPACT_DEFAULTS = Object.freeze({
 function qualityScore(page) {
   const q = Number(page?.imageQualityScores?.qualityScore);
   return Number.isFinite(q) ? q : null;
+}
+
+// ФД-D2 §4.2 — сумарна частка площі сторінки під таблицями. Document AI
+// дає `page.tables[].layout.boundingPoly.normalizedVertices` (∈[0,1]).
+// Один сенс: «частка площі сторінки, що зайнята таблицями, ∈[0,1]». ≥40% →
+// сильний індикатор сторінки-реєстру/змісту (підсилює ToC детектор).
+function tableCoverage(page) {
+  const tables = Array.isArray(page?.tables) ? page.tables : [];
+  if (tables.length === 0) return 0;
+  let total = 0;
+  for (const t of tables) {
+    const v = t?.layout?.boundingPoly?.normalizedVertices;
+    if (!Array.isArray(v) || v.length < 4) continue;
+    const xs = v.map((p) => Number(p?.x) || 0);
+    const ys = v.map((p) => Number(p?.y) || 0);
+    const w = Math.max(...xs) - Math.min(...xs);
+    const h = Math.max(...ys) - Math.min(...ys);
+    total += Math.max(0, Math.min(1, w * h));
+  }
+  return Math.min(1, total);  // capped [0..1] — таблиці можуть перекриватись
+}
+
+// ФД-D2 §4.4 — внутрішня нумерація документа («стор. 1 з 9», «1/9»,
+// «Page 1 of 9», «-1-»). Окремо від нумерації аркушів тома (footerNumber).
+// Один сенс: «детект внутрішньої посилкової нумерації конкретного документа;
+// current=1 → ПОЧАТОК-ДОКУМЕНТА, current==total → КІНЕЦЬ-ДОКУМЕНТА».
+function detectDocumentPageNumber(page) {
+  const last = lastLine(page?._text);
+  if (!last) return null;
+  const m =
+    last.match(/(\d+)\s*[з\/]\s*(\d+)/i) ||
+    last.match(/page\s+(\d+)\s+of\s+(\d+)/i) ||
+    last.match(/^[-—]\s*(\d+)\s*[-—]\s*$/);
+  if (!m) return null;
+  const current = Number(m[1]);
+  if (!Number.isFinite(current) || current < 1) return null;
+  const total = m[2] ? Number(m[2]) : null;
+  return { current, total: Number.isFinite(total) ? total : null };
 }
 
 // Перша визначена мова сторінки (Document AI detectedLanguages — впорядковані
@@ -242,7 +309,17 @@ function compactDigest(page, prev) {
   if (Array.isArray(page?.tables) && page.tables.length) tags.push('таблиці');
   if (Array.isArray(page?.formFields) && page.formFields.length) tags.push('поля-форми');
   const heading = headingSignal(page);
-  if (heading) tags.push(`заголовок:"${heading}"`);
+  if (heading) {
+    tags.push(`заголовок:"${heading}"`);
+    // ФД-D2 §4.3: заголовок зі списку юр. документів → СИЛЬНИЙ сигнал
+    // нового документа. Поверх дорадчого `заголовок:"..."`. Перевірка
+    // підрядкова (case-insensitive): «Постанова про...», «Позовна заява»,
+    // «ВИМОГА слідчого» — усі ловляться через UA_DOC_HEADERS.
+    const upper = heading.toUpperCase();
+    if (UA_DOC_HEADERS.some((kw) => upper.includes(kw))) {
+      tags.push('ЯКІР-ДОКУМЕНТА');
+    }
+  }
   const fnum = footerNumber(page);
   if (fnum != null) {
     tags.push(`футер-№:${fnum}`);
@@ -265,6 +342,24 @@ function compactDigest(page, prev) {
   if (prev.orientation != null && ori !== prev.orientation) tags.push('зміна-орієнтації');
   const lang = primaryLanguage(page);
   if (lang && prev.lang && lang !== prev.lang) tags.push(`зміна-мови:${prev.lang}→${lang}`);
+
+  // ФД-D2 §4.2 — table-coverage. Сильний сигнал «ця сторінка переважно
+  // таблиця» (≥40% площі) → кандидат сторінки-реєстру для ToC детектора.
+  const tc = tableCoverage(page);
+  if (tc >= TABLE_COVERAGE_DOMINANT) {
+    tags.push(`таблиця-домінює:${Math.round(tc * 100)}%`);
+  }
+
+  // ФД-D2 §4.4 — внутрішня нумерація документа. ПОЧАТОК/КІНЕЦЬ — СИЛЬНІ
+  // сигнали меж (один з достатніх для висновку про межу). «док-стор:N/M» —
+  // також передає реальну довжину поточного документа (підказує Triage'у
+  // де очікувати наступну межу).
+  const dn = detectDocumentPageNumber(page);
+  if (dn) {
+    tags.push(`док-стор:${dn.current}${dn.total != null ? `/${dn.total}` : ''}`);
+    if (dn.current === 1) tags.push('ПОЧАТОК-ДОКУМЕНТА');
+    if (dn.total != null && dn.current === dn.total) tags.push('КІНЕЦЬ-ДОКУМЕНТА');
+  }
 
   return {
     line: tags.length ? `[${tags.join(' | ')}]` : '',
