@@ -474,6 +474,127 @@ describe('pageMarkers.buildCompactTriagePassport (ФД-0)', () => {
     });
   });
 
+  describe('ФД-D2.5 § 4.5 — семантична безперервність (continues / possible_break)', () => {
+    it('продовження-абзацу: попередня НЕ закінчена крапкою + наступна з малої літери', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'абзац документа продовжується далі без крапки' },
+        { _text: 'продовження тексту того ж самого документа' },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      expect(p2).toContain('продовження-абзацу');
+      expect(p2).not.toContain('можливий-абзацний-розрив');
+    });
+
+    it('можливий-абзацний-розрив: попередня з крапкою + наступна з великої', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'попередня сторінка закінчена цією фразою.' },
+        { _text: 'Новий абзац починається з великої літери після крапки.' },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      expect(p2).toContain('можливий-абзацний-розрив');
+      expect(p2).not.toContain('продовження-абзацу');
+    });
+
+    it('нейтрально: попередня без крапки + наступна з великої (заголовок) → null', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'попередня без крапки' },
+        { _text: 'ПОСТАНОВА суду' },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      expect(p2).not.toContain('продовження-абзацу');
+      expect(p2).not.toContain('можливий-абзацний-розрив');
+    });
+
+    it('перша сторінка → нема сигналу безперервності (prev.page = null)', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'перша сторінка довільного документа без попередника' },
+      ] });
+      const p1 = out;
+      expect(p1).not.toContain('продовження-абзацу');
+      expect(p1).not.toContain('можливий-абзацний-розрив');
+    });
+
+    it('голі числа (футер-№) на стику → нейтрально (не плутати з реченням)', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'А Б В Г Д\n12' },                       // tail — голе число
+        { _text: 'Наступний документ\nперша лінія тіла' },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      expect(p2).not.toContain('продовження-абзацу');
+      expect(p2).not.toContain('можливий-абзацний-розрив');
+    });
+  });
+
+  describe('ФД-D2.5 § 4.6 — defects-зміна', () => {
+    it('різні набори defects на сусідніх сторінках → дефекти-зміна', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'p1', imageQualityScores: { detectedDefects: [{ type: 'quality/defect_blurry' }] } },
+        { _text: 'p2', imageQualityScores: { detectedDefects: [{ type: 'quality/defect_glare' }, { type: 'quality/defect_dark' }] } },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      expect(p2).toContain('дефекти-зміна');
+    });
+
+    it('однакові набори → НЕ дефекти-зміна', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'p1', imageQualityScores: { detectedDefects: [{ type: 'quality/defect_blurry' }] } },
+        { _text: 'p2', imageQualityScores: { detectedDefects: [{ type: 'quality/defect_blurry' }] } },
+      ] });
+      const p2 = '=== СТОРІНКА 2 ===' + out.split('=== СТОРІНКА 2 ===')[1];
+      expect(p2).not.toContain('дефекти-зміна');
+    });
+
+    it('відсутні defects на одній зі сторінок → null/null, нема сигналу', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'p1' },
+        { _text: 'p2' },
+      ] });
+      expect(out).not.toContain('дефекти-зміна');
+    });
+
+    it('перша сторінка з defects → НЕ дефекти-зміна (нема з чим порівняти)', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
+        { _text: 'p1', imageQualityScores: { detectedDefects: [{ type: 'quality/defect_glare' }] } },
+      ] });
+      expect(out).not.toContain('дефекти-зміна');
+    });
+  });
+
+  describe('ФД-D2.5 § 4.7 — OCR-низька (мета-попередження, не сигнал межі)', () => {
+    it('avg paragraph.confidence <0.7 → "OCR-низька:X.XX"', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'низькоякісний скан тексту',
+        paragraphs: [
+          { layout: { confidence: 0.5 } },
+          { layout: { confidence: 0.6 } },
+          { layout: { confidence: 0.55 } },
+        ],
+      }] });
+      expect(out).toMatch(/OCR-низька:0\.5[0-9]/);
+    });
+
+    it('avg confidence >=0.7 → НЕ "OCR-низька"', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'нормальний документ',
+        paragraphs: [
+          { layout: { confidence: 0.9 } },
+          { layout: { confidence: 0.85 } },
+        ],
+      }] });
+      expect(out).not.toContain('OCR-низька');
+    });
+
+    it('confidence не число / нема paragraphs → НЕ "OCR-низька" (null-safe)', () => {
+      const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [{
+        _text: 'без confidence',
+        paragraphs: [{ layout: {} }],
+      }] });
+      expect(out).not.toContain('OCR-низька');
+      const out2 = buildCompactTriagePassport({ schemaVersion: 1, pages: [{ _text: 'без paragraphs' }] });
+      expect(out2).not.toContain('OCR-низька');
+    });
+  });
+
   describe('ФД-D2 — сукупність нових сигналів на одній сторінці (сценарій реєстру)', () => {
     it('квитанція судового збору з печаткою: ЯКІР + табл-домінює + стрибок-якості + розріджена', () => {
       const out = buildCompactTriagePassport({ schemaVersion: 1, pages: [
