@@ -268,6 +268,58 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(layoutUpload.content.length).toBeLessThan(fakeImage.length);
   });
 
+  it('ФД-D2.6: layout.json стрипає symbols/detected_barcodes/transforms (профілактика B1)', async () => {
+    // Корінь: per-character symbols ще важчі за tokens; detected_barcodes /
+    // transforms ніким не споживаються по pipeline. Регрес-тест: якщо хтось
+    // прибере їх зі STRIPPED_LAYOUT_FIELDS — на скан-томах 250 стор. layout.json
+    // знову роздується на Drive (страж B1).
+    mockProviderState.pdfjsLocal.error = Object.assign(new Error('no text'), { code: 'UNSUPPORTED' });
+    const fakeSymbols = Array.from({ length: 4000 }, (_, i) => ({
+      text: String.fromCharCode(0x430 + (i % 32)),
+      layout: { boundingPoly: { normalizedVertices: [{ x: 0, y: 0 }, { x: 0.01, y: 0.01 }] } },
+    }));
+    const fakeBarcodes = Array.from({ length: 5 }, () => ({
+      barcode: { format: 'CODE_128', value: 'X'.repeat(200) },
+      layout: { boundingPoly: { normalizedVertices: [{ x: 0, y: 0 }] } },
+    }));
+    const fakeTransforms = Array.from({ length: 4 }, () => ({
+      rows: 3, cols: 3, type: 0, data: Array.from({ length: 256 }, () => 0),
+    }));
+    mockProviderState.documentAi.result = {
+      text: 'Стор 1',
+      pageCount: 1,
+      pageStructure: [{
+        pageNumber: 1,
+        symbols: fakeSymbols,
+        detected_barcodes: fakeBarcodes,
+        transforms: fakeTransforms,
+        paragraphs: [{ layout: { textAnchor: { textSegments: [{ startIndex: 0, endIndex: 5 }] } } }],
+        blocks: [{ confidence: 0.99 }],
+        dimension: { width: 1240, height: 1754 },
+        _text: 'Стор 1',
+      }],
+    };
+
+    await extractText(fileFixture(), { skipCache: true });
+
+    const upload = driveState.uploads.find((u) => u.name === 'scan_drive_file_1.layout.json');
+    expect(upload).toBeDefined();
+    const parsed = JSON.parse(upload.content);
+    const page = parsed.pages[0];
+    // ВИКЛЮЧЕНО (нові стрипи ФД-D2.6)
+    expect(page.symbols).toBeUndefined();
+    expect(page.detected_barcodes).toBeUndefined();
+    expect(page.transforms).toBeUndefined();
+    // ЗАЛИШЕНО (легкі корисні поля)
+    expect(page.paragraphs).toBeDefined();
+    expect(page.blocks).toBeDefined();
+    expect(page.dimension).toBeDefined();
+    expect(page._text).toBe('Стор 1');
+    // Регрес-страж B1: записаний файл значно менший за raw JSON.stringify
+    // з усіма важкими полями (інакше будь-який забутий strip регресує тихо).
+    expect(upload.content.length).toBeLessThan(20000);
+  });
+
   it('порожній pageStructure (масив [] від провайдера) → не пишемо .layout.json', async () => {
     mockProviderState.pdfjsLocal.error = Object.assign(new Error('no text'), { code: 'UNSUPPORTED' });
     mockProviderState.documentAi.result = {
