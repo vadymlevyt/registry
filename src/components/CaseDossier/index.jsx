@@ -2035,6 +2035,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   padding: "4px 10px", color: "var(--color-text-2)", cursor: "pointer", fontSize: 12,
                 }}
               ><Link2 size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />Відкрити</button>
+              <button
+                onClick={handleCreateDriveStructure}
+                disabled={creatingStructure}
+                title="Створює нову папку справи на Drive і прив'язує. Потрібно коли стара папка видалена/перейменована вручну і поточне посилання відкриває кошик."
+                style={{
+                  background: "none", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-sm)',
+                  padding: "4px 10px", color: "var(--color-text-2)",
+                  cursor: creatingStructure ? "wait" : "pointer", fontSize: 12,
+                }}
+              >{creatingStructure ? "⏳ Перестворюю..." : "↻ Перестворити"}</button>
             </div>
           )}
           {storageMsg && (
