@@ -282,6 +282,49 @@ function detectDocumentPageNumber(page) {
   return { current, total: Number.isFinite(total) ? total : null };
 }
 
+// ФД-D2.5 §4.5 — семантична безперервність на стику двох сторінок.
+// Експертна евристика адвоката: дивитись останній рядок попередньої
+// сторінки та перший рядок наступної. Якщо текст продовжується смислово —
+// той самий документ; якщо ні — можлива межа.
+//
+// Один сенс: «оцінка чи на стику (n, n+1) текст продовжується (тримай
+// разом — СИЛЬНИЙ-АНТИ сигнал) чи перервався (можлива межа — слабкий
+// сигнал на користь межі)». Повертає 'continues' | 'possible_break' | null.
+//
+// 'continues' — попередня НЕ закінчена крапкою+нова починається з малої:
+//   це абзац який тягнеться через межу сторінки. Triage має поважати —
+//   НЕ ставити boundary між цими сторінками навіть якщо інші дорадчі
+//   підказують межу.
+// 'possible_break' — попередня закінчена крапкою + наступна з ВЕЛИКОЇ:
+//   завершене речення + новий абзац з великої. Слабкий — підсилюється
+//   іншими сигналами.
+// null — нейтрально (наприклад, обидві з великої, або фрагменти короткі).
+function semanticContinuity(prevPage, page) {
+  const prevTail = lastLine(prevPage?._text);
+  const nextHead = firstLine(page?._text);
+  if (!prevTail || !nextHead) return null;
+  // Виключаємо випадки коли tail/head — це чисто числа (футер-№/нумерація)
+  // або дуже коротко (<5 симв.). Такі рядки не несуть смислу для оцінки
+  // продовжуваності абзацу.
+  if (prevTail.length < 5 || nextHead.length < 5) return null;
+  if (/^\d{1,4}$/.test(prevTail.trim())) return null;
+  if (/^\d{1,4}$/.test(nextHead.trim())) return null;
+
+  const prevEnd = prevTail.trim().slice(-1);
+  const nextStart = nextHead.trim().charAt(0);
+  if (!prevEnd || !nextStart) return null;
+
+  const endsSentence = /[.!?…»)]/.test(prevEnd);
+  // unicode-aware: 'а' === 'А'.toLowerCase() — нижній/верхній регістри
+  // через локаль case-toggling. Безпечно: тільки літери ASCII/кирилиці.
+  const startsLower = /\p{Ll}/u.test(nextStart);
+  const startsUpper = /\p{Lu}/u.test(nextStart);
+
+  if (!endsSentence && startsLower) return 'continues';
+  if (endsSentence && startsUpper) return 'possible_break';
+  return null;
+}
+
 // ФД-D2.5 §4.6 — стрибок дефектів сканування. Document AI повертає
 // imageQualityScores.detectedDefects[] з типами `quality/defect_*`. Зміна
 // НАБОРУ defects між сусідніми сторінками сильніша за один лиш qualityScore
@@ -397,6 +440,13 @@ function compactDigest(page, prev) {
     if (dn.total != null && dn.current === dn.total) tags.push('КІНЕЦЬ-ДОКУМЕНТА');
   }
 
+  // ФД-D2.5 §4.5 — семантична безперервність на стику з попередньою.
+  // 'continues' = СИЛЬНИЙ-АНТИ сигнал (НЕ ставити межу); 'possible_break' =
+  // слабкий сигнал на користь межі (підсилюється іншими).
+  const cont = semanticContinuity(prev.page, page);
+  if (cont === 'continues') tags.push('продовження-абзацу');
+  if (cont === 'possible_break') tags.push('можливий-абзацний-розрив');
+
   // ФД-D2.5 §4.6 — зміна набору defects vs попередня сторінка. Сильніше за
   // самотній qualityScore-delta (нова камера/освітлення = інші типи defects).
   const defects = detectDefectsSet(page);
@@ -416,8 +466,10 @@ function compactDigest(page, prev) {
       format: fmt != null ? fmt : prev.format,
       orientation: ori || prev.orientation,
       lang: lang || prev.lang,
-      // Набір defects попередньої сторінки — для дельта-сигналу
-      // «дефекти-зміна» на наступному кроці.
+      // ФД-D2.5: попередня сторінка-об'єкт і набір defects для дельта-сигналів
+      // наступної сторінки. Тримаємо REF на page (не string-tail) — це
+      // дозволяє semanticContinuity мати чисту сигнатуру (prevPage, page).
+      page,
       defects: defects || prev.defects,
     },
   };
@@ -452,7 +504,7 @@ function edgeText(text, o) {
 export function buildCompactTriagePassport(layoutJson, expectedPageCount = null, opts = {}) {
   if (!isPagedLayout(layoutJson, expectedPageCount)) return '';
   const o = { ...COMPACT_DEFAULTS, ...(opts || {}) };
-  let prev = { footer: null, quality: null, format: null, orientation: null, lang: null, defects: null };
+  let prev = { footer: null, quality: null, format: null, orientation: null, lang: null, page: null, defects: null };
   return layoutJson.pages
     .map((page, i) => {
       const p = page || {};

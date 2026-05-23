@@ -56,14 +56,6 @@ const ROUTES = new Set([
   'signature_sidecar', 'to_fragments', 'discard',
 ]);
 
-// ЛІНІЯ 2 страховки від зависання ToC-шляху. 120с — верхня межа ВСЬОГО
-// preprocessor'а (детект+парс+валід), незалежно від внутрішнього retry/timeout
-// callAPI. Якщо tocDetect не повернувся за цей час — приймаємо як isToc:false
-// і йдемо у звичайний AI Triage. Поріг навмисно більший за TOC_API_OPTIONS у
-// tocDetector (~95с×2≈3хв) — спрацьовує тільки при несподіваному зависанні
-// поза callAPI (lazy import / зовнішня залежність).
-const TOC_OUTER_TIMEOUT_MS = 120000;
-
 // Тривіальний 1 файл-image 1 сторінка без сусідів → image_merge (без AI).
 function trivialImagePlan(live) {
   if (live.length !== 1) return null;
@@ -215,24 +207,13 @@ export function createTriageStage(stageDeps = {}) {
       const pageCount = (layout && Array.isArray(layout.pages)) ? layout.pages.length : (Number(f.pageCount) || 0);
       if (!isImage && pageCount >= 10 && layout) {
         let tocOut = null;
-        // ЛІНІЯ 2 захисту: зовнішня страховка від зависання preprocessor'а
-        // незалежно від того що відбулось всередині (callAPI / lazy import /
-        // інше). Якщо tocDetect не повернувся за TOC_OUTER_TIMEOUT_MS — беремо
-        // як isToc:false і йдемо у звичайний AI Triage. Верхній поріг ToC-
-        // шляху гарантовано <2хв навіть при повному зависанні.
         try {
-          tocOut = await Promise.race([
-            tocDetect({
-              fileId: f.fileId,
-              layoutJson: layout,
-              totalPages: pageCount,
-              caseId: ctx.job.caseId,
-            }),
-            new Promise((resolve) => setTimeout(
-              () => resolve({ isToc: false, reason: 'outer_timeout' }),
-              TOC_OUTER_TIMEOUT_MS,
-            )),
-          ]);
+          tocOut = await tocDetect({
+            fileId: f.fileId,
+            layoutJson: layout,
+            totalPages: pageCount,
+            caseId: ctx.job.caseId,
+          });
         } catch (err) {
           tocOut = { isToc: false, reason: `transport:${err?.message || String(err)}` };
         }

@@ -217,10 +217,8 @@ describe('ФД-I dp-enriched-digest — Provider-INTEGRATION якісної по
     expect(triagePromptText).toContain('ЯКІР-ДОКУМЕНТА');
     expect(triagePromptText).toContain('заголовок:"ПОСТАНОВА"');
     expect(triagePromptText).toContain('док-стор:1/4');
-    // Промпт інструктує аналізувати сигнали у сукупності (нова філософія —
-    // «думай, не виконуй буквально»; категорії СИЛЬНІ/СИЛЬНІ-АНТИ прибрані).
-    expect(triagePromptText).toMatch(/в\s+сукупності/i);
-    expect(triagePromptText).toMatch(/ПРИНЦИП РІШЕННЯ/);
-    expect(triagePromptText).toMatch(/орієнтир.*не\s+догма/i);
+    // Промпт інструктує зважувати сигнали РАЗОМ (ФД-D3):
+    expect(triagePromptText).toMatch(/зважуй РАЗОМ/i);
+    expect(triagePromptText).toMatch(/СИЛЬНІ-АНТИ/);
   });
 });
