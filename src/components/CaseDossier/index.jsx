@@ -444,6 +444,15 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [creatingStructure, setCreatingStructure] = useState(false);
   const [storageState, setStorageState] = useState(caseData.storage || {});
   const [storageMsg, setStorageMsg] = useState('');
+  // folderStatus — стан Drive папки справи на момент рендеру:
+  //   'unknown'  — ще не перевірили (loading)
+  //   'alive'    — папка існує на Drive і не у кошику
+  //   'trashed'  — папка на Drive але у кошику (адвокат видалив вручну)
+  //   'missing'  — папки немає взагалі (driveFolderId пустий АБО Drive 404)
+  // Перевірка робиться один Drive GET при зміні driveFolderId. Окремий стан
+  // потрібен щоб UI чесно показав одну з трьох кнопок: «Створити структуру»
+  // (missing), «Перестворити» (trashed), «Відкрити» (alive).
+  const [folderStatus, setFolderStatus] = useState('unknown');
   const [contextLoading, setContextLoading] = useState(false);
   const [contextMsg, setContextMsg] = useState('');
   const [isCreatingContext, setIsCreatingContext] = useState(false);
@@ -519,6 +528,47 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     })();
     return () => { cancelled = true; };
   }, [caseData.id, caseData.storage?.driveFolderId]);
+
+  // Перевірка стану Drive папки справи. Один GET до Drive API при зміні
+  // driveFolderId. Без цього UI не міг розрізнити «жива папка» vs «папка у
+  // кошику» (адвокат бачив кнопку «Відкрити» що вела у trash).
+  //
+  // 404 → 'missing' (папка видалена назавжди або ID stale); res.trashed=true
+  // → 'trashed'; інакше 'alive'. Network/інші помилки лишають 'unknown' —
+  // не блокуємо UI повним fallback на «створити структуру» бо може бути
+  // тимчасова проблема мережі.
+  useEffect(() => {
+    if (!storageState?.driveFolderId) {
+      setFolderStatus('missing');
+      return undefined;
+    }
+    let cancelled = false;
+    setFolderStatus('unknown');
+    (async () => {
+      try {
+        const res = await driveRequest(
+          `https://www.googleapis.com/drive/v3/files/${storageState.driveFolderId}?fields=id,trashed`
+        );
+        if (cancelled) return;
+        if (res.status === 404) {
+          setFolderStatus('missing');
+          return;
+        }
+        if (!res.ok) {
+          setFolderStatus('unknown');
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        setFolderStatus(data.trashed ? 'trashed' : 'alive');
+      } catch (e) {
+        if (cancelled) return;
+        console.warn('[CaseDossier] folder status check failed:', e?.message || e);
+        setFolderStatus('unknown');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [storageState?.driveFolderId]);
 
   // Автоматичне перезавантаження контексту і історії після silent-refresh токена.
   // Подія 'drive-token-refreshed' емітиться з driveAuth.js коли driveRequest
@@ -2011,19 +2061,38 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         {/* Сховище Drive */}
         <div style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 'var(--space-4)'}}>
           <div style={{ fontSize: 10, color: "var(--color-text-3)", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{"Сховище"}</div>
-          {!storageState?.driveFolderId ? (
-            <button
-              onClick={handleCreateDriveStructure}
-              disabled={creatingStructure}
-              style={{
-                background: creatingStructure ? "var(--color-surface-2)" : "var(--color-accent-hover)",
-                color: "#fff", border: "none", borderRadius: 'var(--radius-sm)',
-                padding: "8px 16px", cursor: creatingStructure ? "wait" : "pointer", fontSize: 13,
-              }}
-            >
-              {creatingStructure ? "⏳ Створюю..." : <><Folder size={ICON_SIZE.sm} style={{ verticalAlign: 'middle', marginRight: 6 }} />Створити структуру на Drive</>}
-            </button>
-          ) : (
+          {/* Стан папки справи на Drive: 'missing'|'trashed'|'alive'|'unknown'.
+              missing → одна кнопка «Створити структуру».
+              trashed → одна кнопка «Перестворити» з warning-плашкою (стара у кошику).
+              alive   → назва папки + «Відкрити».
+              unknown → плашка перевірки (рідко, тимчасова мережа). */}
+          {folderStatus === 'missing' || folderStatus === 'trashed' ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {folderStatus === 'trashed' && (
+                <span style={{ color: "var(--color-danger)", fontSize: 12 }}>
+                  Поточна папка у кошику Drive
+                </span>
+              )}
+              <button
+                onClick={handleCreateDriveStructure}
+                disabled={creatingStructure}
+                title={folderStatus === 'trashed'
+                  ? "Створює нову папку справи на Drive (стара у кошику). Поточне посилання «Відкрити» веде в кошик — натисни Перестворити щоб отримати робочу структуру."
+                  : "Створює нову папку справи на Drive з повною структурою (01_ОРИГІНАЛИ … 05_ЗОВНІШНІ)."}
+                style={{
+                  background: creatingStructure ? "var(--color-surface-2)" : "var(--color-accent-hover)",
+                  color: "#fff", border: "none", borderRadius: 'var(--radius-sm)',
+                  padding: "8px 16px", cursor: creatingStructure ? "wait" : "pointer", fontSize: 13,
+                }}
+              >
+                {creatingStructure
+                  ? (folderStatus === 'trashed' ? "⏳ Перестворюю..." : "⏳ Створюю...")
+                  : (folderStatus === 'trashed'
+                      ? <>↻ Перестворити структуру</>
+                      : <><Folder size={ICON_SIZE.sm} style={{ verticalAlign: 'middle', marginRight: 6 }} />Створити структуру на Drive</>)}
+              </button>
+            </div>
+          ) : folderStatus === 'alive' ? (
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ color: "var(--color-success)", fontSize: 13 }}>
                 <Cloud size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />{storageState.driveFolderName || "Drive папка"}
@@ -2035,16 +2104,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   padding: "4px 10px", color: "var(--color-text-2)", cursor: "pointer", fontSize: 12,
                 }}
               ><Link2 size={ICON_SIZE.xs} style={{ verticalAlign: 'middle', marginRight: 4 }} />Відкрити</button>
-              <button
-                onClick={handleCreateDriveStructure}
-                disabled={creatingStructure}
-                title="Створює нову папку справи на Drive і прив'язує. Потрібно коли стара папка видалена/перейменована вручну і поточне посилання відкриває кошик."
-                style={{
-                  background: "none", border: "1px solid var(--color-border)", borderRadius: 'var(--radius-sm)',
-                  padding: "4px 10px", color: "var(--color-text-2)",
-                  cursor: creatingStructure ? "wait" : "pointer", fontSize: 12,
-                }}
-              >{creatingStructure ? "⏳ Перестворюю..." : "↻ Перестворити"}</button>
+            </div>
+          ) : (
+            // 'unknown' — Drive ще перевіряється або тимчасова помилка мережі.
+            // Показуємо нейтральну плашку щоб адвокат знав що UI ще не визначив стан.
+            <div style={{ color: "var(--color-text-3)", fontSize: 12, fontStyle: "italic" }}>
+              Перевіряю стан папки на Drive…
             </div>
           )}
           {storageMsg && (
