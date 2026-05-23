@@ -237,6 +237,25 @@ export async function backupRegistryDataPreV8(token, payload) {
   }
 }
 
+// Бекап перед TASK 0.4 міграцією v8 → v9 (case.origin enum), поза ротацією.
+export async function backupRegistryDataPreV9(token, payload) {
+  try {
+    const backupFolder = await findOrCreateFolder('_backups', null, token);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `registry_data_backup_pre_v9_${ts}.json`;
+    await uploadFileToDrive(
+      fileName,
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      backupFolder.id,
+      token
+    );
+    return { success: true, fileName };
+  } catch (err) {
+    console.error('Pre-v9 backup failed:', err);
+    return { success: false, error: err.message };
+  }
+}
+
 // Бекап перед TASK 0.3.4 міграцією v6 → v6.5 (addedBy semantic cleanup), поза ротацією.
 export async function backupRegistryDataPreV6_5(token, payload) {
   try {

@@ -1,29 +1,34 @@
 // ── COURT SYNC MODULE ────────────────────────────────────────────────────────
-// Модуль «Електронний суд». TASK 0.2 — інфраструктурний скелет.
+// Модуль «Електронний суд». TASK 0.4 — Court Sync MVP.
 //
 // Структура:
-//   • ЄСІТС — видима всім (4 підвкладки: Огляд / Журнал / Налаштування / Розбіжності)
-//   • Розвідник — видима тільки коли isCurrentUserFounder() === true
+//   • ЄСІТС — видима всім. Активні вкладки: Огляд, Імпорт, Налаштування.
+//             Журнал і Розбіжності — заглушки (наступні TASK).
+//   • Розвідник — видима тільки для founder (isCurrentUserFounder()===true).
 //
-// Всі підвкладки — заглушки з текстом «У розробці». Реальна логіка з'явиться
-// у наступних TASK (ЄСІТС RPA інтеграція, Document Processor v2 для inbox тощо).
+// Hash-router (TASK 0.4): `#/court-sync/import` deep-link перемикає на
+// вкладку Імпорт (також target для майбутнього Chrome extension).
 //
-// Дизайн — тільки існуючі design-токени з styles/tokens.css. Жодних власних
-// стилів окрім layout-розкладки (flex). Іконки — з lucide-react через
-// components/UI/icons.js (стандарт проекту).
+// Дизайн — тільки існуючі design-токени з styles/tokens.css. Іконки —
+// з lucide-react через components/UI/icons.js. Без емодзі.
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Scale, Search } from 'lucide-react';
 import { ICON_SIZE } from '../UI/icons.js';
 import { isCurrentUserFounder } from '../../services/tenantService.js';
+import * as hashRouter from '../../services/hashRouter.js';
 import Reconnaissance from './Reconnaissance/index.jsx';
+import ImportTab from './ImportTab.jsx';
+import OverviewTab from './OverviewTab.jsx';
+import SettingsTab from './SettingsTab.jsx';
 
 // ── Підвкладки ───────────────────────────────────────────────────────────────
 
 const ECITS_SUBTABS = [
-  { id: 'overview',     label: 'Огляд' },
-  { id: 'log',          label: 'Журнал' },
-  { id: 'settings',     label: 'Налаштування' },
+  { id: 'overview',      label: 'Огляд' },
+  { id: 'import',        label: 'Імпорт' },
+  { id: 'log',           label: 'Журнал' },
+  { id: 'settings',      label: 'Налаштування' },
   { id: 'discrepancies', label: 'Розбіжності' },
 ];
 
@@ -31,7 +36,7 @@ const SCOUT_SUBTABS = [
   { id: 'reconnaissance', label: 'Розвідка ЄСІТС' },
 ];
 
-// ── Заглушка вмісту ──────────────────────────────────────────────────────────
+// ── Заглушка вмісту (для ще не реалізованих вкладок) ─────────────────────────
 
 function PlaceholderPanel({ title, hint }) {
   return (
@@ -43,7 +48,6 @@ function PlaceholderPanel({ title, hint }) {
 }
 
 // ── Кнопка підвкладки ────────────────────────────────────────────────────────
-// Layout-only inline styles, кольори — з design tokens.
 
 function SubtabButton({ active, onClick, icon: Icon, children }) {
   return (
@@ -73,12 +77,44 @@ function SubtabButton({ active, onClick, icon: Icon, children }) {
 
 // ── Головний компонент ───────────────────────────────────────────────────────
 
-export default function CourtSync() {
+export default function CourtSync({
+  executeAction,
+  cases,
+  tenant,
+  onScenarioHistoryAppend,
+}) {
   const founder = isCurrentUserFounder();
-  // Вкладки верхнього рівня модуля: 'ecits' завжди, 'scout' тільки для засновника.
   const [section, setSection] = useState('ecits');
-  const [ecitsSubtab, setEcitsSubtab] = useState('overview');
+
+  // Початковий підтаб з hash-route (#/court-sync/import → 'import')
+  const initialSubtab = useCallback(() => {
+    const route = hashRouter.getCurrentRoute?.();
+    if (route?.module === 'court-sync' && route.entityId && ECITS_SUBTABS.some(t => t.id === route.entityId)) {
+      return route.entityId;
+    }
+    return 'overview';
+  }, []);
+
+  const [ecitsSubtab, setEcitsSubtab] = useState(initialSubtab);
   const [scoutSubtab, setScoutSubtab] = useState('reconnaissance');
+
+  // Підписка на зміну hash (наприклад розширення викликає navigate('/court-sync/import')).
+  useEffect(() => {
+    const unsubscribe = hashRouter.subscribe((route) => {
+      if (route?.module !== 'court-sync') return;
+      setSection('ecits');
+      if (route.entityId && ECITS_SUBTABS.some(t => t.id === route.entityId)) {
+        setEcitsSubtab(route.entityId);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  const openImport = useCallback(() => {
+    setSection('ecits');
+    setEcitsSubtab('import');
+    hashRouter.navigate?.('court-sync/import');
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -131,12 +167,16 @@ export default function CourtSync() {
             display: 'flex',
             gap: 2,
             borderBottom: '1px solid var(--color-border)',
+            flexWrap: 'wrap',
           }}>
             {ECITS_SUBTABS.map(t => (
               <SubtabButton
                 key={t.id}
                 active={ecitsSubtab === t.id}
-                onClick={() => setEcitsSubtab(t.id)}
+                onClick={() => {
+                  setEcitsSubtab(t.id);
+                  hashRouter.navigate?.(`court-sync/${t.id}`);
+                }}
               >
                 {t.label}
               </SubtabButton>
@@ -144,23 +184,27 @@ export default function CourtSync() {
           </div>
 
           {ecitsSubtab === 'overview' && (
-            <PlaceholderPanel
-              title="Огляд"
-              hint="У розробці. Тут буде статус останньої синхронізації, нові надходження та підсумок по справах."
+            <OverviewTab
+              tenant={tenant}
+              cases={cases}
+              onOpenImport={openImport}
+            />
+          )}
+          {ecitsSubtab === 'import' && (
+            <ImportTab
+              executeAction={executeAction}
+              cases={cases}
+              tenant={tenant}
+              onScenarioHistoryAppend={onScenarioHistoryAppend}
             />
           )}
           {ecitsSubtab === 'log' && (
             <PlaceholderPanel
               title="Журнал"
-              hint="У розробці. Тут буде історія синхронізацій і обмін даними з кабінетом ЄСІТС."
+              hint="У розробці. Тут буде детальна історія синхронізацій (зараз короткий зріз — на вкладці Огляд)."
             />
           )}
-          {ecitsSubtab === 'settings' && (
-            <PlaceholderPanel
-              title="Налаштування"
-              hint="У розробці. Тут буде керування автосинхронізацією, переліком справ і провайдером виконання."
-            />
-          )}
+          {ecitsSubtab === 'settings' && <SettingsTab />}
           {ecitsSubtab === 'discrepancies' && (
             <PlaceholderPanel
               title="Розбіжності"

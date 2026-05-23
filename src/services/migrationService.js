@@ -43,6 +43,17 @@
 //                   окреме ім'я captureMethod (правило #11). Архіви не чіпає
 //                   (lazy-on-load нормалізація у timeEntriesArchiver).
 //                   Окремий крок — migrateToVersion8 нижче.
+// schemaVersion 9   — case.origin enum (TASK 0.4 Court Sync MVP).
+//                   ЄДИНИЙ сенс поля: канал створення справи в Legal BMS.
+//                   enum: 'manual' (адвокат вручну через UI/QI/агента) |
+//                   'ecits_import' (автоімпорт з ЄСІТС через Court Sync) |
+//                   'telegram_import' | 'email_import' (майбутні канали).
+//                   Default 'manual'. Існуючі справи отримують 'manual' —
+//                   до bump'а всі справи створювались вручну.
+//                   case.origin — аналог document.source на рівні справи.
+//                   НЕ плутати з case.team[].addedBy (хто додав у команду) —
+//                   різний сенс (правило #11).
+//                   Окремий крок — migrateToVersion9 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -63,13 +74,14 @@
 import { DEFAULT_TENANT, DEFAULT_USER } from './tenantService.js';
 import { DEFAULT_TENANT_TIME_STANDARDS } from './timeStandards.js';
 import { MODULES } from './moduleNames.js';
+import { ensureEntitlements } from './entitlementsService.js';
 
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
 // migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5 →
 // migrateToVersion7 → migrateToVersion8). Використовується App.jsx для запису
 // нової версії registry і тестами як "це остаточний таргет системи".
-export const CURRENT_SCHEMA_VERSION = 8;
-export const MIGRATION_VERSION = '8.0_time_entry_capture_method';
+export const CURRENT_SCHEMA_VERSION = 9;
+export const MIGRATION_VERSION = '9.0_case_origin';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -186,14 +198,18 @@ function migrateTenant(t) {
       usedBytes: null,
     },
     modelPreferences: t.modelPreferences || { ...DEFAULT_TENANT.modelPreferences },
-    subscription: {
+    // TASK 0.4 — entitlements нормалізується через окремий сервіс. Існуючі
+    // tenants без entitlements отримують дефолти self_hosted (повний доступ).
+    subscription: ensureEntitlements({
       ...(t.subscription || {}),
       plan: t.subscription?.plan || DEFAULT_TENANT.subscription.plan,
       status: t.subscription?.status || DEFAULT_TENANT.subscription.status,
       limits: t.subscription?.limits || { ...DEFAULT_TENANT.subscription.limits },
       current: t.subscription?.current || { ...DEFAULT_TENANT.subscription.current },
       alerts: t.subscription?.alerts || { ...DEFAULT_TENANT.subscription.alerts },
-    },
+    }),
+    // TASK 0.4 — журнал виконань сценаріїв ЄСІТС. Розширення без schema bump.
+    ecits_scenario_history: Array.isArray(t.ecits_scenario_history) ? t.ecits_scenario_history : [],
     settings: {
       ...settings,
       // v4: timeStandards — ієрархія user→tenant→system. Тут — tenant дефолти.
@@ -229,6 +245,8 @@ function ensureModuleIntegration(existing) {
 // Повертає settingsVersion-label який відповідає переданій version. Для рідкісного
 // випадку коли registry на Drive має schemaVersion але втратив settingsVersion.
 function labelForVersion(version) {
+  if (version >= 9) return '9.0_case_origin';
+  if (version >= 8) return '8.0_time_entry_capture_method';
   if (version >= 7) return '7.0_ecits_canonical';
   if (version >= 6.5) return '6.5_addedby_cleanup';
   if (version >= 6) return '6.0_founder_flag';
@@ -828,6 +846,68 @@ export function migrateToVersion8(registry) {
   };
 }
 
+// ── v8 → v9: case.origin enum (TASK 0.4 Court Sync MVP) ─────────────────────
+// Додає case.origin усім існуючим справам зі значенням 'manual' (до bump'а
+// всі справи створювались вручну — не було автоімпорту). Нові ЄСІТС-канали
+// (Court Sync, майбутні Telegram/Email) пишуть інші значення enum.
+//
+// case.origin enum: 'manual' | 'ecits_import' | 'telegram_import' | 'email_import'
+// Аналог document.source на рівні справи. Один сенс — канал створення.
+//
+// Ідемпотентна: повторний запуск з v9+ повертає didMigrate=false. Запуск з
+// v8 на справі що вже має origin (з якоїсь причини) — лишає її як є.
+// Викликається з App.jsx EFFECT-A послідовно після migrateToVersion8.
+export const CASE_ORIGIN_VALUES = Object.freeze([
+  'manual',
+  'ecits_import',
+  'telegram_import',
+  'email_import',
+]);
+
+export function migrateToVersion9(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 9) {
+    return { registry, didMigrate: false, fromVersion, toVersion: fromVersion, stats: null };
+  }
+
+  const stats = { totalCases: 0, originAdded: 0, originAlreadySet: 0 };
+  const cases = Array.isArray(registry?.cases) ? registry.cases : [];
+  const migratedCases = cases.map(c => {
+    if (!c || typeof c !== 'object') return c;
+    stats.totalCases++;
+    if (typeof c.origin === 'string' && CASE_ORIGIN_VALUES.includes(c.origin)) {
+      stats.originAlreadySet++;
+      return c;
+    }
+    stats.originAdded++;
+    return { ...c, origin: 'manual' };
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK 0.4] Migration v${fromVersion} → v9 (case.origin):\n` +
+    `  total cases: ${stats.totalCases}\n` +
+    `  origin added ('manual'): ${stats.originAdded}\n` +
+    `  origin already set (idempotent): ${stats.originAlreadySet}\n` +
+    `[TASK 0.4] Migration v${fromVersion} → v9 done.`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 9,
+      settingsVersion: '9.0_case_origin',
+      cases: migratedCases,
+      lastMigration: { from: fromVersion, to: 9, at: new Date().toISOString() },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 9,
+    stats,
+  };
+}
+
 // ── Імпорт legacy levytskyi_timelog → time_entries[] ────────────────────────
 // Викликається з App.jsx один раз при першому запуску v4 (з прапором).
 // Поля legacy запису:
@@ -890,5 +970,36 @@ export function ensureCaseSaasFields(c) {
   return migrateCase(c);
 }
 
+// ── ensureCaseSaasAndEcitsFields — повна нормалізація для нових справ ──────
+// TASK 0.4 R1 fix. `migrateCase`/`ensureCaseSaasFields` додають лише SaaS v2/v3
+// поля (tenantId/ownerId/team/shareType/externalAccess). v7-поля (ecitsState,
+// parties, processParticipants) додає ЛИШЕ одноразова `migrateToVersion7` —
+// нові справи створені після bump'а не отримували канонічного дефолту.
+// v9-поле case.origin теж потребує дефолту при створенні.
+//
+// Ця функція — точка нормалізації для всіх НОВИХ справ (через create_case,
+// seed-набір, scenario processor). Викликається ПОВЕРХ `ensureCaseSaasFields`,
+// додаючи v7+v9 дефолти. Існуючі справи з Drive проходять через `migrateCase`
+// → `migrateToVersion7` → `migrateToVersion9` як і раніше; ця функція їх не
+// чіпає (`??` зберігає вже виставлене значення).
+//
+// Один сенс (правило #11): "нормалізатор канонічного дефолту case на момент
+// створення". НЕ міграція (бо нова справа не має fromVersion).
+export function ensureCaseSaasAndEcitsFields(c) {
+  const saas = migrateCase(c);
+  if (!saas) return saas;
+  return {
+    ...saas,
+    // v7 поля
+    ecitsState: saas.ecitsState ?? buildDefaultEcitsState(),
+    parties: Array.isArray(saas.parties) ? saas.parties : [],
+    processParticipants: Array.isArray(saas.processParticipants) ? saas.processParticipants : [],
+    // v9 поле
+    origin: (typeof saas.origin === 'string' && CASE_ORIGIN_VALUES.includes(saas.origin))
+      ? saas.origin
+      : 'manual',
+  };
+}
+
 // Експорт для testів і ручних викликів.
-export { migrateTenant, ensureTeamPermissions, ROLE_PERMISSION_DEFAULTS };
+export { migrateTenant, ensureTeamPermissions, ROLE_PERMISSION_DEFAULTS, buildDefaultEcitsState };

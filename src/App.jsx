@@ -8,11 +8,11 @@ import JobProgressTopbar from './components/JobProgressTopbar';
 import GlobalProgressScreen from './components/DocumentProcessorV2/GlobalProgressScreen.jsx';
 import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx';
 import { ECITSRegistryBadge } from './components/ECITSBanner/RegistryBadge.jsx';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, backupRegistryDataPreV9, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, migrateToVersion8, ensureCaseSaasFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, migrateToVersion8, migrateToVersion9, ensureCaseSaasFields, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import * as eventBus from './services/eventBus';
 import {
   ECITS_SYNC_COMPLETED, ECITS_CASE_STATE_UPDATED,
@@ -25,6 +25,10 @@ import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
 import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
 import { createDocument, validateDocument } from './services/documentFactory';
 import { createActions } from './services/actionsRegistry';
+import * as extensionBridge from './services/extensionBridge';
+import * as hashRouter from './services/hashRouter';
+import { submitScenarioResult } from './services/ecits/scenarioProcessor';
+import { getForExtension as getEntitlementsForExtension } from './services/entitlementsService';
 import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/documentSchema';
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
@@ -3802,6 +3806,30 @@ function App() {
     try { activityTracker.report('app_launched', { module: MODULES.APP, category: 'system' }); } catch {}
   }, [driveHydrated]);
 
+  // TASK 0.4 — активуємо window.LegalBMS міст з майбутнім Chrome extension
+  // ПІСЛЯ hydration (інакше перші виклики розширення перетруться EFFECT-A).
+  // enable() ідемпотентна — повторні рендери лишають window.LegalBMS незмінним.
+  useEffect(() => {
+    if (!driveHydrated) return;
+    try { extensionBridge.enable(); } catch (e) { console.warn('[extensionBridge] enable failed:', e); }
+  }, [driveHydrated]);
+
+  // TASK 0.4 — hash-router: deep-link `#/court-sync/import` (target для
+  // майбутнього розширення і прямих посилань) перемикає вкладку на Court Sync.
+  // Запускається ПІСЛЯ hydration. Реєстрація роуту 'court-sync' — інші модулі
+  // (DP v2 тощо) додають свої registerRoute без переписування ядра.
+  useEffect(() => {
+    if (!driveHydrated) return;
+    const unregister = hashRouter.registerRoute('court-sync', {
+      onEnter: () => setTab('courtsync'),
+    });
+    hashRouter.start();
+    return () => {
+      unregister();
+      // Залишаємо роутер живим між useEffect-ре-ранами — тільки наша реєстрація знімається.
+    };
+  }, [driveHydrated]);
+
   const [selected, setSelected] = useState(null);
   const openCase = (c) => { usageLog.log('open_case', {name: c.name}); setSelected(c); };
   const [dossierCase, setDossierCase] = useState(null);
@@ -4136,6 +4164,32 @@ function App() {
             didMigrate = true;
             toVersion = v8.toVersion;
             // Console.log усередині migrateToVersion8 — детальний breakdown.
+          }
+        }
+
+        // TASK 0.4 — pre-v9 бекап перед case.origin enum bump, поза ротацією.
+        if (raw != null && (registry.schemaVersion || 8) < 9) {
+          const flagV9 = localStorage.getItem('levytskyi_pre_v9_backup_done');
+          if (!flagV9) {
+            const res = await backupRegistryDataPreV9(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v9_backup_done', '1');
+              console.log(`[TASK 0.4] Pre-v9 backup: ${res.fileName}`);
+            } else {
+              console.warn('[TASK 0.4] Pre-v9 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // TASK 0.4 — case.origin enum (v8 → v9). Усі існуючі справи отримують
+        // origin: 'manual' (до bump'а всі справи створювались адвокатом вручну).
+        if ((registry.schemaVersion || 1) < 9) {
+          const v9 = migrateToVersion9(registry);
+          if (v9.didMigrate) {
+            registry = v9.registry;
+            didMigrate = true;
+            toVersion = v9.toVersion;
+            // Console.log усередині migrateToVersion9 — детальний breakdown.
           }
         }
 
@@ -4761,6 +4815,31 @@ function App() {
     deleteExtendedForDocument,
   });
 
+  // TASK 0.4 — конфігуруємо extensionBridge кожен render свіжими deps.
+  // configure() — безпечно до hydration; enable() (нижче в useEffect) активує
+  // window.LegalBMS лише після завершення hydration з Drive.
+  extensionBridge.configure({
+    submitScenarioResult: (envelope, options) =>
+      submitScenarioResult(envelope, {
+        executeAction,
+        agentId: 'court_sync_agent',
+        transport: options?.transport || 'extension',
+        getCases: () => cases,
+        getTenant: () => (tenants && tenants[0]) || null,
+        appendScenarioHistoryEntry: (entry) => {
+          setTenants(prev => {
+            if (!Array.isArray(prev) || prev.length === 0) return prev;
+            const [first, ...rest] = prev;
+            const history = Array.isArray(first.ecits_scenario_history) ? first.ecits_scenario_history : [];
+            const next = [entry, ...history].slice(0, 200);
+            return [{ ...first, ecits_scenario_history: next }, ...rest];
+          });
+        },
+      }),
+    eventBus,
+    getEntitlementsForExtension: () => getEntitlementsForExtension((tenants && tenants[0]) || null),
+  });
+
   // ── DRIVE-FIRST SPLASH ─────────────────────────────────────────────────────
   // Блокує UI до завершення hydration. Захищає від випадкового запису
   // INITIAL_CASES або застарілого state на Drive (V2, V8 у diagnostic_drive_first).
@@ -4832,6 +4911,11 @@ function App() {
       if ((registry.schemaVersion || 1) < 8) {
         const v8 = migrateToVersion8(registry);
         if (v8.didMigrate) registry = v8.registry;
+      }
+      // TASK 0.4 — case.origin enum при відновленні (legacy < v9).
+      if ((registry.schemaVersion || 1) < 9) {
+        const v9 = migrateToVersion9(registry);
+        if (v9.didMigrate) registry = v9.registry;
       }
       // Розпаковуємо стейт з бекапу.
       if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));
@@ -5126,7 +5210,20 @@ function App() {
           {!dossierCase && tab === 'courtsync' && (
             <ModuleErrorBoundary>
               <React.Suspense fallback={<div style={{padding:20,color:'#9aa0b8'}}>Завантаження...</div>}>
-                <CourtSync />
+                <CourtSync
+                  executeAction={executeAction}
+                  cases={cases}
+                  tenant={(tenants && tenants[0]) || null}
+                  onScenarioHistoryAppend={(entry) => {
+                    setTenants(prev => {
+                      if (!Array.isArray(prev) || prev.length === 0) return prev;
+                      const [first, ...rest] = prev;
+                      const history = Array.isArray(first.ecits_scenario_history) ? first.ecits_scenario_history : [];
+                      const next = [entry, ...history].slice(0, 200);
+                      return [{ ...first, ecits_scenario_history: next }, ...rest];
+                    });
+                  }}
+                />
               </React.Suspense>
             </ModuleErrorBoundary>
           )}

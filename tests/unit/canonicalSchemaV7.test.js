@@ -56,21 +56,21 @@ import { DEFAULT_USER } from '../../src/services/tenantService.js';
 
 // ── Schema version і label ──────────────────────────────────────────────────
 
-// Найвища досяжна версія після повного ланцюга. TASK 2 підняв таргет 7 → 8
-// (time_entry.source → captureMethod). v7-крок далі тестується нижче окремо.
-describe('Schema version і label (повний ланцюг, таргет після TASK 2)', () => {
-  it('CURRENT_SCHEMA_VERSION === 8', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(8);
+// Найвища досяжна версія після повного ланцюга. TASK 0.4 підняв таргет 8 → 9
+// (case.origin enum). v7-крок далі тестується нижче окремо.
+describe('Schema version і label (повний ланцюг, таргет після TASK 0.4)', () => {
+  it('CURRENT_SCHEMA_VERSION === 9', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(9);
   });
 
-  it("MIGRATION_VERSION === '8.0_time_entry_capture_method'", () => {
-    expect(MIGRATION_VERSION).toBe('8.0_time_entry_capture_method');
+  it("MIGRATION_VERSION === '9.0_case_origin'", () => {
+    expect(MIGRATION_VERSION).toBe('9.0_case_origin');
   });
 
-  it('buildEmptyRegistry створює одразу v8', () => {
+  it('buildEmptyRegistry створює одразу v9', () => {
     const reg = buildEmptyRegistry();
-    expect(reg.schemaVersion).toBe(8);
-    expect(reg.settingsVersion).toBe('8.0_time_entry_capture_method');
+    expect(reg.schemaVersion).toBe(9);
+    expect(reg.settingsVersion).toBe('9.0_case_origin');
   });
 });
 

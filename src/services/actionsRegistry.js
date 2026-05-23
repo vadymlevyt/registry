@@ -15,7 +15,7 @@
 // реальні, а тести — ізольовані. Винос behavior-preserving: тіла ACTIONS
 // дослівні, єдина трансформація — bare `cases.find(` → `getCases().find(`.
 
-import { ensureCaseSaasFields } from './migrationService';
+import { ensureCaseSaasFields, ensureCaseSaasAndEcitsFields } from './migrationService';
 import { DEFAULT_TENANT, getCurrentUser } from './tenantService';
 import { shouldAudit } from './auditLogService';
 import {
@@ -51,6 +51,12 @@ export const SYSTEM_ACTIONS_NO_BILLING = new Set([
 // Викликані з source 'manual' — нараховуються (адвокат через UI/агента редагує).
 // Викликані з source 'court_sync' / 'metadata_extractor' — НЕ нараховуються
 // (автосинхронізація). Розрізняє source у params.
+//
+// TASK 0.4 R5 fix: add_hearing/update_hearing додано — Court Sync синхронізує
+// засідання з ЄСІТС, без R5 fix кожне витягнуте засідання потрапило б у
+// time_entries[] як оплачуваний 'case_work' (хоча це автосинхронізація, не
+// робота адвоката). Hearing-ACTIONS приймають params.source (TASK 0.3.5),
+// тож існуюча source-aware гілка автоматично виключає виклики з 'court_sync'.
 export const EDIT_ACTIONS_SOURCE_AWARE = new Set([
   'update_parties',
   'update_team',                          // не приймає source — завжди нараховується (internal)
@@ -59,6 +65,9 @@ export const EDIT_ACTIONS_SOURCE_AWARE = new Set([
   'update_document_movement_card',
   'update_alternative_sources',
   'update_document_source',
+  // TASK 0.4 R5
+  'add_hearing',
+  'update_hearing',
 ]);
 
 // Чи candidateId є нащадком ancestorId у дереві проваджень.
@@ -100,9 +109,42 @@ export function createActions(deps) {
   // ── ACTIONS — єдиний реєстр дій системи ──────────────────────────────────
   const ACTIONS = {
     // ГРУПА 1 — Справи
-    create_case: ({ fields }) => {
-      const newCase = ensureCaseSaasFields({
-        id: `case_${Date.now()}`,
+    // TASK 0.4 розширення: підтримуються ДВА сумісні формати params:
+    //   1) Legacy: { fields: {...} } — обгортка-об'єкт (всі попередні callers).
+    //   2) Плоский (TASK 0.4): { name, case_no, ..., origin, ecitsState, parties,
+    //      processParticipants } — Court Sync scenarioProcessor пише плоско.
+    // Якщо передано обидва — плоскі ключі мають пріоритет над fields.
+    //
+    // Дедуплікація (R1 fix): якщо params.ecitsState.caseId передано і вже
+    // існує справа з таким ecitsState.caseId — повертаємо
+    // { success: false, error: 'duplicate_ecits_case', existingCaseId }.
+    // Це дозволяє scenarioProcessor викликати update_case_ecits_state замість
+    // дубліката.
+    //
+    // ensureCaseSaasAndEcitsFields (а не ensureCaseSaasFields) — додає v7
+    // канонічний дефолт (ecitsState/parties/processParticipants) і v9 поле
+    // origin: 'manual' за замовчуванням. Якщо caller передав origin —
+    // зберігається його значення (з валідацією в ensureCase…).
+    create_case: (params) => {
+      const incoming = params || {};
+      const base = (incoming.fields && typeof incoming.fields === 'object') ? incoming.fields : {};
+      const { fields: _omit, ...flat } = incoming;
+      const merged = { ...base, ...flat };
+
+      const incomingEcitsCaseId = merged?.ecitsState?.caseId;
+      if (incomingEcitsCaseId) {
+        const existing = getCases().find(c => c?.ecitsState?.caseId === incomingEcitsCaseId);
+        if (existing) {
+          return {
+            success: false,
+            error: 'duplicate_ecits_case',
+            existingCaseId: existing.id,
+          };
+        }
+      }
+
+      const newCase = ensureCaseSaasAndEcitsFields({
+        id: `case_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         userId: 'vadym',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -111,7 +153,7 @@ export function createActions(deps) {
         timeLog: [],
         pinnedNoteIds: [],
         agentHistory: [],
-        ...fields
+        ...merged,
       });
       setCases(prev => [...prev, newCase]);
       return { success: true, caseId: newCase.id };
@@ -1590,14 +1632,15 @@ export function createActions(deps) {
       'batch_update',
     ],
 
-    // TASK 0.3.5 v7 — Court Sync agent для ЄСІТС-інтеграції.
-    // Дозволено: hearing CRUD (для синхронізації засідань), sync ACTIONS,
-    // 6 edit-ACTIONS канонічної схеми (parties, processParticipants,
-    // composition, movementCard, alternativeSources, team).
-    // ЗАБОРОНЕНО (через відсутність у списку): destroy_case, add_document,
-    // update_document, delete_document, create_case (Court Sync не створює
-    // справи — тільки оновлює існуючі за caseId з ЄСІТС).
+    // TASK 0.3.5 v7 + TASK 0.4 Court Sync MVP — Court Sync agent для ЄСІТС.
+    // Дозволено: hearing CRUD, sync ACTIONS, 6 edit-ACTIONS канонічної схеми
+    // (parties, processParticipants, composition, movementCard,
+    // alternativeSources, team). TASK 0.4: + create_case (для імпорту нових
+    // справ з ЄСІТС що ще не існують в Legal BMS — з origin='ecits_import').
+    // ЗАБОРОНЕНО (відсутні у списку): destroy_case, add_document,
+    // update_document, delete_document — документи Court Sync не пише у MVP.
     court_sync_agent: [
+      'create_case',                         // TASK 0.4: новий імпорт з ЄСІТС
       'add_hearing', 'update_hearing',
       'mark_synced_from_ecits', 'update_case_ecits_state',
       'update_parties', 'update_team', 'update_process_participants',
@@ -1700,12 +1743,21 @@ export function createActions(deps) {
       // Виключаємо системні дії (SYSTEM_ACTIONS_NO_BILLING).
       // TASK 0.3.5: edit-ACTIONS викликані з source !== 'manual' теж не
       // нараховуються (це автосинхронізація, не робота адвоката).
+      // TASK 0.4: create_case з origin='ecits_import' (Court Sync імпорт)
+      // теж не нараховується — справа з'явилась автоматично, не як робота.
       let shouldReport = result && (result.success || result.successCount) &&
                          !SYSTEM_ACTIONS_NO_BILLING.has(action);
       if (shouldReport && EDIT_ACTIONS_SOURCE_AWARE.has(action)) {
         const sourceParam = params?.source;
         if (sourceParam && sourceParam !== 'manual') {
           shouldReport = false; // автосинхронізація, не нараховується
+        }
+      }
+      if (shouldReport && action === 'create_case') {
+        // Плоский та legacy формат create_case: перевіряємо обидві локації.
+        const originParam = params?.origin || params?.fields?.origin;
+        if (originParam && originParam !== 'manual') {
+          shouldReport = false; // автоімпорт з ЄСІТС/Telegram/Email
         }
       }
       if (shouldReport) {

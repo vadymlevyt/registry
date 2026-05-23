@@ -55,7 +55,24 @@ export const DEFAULT_TENANT = {
     plan: 'self_hosted',
     status: 'active',
     validUntil: null,
+    // features — DEPRECATED (TASK 0.4). Лишається бо легасі-код може читати;
+    // нова логіка йде через `entitlements` (структуровано per-module/scenario).
     features: ['all'],
+    // entitlements — TASK 0.4. Канонічний дозвільник per-tenant: який модуль/
+    // сценарій активний, чи це trial, дата експірації, ліміт використань.
+    // Точка читання — entitlementsService.canUseModule. Майбутні модулі
+    // підключаються додаванням ключа сюди без зміни клієнтського коду.
+    entitlements: {
+      ecits: {
+        enabled: true,
+        scenarios: { import_cases_and_hearings: true },
+        trialMode: false,
+        expiresAt: null,
+        remainingUsages: null,
+      },
+      documents: { enabled: true },
+      canvas: { enabled: true },
+    },
     limits: {
       aiTokensPerMonth: null,
       aiCostPerMonth: null,
@@ -77,6 +94,12 @@ export const DEFAULT_TENANT = {
       blockAt: 100,
     },
   },
+  // TASK 0.4 — журнал виконань сценаріїв ЄСІТС (Court Sync). LIFO cap 200.
+  // Дзеркало recon_history[]. Окремий потік провенансу — НЕ дублює
+  // time_entries (час), ai_usage (токени), auditLog (критичні дії).
+  // Додано без schema bump (розширення без міграції): існуючі реєстри
+  // без поля читаються як порожня історія.
+  ecits_scenario_history: [],
   settings: {
     language: 'uk',
     documentStandard: {

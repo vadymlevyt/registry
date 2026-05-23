@@ -4,7 +4,7 @@ import {
   migrateRegistryV4toV5,
   splitDocumentV4toV5,
 } from '../../src/services/migrations/v4ToV5.js';
-import { migrateToVersion6_5, migrateToVersion8 } from '../../src/services/migrationService.js';
+import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
 import { validateDocument } from '../../src/services/documentFactory.js';
 
 describe('v4ToV5 migration', () => {
@@ -358,5 +358,98 @@ describe('migrateToVersion8 (v7 → v8 time_entry.source → captureMethod)', ()
     const { registry, stats } = migrateToVersion8(reg);
     expect(registry.time_entries[0]).toEqual({ id: 'te_x', duration: 10 });
     expect(stats.noField).toBe(1);
+  });
+});
+
+describe('migrateToVersion9 — case.origin enum (TASK 0.4)', () => {
+  it('CURRENT_SCHEMA_VERSION = 9 і MIGRATION_VERSION="9.0_case_origin"', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(9);
+    expect(MIGRATION_VERSION).toBe('9.0_case_origin');
+  });
+
+  it('існуючі справи (v8) отримують origin: "manual"', () => {
+    const reg = {
+      schemaVersion: 8,
+      cases: [
+        { id: 'case_1', name: 'A' },
+        { id: 'case_2', name: 'B' },
+      ],
+    };
+    const { registry, didMigrate, toVersion, stats } = migrateToVersion9(reg);
+    expect(didMigrate).toBe(true);
+    expect(toVersion).toBe(9);
+    expect(registry.schemaVersion).toBe(9);
+    expect(registry.settingsVersion).toBe('9.0_case_origin');
+    expect(registry.cases[0].origin).toBe('manual');
+    expect(registry.cases[1].origin).toBe('manual');
+    expect(stats.originAdded).toBe(2);
+    expect(stats.originAlreadySet).toBe(0);
+  });
+
+  it('ідемпотентна: з v9 повертає didMigrate=false і нічого не змінює', () => {
+    const reg = { schemaVersion: 9, cases: [{ id: 'c', origin: 'manual' }] };
+    const { didMigrate, registry } = migrateToVersion9(reg);
+    expect(didMigrate).toBe(false);
+    expect(registry).toBe(reg);
+  });
+
+  it('не перезаписує origin якщо вже встановлено валідне значення', () => {
+    const reg = {
+      schemaVersion: 8,
+      cases: [
+        { id: 'c1', origin: 'ecits_import' },
+        { id: 'c2', origin: 'manual' },
+        { id: 'c3' /* немає origin */ },
+      ],
+    };
+    const { registry, stats } = migrateToVersion9(reg);
+    expect(registry.cases[0].origin).toBe('ecits_import');
+    expect(registry.cases[1].origin).toBe('manual');
+    expect(registry.cases[2].origin).toBe('manual');
+    expect(stats.originAlreadySet).toBe(2);
+    expect(stats.originAdded).toBe(1);
+  });
+
+  it('фіксує lastMigration { from, to, at }', () => {
+    const { registry } = migrateToVersion9({ schemaVersion: 8, cases: [] });
+    expect(registry.lastMigration.from).toBe(8);
+    expect(registry.lastMigration.to).toBe(9);
+    expect(typeof registry.lastMigration.at).toBe('string');
+  });
+});
+
+describe('ensureCaseSaasAndEcitsFields — R1 fix (TASK 0.4)', () => {
+  it('додає ecitsState, parties[], processParticipants[], origin до нової справи', () => {
+    const c = ensureCaseSaasAndEcitsFields({ id: 'case_new', name: 'X' });
+    expect(c.ecitsState).toBeDefined();
+    expect(c.ecitsState.syncStatus).toBe('never');
+    expect(c.ecitsState.syncMetrics).toBeDefined();
+    expect(Array.isArray(c.parties)).toBe(true);
+    expect(Array.isArray(c.processParticipants)).toBe(true);
+    expect(c.origin).toBe('manual');
+  });
+
+  it('зберігає передане origin', () => {
+    const c = ensureCaseSaasAndEcitsFields({ id: 'c', origin: 'ecits_import' });
+    expect(c.origin).toBe('ecits_import');
+  });
+
+  it('відкидає невалідне origin і ставить "manual"', () => {
+    const c = ensureCaseSaasAndEcitsFields({ id: 'c', origin: 'malicious_value' });
+    expect(c.origin).toBe('manual');
+  });
+
+  it('зберігає передане ecitsState', () => {
+    const ec = { caseId: 'hex', syncStatus: 'synced' };
+    const c = ensureCaseSaasAndEcitsFields({ id: 'c', ecitsState: ec });
+    expect(c.ecitsState).toBe(ec);
+  });
+
+  it('додає SaaS поля (tenantId, ownerId, team, shareType)', () => {
+    const c = ensureCaseSaasAndEcitsFields({ id: 'c', name: 'X' });
+    expect(c.tenantId).toBeTruthy();
+    expect(c.ownerId).toBeTruthy();
+    expect(Array.isArray(c.team)).toBe(true);
+    expect(c.shareType).toBeTruthy();
   });
 });
