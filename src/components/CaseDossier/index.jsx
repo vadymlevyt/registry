@@ -2638,10 +2638,29 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: `${statusColor}22`, color: statusColor }}>{statusLabel}</span>
           {(() => { const _nh = (caseData.hearings || []).filter(h => h.status === 'scheduled').sort((a,b) => a.date.localeCompare(b.date))[0]; return _nh ? <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(243,156,18,.15)", color: "var(--color-warning)", display: "inline-flex", alignItems: "center", gap: 4 }}><Calendar size={ICON_SIZE.xs} />{_nh.date}{_nh.time ? ` о ${_nh.time}` : ''}</span> : null; })()}
-          {storageState?.driveFolderId ? (
-            <button onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(79,124,255,.12)", color: "var(--color-accent)", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }} title={storageState.driveFolderName || "Drive папка"}><Cloud size={ICON_SIZE.xs} /><span>Drive</span><Link2 size={ICON_SIZE.xs} /></button>
+          {/* Drive-chip — 4 стани через folderStatus (узгоджено зі смартом у блоці Сховище). */}
+          {folderStatus === 'alive' ? (
+            <button
+              onClick={() => window.open(`https://drive.google.com/drive/folders/${storageState.driveFolderId}`, "_blank")}
+              title={storageState.driveFolderName || "Drive папка"}
+              style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(79,124,255,.12)", color: "var(--color-accent)", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+            ><Cloud size={ICON_SIZE.xs} /><span>Drive</span><Link2 size={ICON_SIZE.xs} /></button>
+          ) : folderStatus === 'trashed' ? (
+            <span
+              title="Папка справи у кошику Drive. Натисни «↻ Перестворити» у блоці «Сховище» нижче."
+              style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(231,76,60,.1)", color: "var(--color-danger)", display: "inline-flex", alignItems: "center", gap: 4, cursor: "help" }}
+            ><AlertTriangle size={ICON_SIZE.xs} /><span>Папка у кошику</span></span>
+          ) : folderStatus === 'missing' ? (
+            <span
+              title="Папки справи на Drive немає. Натисни «Створити структуру на Drive» у блоці «Сховище» нижче."
+              style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(231,76,60,.1)", color: "var(--color-danger)", display: "inline-flex", alignItems: "center", gap: 4, cursor: "help" }}
+            ><AlertTriangle size={ICON_SIZE.xs} /><span>Створіть папку</span></span>
           ) : (
-            <span style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "rgba(231,76,60,.1)", color: "var(--color-danger)", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={ICON_SIZE.xs} /><span>Без папки</span></span>
+            // unknown — стан ще перевіряється або тимчасова мережа.
+            <span
+              title="Стан папки на Drive ще перевіряється…"
+              style={{ fontSize: 11, padding: "3px 9px", borderRadius: 'var(--radius-xs)', fontWeight: 600, background: "var(--color-surface-2)", color: "var(--color-text-3)", display: "inline-flex", alignItems: "center", gap: 4 }}
+            ><Cloud size={ICON_SIZE.xs} /><span>Drive…</span></span>
           )}
           {caseData.status !== "closed" && onCloseCase && (
             <button onClick={async () => {
