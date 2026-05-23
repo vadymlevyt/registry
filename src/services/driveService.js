@@ -48,7 +48,26 @@ export async function findOrCreateFolder(name, parentId, token) {
   );
   const searchData = await searchRes.json();
 
-  const match = (searchData.files || []).find((f) => f.name === name);
+  // NFC-нормалізація + trim перед порівнянням. Без цього `f.name === name`
+  // повертає false на візуально ідентичних рядках і findOrCreateFolder
+  // створює дублікат папки.
+  //
+  // Реальні джерела розбіжності спостережені у проді на справі Нестеренка
+  // (2026-05-23 — дві папки на Drive з однаковим іменем):
+  //   1. Trailing/leading whitespace — '«Нестеренко » vs «Нестеренко»' (часто
+  //      коли ім'я копіюється з UI з зайвим пробілом).
+  //   2. NFC vs NFD форми Unicode (актуально для латиниці з diacritics, для
+  //      precomposed кирилиці зазвичай нерелевантно — але normalize безпечно
+  //      і дешево, тому застосовуємо превентивно).
+  //   3. Race condition (два паралельні findOrCreateFolder для того ж імені
+  //      одночасно) — НЕ покривається цим фіксом, потребує транзакційного
+  //      підходу і виходить за scope.
+  //
+  // Той самий патерн (NFC normalize) уже у ensureSubFolders (CaseDossier:755).
+  const target = name.normalize('NFC').trim();
+  const match = (searchData.files || []).find(
+    (f) => f.name.normalize('NFC').trim() === target
+  );
   if (match) {
     return match;
   }
