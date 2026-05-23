@@ -2466,6 +2466,8 @@ function PreviewPopup({
             displayUrl={displayUrl}
             initialCoords={initialCropperCoords}
             frameVisible={frameVisible}
+            userRotation={userRotation}
+            bakedUserRotationRef={bakedUserRotationRef}
             onChange={(rotatedRect) => {
               if (!naturalDims) return;
               const original = rotateRectCCW(
@@ -2598,7 +2600,16 @@ function PreviewPopup({
 //
 // Lazy import — react-advanced-cropper ~30KB gzip, не тягнемо у головний bundle.
 
-function CropperHost({ cropperRef, displayUrl, initialCoords, frameVisible, onChange }) {
+// userRotation і bakedUserRotationRef передаються як props (раніше були
+// dangling references на scope PreviewPopup — ReferenceError при re-open
+// попапа після ✓ Готово, коли frameVisible=false і виконувалась гілка
+// view-only з CSS-rotation delta). Один сенс на prop (правило #11):
+// userRotation — поточний кут адвоката (number 0/90/180/270), bakedUserRotationRef
+// — кут запечений у displayUrl-blob, потрібен для delta-розрахунку без
+// регенерації blob.
+//
+// Експортовано для regression-тесту (tests/unit/cropperHost.test.jsx).
+export function CropperHost({ cropperRef, displayUrl, initialCoords, frameVisible, onChange, userRotation, bakedUserRotationRef }) {
   const [cropperLib, setCropperLib] = useState(null);
 
   useEffect(() => {
