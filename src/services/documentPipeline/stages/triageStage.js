@@ -158,14 +158,10 @@ function normalizePlan(raw) {
 // stageDeps:
 //   triage({artifacts,userHint,caseId}) → {documents,unusedPages} — AI-хід
 //     Triage (Haiku, поверх toolUseRunner; ін'єкт). Обов'язковий для актив.
-//   tocDetect({fileId,layoutJson,totalPages,caseId}) → {isToc,plan,reason?}
-//     — ФД-T2: препроцесор реєстру/опису матеріалів (TASK ToC §3). Не нова
-//     стадія (обмеження №4) — детермінований обхід AI Triage коли том має
-//     готовий реєстр. Опційний; нема — пропускаємо одразу до AI Triage.
 //   getStreamedText(fileId) / getStreamedLayout(fileId) — потоковий OCR
 //     текст / per-page layout (executor-accessor; як detectBoundariesV3).
 export function createTriageStage(stageDeps = {}) {
-  const { triage, tocDetect, getStreamedText, getStreamedLayout } = stageDeps;
+  const { triage, getStreamedText, getStreamedLayout } = stageDeps;
 
   return async function triageStage(ctx) {
     const live = ctx.files.filter((f) => !f.skipped);
@@ -187,60 +183,6 @@ export function createTriageStage(stageDeps = {}) {
           message: 'Одне зображення = один документ (детермінована сітка).',
         }],
       };
-    }
-
-    // ── ФД-T2 ToC препроцесор (тільки single-PDF великий том) ────────────
-    // Реєстр/опис матеріалів — детермінований план з самого тома (адвокат/
-    // канцелярія його склали). Якщо знайшли і розпарсили — обходимо AI
-    // Triage. Інакше — fallback на AI Triage з збагаченим дайджестом
-    // (Гілка B). Чітка умова входу: 1 файл, не image (mime не image/*),
-    // pageCount ≥ 10 (нема сенсу шукати реєстр на коротких файлах — у
-    // tocDetector власний пре-фільтр <10 теж, але тут економимо виклик).
-    if (typeof tocDetect === 'function' && live.length === 1) {
-      const f = live[0];
-      const mime = (f.originalMime || '').toLowerCase();
-      const isImage = mime.startsWith('image/');
-      const layout = typeof getStreamedLayout === 'function' ? getStreamedLayout(f.fileId) : null;
-      // pageCount беремо з layout (makeContext не пробрасує streamed.pageCount
-      // у ctx.files — це інваріант диригента). Якщо layout є, його довжина і
-      // є фактичним total pages для цього артефакту.
-      const pageCount = (layout && Array.isArray(layout.pages)) ? layout.pages.length : (Number(f.pageCount) || 0);
-      if (!isImage && pageCount >= 10 && layout) {
-        let tocOut = null;
-        try {
-          tocOut = await tocDetect({
-            fileId: f.fileId,
-            layoutJson: layout,
-            totalPages: pageCount,
-            caseId: ctx.job.caseId,
-          });
-        } catch (err) {
-          tocOut = { isToc: false, reason: `transport:${err?.message || String(err)}` };
-        }
-        if (tocOut?.isToc && Array.isArray(tocOut.plan?.documents) && tocOut.plan.documents.length > 0) {
-          const plan = normalizePlan(tocOut.plan);
-          if (plan.documents.length > 0) {
-            return {
-              ok: true,
-              ctx: { ...ctx, reconstructionPlan: { ...plan, source: 'toc_detector' }, unusedPages: plan.unusedPages },
-              decisions: [{
-                type: 'document_boundaries',
-                scope: 'triage',
-                deterministic: true,
-                source: 'toc_detector',
-                documentCount: plan.documents.length,
-                proposals: plan.documents.map((d) => ({
-                  documentId: d.documentId, name: d.name, type: d.type, route: d.route, fragments: d.fragments,
-                })),
-                unusedPages: plan.unusedPages,
-                message: `Реєстр матеріалів у томі: ${plan.documents.length} документів за описом справи (AI Triage обійдено).`,
-              }],
-            };
-          }
-        }
-        // tocOut.isToc:false — fallback на AI Triage нижче. reason у warnings
-        // не пишемо тихо — нехай AI Triage просто продовжує своїм шляхом.
-      }
     }
 
     // ── AI Triage ────────────────────────────────────────────────────────

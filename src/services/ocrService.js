@@ -132,24 +132,11 @@ async function writeArtifact(file, fileName, content, mimeType) {
 // операцій (AI Очищення тексту, semantic split тощо). Викидаємо ТІЛЬКИ при
 // серіалізації — pageStructure у пам'яті залишається повним для caller'ів.
 //
-//   image            — base64 PNG-рендер сторінки. Дублює оригінал у 01_ОРИГІНАЛИ.
-//                      ~5-7 МБ на сторінку для типового скана судового документа.
-//   tokens           — координати кожної окремої літери. Майбутні модулі працюють
-//                      на рівні paragraphs/blocks, окремі літери не потрібні.
-//   symbols          — per-character деталі (ще важчі за tokens). Не споживає
-//                      ані Triage, ані очистка, ані in'юер. ФД-D2.6 (TASK ToC):
-//                      профілактично стрипати разом з tokens (один сенс «важкі
-//                      per-glyph дані не потрібні нікому далі по pipeline»).
-//   detected_barcodes — деталі баркодів. Не споживається ніким у pipeline. Стрипати.
-//   transforms       — трансформаційні матриці застосовані до оригінального
-//                      зображення сторінки. Не споживається ніким. Стрипати.
-const STRIPPED_LAYOUT_FIELDS = [
-  'image',
-  'tokens',
-  'symbols',
-  'detected_barcodes',
-  'transforms',
-];
+//   image  — base64 PNG-рендер сторінки. Дублює оригінал у 01_ОРИГІНАЛИ.
+//            ~5-7 МБ на сторінку для типового скана судового документа.
+//   tokens — координати кожної окремої літери. Майбутні модулі працюють
+//            на рівні paragraphs/blocks, окремі літери не потрібні.
+const STRIPPED_LAYOUT_FIELDS = ['image', 'tokens'];
 
 function stripHeavyFields(pageStructure) {
   if (!Array.isArray(pageStructure)) return pageStructure;

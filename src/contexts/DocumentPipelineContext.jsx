@@ -102,17 +102,6 @@ async function aiTriage({ artifacts, userHint, caseId }) {
   return analyzeTriageViaToolUse({ artifacts, userHint, caseId, apiKey });
 }
 
-// ФД-T2 ToC препроцесор. Тонка обгортка над tocDetector (Haiku, 2 виклики
-// detect+parse, білінг §12 всередині модуля). Нема ключа → {isToc:false}
-// без throw — створюємо однорідну відповідь, createTriageStage йде у
-// fallback AI Triage.
-async function aiTocDetect({ fileId, layoutJson, totalPages, caseId }) {
-  const apiKey = getApiKey();
-  if (!apiKey) return { isToc: false, reason: 'no_api_key' };
-  const { detectTableOfContents } = await import('../services/documentBoundary/tocDetector.js');
-  return detectTableOfContents({ fileId, layoutJson, totalPages, caseId, apiKey });
-}
-
 async function aiCleanText(text, { fileName } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('Немає API ключа для очистки');
@@ -197,7 +186,6 @@ export function DocumentPipelineProvider({ executeAction, children }) {
           // самі що раніше (потоковий OCR + per-page layout для паспорта).
           detectBoundaries: createTriageStage({
             triage: aiTriage,
-            tocDetect: aiTocDetect,
             getStreamedText,
             getStreamedLayout,
           }),

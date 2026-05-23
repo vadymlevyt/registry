@@ -198,35 +198,6 @@ export function buildStructuralPassport(layoutJson, expectedPageCount = null) {
 const QUALITY_JUMP = 0.25;   // |Δ qualityScore| ≥ → ймовірна зміна джерела/документа (стартова точка)
 const SPARSE_BLOCKS = 2;     // ≤ стільки текстових блоків — кандидат «розрідженої» сторінки
 const SPARSE_CHARS = 200;    // … і ≤ стільки символів _text → «розріджена» (обкладинка/квитанція/штамп)
-const TABLE_COVERAGE_DOMINANT = 0.40;  // ФД-D2 §4.2: ≥40% площі під таблицями → кандидат сторінки-реєстру
-
-// ФД-D2 §4.3 — якорі-заголовки української юридичної практики. Підсилюють
-// наявний headingSignal(), коли заголовок зверху містить типове слово
-// судового документа. Шорт-список покриває ~85% типів; редагується як
-// звичайна константа без зміни схеми (це не enum SCHEMA). Один сенс:
-// «слова, які майже гарантовано вказують на початок нового документа».
-const UA_DOC_HEADERS = [
-  'ПОСТАНОВА',
-  'УХВАЛА',
-  'РІШЕННЯ',
-  'ВИРОК',
-  'ВИСНОВОК',
-  'ПРОТОКОЛ',
-  'АКТ',
-  'ЗАЯВА',
-  'ПОЗОВНА',
-  'ДОВІДКА',
-  'СВІДОЦТВО',
-  'ДЕКЛАРАЦІЯ',
-  'ДОГОВІР',
-  'ОРДЕР',
-  'КЛОПОТАННЯ',
-  'СКАРГА',
-  'ВИМОГА',
-  'ПОВІДОМЛЕННЯ',
-  'ВИТЯГ',
-  'ЛИСТ',
-];
 
 // Налаштовуваний ручник (спека §3.2; дефолти — стартові точки, не остаточні).
 const COMPACT_DEFAULTS = Object.freeze({
@@ -243,123 +214,6 @@ function qualityScore(page) {
   const q = Number(page?.imageQualityScores?.qualityScore);
   return Number.isFinite(q) ? q : null;
 }
-
-// ФД-D2 §4.2 — сумарна частка площі сторінки під таблицями. Document AI
-// дає `page.tables[].layout.boundingPoly.normalizedVertices` (∈[0,1]).
-// Один сенс: «частка площі сторінки, що зайнята таблицями, ∈[0,1]». ≥40% →
-// сильний індикатор сторінки-реєстру/змісту (підсилює ToC детектор).
-function tableCoverage(page) {
-  const tables = Array.isArray(page?.tables) ? page.tables : [];
-  if (tables.length === 0) return 0;
-  let total = 0;
-  for (const t of tables) {
-    const v = t?.layout?.boundingPoly?.normalizedVertices;
-    if (!Array.isArray(v) || v.length < 4) continue;
-    const xs = v.map((p) => Number(p?.x) || 0);
-    const ys = v.map((p) => Number(p?.y) || 0);
-    const w = Math.max(...xs) - Math.min(...xs);
-    const h = Math.max(...ys) - Math.min(...ys);
-    total += Math.max(0, Math.min(1, w * h));
-  }
-  return Math.min(1, total);  // capped [0..1] — таблиці можуть перекриватись
-}
-
-// ФД-D2 §4.4 — внутрішня нумерація документа («стор. 1 з 9», «1/9»,
-// «Page 1 of 9», «-1-»). Окремо від нумерації аркушів тома (footerNumber).
-// Один сенс: «детект внутрішньої посилкової нумерації конкретного документа;
-// current=1 → ПОЧАТОК-ДОКУМЕНТА, current==total → КІНЕЦЬ-ДОКУМЕНТА».
-function detectDocumentPageNumber(page) {
-  const last = lastLine(page?._text);
-  if (!last) return null;
-  const m =
-    last.match(/(\d+)\s*[з\/]\s*(\d+)/i) ||
-    last.match(/page\s+(\d+)\s+of\s+(\d+)/i) ||
-    last.match(/^[-—]\s*(\d+)\s*[-—]\s*$/);
-  if (!m) return null;
-  const current = Number(m[1]);
-  if (!Number.isFinite(current) || current < 1) return null;
-  const total = m[2] ? Number(m[2]) : null;
-  return { current, total: Number.isFinite(total) ? total : null };
-}
-
-// ФД-D2.5 §4.5 — семантична безперервність на стику двох сторінок.
-// Експертна евристика адвоката: дивитись останній рядок попередньої
-// сторінки та перший рядок наступної. Якщо текст продовжується смислово —
-// той самий документ; якщо ні — можлива межа.
-//
-// Один сенс: «оцінка чи на стику (n, n+1) текст продовжується (тримай
-// разом — СИЛЬНИЙ-АНТИ сигнал) чи перервався (можлива межа — слабкий
-// сигнал на користь межі)». Повертає 'continues' | 'possible_break' | null.
-//
-// 'continues' — попередня НЕ закінчена крапкою+нова починається з малої:
-//   це абзац який тягнеться через межу сторінки. Triage має поважати —
-//   НЕ ставити boundary між цими сторінками навіть якщо інші дорадчі
-//   підказують межу.
-// 'possible_break' — попередня закінчена крапкою + наступна з ВЕЛИКОЇ:
-//   завершене речення + новий абзац з великої. Слабкий — підсилюється
-//   іншими сигналами.
-// null — нейтрально (наприклад, обидві з великої, або фрагменти короткі).
-function semanticContinuity(prevPage, page) {
-  const prevTail = lastLine(prevPage?._text);
-  const nextHead = firstLine(page?._text);
-  if (!prevTail || !nextHead) return null;
-  // Виключаємо випадки коли tail/head — це чисто числа (футер-№/нумерація)
-  // або дуже коротко (<5 симв.). Такі рядки не несуть смислу для оцінки
-  // продовжуваності абзацу.
-  if (prevTail.length < 5 || nextHead.length < 5) return null;
-  if (/^\d{1,4}$/.test(prevTail.trim())) return null;
-  if (/^\d{1,4}$/.test(nextHead.trim())) return null;
-
-  const prevEnd = prevTail.trim().slice(-1);
-  const nextStart = nextHead.trim().charAt(0);
-  if (!prevEnd || !nextStart) return null;
-
-  const endsSentence = /[.!?…»)]/.test(prevEnd);
-  // unicode-aware: 'а' === 'А'.toLowerCase() — нижній/верхній регістри
-  // через локаль case-toggling. Безпечно: тільки літери ASCII/кирилиці.
-  const startsLower = /\p{Ll}/u.test(nextStart);
-  const startsUpper = /\p{Lu}/u.test(nextStart);
-
-  if (!endsSentence && startsLower) return 'continues';
-  if (endsSentence && startsUpper) return 'possible_break';
-  return null;
-}
-
-// ФД-D2.5 §4.6 — стрибок дефектів сканування. Document AI повертає
-// imageQualityScores.detectedDefects[] з типами `quality/defect_*`. Зміна
-// НАБОРУ defects між сусідніми сторінками сильніша за один лиш qualityScore
-// delta (нова сесія сканування — інша камера, інше освітлення, інші типи
-// дефектів). Один сенс: «детект зміни умов сканування за набором дефектів
-// між сторінками».
-function detectDefectsSet(page) {
-  const defects = page?.imageQualityScores?.detectedDefects;
-  if (!Array.isArray(defects)) return null;
-  const types = defects.map((d) => d?.type).filter(Boolean);
-  return new Set(types);
-}
-
-function defectsChanged(prevSet, curSet) {
-  if (!prevSet || !curSet) return false;
-  if (prevSet.size !== curSet.size) return true;
-  for (const t of curSet) if (!prevSet.has(t)) return true;
-  return false;
-}
-
-// ФД-D2.5 §4.7 — середня OCR-впевненість paragraphs на сторінці. Document
-// AI дає Layout.confidence на КОЖНОМУ paragraph. Беремо середнє як проксі
-// «надійності тексту». Один сенс: «середня впевненість OCR абзаців на
-// сторінці; <0.7 → попередження Triage не довіряти тонким сигналам».
-// НЕ сигнал межі — мета-попередження («не створюй короткий документ через
-// слабкі сигнали на цій сторінці — це може бути шум OCR»).
-function avgParagraphConfidence(page) {
-  const ps = Array.isArray(page?.paragraphs) ? page.paragraphs : [];
-  if (ps.length === 0) return null;
-  const confs = ps.map((p) => Number(p?.layout?.confidence)).filter(Number.isFinite);
-  if (confs.length === 0) return null;
-  return confs.reduce((a, b) => a + b, 0) / confs.length;
-}
-
-const OCR_LOW_THRESHOLD = 0.70;  // нижче — попередження «текст ненадійний» (стартова точка)
 
 // Перша визначена мова сторінки (Document AI detectedLanguages — впорядковані
 // за confidence; беремо першу). Слабкий сигнал зміни документа.
@@ -388,17 +242,7 @@ function compactDigest(page, prev) {
   if (Array.isArray(page?.tables) && page.tables.length) tags.push('таблиці');
   if (Array.isArray(page?.formFields) && page.formFields.length) tags.push('поля-форми');
   const heading = headingSignal(page);
-  if (heading) {
-    tags.push(`заголовок:"${heading}"`);
-    // ФД-D2 §4.3: заголовок зі списку юр. документів → СИЛЬНИЙ сигнал
-    // нового документа. Поверх дорадчого `заголовок:"..."`. Перевірка
-    // підрядкова (case-insensitive): «Постанова про...», «Позовна заява»,
-    // «ВИМОГА слідчого» — усі ловляться через UA_DOC_HEADERS.
-    const upper = heading.toUpperCase();
-    if (UA_DOC_HEADERS.some((kw) => upper.includes(kw))) {
-      tags.push('ЯКІР-ДОКУМЕНТА');
-    }
-  }
+  if (heading) tags.push(`заголовок:"${heading}"`);
   const fnum = footerNumber(page);
   if (fnum != null) {
     tags.push(`футер-№:${fnum}`);
@@ -422,42 +266,6 @@ function compactDigest(page, prev) {
   const lang = primaryLanguage(page);
   if (lang && prev.lang && lang !== prev.lang) tags.push(`зміна-мови:${prev.lang}→${lang}`);
 
-  // ФД-D2 §4.2 — table-coverage. Сильний сигнал «ця сторінка переважно
-  // таблиця» (≥40% площі) → кандидат сторінки-реєстру для ToC детектора.
-  const tc = tableCoverage(page);
-  if (tc >= TABLE_COVERAGE_DOMINANT) {
-    tags.push(`таблиця-домінює:${Math.round(tc * 100)}%`);
-  }
-
-  // ФД-D2 §4.4 — внутрішня нумерація документа. ПОЧАТОК/КІНЕЦЬ — СИЛЬНІ
-  // сигнали меж (один з достатніх для висновку про межу). «док-стор:N/M» —
-  // також передає реальну довжину поточного документа (підказує Triage'у
-  // де очікувати наступну межу).
-  const dn = detectDocumentPageNumber(page);
-  if (dn) {
-    tags.push(`док-стор:${dn.current}${dn.total != null ? `/${dn.total}` : ''}`);
-    if (dn.current === 1) tags.push('ПОЧАТОК-ДОКУМЕНТА');
-    if (dn.total != null && dn.current === dn.total) tags.push('КІНЕЦЬ-ДОКУМЕНТА');
-  }
-
-  // ФД-D2.5 §4.5 — семантична безперервність на стику з попередньою.
-  // 'continues' = СИЛЬНИЙ-АНТИ сигнал (НЕ ставити межу); 'possible_break' =
-  // слабкий сигнал на користь межі (підсилюється іншими).
-  const cont = semanticContinuity(prev.page, page);
-  if (cont === 'continues') tags.push('продовження-абзацу');
-  if (cont === 'possible_break') tags.push('можливий-абзацний-розрив');
-
-  // ФД-D2.5 §4.6 — зміна набору defects vs попередня сторінка. Сильніше за
-  // самотній qualityScore-delta (нова камера/освітлення = інші типи defects).
-  const defects = detectDefectsSet(page);
-  if (defectsChanged(prev.defects, defects)) tags.push('дефекти-зміна');
-
-  // ФД-D2.5 §4.7 — мета-попередження «текст ненадійний». НЕ сигнал межі.
-  const conf = avgParagraphConfidence(page);
-  if (conf != null && conf < OCR_LOW_THRESHOLD) {
-    tags.push(`OCR-низька:${conf.toFixed(2)}`);
-  }
-
   return {
     line: tags.length ? `[${tags.join(' | ')}]` : '',
     next: {
@@ -466,11 +274,6 @@ function compactDigest(page, prev) {
       format: fmt != null ? fmt : prev.format,
       orientation: ori || prev.orientation,
       lang: lang || prev.lang,
-      // ФД-D2.5: попередня сторінка-об'єкт і набір defects для дельта-сигналів
-      // наступної сторінки. Тримаємо REF на page (не string-tail) — це
-      // дозволяє semanticContinuity мати чисту сигнатуру (prevPage, page).
-      page,
-      defects: defects || prev.defects,
     },
   };
 }
@@ -504,7 +307,7 @@ function edgeText(text, o) {
 export function buildCompactTriagePassport(layoutJson, expectedPageCount = null, opts = {}) {
   if (!isPagedLayout(layoutJson, expectedPageCount)) return '';
   const o = { ...COMPACT_DEFAULTS, ...(opts || {}) };
-  let prev = { footer: null, quality: null, format: null, orientation: null, lang: null, page: null, defects: null };
+  let prev = { footer: null, quality: null, format: null, orientation: null, lang: null };
   return layoutJson.pages
     .map((page, i) => {
       const p = page || {};
