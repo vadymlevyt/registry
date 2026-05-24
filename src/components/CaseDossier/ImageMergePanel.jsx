@@ -369,13 +369,28 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         throw new Error('Pipeline повернув порожній finalOrder');
       }
 
-      for (let i = 0; i < realFiles.length; i++) {
+      // HEIC з телефону (через Drive чи device input) браузер не вміє декодувати
+      // у <img src=blob:...>. Після pipeline беремо нормалізовані файли
+      // (JPEG після heic2any для HEIC; оригінал для решти) і використовуємо їх
+      // ВСЮДИ де потрібен Blob для UI: thumbnails, popup, edge detection,
+      // computeRenderedBlob. Без цього thumbnails і enlarged view порожні
+      // для HEIC-фото.
+      const displayFiles =
+        Array.isArray(result.normalizedFiles) &&
+        result.normalizedFiles.length === realFiles.length
+          ? result.normalizedFiles
+          : realFiles;
+
+      for (let i = 0; i < displayFiles.length; i++) {
         if (!thumbUrlsRef.current.has(i)) {
-          thumbUrlsRef.current.set(i, URL.createObjectURL(realFiles[i]));
+          const f = displayFiles[i];
+          if (f instanceof Blob) {
+            thumbUrlsRef.current.set(i, URL.createObjectURL(f));
+          }
         }
       }
 
-      setPipelineResult({ ...result, realFiles });
+      setPipelineResult({ ...result, realFiles: displayFiles });
       setOrderedIndices(result.finalOrder);
       setUserRotation(new Map());
       setCropProposals(new Map());
@@ -401,17 +416,21 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       // іконки ✂️ зʼявляться по мірі готовності. На випадок помилки —
       // просто пропускаємо файл (proposal лишається відсутнім).
       (async () => {
-        console.log('[merge] edge detection START for', realFiles.length, 'files');
+        // Використовуємо displayFiles (post-HEIC) — detectDocumentEdges
+        // завантажує у <img>/Canvas, HEIC не декодується.
+        console.log('[merge] edge detection START for', displayFiles.length, 'files');
         const proposals = new Map();
-        for (let i = 0; i < realFiles.length; i++) {
+        for (let i = 0; i < displayFiles.length; i++) {
+          const f = displayFiles[i];
+          if (!(f instanceof Blob)) continue;
           try {
-            const rect = await detectDocumentEdges(realFiles[i], realFiles[i]?.name || `#${i}`);
+            const rect = await detectDocumentEdges(f, f?.name || `#${i}`);
             if (rect) proposals.set(i, rect);
           } catch (e) {
             console.warn('[merge] edge detection failed for idx', i, e);
           }
         }
-        console.log('[merge] edge detection DONE: proposals=', proposals.size, 'of', realFiles.length);
+        console.log('[merge] edge detection DONE: proposals=', proposals.size, 'of', displayFiles.length);
         setCropProposals(proposals);
       })();
 

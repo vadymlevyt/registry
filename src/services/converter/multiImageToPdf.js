@@ -38,6 +38,10 @@
 //   ocrResults: Array<{ index, text, pageStructure, warnings }>, // raw OCR
 //   sortResult: SortResult | null,    // null коли 1 image
 //   finalOrder: Array<number>,        // індекси у фінальному порядку
+//   normalizedFiles: Array<File|Object>, // post-HEIC файли у тому самому
+//     // порядку що вхідні files. JPEG для конвертованих HEIC, оригінал
+//     // для решти. Для HEIC fail — placeholder {_heicFailed}. UI бере
+//     // звідси Blob для thumbnails/preview (браузер не вміє <img src=HEIC>).
 //   warnings: Array<string>,
 //   converter: 'multiImageToPdf',
 //   durationMs: number,
@@ -495,6 +499,7 @@ export async function convertImagesToPdf(files, options = {}) {
     ocrResults,
     sortResult,
     finalOrder,
+    normalizedFiles: normalized,
     detectedOrientations,
     orientationDebug,
     uncertainOrientationIndices,
