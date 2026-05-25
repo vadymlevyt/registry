@@ -169,19 +169,58 @@ ctx.errors = [...ctx.errors, { ...(result.error || {}), stage: result.error?.sta
 
 ### 3.2 `src/services/documentPipeline/stages/triageStage.js`
 
+**ВАЖЛИВО (уточнено 25.05.2026 після першого виконання):** критерій
+«1 doc × 100% покриття» — необхідна, але **недостатня** умова.
+Бо лагідно ловить три легітимні сценарії:
+
+1. Малий PDF (3-20 стор.) → AI коректно каже `add_as_is` на весь файл.
+   Це не провал — PDF справді є одним документом.
+2. Група фото → AI `image_merge` робить з них один документ. Це **дизайн
+   route**, не provід.
+3. `fragment_reconstruct` — збирання документа через кілька PDF в один.
+   Теж **дизайн route**.
+
+Тому функція **МУСИТЬ мати два додаткові фільтри** (інакше зламає
+~11 існуючих integration-тестів і реальні happy-path сценарії адвоката):
+
+- **Фільтр обсягу** — degenerate concern реальний тільки на томах, де
+  Haiku справді здає вікно. Це той самий поріг, що й
+  `RICH_PASSPORT_MAX_PAGES_DEFAULT` з §3.3 — один сенс цифри, одна
+  межа «з якої точки Haiku в зоні ризику» (правило #11).
+- **Фільтр route** — degenerate можливий тільки для маршрутів, де AI
+  мав знайти/підтвердити межі. Для `image_merge` /
+  `fragment_reconstruct` / `signature_sidecar` / `to_fragments` /
+  `discard` «1 doc × 100%» — це **очікувана поведінка route**, не
+  провал. Залишаємо тільки `add_as_is` і `slice`.
+
 **Додати** експортовану чисту функцію (одразу після `resolveOverlaps`):
 
 ```js
-// isDegeneratePlan — план виглядає як passthrough: рівно один документ,
-// чиї фрагменти покривають 100% сторінок усіх живих файлів. Один сенс:
-// «AI не знайшов меж — повертає тома як один шматок, що тотожно
-// відсутності нарізки». Окрема від normalizePlan, бо normalize працює
-// над raw AI-відповіддю (форма), а ця — над уже нормалізованим планом
-// і живим набором файлів (семантика покриття).
+// DEGENERATE_MIN_PAGES — той самий поріг, що RICH_PASSPORT_MAX_PAGES_DEFAULT
+// у pageMarkers.js (правило #11: одна цифра — один сенс «межа якості
+// Haiku вікна»). Якщо буде змінено там — синхронно змінити тут (і
+// зафіксувати в звіті §9.4 grep підтвердження).
+const DEGENERATE_MIN_PAGES = 70;
+
+// DEGENERATE_ELIGIBLE_ROUTES — маршрути, де AI мав знайти/підтвердити
+// межі. Для image_merge / fragment_reconstruct / signature_sidecar /
+// to_fragments / discard «1 doc × 100%» — дизайн route, не провал.
+const DEGENERATE_ELIGIBLE_ROUTES = new Set(['add_as_is', 'slice']);
+
+// isDegeneratePlan — план виглядає як passthrough НА ВЕЛИКОМУ ТОМІ ДЕ
+// AI МАВ ШУКАТИ МЕЖІ: рівно один документ маршруту add_as_is/slice,
+// фрагменти якого покривають 100% сторінок усіх живих файлів, при
+// сумарному обсязі ≥DEGENERATE_MIN_PAGES. Окрема від normalizePlan, бо
+// normalize працює над raw AI-відповіддю (форма), а ця — над уже
+// нормалізованим планом і живим набором файлів (семантика покриття +
+// контекст обсягу + контекст маршруту).
 export function isDegeneratePlan(plan, liveFiles) {
   if (!plan || plan.documents?.length !== 1) return false;
   const doc = plan.documents[0];
-  if (doc.route === 'discard' || doc.fragments.length === 0) return false;
+  if (!DEGENERATE_ELIGIBLE_ROUTES.has(doc.route)) return false;
+  if (doc.fragments.length === 0) return false;
+  const totalPages = liveFiles.reduce((s, f) => s + (f.pageCount || 1), 0);
+  if (totalPages < DEGENERATE_MIN_PAGES) return false;
   const byFile = new Map();
   for (const fr of doc.fragments) {
     const prev = byFile.get(fr.fileId) || [];
@@ -306,14 +345,23 @@ disposition внутрішня кухня диригента — але пере
 
 ### 4.1 Unit — `tests/unit/triageStage.test.js` (новий файл)
 
-- `isDegeneratePlan` на синтетичних планах:
-  - 1 файл 50 стор., план `[{fragments:[{1,50}]}]` → **true**.
-  - 1 файл 50 стор., план `[{fragments:[{1,30}]}, {fragments:[{31,50}]}]` → **false**.
-  - 2 файли по 10 стор., план `[{fragments:[{file1,1,10},{file2,1,10}]}]` → **true**.
-  - 2 файли по 10 стор., план з 1 документа, що покриває тільки file1 → **false**.
-  - План з `{route:'discard'}` → **false** (discard не degenerate).
+- `isDegeneratePlan` на синтетичних планах **(сітка покриває обидва нові фільтри)**:
+  - 1 файл **80 стор.**, `route:'add_as_is'`, `[{fragments:[{1,80}]}]` → **true**.
+  - 1 файл **80 стор.**, `route:'slice'`, `[{fragments:[{1,80}]}]` → **true**.
+  - **Фільтр обсягу (Q1):** 1 файл **3 стор.**, `route:'add_as_is'`, `[{fragments:[{1,3}]}]` → **false** (нижче DEGENERATE_MIN_PAGES=70 — це happy-path малого PDF).
+  - **Фільтр обсягу:** 1 файл **69 стор.**, `route:'add_as_is'` → **false** (на самій межі — нижче ще не ловимо).
+  - **Фільтр route (Q2):** 1 файл 100 стор., `route:'image_merge'`, `[{fragments:[{1,100}]}]` → **false** (image_merge — дизайн route).
+  - **Фільтр route:** 1 файл 100 стор., `route:'fragment_reconstruct'` → **false** (дизайн route).
+  - **Фільтр route:** план з `{route:'discard'}` → **false** (службовий).
+  - 1 файл 100 стор., `route:'add_as_is'`, план `[{fragments:[{1,60}]}, {fragments:[{61,100}]}]` → **false** (два документи — не degenerate).
+  - 2 файли по 50 стор. (total 100), `route:'add_as_is'`, план `[{fragments:[{file1,1,50},{file2,1,50}]}]` → **true** (multi-file passthrough на великому сумарному обсязі).
+  - 2 файли по 50 стор., план з 1 документа що покриває тільки file1 → **false**.
   - План з 0 документів → **false**.
 - `_setRichPassportMaxPages(50)` / `richMaxPages()` round-trip.
+- **Симетрія порогів:** окремий тест-нагадувач, що `DEGENERATE_MIN_PAGES`
+  у `triageStage.js` дорівнює `RICH_PASSPORT_MAX_PAGES_DEFAULT` у
+  `pageMarkers.js` (правило #11 — одна цифра один сенс; якщо зміниться
+  одна — впаде цей тест як reminder синхронно змінити іншу).
 
 ### 4.2 Unit — `tests/unit/documentPipelineDisposition.test.js` (новий)
 
@@ -424,6 +472,12 @@ result = {
   (наприклад, «вдало завершили, але без документів» — це справжній
   `ok:true` з порожнім `documents`, не halt). Halt = «стадія сама
   вирішила, що подальші стадії не мають сенсу».
+- НЕ прибирати фільтр обсягу (`DEGENERATE_MIN_PAGES`) і фільтр route
+  (`DEGENERATE_ELIGIBLE_ROUTES`) з `isDegeneratePlan` навіть якщо тести
+  «здаються надлишковими». Перша версія спеки (без них) ламала
+  ~11 integration-тестів на легітимних happy-path сценаріях (малий PDF,
+  image_merge, fragment_reconstruct). Це і є корінь — критерій
+  «1 doc × 100%» **необхідний, але не достатній**.
 
 ---
 
