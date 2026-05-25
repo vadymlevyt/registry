@@ -252,7 +252,10 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     const d = decisions.find((x) => Array.isArray(x.unusedPages) && x.unusedPages.length > 0);
     return d?.unusedPages || [];
   }, [decisions]);
-  const ATTENTION_TYPES = ['text_clean_failed', 'document_split_skipped', 'duplicate_skipped', 'duplicate_review'];
+  // triage_whole_volume — свідомий halt Triage (стадія не змогла визначити
+  // межі), нейтральне «питання що потребує ручної дії», не помилка системи.
+  // Рендериться через ту саму dpv2-attention-card без --error.
+  const ATTENTION_TYPES = ['text_clean_failed', 'document_split_skipped', 'duplicate_skipped', 'duplicate_review', 'triage_whole_volume'];
   const attentionDecisions = decisions.filter((d) => ATTENTION_TYPES.includes(d.type));
   const attentionCount = errors.length + attentionDecisions.length;
 

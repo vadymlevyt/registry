@@ -340,9 +340,9 @@ describe('pageMarkers.buildCompactTriagePassport (ФД-0)', () => {
 // великий том знову переповнить вікно Haiku (тихий passthrough). Цей тест
 // ловить регрес: resolveBoundaryText мусить бути компактним, не повнотекстовим.
 describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
-  it('великий том (>100 стор.) → стартовий мінімум: у рази менший за структурний', () => {
-    // 120 стор. — вище RICH_PASSPORT_MAX_PAGES → дефолти компактного паспорта
-    // (без зайвої тіла-тексту, безпечно для вікна Haiku).
+  it('великий том (>70 стор.) → стартовий мінімум: у рази менший за структурний', () => {
+    // 120 стор. — вище RICH_PASSPORT_MAX_PAGES_DEFAULT → дефолти компактного
+    // паспорта (без зайвої тіла-тексту, безпечно для вікна Haiku).
     const big = { schemaVersion: 1, pages: Array.from({ length: 120 }, (_, p) => ({
       _text: Array.from({ length: 45 }, (_, k) =>
         `Сторінка ${p + 1} рядок ${k + 1} реального обсягу абзацу судового документа`).join('\n'),
@@ -355,9 +355,9 @@ describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
     expect(out.length).toBeLessThan(buildStructuralPassport(big).length / 5);
   });
 
-  it('малий том (≤100 стор.) → rich profile: head 10 + tail 10 (Брановський-зрізає)', () => {
+  it('малий том (≤70 стор.) → rich profile: head 10 + tail 10 (Брановський-зрізає)', () => {
     // Реалістична багаторядкова OCR-сторінка (Document AI _text з \n).
-    // 65 стор. ≤ RICH_PASSPORT_MAX_PAGES → активується rich profile: head/tail
+    // 65 стор. ≤ RICH_PASSPORT_MAX_PAGES_DEFAULT → активується rich profile: head/tail
     // 10/10 по 1500 симв. На сторінці з 30 рядками rich покриває 1-10 + 21-30
     // (20 з 30), середина 11-20 елідується ⟨…⟩. Дефолтний компактний покривав
     // би лише 1-3 + 29-30 (5 з 30) — у 4x менше тексту для дискримінації меж.
@@ -382,17 +382,17 @@ describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
     expect(pureDefault).not.toContain('рядок 21 реального');
   });
 
-  it('поріг переходу: 100 → rich, 101 → дефолти (один сенс — за обсягом)', () => {
+  it('поріг переходу: 70 → rich, 71 → дефолти (один сенс — за обсягом)', () => {
     // dimension → непорожній дайджест → fullTextIfNoSignal не плутає тест.
     const make = (n) => ({ schemaVersion: 1, pages: Array.from({ length: n }, () => ({
       _text: Array.from({ length: 30 }, (_, k) => `рядок ${k + 1} достатньо інформативний для тесту`).join('\n'),
       dimension: { width: 595, height: 842 },
     })) });
-    const at100 = resolveBoundaryText(make(100), null, '');
-    const at101 = resolveBoundaryText(make(101), null, '');
+    const at70 = resolveBoundaryText(make(70), null, '');
+    const at71 = resolveBoundaryText(make(71), null, '');
     // Розмір на сторінку: rich значно більший за дефолтний (близько 4x при
     // 30 рядках per page; беремо безпечний поріг 2x).
-    expect(at100.length / 100).toBeGreaterThan(at101.length / 101 * 2);
+    expect(at70.length / 70).toBeGreaterThan(at71.length / 71 * 2);
   });
 
   it('layout непридатний → fallback на plain текст цілий', () => {
