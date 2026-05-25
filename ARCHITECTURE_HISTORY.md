@@ -18,6 +18,7 @@
 | addedBy Semantic Cleanup v6.5 | 6 → 6.5 | `report_task_0_3_4_addedby_cleanup.md`, `TASK_0_3_4_addedby_cleanup.md` |
 | Canonical Schema v7 (ЄСІТС) | 6.5 → 7 | `report_task_0_3_5_canonical_schema_v7.md`, `TASK_0_3_5_canonical_schema_v7.md`, `audit_before_task_0_3_5.md`, `audit_review_task_0_3_5_draft.md` |
 | TASK A — конвертація форматів у PDF | без bump | `report_pdf_conversion_task_a.md`, `report_docx_html_format_analysis.md`, `consultation_pdf_*.md` |
+| Smart Triage degenerate plan → halt-канал (2026-05-25) | без bump | `TASK_smart_triage_degenerate_plan_neutral_stop.md`, `report_task_smart_triage_degenerate_plan_neutral_stop.md` |
 
 ---
 
@@ -853,3 +854,174 @@ Phase B forward-fix (P1 dedup race / error-contract діагностика +
 forward-fix + Provider-integration тест 25-doc плану). Тригер активації —
 коли потрібна додаткова швидкість на великих томах і є час на діагностику
 з реалістичним Provider-integration тестом.
+
+---
+
+## SMART TRIAGE — DEGENERATE PLAN → HALT-КАНАЛ (2026-05-25)
+
+**TASK:** `docs/tasks/TASK_smart_triage_degenerate_plan_neutral_stop.md`
+**Звіт:** `docs/reports/report_task_smart_triage_degenerate_plan_neutral_stop.md`
+**Гілка розробки:** `claude/smart-triage-degenerate-plan-Xxg1n`
+**Батьківські:** `TASK_smart_triage.md`, `TASK_smart_triage_passport_scale_and_text.md`
+
+### Корінь
+
+На томі 200+ стор. (коли паспорт меж ще влазить у вікно Haiku, але якість
+деградувала) `triage` штатно повертав raw без винятку, `normalizePlan`
+видавав `{documents:[{route:'add_as_is', fragments:[{1, N}]}]}` — один
+документ на весь діапазон усіх файлів. PERSIST матеріалізував його як
+один великий нерізаний PDF, адвокат бачив зелений «успіх», у досьє
+лежав необроблений том. Парадокс: «формально-успішний результат =
+фактично необроблений том».
+
+Семантичний brother силент-fallback з батьківського §0 «тихий режим
+відмови»: там passthrough ставав на catch, тут — на «успішному» виході.
+
+### Дизайн (варіант A — обраний, варіант B відхилений)
+
+**A. Нова disposition `halt` у диригенті + decision `triage_whole_volume`
+через наявний `ATTENTION_TYPES`.** Свідомий стоп: стадія завершила
+роботу і вважає продовження нерелевантним. Сенс — у `decisions[]`
+(Зона 3 «Питання»), НЕ у `errors[]`.
+
+**B (відхилений).** Білий список `NEUTRAL_ERROR_CODES` у компоненті
+DocumentProcessorV2 + новий error-канал з `error.severity='neutral'`.
+Нашаровував би третій семантичний канал на `errors[]`, повторюючи
+skipCache-помилку правила #11.
+
+### Нова disposition `halt` — первинний контракт диригента
+
+Додано в `src/services/documentPipeline.js:46-60` як 5-та категорія
+StageResult (поряд з `continue`/`fatal`/`skip`):
+
+```
+halt:true, decisions:[…] → свідомий стоп: стадія завершила свою роботу
+                            і вважає продовження нерелевантним. Сенс —
+                            у decisions (Зона 3 «Питання»), не у errors.
+```
+
+`classifyDisposition` (`documentPipeline.js:371-385`) отримала +1 рядок
+ПЕРЕД перевіркою `result.ok`:
+
+```js
+if (result.halt === true) return 'halt';
+```
+
+Перевірка ВИЩЕ за `ok` — щоб `halt:true` мав пріоритет навіть якщо стадія
+випадково передасть `ok:true` (тест-нагадувач у
+`tests/unit/documentPipelineDisposition.test.js`).
+
+У циклі `run` додана нова гілка обробки `halt` МІЖ merge decisions і
+обробкою `ok:false`: ставить `ctx.stoppedAt = name`, break — **БЕЗ
+запису у `ctx.errors`**. `finalizeResult` повертає `ok = ctx.documents.length>0 && !ctx.stoppedAt`
+— тобто на halt-у `ok:false` (документів немає), але `errors:[]` порожній.
+
+`classifyDisposition` експортована (раніше була внутрішня) — для unit-
+тестів інваріантів. `addDocuments`/PERSIST/EMIT не виконуються на halt
+(окрема перевірка spy'єм у integration-тесті).
+
+**Бонус — готовність для майбутніх TASK C/D:** halt тепер доступний для
+стадій з «свідомим стопом без аварії» (юзер відмінив на confirmBoundaries,
+дублікат на dedup-стадії, чорновики тощо). Той самий механізм без
+розширення типу помилки.
+
+### `isDegeneratePlan` — необхідна, але не достатня умова
+
+Першим підходом критерій сформулювали як «1 документ покриває 100%
+сторінок усіх живих файлів». Прогін `npm test` після першої версії
+видав **11 падінь** на легітимних happy-path:
+- 1 PDF на 3 стор. + AI повертає 1 `add_as_is` doc що покриває все —
+  валідний сценарій (PDF справді є одним документом).
+- 2 фото → AI `image_merge` робить з них 1 doc — дизайн route.
+- 1 doc розрізаний по кількох PDF через `fragment_reconstruct` — дизайн
+  route.
+- Unit-тест дедупу: після `resolveOverlaps` лишається 1 doc що покриває
+  100%.
+
+Це і є точне спрацювання §8 регресійної дисципліни. Зупинився, ескалював
+адвокату через `AskUserQuestion`. Спека уточнена в коміті `b6c3bce`:
+два додаткові фільтри (`triageStage.js:124-167`):
+
+```js
+const DEGENERATE_MIN_PAGES = 70;
+const DEGENERATE_ELIGIBLE_ROUTES = new Set(['add_as_is', 'slice']);
+```
+
+- **Фільтр обсягу.** Той самий поріг що `RICH_PASSPORT_MAX_PAGES_DEFAULT`
+  у `pageMarkers.js` (правило #11 — одна цифра, один сенс «межа якості
+  Haiku вікна»). Тест-нагадувач симетрії у
+  `tests/unit/triageStage.test.js` («Симетрія порогів — нагадувач правила
+  #11»): поведінкова перевірка через 70/69 граничні значення.
+- **Фільтр route.** Тільки маршрути де AI мав знайти/підтвердити межі.
+  Для `image_merge` / `fragment_reconstruct` / `signature_sidecar` /
+  `to_fragments` / `discard` — «1 doc × 100%» це **дизайн route**, не
+  passthrough.
+
+Окрема від `normalizePlan` чиста функція: normalize працює над формою
+raw-відповіді, isDegeneratePlan — над семантикою (покриття + контекст
+обсягу + контекст маршруту). Тестується ізольовано (12 unit-тестів).
+
+### Поріг rich-паспорта 100 → 70
+
+`pageMarkers.js:368-385`: стара константа `RICH_PASSPORT_MAX_PAGES = 100`
+**видалена** (а не лишена поряд — правило #11; grep підтвердив відсутність
+зовнішніх споживачів). Замість:
+- `RICH_PASSPORT_MAX_PAGES_DEFAULT = 70` — обґрунтування емпіричне
+  (валідація на томах 70-100 стор. показала що Haiku на rich-паспорті в
+  цьому діапазоні втрачає межі → degenerate plan).
+- `_setRichPassportMaxPages(n)` — експортований override-хук (префікс
+  `_` як контракт-конвенція «не для production-коду, тільки тести / майбутня
+  tenant-калібровка»). Round-trip перевіряється у unit-тесті.
+- `richMaxPages()` резолвер у `passportOptsForBudget(pageCount)`.
+
+Rich-профіль на 70+ стор. більше не видається — стартовий мінімум
+(краї тексту замість тіла, ~200-280 ток/стор. проти ~1000-2000).
+
+### UI — нейтральне «Питання» в DPv2
+
+`DocumentProcessorV2/index.jsx:255-259`: додано `'triage_whole_volume'`
+до `ATTENTION_TYPES`. Жодних `NEUTRAL_ERROR_CODES`, жодного розщеплення
+`errors[]` на `neutralErrors`/`hardErrors`, жодного нового CSS-класу.
+`attentionDecisions.filter` уже рендерить через `dpv2-attention-card`
+без `--error` — рівно те, що треба.
+
+`errors[]` у пайплайн-результаті порожній на цьому шляху (halt не пише
+в `ctx.errors`), тож блок «Помилки» автоматично показує «Помилок немає».
+Лексика — нейтральна («Не вдалось визначити межі документів — потрібна
+ручна нарізка»), без слів «помилка»/«збій»/«вибачте».
+
+### Що НЕ зачеплено
+
+- catch на `triageStage.js:240-247` (тиха-відмова на API-помилці) —
+  інший сценарій (API-вибух, ingest не блокуємо).
+- `trivialImagePlan` (1 image, 1 page) — детермінована сітка перед AI,
+  адвокат очікує саме такого результату для одного фото.
+- `normalizePlan` — форма raw-відповіді, окрема відповідальність.
+- `buildCompactTriagePassport` / `buildStructuralPassport` /
+  `buildPagedText` / `isPagedLayout` — підписи й поведінка не змінені.
+- 3 наявні disposition (continue/fatal/skip) — regression-тести зелені.
+- `case.team[]`, `auditLog`, `ai_usage`, `time_entries`, ACTIONS,
+  PERMISSIONS, schemaVersion — жодних змін.
+
+### Тести / інваріанти
+
+- 116 test files / 1531 tests passed (+25 нових, +3 оновлених).
+- Нові: `tests/unit/documentPipelineDisposition.test.js` (8 disposition
+  case-ів), розширення `tests/unit/triageStage.test.js` (+13 — фільтри
+  isDegeneratePlan, override hook, симетрія порогів),
+  `tests/integration/triage_degenerate_plan.test.js` (4 пайплайн-end-to-
+  end), `tests/integration/dp4-ui-triage-whole-volume.test.jsx` (1 UI snapshot).
+- Оновлені (числа порогу 100/101 → 70/71 у `tests/unit/pageMarkers.test.js`).
+- Critical regression-інваріант: «PERSIST не виконано на halt» — окремий
+  spy-перевірка у integration-тесті.
+
+### Поза скоупом → майбутні TASK
+
+- Semantic dedup на post-normalize (формально-валідний 2-doc план з
+  логічно тотожними документами) — не у спеці, не у `tracking_debt`.
+  Активується якщо виявиться у логах реальної експлуатації.
+- `pageCount` у DP-1 `makeContext` — Provider додає його через
+  streamingExecutor. Потенційний refactor: додати у контракт `makeContext`.
+  Не критично, не зачіпає production (Provider це робить через інший шлях).
+- Per-tenant калібровка `RICH_PASSPORT_MAX_PAGES_DEFAULT` через UI —
+  override hook готовий, активація — окремим TASK при потребі.

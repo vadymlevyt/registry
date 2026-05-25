@@ -47,6 +47,12 @@
 //   2. ok:true, decisions:[…]       → є питання адвокату (накопичуються)
 //   3. ok:false, error.file_skipped → файл провалився, решта продовжує
 //   4. ok:false, error.fatal        → pipeline зупиняється, стан для resume
+//   5. halt:true, decisions:[…]     → свідомий стоп: стадія завершила свою
+//                                     роботу і вважає продовження нерелевантним.
+//                                     Сенс — у decisions (Зона 3 «Питання»),
+//                                     не у errors. Окремо від fatal (правило #11):
+//                                     fatal = дані неповні; halt = дані штатні,
+//                                     стадія сама обрала зупинку.
 //
 // Інваріант диригента: ok:false МУСИТЬ нести fatal АБО file_skipped. Невідома
 // форма ok:false трактується як fatal (юрсистема: краще зупинитись ніж тихо
@@ -362,8 +368,14 @@ const DEFAULT_STAGE_IMPL = Object.freeze({
 // Класифікація диспозиції за StageResult. Жодного знання про домен (тип
 // документа, суд, формат) — лише форма результату. Це і є «явна політика
 // stop/continue/flag визначена ДО коду».
-function classifyDisposition(result) {
-  if (!result || result.ok === true) return 'continue';
+// classifyDisposition — ЄДИНА політика диригента: за формою StageResult →
+// одна з чотирьох диспозицій ('continue' | 'halt' | 'skip' | 'fatal').
+// Експортується для unit-тестів (інваріанти + regression на наявні три
+// диспозиції після додавання нової 'halt').
+export function classifyDisposition(result) {
+  if (!result) return 'fatal';
+  if (result.halt === true) return 'halt';   // свідомий стоп пайплайна стадією
+  if (result.ok === true) return 'continue';
   const err = result.error || {};
   if (err.fatal === true) return 'fatal';
   if (err.file_skipped === true) return 'skip';
@@ -484,6 +496,15 @@ export function createDocumentPipeline(deps = {}) {
 
       if (disposition === 'continue') {
         continue;
+      }
+
+      if (disposition === 'halt') {
+        // halt — свідомий стоп пайплайна стадією, не аварія. Сенс несе
+        // decisions (Зона 3 «Питання»), не error. ctx.errors не чіпаємо,
+        // ctx.documents лишається яким є (можливо порожнім). Стоп — щоб
+        // наступні стадії (PERSIST/INDEX) не плодили фіктивних документів.
+        ctx.stoppedAt = name;
+        break;
       }
 
       // ok:false — фіксуємо помилку у накопичувач (вкладка Помилки DP-4).

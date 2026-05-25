@@ -122,6 +122,52 @@ function resolveOverlaps(documents) {
   };
 }
 
+// DEGENERATE_MIN_PAGES — той самий поріг, що RICH_PASSPORT_MAX_PAGES_DEFAULT
+// у pageMarkers.js (правило #11: одна цифра — один сенс «межа якості
+// Haiku вікна»). Якщо буде змінено там — синхронно змінити тут (reminder
+// у tests/unit/triageStage.test.js на симетрію порогів).
+const DEGENERATE_MIN_PAGES = 70;
+
+// DEGENERATE_ELIGIBLE_ROUTES — маршрути, де AI мав знайти/підтвердити
+// межі. Для image_merge / fragment_reconstruct / signature_sidecar /
+// to_fragments / discard «1 doc × 100%» — дизайн route, не провал.
+const DEGENERATE_ELIGIBLE_ROUTES = new Set(['add_as_is', 'slice']);
+
+// isDegeneratePlan — план виглядає як passthrough НА ВЕЛИКОМУ ТОМІ ДЕ
+// AI МАВ ШУКАТИ МЕЖІ: рівно один документ маршруту add_as_is/slice,
+// фрагменти якого покривають 100% сторінок усіх живих файлів, при
+// сумарному обсязі ≥DEGENERATE_MIN_PAGES. Окрема від normalizePlan, бо
+// normalize працює над raw AI-відповіддю (форма), а ця — над уже
+// нормалізованим планом і живим набором файлів (семантика покриття +
+// контекст обсягу + контекст маршруту).
+export function isDegeneratePlan(plan, liveFiles) {
+  if (!plan || !Array.isArray(plan.documents) || plan.documents.length !== 1) return false;
+  const doc = plan.documents[0];
+  if (!doc || !DEGENERATE_ELIGIBLE_ROUTES.has(doc.route)) return false;
+  if (!Array.isArray(doc.fragments) || doc.fragments.length === 0) return false;
+  if (!Array.isArray(liveFiles) || liveFiles.length === 0) return false;
+  const totalPages = liveFiles.reduce((s, f) => s + (f.pageCount || 1), 0);
+  if (totalPages < DEGENERATE_MIN_PAGES) return false;
+  const byFile = new Map();
+  for (const fr of doc.fragments) {
+    const prev = byFile.get(fr.fileId) || [];
+    prev.push([fr.startPage, fr.endPage]);
+    byFile.set(fr.fileId, prev);
+  }
+  if (byFile.size !== liveFiles.length) return false;
+  for (const f of liveFiles) {
+    const ranges = byFile.get(f.fileId);
+    if (!ranges) return false;
+    const pc = f.pageCount || 1;
+    const covered = new Set();
+    for (const [s, e] of ranges) {
+      for (let p = s; p <= e; p++) covered.add(p);
+    }
+    if (covered.size < pc) return false;
+  }
+  return true;
+}
+
 // Нормалізувати AI-план у канонічний транзитний формат плану.
 function normalizePlan(raw) {
   const docs = Array.isArray(raw?.documents) ? raw.documents : [];
@@ -206,6 +252,29 @@ export function createTriageStage(stageDeps = {}) {
       };
     }
     if (plan.documents.length === 0) return { ok: true };     // нічого не виділено → passthrough
+
+    if (isDegeneratePlan(plan, live)) {
+      // Свідомий стоп пайплайна: AI не зміг розрізнити межі, повертає тома
+      // одним шматком. Це не помилка стейджу і не виняток API (для нього є
+      // catch вище) — це визнання, що автоматичної відповіді немає, потрібна
+      // ручна дія. Тому НЕ ok:false+error, а halt+decision: сенс несе
+      // decision у Зоні 3 «Питання» через ATTENTION_TYPES. Диригент бачить
+      // halt:true → break без запису у ctx.errors.
+      return {
+        halt: true,
+        decisions: [{
+          type: 'triage_whole_volume',
+          scope: 'triage',
+          message: 'Не вдалось визначити межі документів — том пропонується '
+                 + 'як один шматок. Потрібна ручна нарізка або повторний '
+                 + 'прогін меншими частинами.',
+          meta: {
+            liveFileCount: live.length,
+            totalPages: live.reduce((s, f) => s + (f.pageCount || 1), 0),
+          },
+        }],
+      };
+    }
 
     return {
       ok: true,

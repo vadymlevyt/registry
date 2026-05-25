@@ -342,11 +342,11 @@ export function buildCompactTriagePassport(layoutJson, expectedPageCount = null,
  * ФД-1.1 (валідація адвокатом на Брановському): чисто компактний паспорт
  * втрачав ТІЛО тексту, з якого AI дискримінує межі за змістом фраз. На
  * малому томі це збіднення зайве — вікно Haiku вистачає. Тому щільність
- * адаптивна за обсягом: ≤RICH_PASSPORT_MAX_PAGES стор. → rich profile
- * (head/tail у рази більші, фактично повне тіло короткої OCR-сторінки);
- * вище → стартовий мінімум (краї, не переповнюючи 250-стор. тома).
- * Брановський (65 стор.) повертається до старої точності, 200-250 стор.
- * лишаються в зоні якості.
+ * адаптивна за обсягом: ≤richMaxPages() стор. → rich profile (head/tail
+ * у рази більші, фактично повне тіло короткої OCR-сторінки); вище →
+ * стартовий мінімум (краї, не переповнюючи 250-стор. тома). Брановський
+ * (65 стор.) повертається до старої точності, 200-250 стор. лишаються в
+ * зоні якості.
  * @param {object|null} layoutJson
  * @param {number|null} expectedPageCount
  * @param {string} plainText — fallback (OCR-текст без структури / resume)
@@ -360,17 +360,29 @@ export function resolveBoundaryText(layoutJson, expectedPageCount, plainText) {
     || String(plainText || '');
 }
 
-// Один сенс: «обрати щільність паспорта залежно від обсягу — більше тексту
-// коли є бюджет вікна (малий том), стартовий мінімум коли загроза переповнення
-// (великий том)». Цифра 100 — стартова точка, обґрунтована: реалістична OCR-
-// сторінка ~1500-2500 симв., 100 стор. × 2500 ≈ ~125K токенів (зона якості
-// Haiku ≤~150K, при 200K-вікні). Вище — стартовий мінімум обов'язковий.
-const RICH_PASSPORT_MAX_PAGES = 100;
+// Один сенс: «з цього порогу адаптивна rich-щільність паспорта небезпечна —
+// переходимо на стартовий мінімум». Зниження зі 100 до 70: валідація
+// адвокатом на томах 70-100 стор. показала, що Haiku на rich-паспорті в
+// цьому діапазоні втрачає межі (degenerate plan). Стартова точка,
+// обґрунтована емпірично; override-хук для калібровки/тестів.
+const RICH_PASSPORT_MAX_PAGES_DEFAULT = 70;
+let _richMaxPagesOverride = null;
+
+// _setRichPassportMaxPages — внутрішня контракт-конвенція (префікс `_`):
+// «не для production-коду, тільки тести / майбутня tenant-калібровка через
+// явний оператор». Не для UI.
+export function _setRichPassportMaxPages(n) {
+  _richMaxPagesOverride = (typeof n === 'number' && n > 0) ? n : null;
+}
+function richMaxPages() {
+  return _richMaxPagesOverride ?? RICH_PASSPORT_MAX_PAGES_DEFAULT;
+}
+
 const RICH_PASSPORT_OPTS = Object.freeze({
   headLines: 10, tailLines: 10,
   headChars: 1500, tailChars: 1500,
   fullTextIfNoSignal: true, ambiguousMaxChars: 1200,
 });
 function passportOptsForBudget(pageCount) {
-  return pageCount > 0 && pageCount <= RICH_PASSPORT_MAX_PAGES ? RICH_PASSPORT_OPTS : {};
+  return pageCount > 0 && pageCount <= richMaxPages() ? RICH_PASSPORT_OPTS : {};
 }
