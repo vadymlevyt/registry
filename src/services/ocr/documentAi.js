@@ -1,6 +1,8 @@
 // ── OCR PROVIDER: Google Document AI ────────────────────────────────────────
 // Sync-обробка через :process endpoint у регіоні europe-west2.
-// Ліміти: 15 сторінок і 20 МБ на запит. Для великих PDF — нарізка через pdf-lib.
+// Ліміти: 15 сторінок і 40 МБ на запит (Google online/sync). Для великих PDF —
+// нарізка через pdf-lib. imagelessMode:true прибирає image base64 з response
+// (5-10× зменшує JSON у відповіді → менший memory peak per chunk на iPad heap).
 //
 // driveRequest вже додає Authorization: Bearer <token> з cloud-platform scope.
 //
@@ -18,7 +20,7 @@
 //     причини. Повторювана: 3 спроби з backoff 1s/3s/9s.
 //   • AUTH — 401/403, без retry, fallback не допоможе.
 //   • QUOTA — 429, без retry (адвокату показати "ліміт").
-//   • UNSUPPORTED — 400 від Document AI або наш guard (ZIP-PDF, >20МБ).
+//   • UNSUPPORTED — 400 від Document AI або наш guard (ZIP-PDF, >40МБ).
 //     Без retry — повторна спроба не змінить вердикт.
 //   • UNKNOWN — за замовчуванням ставимо як NETWORK (краще зайвий retry
 //     ніж тиха ескалація на claudeVision при моргнутій мережі).
@@ -40,7 +42,11 @@ import { getResume, setResume, clearResume, processedPageCount } from './resumeS
 const DOC_AI_ENDPOINT =
   'https://europe-west2-documentai.googleapis.com/v1/projects/73468500916/locations/europe-west2/processors/2cc453e438078154:process';
 const DOC_AI_PAGES_PER_REQUEST = 15;
-const DOC_AI_MB_PER_REQUEST = 20;
+// Google Cloud Document AI online/sync limit: 40 МБ per request (раніше було
+// 20 МБ; Google підняв ліміт). Синхронізовано з `memoryMonitor.adviseChunkPages`
+// що вже цілить chunks під 40 МБ (правило #11 — одна цифра «межа Document AI
+// online request» в одному сенсі по всьому коду).
+const DOC_AI_MB_PER_REQUEST = 40;
 const DOC_AI_TIMEOUT_MS = 120_000;
 
 // RETRY константи для NETWORK/UNKNOWN. 3 спроби, exponential backoff.
@@ -152,8 +158,14 @@ function extractPageText(page, chunkText) {
 
 async function postToDocAi(bytes, mimeType, externalSignal) {
   const base64 = arrayBufferToBase64(bytes);
+  // imagelessMode (підтверджено у Google Discovery API
+  // `GoogleCloudDocumentaiV1ProcessRequest.imagelessMode`): API НЕ повертає
+  // image base64 у response → response у 5-10× менший → менший memory peak
+  // per chunk. STRIPPED_LAYOUT_FIELDS у ocrService лишається як safety-net
+  // на випадок якщо edge-case API все-таки поверне image.
   const body = JSON.stringify({
     rawDocument: { content: base64, mimeType },
+    imagelessMode: true,
   });
 
   const ctrl = new AbortController();
@@ -378,7 +390,7 @@ export default {
       // Перевірка розміру чанка (на випадок дуже жирних сторінок)
       if (chunkBytes.byteLength > DOC_AI_MB_PER_REQUEST * 1024 * 1024) {
         state.lastFailedRange = { startPage: startPage1, endPage: endPage1 };
-        state.lastError = { code: 'UNSUPPORTED', message: 'chunk > 20MB' };
+        state.lastError = { code: 'UNSUPPORTED', message: `chunk > ${DOC_AI_MB_PER_REQUEST}MB` };
         setResume(file.id, state);
         throw makeError(
           'UNSUPPORTED',
