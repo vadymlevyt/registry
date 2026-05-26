@@ -305,13 +305,19 @@ export function createStreamingExecutor(deps = {}) {
       progressStore.reconcilePolling();
       return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: result.errors, decisions: result.decisions };
     } catch (err) {
+      // Вирівнювання return-shape з pipeline-stoppage (рядки 299-306): для UI
+      // (DPv2 Зона 3 «Помилки») і будь-якого caller'а існує ОДИН контракт
+      // на ok:false — `errors[]` масив (правило #11). Без цього збій executor
+      // (throw з streamFile/Drive/worker) доходить до адвоката лише тостом
+      // без деталей: `res.errors` undefined → опис тосту порожній → блок
+      // «Помилки» показує «Помилок немає» хоча реально стався збій.
       state.status = JOB_STATUS.STOPPED;
       state.stoppedAt = state.stoppedAt || 'exception';
-      state.error = { code: 'EXECUTOR_THREW', message: err?.message || String(err) };
+      state.error = { code: 'EXECUTOR_THREW', message: err?.message || String(err), stage: state.stoppedAt };
       try { await jobStore.saveState(state); } catch { /* стан міг не зберегтись */ }
       progressStore.finishJob(jobId, { status: 'stopped' });
       progressStore.reconcilePolling();
-      return { ok: false, jobId, resumable: true, error: state.error };
+      return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: [state.error], decisions: [] };
     }
   }
 

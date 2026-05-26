@@ -115,6 +115,59 @@ describe('streamingExecutor', () => {
     const kp = await exec.keepPartial('c1', 'jC');
     expect(kp.kept).toBe(true);
   });
+
+  // TASK executor_threw_visible_in_zone3 §4.1 — catch-return shape.
+  // Будь-який exception у run() (OCR/Drive/worker) має повертати ТОЙ САМИЙ
+  // shape що штатний pipeline-stoppage: `errors[]` масив з одним елементом
+  // (правило #11 — один контракт на ok:false). До фіксу повертав сингулярний
+  // `error`, через що DPv2 Зона 3 «Помилки» показувала «Помилок немає».
+  it('catch-return: exception у processChunk → errors[] масив (shape вирівняний з pipeline-stoppage)', async () => {
+    const processChunk = vi.fn(async () => { throw new Error('OCR chunk 4: Document AI вичерпано retry'); });
+    const { exec } = makeExec({ processChunk });
+    const res = await exec.run({ caseId: 'c1', caseData: { id: 'c1' }, jobId: 'jE', files: [await fileInput(6)] });
+    expect(res.ok).toBe(false);
+    expect(res.resumable).toBe(true);
+    expect(res.stoppedAt).toBeTruthy();
+    expect(Array.isArray(res.errors)).toBe(true);
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors[0].code).toBe('EXECUTOR_THREW');
+    expect(res.errors[0].message).toContain('OCR chunk 4: Document AI вичерпано retry');
+    expect(Array.isArray(res.decisions)).toBe(true);
+    expect(res.decisions).toHaveLength(0);
+    // сингулярний `error` не повертається (правило #11 — один контракт)
+    expect(res.error).toBeUndefined();
+  });
+
+  // §4.2 regression — успішний прогон shape незмінний.
+  it('catch-return: ok:true shape незмінний (regression успішного шляху)', async () => {
+    const { exec } = makeExec();
+    const res = await exec.run({ caseId: 'c1', caseData: { id: 'c1' }, files: [await fileInput(4)] });
+    expect(res.ok).toBe(true);
+    expect(res.jobId).toBeTruthy();
+    expect(Array.isArray(res.documents)).toBe(true);
+    expect(Array.isArray(res.decisions)).toBe(true);
+    expect(Array.isArray(res.events)).toBe(true);
+    expect(res.cleanedUp).toBe(true);
+    // успішний шлях НЕ має errors[] / stoppedAt / resumable
+    expect(res.errors).toBeUndefined();
+    expect(res.error).toBeUndefined();
+  });
+
+  // §4.3 regression — штатний pipeline-stoppage (fatal/skip з диригента)
+  // лишає `errors: result.errors` як було.
+  it('catch-return: pipeline-stoppage shape не зачеплено (regression)', async () => {
+    const errs = [{ code: 'STAGE_FAILED', message: 'персист не пройшов' }];
+    const decs = [{ type: 'duplicate_skipped' }];
+    const failing = { run: async () => ({ ok: false, stoppedAt: 'persist', errors: errs, decisions: decs }) };
+    const { exec } = makeExec({ createPipeline: () => failing });
+    const res = await exec.run({ caseId: 'c1', caseData: { id: 'c1' }, jobId: 'jS', files: [await fileInput(4)] });
+    expect(res.ok).toBe(false);
+    expect(res.resumable).toBe(true);
+    expect(res.stoppedAt).toBe('persist');
+    expect(res.errors).toEqual(errs);
+    expect(res.decisions).toEqual(decs);
+    expect(res.error).toBeUndefined();
+  });
 });
 
 // structuredClone не клонує arrayBuffer-aliased поля коректно для повтору —

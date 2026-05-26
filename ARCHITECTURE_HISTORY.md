@@ -19,6 +19,7 @@
 | Canonical Schema v7 (ЄСІТС) | 6.5 → 7 | `report_task_0_3_5_canonical_schema_v7.md`, `TASK_0_3_5_canonical_schema_v7.md`, `audit_before_task_0_3_5.md`, `audit_review_task_0_3_5_draft.md` |
 | TASK A — конвертація форматів у PDF | без bump | `report_pdf_conversion_task_a.md`, `report_docx_html_format_analysis.md`, `consultation_pdf_*.md` |
 | Smart Triage degenerate plan → halt-канал (2026-05-25) | без bump | `TASK_smart_triage_degenerate_plan_neutral_stop.md`, `report_task_smart_triage_degenerate_plan_neutral_stop.md` |
+| EXECUTOR_THREW visible у Зоні 3 (2026-05-26) | без bump | `TASK_executor_threw_visible_in_zone3.md`, `report_task_executor_threw_visible_in_zone3.md` |
 
 ---
 
