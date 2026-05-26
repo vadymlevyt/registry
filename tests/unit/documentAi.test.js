@@ -117,8 +117,12 @@ describe('documentAi — guard 40 МБ + imagelessMode у body', () => {
     expect(docAiCalls).toHaveLength(0);
   });
 
-  // §4.2 — body postToDocAi містить imagelessMode:true.
-  it('postToDocAi body містить imagelessMode:true (підтверджено у запиті)', async () => {
+  // TASK revert_imagelessmode §4.1 — body postToDocAi НЕ містить imagelessMode.
+  // imagelessMode:true прибирає з response не тільки image base64, а й
+  // залежні поля (imageQualityScores, visualElements) які compactDigest
+  // використовує як сигнали меж для Triage. На 285+-стор. томах це
+  // ламає нарізку (1 doc / pageCount=1). Поле має бути ВІДСУТНЄ у body.
+  it('postToDocAi body НЕ містить imagelessMode (default Google = false)', async () => {
     driveDownloadBytes.current = makePdfBytes(10);
     await documentAi.extract(
       { id: 'fIM', name: 'small.pdf', mimeType: 'application/pdf' },
@@ -126,15 +130,16 @@ describe('documentAi — guard 40 МБ + imagelessMode у body', () => {
     );
     expect(docAiCalls).toHaveLength(1);
     const body = JSON.parse(docAiCalls[0].body);
-    expect(body.imagelessMode).toBe(true);
+    expect('imagelessMode' in body).toBe(false);
+    expect(body.imagelessMode).toBeUndefined();
     // Базова форма rawDocument збережена.
     expect(body.rawDocument).toBeDefined();
     expect(body.rawDocument.mimeType).toBe('application/pdf');
     expect(typeof body.rawDocument.content).toBe('string');
   });
 
-  // §4.2 — image MIME теж відсилає imagelessMode (single-request гілка).
-  it('image MIME → imagelessMode:true теж присутній', async () => {
+  // §4.1 — image MIME гілка теж НЕ містить imagelessMode у body.
+  it('image MIME → body теж БЕЗ imagelessMode', async () => {
     driveDownloadBytes.current = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]).buffer;  // JPEG magic
     await documentAi.extract(
       { id: 'fImg', name: 'photo.jpg', mimeType: 'image/jpeg' },
@@ -142,7 +147,7 @@ describe('documentAi — guard 40 МБ + imagelessMode у body', () => {
     );
     expect(docAiCalls).toHaveLength(1);
     const body = JSON.parse(docAiCalls[0].body);
-    expect(body.imagelessMode).toBe(true);
+    expect('imagelessMode' in body).toBe(false);
     expect(body.rawDocument.mimeType).toBe('image/jpeg');
   });
 });

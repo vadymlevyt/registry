@@ -21,6 +21,7 @@
 | Smart Triage degenerate plan → halt-канал (2026-05-25) | без bump | `TASK_smart_triage_degenerate_plan_neutral_stop.md`, `report_task_smart_triage_degenerate_plan_neutral_stop.md` |
 | EXECUTOR_THREW visible у Зоні 3 (2026-05-26) | без bump | `TASK_executor_threw_visible_in_zone3.md`, `report_task_executor_threw_visible_in_zone3.md` |
 | DocAI ліміт 20→40 МБ + imagelessMode (2026-05-26) | без bump | `TASK_documentai_limit_40mb_imageless.md`, `report_task_documentai_limit_40mb_imageless.md` |
+| Revert imagelessMode (регресія Triage) (2026-05-26 вечір) | без bump | `TASK_revert_imagelessmode.md`, `report_task_revert_imagelessmode.md` |
 
 ---
 

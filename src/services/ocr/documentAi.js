@@ -1,8 +1,8 @@
 // ── OCR PROVIDER: Google Document AI ────────────────────────────────────────
 // Sync-обробка через :process endpoint у регіоні europe-west2.
 // Ліміти: 15 сторінок і 40 МБ на запит (Google online/sync). Для великих PDF —
-// нарізка через pdf-lib. imagelessMode:true прибирає image base64 з response
-// (5-10× зменшує JSON у відповіді → менший memory peak per chunk на iPad heap).
+// нарізка через pdf-lib. imagelessMode свідомо НЕ передаємо (див. коментар у
+// postToDocAi + LESSONS.md урок 26.05.2026: ламає Triage сигнали меж).
 //
 // driveRequest вже додає Authorization: Bearer <token> з cloud-platform scope.
 //
@@ -158,14 +158,13 @@ function extractPageText(page, chunkText) {
 
 async function postToDocAi(bytes, mimeType, externalSignal) {
   const base64 = arrayBufferToBase64(bytes);
-  // imagelessMode (підтверджено у Google Discovery API
-  // `GoogleCloudDocumentaiV1ProcessRequest.imagelessMode`): API НЕ повертає
-  // image base64 у response → response у 5-10× менший → менший memory peak
-  // per chunk. STRIPPED_LAYOUT_FIELDS у ocrService лишається як safety-net
-  // на випадок якщо edge-case API все-таки поверне image.
+  // imagelessMode НЕ передаємо: під цим прапором Google прибирає з response
+  // не тільки сам `image` base64, а й залежні поля (`imageQualityScores`,
+  // `visualElements`), які `pageMarkers.compactDigest` використовує як
+  // сигнали меж документів для Triage. Без них Triage на 285+-стор. томах
+  // здається → 1 doc / pageCount=1. Деталі — LESSONS.md, урок 26.05.2026.
   const body = JSON.stringify({
     rawDocument: { content: base64, mimeType },
-    imagelessMode: true,
   });
 
   const ctrl = new AbortController();
