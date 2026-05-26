@@ -50,4 +50,50 @@ describe('analyzeTriageViaToolUse', () => {
     stubFetchReturning('вибач, не можу');
     await expect(analyzeTriageViaToolUse({ artifacts, apiKey: 'k' })).rejects.toThrow(/не-JSON/);
   });
+
+  // TASK triage_maxtokens_diagnostic §4.1 — max_tokens піднято з 4000 до
+  // 16000 для томів з 50-74 документами (план ≈ 5900 токенів) щоб Haiku
+  // не видавав «здавальницький» план через limit.
+  it('body містить max_tokens: 16000 (підвищено з 4000)', async () => {
+    const cap = {};
+    stubFetchReturning({ documents: [], unusedPages: [] }, cap);
+    await analyzeTriageViaToolUse({ artifacts, apiKey: 'k' });
+    expect(cap.body.max_tokens).toBe(16000);
+  });
+
+  // §4.2 — console.info лог діагностики токенів після API виклику.
+  it('console.info логує [Triage] з реальними input/output токенами', async () => {
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    stubFetchReturning({ documents: [], unusedPages: [] });
+    await analyzeTriageViaToolUse({
+      artifacts: [{ fileId: 'f0', name: 'a.pdf', pageCount: 285, passport: 'p' }],
+      apiKey: 'k',
+    });
+    const calls = spy.mock.calls.map((c) => c[0]);
+    const triageLog = calls.find((m) => typeof m === 'string' && m.includes('[Triage]'));
+    expect(triageLog).toBeTruthy();
+    expect(triageLog).toMatch(/artifacts=1/);
+    expect(triageLog).toMatch(/pages=285/);
+    expect(triageLog).toMatch(/input=10t/);
+    expect(triageLog).toMatch(/output=5t/);
+    expect(triageLog).toMatch(/model=/);
+    spy.mockRestore();
+  });
+
+  // §4.3 — лог ізольований: відсутність usage не валить pipeline.
+  it('відсутність data.usage не валить pipeline (try/catch ізолює лог)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      content: [{ type: 'text', text: JSON.stringify({ documents: [], unusedPages: [] }) }],
+      // usage свідомо відсутній
+    }), { status: 200 })));
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const out = await analyzeTriageViaToolUse({ artifacts, apiKey: 'k' });
+    expect(out.documents).toEqual([]);
+    // Лог все одно викликається, просто з undefined значеннями — це ок,
+    // try/catch захищає тільки від throw, а не від undefined в строці.
+    const triageLog = spy.mock.calls.map((c) => c[0]).find((m) => typeof m === 'string' && m.includes('[Triage]'));
+    expect(triageLog).toBeTruthy();
+    expect(triageLog).toMatch(/input=undefinedt/);
+    spy.mockRestore();
+  });
 });

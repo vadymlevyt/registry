@@ -57,9 +57,30 @@ export async function analyzeTriageViaToolUse({ artifacts = [], userHint = '', c
 
   const data = await callAPIWithRetry({
     model,
-    max_tokens: 4000,
+    // Підвищено з 4000 — для тома з 50-74 документами план у JSON ≈ 60-90
+    // токенів на документ × 74 ≈ 5900 токенів. Старий ліміт 4000 потенційно
+    // змушував Haiku видавати «здавальницький» план бо знав що не вкладеться.
+    // Узгоджено з CaseDossier context-generator (16000). Haiku 4.5 підтримує
+    // до ~16K output tokens. Anthropic тарифікує тільки використані токени,
+    // не ліміт — це дозвіл, не вимога видавати більше.
+    max_tokens: 16000,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
   }, { apiKey });
+
+  // Діагностика великих томів — реальні токени input/output. Без цього
+  // неможливо розрізнити «AI обрізаний max_tokens» від «AI здається сам»
+  // на томах 200+ стор. Видно у DevTools Console на планшеті адвоката.
+  try {
+    const inT = data?.usage?.input_tokens;
+    const outT = data?.usage?.output_tokens;
+    const artifactsCount = artifacts.length;
+    const totalPages = artifacts.reduce((s, a) => s + (a.pageCount || 0), 0);
+    // eslint-disable-next-line no-console
+    console.info(
+      `[Triage] artifacts=${artifactsCount} pages=${totalPages} `
+      + `input=${inT}t output=${outT}t model=${model}`
+    );
+  } catch { /* лог ізольований — не валить pipeline */ }
 
   if (data?.error) throw new Error(data.error.message);
 
