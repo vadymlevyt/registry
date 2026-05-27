@@ -4,6 +4,8 @@
 // обробка відповіді "обох", нагадування у ПОЧИНАЙ)
 // + TASK 0.4.3 (фільтр активних справ: рік 26 → завжди, рік 25 → лише з
 // засіданнями 2026; швидкий вихід у skipped без витягування реквізитів)
+// + TASK 0.4.4 (зовнішня пам'ять: журнал кожні 5 справ у чат + фіналізація
+// з журналу замість стиснутої пам'яті; null замість вигадки)
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -140,15 +142,18 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.1 блоки', () =>
     expect(prompt).toContain('"Інформація про справу" ОДИН раз');
   });
 
-  // Блок 5 — Checkpoint
-  it('Блок 5: проміжний JSON КОЖНІ 5 справ + фінальний JSON в кінці', () => {
-    expect(prompt).toContain('КОЖНИХ 5 ОБРОБЛЕНИХ СПРАВ');
-    expect(prompt).toContain('[ПРОМІЖНИЙ РЕЗУЛЬТАТ');
+  // Блок 5 — Checkpoint (TASK 0.4.4 перетворив [ПРОМІЖНИЙ РЕЗУЛЬТАТ] на
+  // [ЖУРНАЛ — справи N..N+4], але зобов'язання "кожні 5 справ" збережено)
+  it('Блок 5: журнал КОЖНІ 5 справ + фінальний JSON в кінці', () => {
+    expect(prompt).toContain('КОЖНИХ 5 справ');
+    expect(prompt).toContain('[ЖУРНАЛ — справи N..N+4]');
     expect(prompt).toContain('[ФІНАЛЬНИЙ РЕЗУЛЬТАТ]');
   });
-  it('Блок 5: проміжний/фінальний — повний envelope (не дельта); дедуплікація через ecitsCaseId', () => {
-    expect(prompt).toContain('не дельта');
-    expect(prompt).toContain('Дедуплікація в Legal BMS через');
+  it('Блок 5: журнал зберігається дослівно (TASK 0.4.4 — зовнішня пам\'ять у чаті)', () => {
+    // TASK 0.4.4 переформулював: замість «не дельта / дедуплікація через
+    // ecitsCaseId» тепер — журнал як надійне сховище, бо повідомлення в
+    // чаті не стискаються compacting'ом
+    expect(prompt).toContain('compacting НЕ СТИСКАЄ');
     expect(prompt).toContain('ecitsCaseId');
   });
 
@@ -228,20 +233,22 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.2 (точка ріш
     expect(tail).toContain('ТОЧКА РІШЕННЯ');
   });
 
-  it('структура: ТОЧКА РІШЕННЯ розташована ПІСЛЯ ПРОМІЖНІ РЕЗУЛЬТАТИ і ПЕРЕД СТРУКТУРА ENVELOPE', () => {
-    const intermediateIdx = prompt.indexOf('ПРОМІЖНІ РЕЗУЛЬТАТИ');
+  it('структура: ТОЧКА РІШЕННЯ розташована ПІСЛЯ ЗОВНІШНЬОЇ ПАМ\'ЯТІ і ПЕРЕД СТРУКТУРА ENVELOPE', () => {
+    // TASK 0.4.4 — блок ПРОМІЖНІ РЕЗУЛЬТАТИ перейменовано на ЗОВНІШНЯ ПАМ'ЯТЬ
+    const memoryIdx = prompt.indexOf("ЗОВНІШНЯ ПАМ'ЯТЬ");
     const decisionIdx = prompt.indexOf('ТОЧКА РІШЕННЯ АДВОКАТА');
     const envelopeIdx = prompt.indexOf('СТРУКТУРА ENVELOPE');
-    expect(intermediateIdx).toBeGreaterThan(-1);
+    expect(memoryIdx).toBeGreaterThan(-1);
     expect(decisionIdx).toBeGreaterThan(-1);
     expect(envelopeIdx).toBeGreaterThan(-1);
-    expect(intermediateIdx).toBeLessThan(decisionIdx);
+    expect(memoryIdx).toBeLessThan(decisionIdx);
     expect(decisionIdx).toBeLessThan(envelopeIdx);
   });
 
   it('решта структури з 0.4.1 збережена (фільтр ролей, checkpoint, безпека)', () => {
     expect(prompt).toContain("РІВНО ОДНЕ СЛОВО \"Представник\"");
-    expect(prompt).toContain('КОЖНИХ 5 ОБРОБЛЕНИХ СПРАВ');
+    // TASK 0.4.4 переформулював checkpoint, але зобов'язання "кожні 5" збережено
+    expect(prompt).toContain('КОЖНИХ 5 справ');
     expect(prompt).toContain('КАТЕГОРИЧНО НЕ НАТИСКАЙ');
     expect(prompt).toContain('"Адвокат" і');
   });
@@ -306,7 +313,8 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.3 (фільтр ак
 
   it('решта 0.4.1/0.4.2 збережена (фільтр ролей, checkpoint, точка рішення, безпека)', () => {
     expect(prompt).toContain("РІВНО ОДНЕ СЛОВО \"Представник\"");
-    expect(prompt).toContain('КОЖНИХ 5 ОБРОБЛЕНИХ СПРАВ');
+    // TASK 0.4.4 переформулював checkpoint у журнал, зобов'язання "кожні 5" лишилось
+    expect(prompt).toContain('КОЖНИХ 5 справ');
     expect(prompt).toContain('ТОЧКА РІШЕННЯ АДВОКАТА');
     expect(prompt).toContain('КАТЕГОРИЧНО НЕ НАТИСКАЙ');
   });
@@ -323,5 +331,114 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.3 (фільтр ак
     expect(step3Idx).toBeGreaterThan(-1);
     expect(step4Idx).toBeGreaterThan(-1);
     expect(step3Idx).toBeLessThan(step4Idx);
+  });
+});
+
+// ── TASK 0.4.4 — зовнішня пам'ять і фіналізація з журналу ─────────────────
+describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.4 (зовнішня пам\'ять)', () => {
+  const prompt = buildEcitsImportPrompt();
+
+  it("містить окремий блок ЗОВНІШНЯ ПАМ'ЯТЬ (замінив ПРОМІЖНІ РЕЗУЛЬТАТИ)", () => {
+    expect(prompt).toContain("ЗОВНІШНЯ ПАМ'ЯТЬ");
+    expect(prompt).toContain("ОБОВ'ЯЗКОВІ ПРОМІЖНІ ЗАПИСИ ЖУРНАЛУ");
+    // Старий заголовок не повинен лишитись
+    expect(prompt).not.toContain('ПРОМІЖНІ РЕЗУЛЬТАТИ (страховка від ліміту)');
+    expect(prompt).not.toContain('[ПРОМІЖНИЙ РЕЗУЛЬТАТ —');
+  });
+
+  it("пояснює механіку: compacting стискає робочу пам'ять, але не повідомлення у чаті", () => {
+    expect(prompt).toContain('compacting');
+    expect(prompt).toContain('compacting НЕ СТИСКАЄ');
+  });
+
+  it("жорстке зобов'язання журналу: 'НЕ продовжуй обхід доки не виписав'", () => {
+    expect(prompt).toContain("НЕ продовжуй обхід наступних справ доки");
+    expect(prompt).toContain("ЦЕ НЕ МОЖНА ПРОПУСКАТИ");
+    expect(prompt).toContain("обов'язкове, не опція");
+  });
+
+  it("мітка журналу [ЖУРНАЛ — справи N..N+4] (не плутати з фінальним)", () => {
+    expect(prompt).toContain('[ЖУРНАЛ — справи N..N+4]');
+    expect(prompt).toContain('[ФІНАЛЬНИЙ РЕЗУЛЬТАТ]');
+    // Старі мітки прибрано
+    expect(prompt).not.toContain('[ПРОМІЖНИЙ РЕЗУЛЬТАТ —');
+  });
+
+  it("інструкція дослівно: 'імена і час точно як у кабінеті'", () => {
+    expect(prompt).toContain('ДОСЛІВНО');
+    // Текст промпту може мати перенесення рядка між "точно" і "як у кабінеті" —
+    // нормалізуємо пробіли перед збігом
+    const normalized = prompt.replace(/\s+/g, ' ');
+    expect(normalized).toContain('точно як у кабінеті');
+  });
+
+  it("обробка хвоста: випиши журнал навіть якщо лишилось < 5 справ", () => {
+    expect(prompt).toContain('менше 5 в кінці');
+    expect(prompt).toContain('за ті що');
+  });
+
+  it("містить окремий блок ФІНАЛІЗАЦІЯ — ЗБИРАЙ З ЖУРНАЛУ, НЕ З ПАМ'ЯТІ", () => {
+    expect(prompt).toContain("ФІНАЛІЗАЦІЯ — ЗБИРАЙ З ЖУРНАЛУ, НЕ З ПАМ'ЯТІ");
+  });
+
+  it("фіналізація: процедура збору з журнальних повідомлень", () => {
+    expect(prompt).toContain('ПЕРЕЧИТАЙ свої попередні повідомлення');
+    expect(prompt).toContain('[ЖУРНАЛ — справи N..N+4]');
+    expect(prompt).toContain('копіюй кожне поле');
+    expect(prompt).toContain('буква в букву');
+  });
+
+  it("при розбіжності — 'вір ЖУРНАЛУ' (він точніший за пам'ять)", () => {
+    expect(prompt).toContain('вір ЖУРНАЛУ');
+    expect(prompt).toContain('точніший за пам\'ять');
+  });
+
+  it("заборона вигадувати: null замість вигадки якщо немає в журналі", () => {
+    expect(prompt).toContain('НЕ вигадуй');
+    expect(prompt).toContain('Краще null ніж вигадка');
+  });
+
+  it("блок ПОЧИНАЙ нагадує про журнал як джерело правди", () => {
+    const startIdx = prompt.lastIndexOf('ПОЧИНАЙ');
+    expect(startIdx).toBeGreaterThan(-1);
+    const tail = prompt.slice(startIdx);
+    expect(tail).toContain("обов'язковий [ЖУРНАЛ]");
+    expect(tail).toContain('З ЖУРНАЛУ');
+    expect(tail).toContain("джерело правди");
+    expect(tail).toContain('null');
+  });
+
+  it("структура: ЗОВНІШНЯ ПАМ'ЯТЬ перед ФІНАЛІЗАЦІЯ; ФІНАЛІЗАЦІЯ перед СТРУКТУРА ENVELOPE", () => {
+    const memoryIdx = prompt.indexOf("ЗОВНІШНЯ ПАМ'ЯТЬ — ОБОВ'ЯЗКОВІ");
+    const finalizeIdx = prompt.indexOf('ФІНАЛІЗАЦІЯ — ЗБИРАЙ З ЖУРНАЛУ');
+    const envelopeIdx = prompt.indexOf('СТРУКТУРА ENVELOPE (формат повернення)');
+    expect(memoryIdx).toBeGreaterThan(-1);
+    expect(finalizeIdx).toBeGreaterThan(-1);
+    expect(envelopeIdx).toBeGreaterThan(-1);
+    expect(memoryIdx).toBeLessThan(finalizeIdx);
+    expect(finalizeIdx).toBeLessThan(envelopeIdx);
+  });
+
+  it("ТОЧКА РІШЕННЯ і далі ФІНАЛІЗАЦІЯ — узгоджений потік 'питання → збір з журналу'", () => {
+    const decisionIdx = prompt.indexOf('ТОЧКА РІШЕННЯ АДВОКАТА');
+    const finalizeIdx = prompt.indexOf('ФІНАЛІЗАЦІЯ — ЗБИРАЙ З ЖУРНАЛУ');
+    expect(decisionIdx).toBeGreaterThan(-1);
+    expect(finalizeIdx).toBeGreaterThan(-1);
+    expect(decisionIdx).toBeLessThan(finalizeIdx);
+  });
+
+  it("сигнатура buildEcitsImportPrompt не змінилась (override targetHearingYear досі прокидається)", () => {
+    const p = buildEcitsImportPrompt({ targetHearingYear: 2027 });
+    expect(p).toContain('2027');
+    expect(p).toContain("ЗОВНІШНЯ ПАМ'ЯТЬ");
+    expect(p).toContain('ФІНАЛІЗАЦІЯ — ЗБИРАЙ З ЖУРНАЛУ');
+  });
+
+  it("решта 0.4.1-0.4.3 збережена (фільтр ролей, активність, точка рішення, безпека)", () => {
+    expect(prompt).toContain("РІВНО ОДНЕ СЛОВО \"Представник\"");
+    expect(prompt).toContain('КРОК 3 — Перевір активність');
+    expect(prompt).toContain('ТОЧКА РІШЕННЯ АДВОКАТА');
+    expect(prompt).toContain('справа 2025 без засідань 2026 — неактивна');
+    expect(prompt).toContain('КАТЕГОРИЧНО НЕ НАТИСКАЙ');
   });
 });
