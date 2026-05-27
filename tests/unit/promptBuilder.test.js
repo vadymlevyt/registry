@@ -2,6 +2,8 @@
 // кримінальні з кількома обвинуваченими, економія кроків, checkpoint)
 // + TASK 0.4.2 (точка рішення адвоката: збір питань, текстовий список,
 // обробка відповіді "обох", нагадування у ПОЧИНАЙ)
+// + TASK 0.4.3 (фільтр активних справ: рік 26 → завжди, рік 25 → лише з
+// засіданнями 2026; швидкий вихід у skipped без витягування реквізитів)
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -158,9 +160,12 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.1 блоки', () =>
     expect(filterIdx).toBeGreaterThan(-1);
     expect(styleIdx).toBeLessThan(filterIdx);
   });
-  it('структура: ФІЛЬТРАЦІЯ ПЕРЕД КРОК 3 (витягуванням полів справи)', () => {
+  it('структура: ФІЛЬТРАЦІЯ ПЕРЕД КРОК 3 (перевірка активності + поля справи)', () => {
     const filterIdx = prompt.indexOf('ФІЛЬТРАЦІЯ СПРАВ');
-    const step3Idx = prompt.indexOf('КРОК 3 — Витягни поля');
+    // TASK 0.4.3 — КРОК 3 перейменовано: "Перевір активність і витягни поля"
+    const step3Idx = prompt.indexOf('КРОК 3 — Перевір активність');
+    expect(filterIdx).toBeGreaterThan(-1);
+    expect(step3Idx).toBeGreaterThan(-1);
     expect(filterIdx).toBeLessThan(step3Idx);
   });
 
@@ -245,5 +250,78 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.2 (точка ріш
     const p = buildEcitsImportPrompt({ targetHearingYear: 2027 });
     expect(p).toContain('2027');
     expect(p).toContain('ТОЧКА РІШЕННЯ АДВОКАТА');
+  });
+});
+
+// ── TASK 0.4.3 — фільтр активних справ ─────────────────────────────────────
+describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.3 (фільтр активних справ)', () => {
+  const prompt = buildEcitsImportPrompt();
+
+  it('видалено рядок "включи навіть без засідань" (першопричина переповнення)', () => {
+    expect(prompt).not.toContain('все одно включи її');
+    expect(prompt).not.toContain('з порожнім масивом hearings');
+  });
+
+  it('КРОК 3 починається зі швидкої перевірки активності', () => {
+    expect(prompt).toContain('КРОК 3 — Перевір активність');
+    expect(prompt).toContain('ПЕРШИМ ділом — швидка перевірка активності');
+    expect(prompt).toContain('Не витрачай кроки на повні реквізити доки не переконався');
+  });
+
+  it('логіка: рік 26 → беремо ЗАВЖДИ (свіжа справа)', () => {
+    expect(prompt).toContain('ЯКЩО рік справи = 26');
+    expect(prompt).toContain('Справа СВІЖА → беремо ЗАВЖДИ');
+  });
+
+  it('логіка: рік 25 → беремо ТІЛЬКИ якщо є засідання 2026', () => {
+    expect(prompt).toContain('ЯКЩО рік справи = 25');
+    expect(prompt).toContain('Є ХОЧА Б ОДНЕ засідання');
+    expect(prompt).toContain('будь-яка інстанція');
+  });
+
+  it('швидкий вихід у skipped для неактивних 25 (БЕЗ витягування реквізитів)', () => {
+    expect(prompt).toContain('НЕМАЄ жодного засідання');
+    expect(prompt).toContain('справа 2025 без засідань 2026 — неактивна');
+    expect(prompt).toContain('РЕКВІЗИТИ НЕ ВИТЯГУЙ');
+  });
+
+  it('пріоритет "Внесення дат слухання" перед повістками збережено', () => {
+    expect(prompt).toContain('"Внесення дат слухання"');
+    expect(prompt).toContain('структурована дата');
+  });
+
+  it('явно вказує що інстанція/провадження не має значення для активності', () => {
+    expect(prompt).toContain('Інстанція не має значення');
+  });
+
+  it('КРОК 4 — тільки для АКТИВНИХ справ (порожній hearings допустимий для 26 року)', () => {
+    expect(prompt).toContain('тільки для АКТИВНИХ справ');
+    expect(prompt).toContain('Для свіжої справи 26 року hearings може бути порожнім');
+  });
+
+  it('структура envelope: пояснено куди йдуть неактивні справи', () => {
+    expect(prompt).toContain('У cases[] потрапляють ТІЛЬКИ активні справи');
+    expect(prompt).toContain('у skipped[]');
+  });
+
+  it('решта 0.4.1/0.4.2 збережена (фільтр ролей, checkpoint, точка рішення, безпека)', () => {
+    expect(prompt).toContain("РІВНО ОДНЕ СЛОВО \"Представник\"");
+    expect(prompt).toContain('КОЖНИХ 5 ОБРОБЛЕНИХ СПРАВ');
+    expect(prompt).toContain('ТОЧКА РІШЕННЯ АДВОКАТА');
+    expect(prompt).toContain('КАТЕГОРИЧНО НЕ НАТИСКАЙ');
+  });
+
+  it('сигнатура buildEcitsImportPrompt не змінилась; targetHearingYear override прокидається у reason', () => {
+    const p = buildEcitsImportPrompt({ targetHearingYear: 2027 });
+    expect(p).toContain('справа 2025 без засідань 2027 — неактивна');
+    expect(p).toContain('Перевір активність');
+  });
+
+  it('структура: КРОК 3 (активність + поля) ПЕРЕД КРОК 4 (засідання)', () => {
+    const step3Idx = prompt.indexOf('КРОК 3 — Перевір активність');
+    const step4Idx = prompt.indexOf('КРОК 4 — Збери засідання');
+    expect(step3Idx).toBeGreaterThan(-1);
+    expect(step4Idx).toBeGreaterThan(-1);
+    expect(step3Idx).toBeLessThan(step4Idx);
   });
 });
