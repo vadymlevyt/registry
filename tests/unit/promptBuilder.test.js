@@ -1,5 +1,7 @@
 // promptBuilder.test.js — TASK 0.4 + TASK 0.4.1 (фільтр ролей, primaryParty,
 // кримінальні з кількома обвинуваченими, економія кроків, checkpoint)
+// + TASK 0.4.2 (точка рішення адвоката: збір питань, текстовий список,
+// обробка відповіді "обох", нагадування у ПОЧИНАЙ)
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -112,12 +114,14 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.1 блоки', () =>
   });
 
   // Блок 3 — Кримінальні з кількома обвинуваченими
-  it('Блок 3: кримінальні з кількома обвинуваченими → warning, primaryParty=case_no, не вгадувати', () => {
+  // (TASK 0.4.2 — оновлено: тихий warning замінено на точку рішення)
+  it('Блок 3: кримінальні з кількома обвинуваченими → точка рішення, primaryParty=case_no, не вгадувати, не зупиняти обхід', () => {
     expect(prompt).toContain('КІЛЬКА обвинувачених');
     expect(prompt).toContain('НЕ вгадуй');
-    expect(prompt).toContain('primaryParty залиш = case_no');
-    expect(prompt).toContain('warnings');
-    expect(prompt).toContain('Уточніть кого захищає');
+    expect(prompt).toContain('primaryParty тимчасово = case_no');
+    expect(prompt).toContain('ПОТРЕБУЄ РІШЕННЯ АДВОКАТА');
+    expect(prompt).toContain('ТОЧКИ РІШЕННЯ');
+    expect(prompt).toContain('НЕ зупиняй обхід');
   });
 
   // Блок 4 — Економія кроків
@@ -164,5 +168,82 @@ describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.1 блоки', () =>
   it('safety block ВСЕ ЩЕ присутній (TASK 0.4.1 не видаляє жорсткі обмеження)', () => {
     expect(prompt).toContain('КАТЕГОРИЧНО НЕ НАТИСКАЙ');
     expect(prompt).toContain('КАТЕГОРИЧНО НЕ РОБИ');
+  });
+});
+
+// ── TASK 0.4.2 — точка рішення адвоката ───────────────────────────────────
+describe('promptBuilder.buildEcitsImportPrompt — TASK 0.4.2 (точка рішення)', () => {
+  const prompt = buildEcitsImportPrompt();
+
+  it('містить окремий блок ТОЧКА РІШЕННЯ АДВОКАТА', () => {
+    expect(prompt).toContain('ТОЧКА РІШЕННЯ АДВОКАТА');
+    expect(prompt).toContain('перед фінальним JSON');
+  });
+
+  it('інструктує НЕ зупиняти обхід заради одного питання', () => {
+    // Принцип: агент не перебиває роботу по кожній неоднозначності
+    expect(prompt).toContain('НЕ зупиняй обхід');
+    expect(prompt).toContain('НЕ перебивай обхід');
+  });
+
+  it('інструктує збирати всі питання в один список наприкінці', () => {
+    expect(prompt).toContain('збираються в одну фінальну точку');
+    expect(prompt).toContain('ОДНИМ блоком');
+    expect(prompt).toContain('ЧЕКАЙ його відповідь');
+  });
+
+  it('містить шаблон питання з форматом відповіді', () => {
+    expect(prompt).toContain('Перш ніж завершити — потрібні твої рішення');
+    expect(prompt).toContain('Кого з них захищає Левицький');
+    expect(prompt).toContain('Відповідай номером і вибором');
+  });
+
+  it('містить обробку відповіді "обох" — primaryParty = перший + notes', () => {
+    expect(prompt).toContain('"обох"');
+    expect(prompt).toContain('primaryParty = перший обвинувачений');
+    expect(prompt).toContain('Захист обох обвинувачених');
+  });
+
+  it('розрізняє два сценарії: НЕМАЄ питань → одразу фінальний; Є питання → спочатку список', () => {
+    expect(prompt).toContain('ЯКЩО таких питань НЕМАЄ');
+    expect(prompt).toContain('ЯКЩО питання Є');
+    expect(prompt).toContain('НЕ видавай фінальний JSON одразу');
+  });
+
+  it('передбачає майбутні типи неоднозначностей (екстенсійний майбутньостійкий блок)', () => {
+    expect(prompt).toContain('інші типи неоднозначностей');
+  });
+
+  it('блок ПОЧИНАЙ містить нагадування про точку рішення', () => {
+    const startIdx = prompt.lastIndexOf('ПОЧИНАЙ');
+    expect(startIdx).toBeGreaterThan(-1);
+    const tail = prompt.slice(startIdx);
+    expect(tail).toContain('кілька обвинувачених');
+    expect(tail).toContain('не зупиняйся');
+    expect(tail).toContain('ТОЧКА РІШЕННЯ');
+  });
+
+  it('структура: ТОЧКА РІШЕННЯ розташована ПІСЛЯ ПРОМІЖНІ РЕЗУЛЬТАТИ і ПЕРЕД СТРУКТУРА ENVELOPE', () => {
+    const intermediateIdx = prompt.indexOf('ПРОМІЖНІ РЕЗУЛЬТАТИ');
+    const decisionIdx = prompt.indexOf('ТОЧКА РІШЕННЯ АДВОКАТА');
+    const envelopeIdx = prompt.indexOf('СТРУКТУРА ENVELOPE');
+    expect(intermediateIdx).toBeGreaterThan(-1);
+    expect(decisionIdx).toBeGreaterThan(-1);
+    expect(envelopeIdx).toBeGreaterThan(-1);
+    expect(intermediateIdx).toBeLessThan(decisionIdx);
+    expect(decisionIdx).toBeLessThan(envelopeIdx);
+  });
+
+  it('решта структури з 0.4.1 збережена (фільтр ролей, checkpoint, безпека)', () => {
+    expect(prompt).toContain("РІВНО ОДНЕ СЛОВО \"Представник\"");
+    expect(prompt).toContain('КОЖНИХ 5 ОБРОБЛЕНИХ СПРАВ');
+    expect(prompt).toContain('КАТЕГОРИЧНО НЕ НАТИСКАЙ');
+    expect(prompt).toContain('"Адвокат" і');
+  });
+
+  it('сигнатура buildEcitsImportPrompt не змінилась (override targetHearingYear досі працює)', () => {
+    const p = buildEcitsImportPrompt({ targetHearingYear: 2027 });
+    expect(p).toContain('2027');
+    expect(p).toContain('ТОЧКА РІШЕННЯ АДВОКАТА');
   });
 });
