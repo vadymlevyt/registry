@@ -28,8 +28,6 @@ export function Thumbnail({
   cropState, inGroup = false,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu, onKeepRecommendedDuplicate, sortable,
 }) {
-  // eslint-disable-next-line no-unused-vars
-  const _isProcessed = isProcessed;
   const isDuplicateRecommended = duplicateInfo && duplicateInfo.recommended === origIdx;
   const isDuplicateOther = duplicateInfo && duplicateInfo.recommended !== origIdx;
 
