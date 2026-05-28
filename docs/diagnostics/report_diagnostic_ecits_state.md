@@ -1,0 +1,174 @@
+# Діагностичний звіт — `update_case_ecits_state`: навіщо і чому падає
+
+**Дата:** 2026-05-27
+**Тип:** read-only розслідування коду (без виправлень)
+**Привід:** реальний імпорт 11 справ ЄСІТС — 4 створено, 1 оновлено, 6× `update_case_ecits_state failed: Справу case_XXX не знайдено`, 3 засідання skipped.
+**Гілка:** `claude/ecits-state-diagnostic-z350I`
+
+> Усі твердження — з посиланням на файл:рядок. Де доказ неповний без рантайм-логів — це явно позначено.
+
+---
+
+## 1. Що робить `update_case_ecits_state` — точний опис полів і логіки
+
+**Хендлер:** `src/services/actionsRegistry.js:1252-1292`.
+
+Сигнатура: `update_case_ecits_state({ caseId, patch, source })`.
+
+Логіка по кроках:
+1. Валідація: `caseId`, `patch` (object), `source` — усі обов'язкові (`actionsRegistry.js:1253-1255`).
+2. `setCases(prev => prev.map(...))` шукає справу `c.id === caseId` (`:1261-1262`).
+3. Якщо у справи вже є `ecitsState._lastSource` і новий `source` має нижчий пріоритет за `canOverwrite()` — **перезапис пропускається**, повертається `{ success:true, overwriteSkipped:true }` (`:1265-1271, :1291`). Це НЕ шлях "не знайдено".
+4. Інакше — **shallow-merge** `patch` у `ecitsState` + проставляє `_lastSource: source` (`:1272-1280`).
+5. Якщо жодна справа не збіглась за `id` → `{ success:false, error:`Справу ${caseId} не знайдено` }` (`:1282`).
+6. Публікує `ECITS_CASE_STATE_UPDATED` у eventBus (`:1284-1287`).
+
+**Що саме записує scenarioProcessor через цей ACTION** (`src/services/ecits/scenarioProcessor.js:151-159`) — лише три поля:
+```js
+patch: {
+  lastSyncedAt: new Date().toISOString(),
+  syncStatus: 'synced',
+  failureReason: null,
+}
+source: 'court_sync'
+```
+
+Важливо:
+- **`ecitsState.caseId` він НЕ чіпає.** Дедуплікаційний ключ (`caseId`) проставляється **при створенні**, не цим ACTION (див. §3).
+- **`syncMetrics` він НЕ інкрементує.** Лічильники синхронізацій рухає тільки `mark_synced_from_ecits` (`actionsRegistry.js:1197-1245`), а scenarioProcessor його **не викликає взагалі**. Тобто навіть при успішному `update_case_ecits_state` лічильники `totalSyncs/successfulSyncs` між синхронізаціями не зростають — це окрема (вже наявна) недбалість, не предмет цього TASK.
+
+**Коли викликається в потоці:** ТІЛЬКИ у гілці "справа вже існує" (`scenarioProcessor.js:148-164`). Для **нової** справи викликається `create_case` і `update_case_ecits_state` НЕ викликається (`:165-181`).
+
+**Що буде якщо його не викликати взагалі:** наступна синхронізація **не зламається**. Дедуплікація тримається на `ecitsState.caseId`, який пишеться при `create_case` (§3). Без `update_case_ecits_state` справа просто матиме застарілі `lastSyncedAt`/`syncStatus`. Сьогодні **жоден UI ці поля не читає** (§4).
+
+---
+
+## 2. Корінь помилки "Справу не знайдено"
+
+### 2.1 Доведений архітектурний дефект — заморожений read-снапшот проти живого write
+
+Хендлери **пишуть** через `setCases(prev => …)` — функціональний апдейтер, що працює з **живим** станом React:
+- `create_case`: `setCases(prev => [...prev, newCase])` (`actionsRegistry.js:158`)
+- `update_case_ecits_state`: `setCases(prev => prev.map(...))`, прапор `found` теж рахується по `prev` (`:1261-1281`)
+
+Але scenarioProcessor **читає** справи через `getCases()`, який у проді — **заморожений immutable-снапшот рендеру**:
+- App: `getCases: () => cases` (`src/App.jsx:4802` і дзеркально `:4827`) — замикає `cases` цього рендеру
+- ImportTab: `getCases: () => cases || []` (`src/components/CourtSync/ImportTab.jsx:68`) — замикає prop `cases` рендеру, на якому адвокат натиснув "Обробити"
+
+`cases` — це React-стейт (immutable). `setCases(prev => [...prev, …])` створює **новий масив**; змінна `cases`, яку замкнув `getCases`, на нього **ніколи не вказує**. Поки `submitScenarioResult` крутить цикл з `await` (`scenarioProcessor.js:253-268`), жодного ре-рендеру всередині запущеного `handleProcess` не відбувається — його замикання `cases` залишається тим самим від початку до кінця прогону.
+
+**Наслідок — read-after-write всередині одного прогону зламано:**
+- `existing = getCases().find(c => c?.ecitsState?.caseId === …)` (`scenarioProcessor.js:145`) — не бачить справ, створених у попередніх ітераціях цього ж прогону.
+- Дедуп всередині `create_case` (`actionsRegistry.js:136`) — теж читає `getCases()` → теж сліпий до щойно створеного.
+- `targetCase = getCases().find(c => c.id === caseId)` для дедупу засідань (`scenarioProcessor.js:184`) — для **новоствореної** справи поверне `undefined`.
+
+### 2.2 Що з гіпотез TASK справдилось
+
+| Гіпотеза TASK | Вердикт |
+|---|---|
+| **Асинхронність** (create не дочекалось) | **Частково так** — `setCases` асинхронний, але корінь не в "не дочекались", а в тому що **read-канал взагалі не той самий, що write-канал**. |
+| **Контекст** (створено в одній структурі, шукає в іншій) | **Так, це суть.** Запис іде у живий React-стейт через `setCases`; читання — у заморожений снапшот `cases`. Дві різні структури. |
+| **ID конфлікт** (`case_id` змінюється) | **Ні.** `normalizeCases` регенерує `id` лише якщо `id == null` (`App.jsx:3393`); `migrateCase`/`normalizeCaseId` зберігають наявний `id` (`migrationService.js:133-188, :116`). ID стабільний. |
+
+### 2.3 Чесне обмеження доказу
+
+`update_case_ecits_state` повертає "не знайдено" (`actionsRegistry.js:1282`) **лише** коли `caseId` присутній, але `c.id === caseId` не збігається з жодною справою у **живому** `prev`. Заморожений снапшот **детерміновано** ламає read-after-write для справ, створених **у цьому ж прогоні** (§2.1) — це доведено кодом і підтверджено тим, що тест цей шлях маскує (§2.4).
+
+Точна арифметика "6 із 7 впало, 1 пройшла" залежить від конкретного envelope і стану `registry_data.json` тієї сесії, яких у коді немає. Два сценарії, сумісні з кодом:
+- **(a)** ці справи були створені на **попередньому** прогоні імпорту, але снапшот кліку і живий стейт розійшлись (напр. проміжний `setCases(normalizeCases(...))` під час hydration);
+- **(b)** ефект §2.1 у чистому вигляді.
+
+**Обидва усуваються тим самим фіксом** (read живого стану — §5). Для протоколу: фікс-TASK має зберегти console-лог тієї сесії + `registry_data.json`, щоб зафіксувати який саме сценарій спрацював. Це єдине, що тут не доводиться зі статичного коду.
+
+### 2.4 Чому тести цього не зловили (підтвердження діагнозу)
+
+`tests/unit/scenarioProcessor.test.js:104-132`:
+```js
+const cases = [];                              // мутабельний масив
+// fake create_case:
+cases.push(newCase);                           // :114 — мутація IN PLACE
+// fake update_case_ecits_state:
+if (action === 'update_case_ecits_state') {
+  return { success: true };                    // :122-124 — без перевірки членства
+}
+getCases: () => cases,                         // :131 — той самий мутований масив
+```
+Тест віддає `getCases`, що вказує на **той самий мутований** масив → read-after-write "працює". Плюс fake-хендлер `update_case_ecits_state` повертає `success` **безумовно**, навіть не перевіряючи що справа є. Тому тест **не може** відтворити прод-шлях з immutable-снапшотом і реальною перевіркою `found`. Дефект структурно невидимий для наявного набору тестів.
+
+---
+
+## 3. Як працює дедуплікація — за яким полем і чи потрібен ecits-стан
+
+**Матч — ТІЛЬКИ за `ecitsState.caseId`** (32-hex ЄСІТС-ідентифікатор), у двох місцях:
+- scenarioProcessor: `getCases().find(c => c?.ecitsState?.caseId === ecitsCase.ecitsCaseId)` (`scenarioProcessor.js:145`)
+- create_case (другий ешелон): `getCases().find(c => c?.ecitsState?.caseId === incomingEcitsCaseId)` → `{ error:'duplicate_ecits_case', existingCaseId }` (`actionsRegistry.js:134-144`)
+
+**`case_no` у дедупі НЕ використовується ніде.**
+
+**Чому дублів не виникло попри падіння `update_case_ecits_state`:** ключ `ecitsState.caseId` записується при **створенні**, а не цим ACTION. `buildCreateCaseParams` кладе `ecitsState.caseId = ecitsCase.ecitsCaseId` у `fields` (`scenarioProcessor.js:60-91`), `create_case` мерджить це у нову справу (`actionsRegistry.js:146-157`), а `ensureCaseSaasAndEcitsFields` зберігає переданий `ecitsState` через `saas.ecitsState ?? buildDefaultEcitsState()` (`migrationService.js:988-1002`); `migrateCase` робить `{ ...c }` і `ecitsState` не викидає (`migrationService.js:133-188`). Отже після першого успішного `create_case` ключ дедупу **вже на місці й персиститься на Drive** — повторний імпорт знаходить справу і не дублює. `update_case_ecits_state` лише освіжає `lastSyncedAt/syncStatus` — для дедупу він **не потрібен**.
+
+**Чи можна покладатись на `case_no`?** Поточна архітектура цього не робить і не варто: `case_no` денормалізований і не гарантовано унікальний (різні провадження/інстанції однієї справи, суфікси `-X` у форматі `NNN/NNNNN/NN[-X]`, ручні правки). Стабільний унікальний ключ — саме `ecitsCaseId`. Тобто ecits-стан як **носій ключа дедупу** потрібен; як носій `lastSyncedAt` (те, що пише падаючий ACTION) — наразі майже ні від чого не залежить (§4).
+
+---
+
+## 4. Реальні наслідки помилок
+
+Падіння 6× `update_case_ecits_state` означає, що для цих справ **не освіжились** рівно три поля: `lastSyncedAt`, `syncStatus` (`→'synced'`), `failureReason` (`→null`) (`scenarioProcessor.js:153-158`).
+
+**Що залишилось без даних:** `ecitsState.lastSyncedAt` / `syncStatus` цих справ показують попереднє значення (для існуючих — застаріле; якщо це були свіжостворені — дефолтні `null`/`'never'` з `buildDefaultEcitsState`, `migrationService.js:623-641`). `syncMetrics` у будь-якому разі не рухається (його чіпає лише `mark_synced_from_ecits`, який не викликається).
+
+**Хто це споживає:** пошук по `src/` показав, що `ecitsState`/`lastSyncedAt`/`syncStatus`/`syncMetrics` читають **тільки** `actionsRegistry.js`, `migrationService.js`, `scenarioProcessor.js`, `schemas/caseSchema.js`. **Жоден компонент** (`OverviewTab`, `SettingsTab`, `ImportTab`, `ECITSBanner`) ці поля не рендерить — статистика Огляду йде з `tenant.ecits_scenario_history`, не з per-case `ecitsState`.
+
+**Висновок щодо наслідків:**
+- **Наступна синхронізація НЕ зламається** — дедуп тримається на `caseId` (§3), він цілий.
+- **Втрати даних немає** — справи створені/оновлені, засідання додані.
+- **Реальна шкода сьогодні — косметична + дезінформація:** (1) `lastSyncedAt`/`syncStatus` застарілі, але їх ніхто не показує; (2) лог і `ecits_scenario_history` забиваються 6 фейковими `errors`, через що ResultCard лякає адвоката неіснуючою проблемою; (3) **латентний ризик**: той самий дефект §2.1 підриває дедуп у `create_case` і дедуп засідань **у межах одного прогону** — на envelope з кількома спорідненими/повторними записами він призведе до реальних дублів.
+
+---
+
+## 5. Висновок + рекомендація
+
+### Що відбувається насправді (одним абзацом)
+`ecitsState` не зайвий — він **єдине джерело ключа дедуплікації** (`ecitsState.caseId`), і саме тому дублів немає. Падає не дедуп, а лише **освіження sync-метаданих**: `update_case_ecits_state` читає справи через заморожений immutable-снапшот `getCases: () => cases`, а пише через живий `setCases(prev=>…)`. Read і write — різні структури; всередині одного прогону read не бачить write. Наявні тести дефект маскують, бо віддають `getCases` поверх мутабельного масиву і fake-хендлер з безумовним `success`.
+
+### Оцінка варіантів
+
+- **Варіант A — прибрати ecits-стан, дедуп по `case_no`.** ❌ Відхилити. `ecitsState.caseId` — стабільний унікальний ключ; `case_no` неунікальний і денормалізований (§3). Прибирання `ecitsState` ламає дедуп і вбиває майбутню sync-телеметрію. Суперечить ДНК (структуру даних робимо правильно з першого разу).
+- **Варіант B — лишити ecits-стан, виправити баг "не знайдено".** ✅ **Рекомендовано.** Дефект локальний: read-канал має читати **живий** стан. Жодного рефактору архітектури.
+- **Варіант C — ecits-стан як єдине SSOT, переробити архітектуру.** ❌ Надмірно. `ecitsState.caseId` **вже є** SSOT дедупу; зламаний лише механізм читання, не модель даних. YAGNI.
+
+### Рекомендований варіант: **B** (окремим фікс-TASK)
+
+Обґрунтування: баг реальний, але сьогодні переважно **безпечний** (дедуп цілий, UI ці поля не читає). Виправити все одно треба, бо: (1) фейкові помилки в логу/`ecits_scenario_history` дезінформують адвоката; (2) майбутній Огляд/статус синхронізації **читатиме** `lastSyncedAt`/`syncStatus` і покаже стале; (3) **той самий** заморожений снапшот загрожує дедупу `create_case` і засідань у межах одного прогону — це латентний ризик реальних дублів.
+
+**Напрям фіксу (для фікс-TASK, тут не реалізуємо):**
+- Зробити read-канал «живим»: тримати `casesRef = useRef`, синхронізований з `cases`, і подавати `getCases: () => casesRef.current` (оновлювати ref у тому ж потоці, що й `setCases`, щоб read-after-write бачив свіже). Це лагодить не лише `update_case_ecits_state`, а й дедуп `create_case` (`actionsRegistry.js:136`) і `hearingExists` (`scenarioProcessor.js:184`).
+- **Або** хай `scenarioProcessor` веде локальний акумулятор справ, створених у цьому прогоні, і зливає його з `getCases()` перед кожним lookup.
+- Додати інтеграційний тест, що відтворює прод-семантику: `getCases` поверх **immutable** снапшоту + реальний (не fake) ланцюг `createActions`, з перевіркою що друга ітерація на той самий `ecitsCaseId` НЕ створює дубль і що `update_case_ecits_state` знаходить щойно створену справу. Поточний `scenarioProcessor.test.js:104-132` цей сценарій структурно пропускає.
+- Перед фіксом зберегти артефакти тієї сесії (console-лог + `registry_data.json`), щоб закрити §2.3 (a vs b).
+
+**Окремо, поза цим фіксом** (зафіксувати в `tracking_debt.md`): scenarioProcessor не викликає `mark_synced_from_ecits`, тому `syncMetrics` ніколи не інкрементується між синхронізаціями — sync-лічильники мертві незалежно від бага вище.
+
+---
+
+## Додаток — карта посилань на код
+
+| Що | Файл:рядок |
+|---|---|
+| Хендлер `update_case_ecits_state` | `src/services/actionsRegistry.js:1252-1292` |
+| Повернення "Справу не знайдено" | `src/services/actionsRegistry.js:1282` |
+| `create_case` + дедуп + write | `src/services/actionsRegistry.js:128-160` (дедуп `:134-144`, write `:158`) |
+| Allowlist `court_sync_agent` (+`create_case`) | `src/services/actionsRegistry.js:1642-1650` |
+| `mark_synced_from_ecits` (рухає syncMetrics) | `src/services/actionsRegistry.js:1197-1245` |
+| scenarioProcessor: existing lookup | `src/services/ecits/scenarioProcessor.js:145` |
+| scenarioProcessor: виклик update | `src/services/ecits/scenarioProcessor.js:148-164` |
+| scenarioProcessor: гілка create | `src/services/ecits/scenarioProcessor.js:165-181` |
+| scenarioProcessor: targetCase (frozen) | `src/services/ecits/scenarioProcessor.js:184` |
+| `buildCreateCaseParams` (ставить ecitsState.caseId) | `src/services/ecits/scenarioProcessor.js:58-93` |
+| App: заморожений `getCases` | `src/App.jsx:4802`, `:4827` |
+| ImportTab: заморожений `getCases` | `src/components/CourtSync/ImportTab.jsx:64-72` |
+| `ensureCaseSaasAndEcitsFields` (зберігає ecitsState) | `src/services/migrationService.js:988-1002` |
+| `migrateCase` (не викидає ecitsState) | `src/services/migrationService.js:133-188` |
+| `buildDefaultEcitsState` | `src/services/migrationService.js:623-641` |
+| `normalizeCases` (id стабільний) | `src/App.jsx:3385-3393` |
+| Тест, що маскує баг | `tests/unit/scenarioProcessor.test.js:104-132` |
