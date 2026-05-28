@@ -25,7 +25,7 @@ vi.mock('../../src/services/sortation/imageSortingAgent.js', () => ({
   ensureUniqueName: (n) => n,
 }));
 
-import { ImageMergePanel } from '../../src/components/CaseDossier/ImageMergePanel.jsx';
+import { ImageMergePanel } from '../../src/components/CaseDossier/ImageMergePanel/index.jsx';
 
 const CASE_DATA = {
   id: 'case_1',

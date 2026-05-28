@@ -248,16 +248,185 @@ src/
 
 Це — **власне оркестрація**, її не виносять.
 
+### 4.7 Які компоненти ймовірно додаватимуться в майбутньому
+
+Корінь `src/` після Фази 5 має готову форму під SaaS-розгортання:
+
+#### Папка `components/` — додаткові верхньорівневі модулі
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `TenantSwitcher.jsx` | components/TenantSwitcher/ | Multi-user Activation — перемикання організацій |
+| `UserMenu.jsx` | components/UserMenu/ | Multi-user — аватар, профіль, вихід |
+| `NotificationCenter.jsx` | components/NotificationCenter/ | дедлайни що наближаються, нові засідання |
+| `GlobalSearch.jsx` | components/GlobalSearch/ | універсальний пошук справ/нотаток/документів |
+| `KeyboardShortcuts.jsx` | components/KeyboardShortcuts/ | overlay списку гарячих клавіш |
+| `VoiceCommandPanel.jsx` | components/VoiceCommandPanel/ | глобальна голосова команда (AI-first) |
+| `OnboardingTour.jsx` | components/OnboardingTour/ | walkthrough при першому вході |
+
+#### Папка `services/` — нові сервіси інфраструктури
+
+| Сервіс | Файл | Тригер |
+|---|---|---|
+| `notificationService.js` | services/ | Notification Center потребує підписки на події |
+| `voiceCommandService.js` | services/ | глобальна обробка голосових команд (Web Speech API) |
+| `searchIndexService.js` | services/ | повнотекстовий індекс для GlobalSearch |
+| `aiProviderRouter.js` | services/ai/ | AI Provider Abstraction (Anthropic / OpenAI / Grok) |
+| `telegramBotBridge.js` | services/ | Telegram бот через спільний actionsRegistry |
+
+#### Папка `hooks/` — кастомні React-хуки
+
+| Хук | Файл | Тригер |
+|---|---|---|
+| `useTenant.js` | hooks/ | tenant-aware рендеринг |
+| `useNotifications.js` | hooks/ | NotificationCenter |
+| `useVoiceCommand.js` | hooks/ | глобальне голосове управління |
+| `useKeyboardShortcuts.js` | hooks/ | реєстрація локальних shortcut'ів |
+| `useEntitlements.js` | hooks/ | gating UI за тарифом |
+
+#### Папка `data/` — seed-дані та фікстури
+
+| Файл | Тригер |
+|---|---|
+| `tenantPresets.js` | пресети для різних типів tenants (solo/bureau/firm) |
+| `roleTemplates.js` | дефолтні шаблони ролей |
+| `demoMode.js` | демо-дані для нових юзерів без реальних справ |
+
+**Принцип:** усі нові верхньорівневі модулі підключаються в `App.jsx`
+як **рівноправні діти render-дерева**, не як вмонтований код. App.jsx
+лишається оркестратором.
+
 ---
 
-## 5. ImageMergePanel.jsx — 2822 → ~600 + 12 файлів
+## 5. ImageMergePanel.jsx — 2822 → 14 файлів (Фаза 1 — детальний розгляд)
 
-### 5.1 Поточний стан
+### 5.1 Що це за файл і що він робить
 
-Файл **уже містить 14 внутрішніх компонентів** — структура є, просто всі
-в одному файлі.
+`src/components/CaseDossier/ImageMergePanel.jsx` — реалізує функціонал
+**склейки кількох зображень у один PDF**. Адвокат бачить його коли в
+CaseDossier → AddDocumentModal обирає кнопку «🖼 Склеїти зображення»
+(на відміну від «📄 Додати файл» для одного файлу).
 
-### 5.2 Мокап до / після
+**Типовий сценарій:** адвокат сфотографував паспорт громадянина (4 фото —
+обкладинка, реєстрація, прописка, тощо), або «з'їв» 8 сторінок постанови
+у вигляді фото. Замість вантажити окремими файлами — склеює в одну PDF
+з правильним порядком.
+
+#### Контракт компонента (публічне API)
+
+```jsx
+<ImageMergePanel
+  caseData={...}              // справа адвоката
+  apiKey={...}                // ключ Claude API
+  onSubmit={...}              // (file, mergeArtifacts) → коли готово
+  onCancel={...}              // адвокат натиснув «Назад»
+  onOpenDrivePicker={...}     // адвокат хоче додати з Drive
+  onSingleFileRedirect={...}  // лише 1 файл — перекинути у single-file потік
+  ref={...}                   // forwardRef + useImperativeHandle (методи назовні)
+/>
+```
+
+#### Три фази UX
+
+1. **`selecting`** — вибір файлів. Кнопки «Завантажити з пристрою» (device
+   input multiple) і «Додати з Drive» (multi-select picker).
+2. **`processing`** — AI pipeline. OCR → image sorting agent (визначає
+   порядок 1-2-3-4) → orientation detection (через EXIF + Document AI) →
+   edge detection (для crop proposals) → PDF assembly.
+3. **`preview`** — grid з drag-and-drop, попап перегляду з pinch-zoom,
+   ручна корекція повороту, обрізка країв, форма метаданих
+   (категорія, автор, дата, назва).
+
+### 5.2 Що містить — компонент за компонентом
+
+**14 внутрішніх компонентів + 4 хелпери/константи**. Реальні розміри:
+
+| # | Сутність | Рядки | Скільки | За що відповідає |
+|---|---|---|---|---|
+| — | імпорти, константи (CATEGORY_OPTIONS, AUTHOR_OPTIONS, MAX_IMAGES_WARN), `isImageFile` | 1-78 | 78 | заголовок файлу |
+| 1 | `ImageMergePanel` (основний, forwardRef) | 79-880 | **802** | головна машина станів, useImperativeHandle назовні |
+| — | `PHASES` (константа) | 872-880 | 9 | мапа фаз для прогресу |
+| 2 | `ProcessingView` | 881-930 | 50 | сторінка-індикатор фази processing |
+| 3 | `PreviewView` | 931-1431 | **501** | сторінка preview — оркестрація grid, popup, форми, рендеру |
+| 4 | `SortableGrid` | 1432-1554 | 123 | drag-and-drop grid (@dnd-kit/sortable) для зміни порядку |
+| 5 | `DndGrid` | 1555-1614 | 60 | обгортка над DndContext (touch + mouse) |
+| 6 | `SortableItem` | 1615-1656 | 42 | окрема картка зображення у grid |
+| 7 | `RenderItem` | 1657-1879 | 223 | рендер тіла картки (thumbnail + кнопки + warnings) |
+| 8 | `Thumbnail` | 1880-2069 | 190 | мініатюра з підтримкою HEIC (lazy convert через heic2any) |
+| 9 | `PreviewPopup` | 2070-2630 | **686** | повноекранний попап з pinch-zoom (react-zoom-pan-pinch), crop UI, manual rotation |
+| 10 | `CropperHost` (експортується!) | 2631-2718 | 88 | хост cropper'а, окремий експорт для тестів |
+| — | `rotateRectCW` (хелпер) | 2719-2744 | 26 | геометрія: поворот rect на 90° CW |
+| — | `rotateRectCCW` (хелпер) | 2745-2755 | 11 | дзеркальна операція |
+| 11 | `ContextMenu` | 2756-2788 | 33 | right-click menu (Переглянути / Повернути / Видалити) |
+| 12 | `SingleFileWarning` | 2789-2822 | 33 | модалка «у вас один файл, ви впевнені?» |
+
+#### Карта залежностей
+
+```
+ImageMergePanel (main)
+ ├─ ProcessingView                   ← на фазі processing
+ ├─ PreviewView                       ← на фазі preview, оркеструє:
+ │   ├─ SortableGrid                  ← drag-and-drop grid
+ │   │   └─ DndGrid                   ← DndContext wrapper
+ │   │       └─ SortableItem          ← sortable картка
+ │   │           └─ RenderItem        ← вміст картки
+ │   │               ├─ Thumbnail     ← мініатюра (HEIC-aware)
+ │   │               └─ ContextMenu   ← right-click
+ │   ├─ PreviewPopup                  ← повноекранний перегляд
+ │   │   └─ CropperHost               ← cropper UI
+ │   │       ├─ rotateRectCW          ← геометрія
+ │   │       └─ rotateRectCCW
+ │   └─ SingleFileWarning             ← модалка попередження
+```
+
+Це **дерево**, не плутанина. Кожен компонент має чітких батьків, передає
+props вниз, не лізе через замикання у state Main компонента. Структура
+**уже добра** — просто всі гілки живуть в одному файлі.
+
+### 5.3 Чому файл роздувся — історія шарів
+
+Типове накопичення сценаріями за ~два місяці:
+
+**Стартова точка** (TASK B базова версія): простий компонент склейки
+~400-500 рядків. Все логічно жило в одному файлі.
+
+**Шар 1 — Drag-and-drop.** Адвокату потрібно міняти порядок картинок.
+Додано `SortableGrid` + `DndGrid` + `SortableItem` через `@dnd-kit/core`.
+**+225 рядків.**
+
+**Шар 2 — HEIC підтримка.** Айфон шле HEIC, браузер не вміє рендерити
+нативно. Додано lazy-import `heic2any`, спеціальна логіка в `Thumbnail`.
+**+190 рядків.**
+
+**Шар 3 — Manual rotation.** Адвокат розвернув телефон, фото догори
+ногами. Окрема `userRotation` Map (правило #11 — окрема від auto-detect).
+**+85 рядків.**
+
+**Шар 4 — Preview popup.** Пощипати-зумнути фото, побачити деталі.
+Додано `PreviewPopup` з `react-zoom-pan-pinch`. **+686 рядків** — це
+найбільший шматок!
+
+**Шар 5 — Passive crop UX.** AI визначає межі документа на фото (edge
+detection), показує bounding box. Адвокат бачить crop proposal — приймає
+або корегує. Додано `cropProposals` Map, `CropperHost`, геометрію
+поворотів. **+130 рядків.**
+
+**Шар 6 — Single file warning.** Адвокат натиснув «Створити PDF» з одним
+файлом — модалка пропонує перекинути в single-file flow. **+33 рядки.**
+
+**Кореневі причини:**
+
+1. **Близькість контексту.** Всі ці шари — про «зображення в PDF».
+   Природно тримати разом.
+2. **Інкрементальне додавання.** Кожен шар — окремий TASK, ніхто з тих
+   TASK'ів сам по собі не вимагав «винеси все».
+3. **Відсутність порогу.** Не було правила «коли файл переходить 1500
+   рядків — перенос». Тому 5 шарів пройшли непомітно.
+
+Це **природний процес**, не лінь і не недогляд. Без правила-сторожа
+кожен великий файл проходить такий шлях.
+
+### 5.4 Мокап до / після
 
 **ДО:**
 
@@ -266,43 +435,154 @@ src/components/CaseDossier/
 └── ImageMergePanel.jsx          (2822 рядків, 14 компонентів усередині)
 ```
 
-**ПІСЛЯ:**
+**ПІСЛЯ (з ДНК-папками під майбутні розширення):**
 
 ```
 src/components/CaseDossier/
 └── ImageMergePanel/                ← папка
-    ├── index.jsx                   (≈600, основний компонент з forwardRef)
-    ├── ProcessingView.jsx          (≈50)
-    ├── PreviewView.jsx             (≈500)
-    ├── SortableGrid.jsx            (≈120)
-    ├── DndGrid.jsx                 (≈60)
-    ├── SortableItem.jsx            (≈40)
-    ├── RenderItem.jsx              (≈220)
-    ├── Thumbnail.jsx               (≈190)
-    ├── PreviewPopup.jsx            (≈560)
-    ├── CropperHost.jsx             (≈90)
-    ├── ContextMenu.jsx             (≈30)
-    ├── SingleFileWarning.jsx       (≈60)
-    ├── constants.js                (≈30, CATEGORY_OPTIONS, AUTHOR_OPTIONS, MAX_IMAGES_WARN)
-    └── geometry.js                 (≈50, rotateRectCW, rotateRectCCW)
+    ├── index.jsx                   (≈810) головний компонент + useImperativeHandle
+    ├── PreviewView.jsx             (≈505) оркестратор фази preview
+    ├── PreviewPopup.jsx            (≈690) повноекранний попап з pinch-zoom
+    ├── RenderItem.jsx              (≈225) тіло картки в grid
+    ├── Thumbnail.jsx               (≈195) мініатюра з HEIC-логікою
+    ├── CropperHost.jsx             (≈95)  експортний — лишається експортним
+    ├── ContextMenu.jsx             (≈40)
+    ├── ProcessingView.jsx          (≈55)
+    ├── SingleFileWarning.jsx       (≈40)
+    ├── constants.js                (≈30)  CATEGORY_OPTIONS, AUTHOR_OPTIONS,
+    │                                       MAX_IMAGES_WARN, PHASES, isImageFile
+    ├── geometry.js                 (≈45)  rotateRectCW, rotateRectCCW
+    ├── grid/                       ← підпапка drag-and-drop
+    │   ├── SortableGrid.jsx        (≈125)
+    │   ├── DndGrid.jsx             (≈65)
+    │   └── SortableItem.jsx        (≈45)
+    ├── tools/                      ← МАЙБУТНЄ (порожня поки)
+    ├── annotations/                ← МАЙБУТНЄ (порожня поки)
+    ├── ai/                         ← МАЙБУТНЄ (порожня поки)
+    └── export/                     ← МАЙБУТНЄ (порожня поки)
 ```
 
-### 5.3 Що вже добре і просто переноситься
+**Сума:** 12 React-файлів + 2 модулі-хелпери. Найбільший
+(`PreviewPopup.jsx`) — близько 690 рядків (на межі прийнятного, але
+зчеплення zoom+crop логічне). Решта — у здоровому діапазоні 30-505.
 
-- Кожен внутрішній компонент має чіткі межі (forwardRef, props)
-- Жоден компонент не «руками» лізе у state іншого — все через props/callbacks
-- `CATEGORY_OPTIONS` / `AUTHOR_OPTIONS` / `MAX_IMAGES_WARN` — константи на топі файлу
+#### Окремий нюанс: `CropperHost` уже експортується
 
-### 5.4 Ризик
+Рядок 2631: `export function CropperHost(...)`. Це означає що
+`tests/unit/cropperHost.test.jsx` уже імпортує його напряму. **При
+виносі у власний файл імпорт у тесті оновлюється на новий шлях** — більше
+нічого міняти не треба.
 
-**Мінімальний.** Це фізичне переміщення з імпортами. Жодної зміни логіки,
-жодної зміни сигнатур. Існуючі тести (`tests/unit/ImageMergePanel.*`,
-`tests/integration/multiImageToPdf.test.js`) лишаються зеленими.
+### 5.5 Що поділ дасть конкретно
 
-### 5.5 Час
+**Зараз (вимірюється):**
 
-Орієнтовно **один вечір** з тестами і перевіркою на реальній справі
-(склейка зображень паспорта).
+- Один файл 2822 рядки в директорії CaseDossier
+- 4 тести вже існують (`ImageMergePanel.test.jsx`, `cropperHost.test.jsx`,
+  `imageMergeRenderer.test.js`, `multiImageToPdf.test.js`)
+- Будь-яка зміна у будь-якому з 14 компонентів = зачіпає той самий файл
+  = merge-конфлікт ймовірний
+
+**Після (вимірюється):**
+
+- 14 файлів, кожен ≤690 рядків
+- Тести можуть точково тестувати окремі компоненти (наприклад unit-тест
+  на `Thumbnail` з мок-HEIC-файлом)
+- Зміна у `PreviewPopup` не зачіпає файл `Thumbnail` — паралельна робота
+  можлива
+- AI-контекст: щоб поправити баг у `Thumbnail`, треба читати ~195 рядків,
+  не 2822
+- Discoverability: «де живе DnD?» → `grid/` папка
+
+**Чого НЕ зміниться:**
+
+- Адвокат відкриває склейку — все працює ідентично. Жоден піксель UI не
+  міняється.
+- Bundle size — однаковий (Vite склеює)
+- Тести — той самий набір, мінімальне оновлення імпортів
+
+### 5.6 Як запобігти повторному роздуттю
+
+**Правило, яке варто внести у `CLAUDE.md` (правило №12):**
+
+```
+№12 — Розмір файлу як межа
+
+При додаванні нового внутрішнього компонента/хелпера у існуючий файл:
+
+— Якщо новий блок >100 рядків — створювати окремий файл одразу
+— Якщо файл після додавання перетне 800 рядків — створювати окремий
+  файл одразу
+— Якщо файл після додавання перетне 1500 рядків — обов'язковий міні-TASK
+  розщеплення в тому ж PR
+
+Виняток: registry-файли (actionsRegistry, migrationService) — для них
+структура каталогу важливіша за розмір.
+```
+
+Це **правило-сторож** на кшталт правила #11. Воно перетворює рефлекс
+«логічно близько → в той самий файл» на свідому паузу «а чи перетне
+поріг?».
+
+**Технічний enforcement (опціонально):** простий чек у CI
+`scripts/check-file-sizes.js` що попереджає (не блокує) про файли понад
+1500 рядків. Починати **без CI-enforcement** — бачимо ефект правила,
+потім вирішуємо чи треба автоматика.
+
+### 5.7 Які компоненти ймовірно додаватимуться в майбутньому
+
+Правдоподібні наступні шари (фотозйомка з телефону, паспорти,
+постанови — реальні сценарії адвоката):
+
+#### Підпапка `tools/` — інструменти редагування
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `BrightnessContrastTool.jsx` | tools/ | адвокат фотографує погано освітлений документ |
+| `PerspectiveCorrectionTool.jsx` | tools/ | фото столу під кутом, edge detection не справляється |
+| `PageDeskewTool.jsx` | tools/ | скан з фотоапарата нерівно |
+| `ColorPickerTool.jsx` | tools/ | вибір ч/б vs color для economy |
+
+#### Підпапка `annotations/` — нанесення на зображення
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `AnnotationOverlay.jsx` | annotations/ | потреба нанесення підпису/печатки |
+| `SignatureStamp.jsx` | annotations/ | вставка готового підпису адвоката |
+| `TextWatermark.jsx` | annotations/ | водяний знак «копія вірна оригіналу» |
+
+#### Підпапка `ai/` — AI-помічники
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `MultiPageDetector.jsx` | ai/ | AI визначає що 8 фото — це 2 документи по 4 стор. |
+| `ScanQualityCheck.jsx` | ai/ | попередження «фото нечитабельне, переробити» |
+| `PageReorderHints.jsx` | ai/ | image sorting agent невпевнений у порядку |
+| `AutoCropSuggestion.jsx` | ai/ | альтернатива existing crop proposal |
+
+#### Підпапка `export/` — експортні налаштування
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `ExportOptionsTool.jsx` | export/ | DPI, compression, color/grayscale |
+| `PageSizePreset.jsx` | export/ | A4 / Letter / Legal вибір |
+| `CompressionLevel.jsx` | export/ | економія місця на Drive |
+
+**Принцип:** ці папки **створюються порожніми у TASK Фази 1** — як
+ДНК-закладки. Кожен майбутній TASK додає компонент у відповідну папку
+від народження. Жодного «потім винесемо» — структура каталогу одразу
+сигналізує **куди** йде новий код.
+
+### 5.8 Ризик і час
+
+**Ризик: мінімальний.** Це фізичне переміщення з імпортами. Жодної зміни
+логіки, жодної зміни сигнатур.
+
+**Тести:** існуючі 4 файли тестів лишаються зеленими. Імпорти у
+`cropperHost.test.jsx` оновлюються на новий шлях. Інші три не торкаються.
+
+**Час:** орієнтовно **один вечір** з тестами і перевіркою на реальній
+справі (склейка зображень паспорта).
 
 ---
 
@@ -378,6 +658,44 @@ src/components/CaseDossier/
 Орієнтовно **два-три дні** з тестами. Чотири окремі мікро-TASK'и (по одній
 вкладці за раз) безпечніші ніж один великий.
 
+### 6.6 Які компоненти ймовірно додаватимуться в майбутньому
+
+#### Підпапка `tabs/` — нові вкладки досьє
+
+| Вкладка | Файл | Тригер |
+|---|---|---|
+| `TimelineTab.jsx` | tabs/ | хронологічний вид усього що сталось у справі (hearings, deadlines, notes, documents) |
+| `FinancesTab.jsx` | tabs/ | Billing UI v1 — деталізація `time_entries` для цієї справи |
+| `StrategyTab.jsx` | tabs/ | довгострокова стратегія, гіпотези, тактика — окремо від notes |
+| `ClientPortalTab.jsx` | tabs/ | CRM-зріз: що видно клієнту (`visibleToClient` фільтр) |
+| `TeamTab.jsx` | tabs/ | Multi-user — управління командою справи (case.team[]) |
+| `ECITSTab.jsx` | tabs/ | окрема вкладка з даними з ЄСІТС (parties, composition, syncMetrics) |
+
+#### Підпапка `panels/` — допоміжні панелі (sidebar)
+
+| Панель | Файл | Тригер |
+|---|---|---|
+| `VoiceCommandPanel.jsx` | panels/ | AI-first — глобальний голос для команд на справі |
+| `QuickStatsSidebar.jsx` | panels/ | вузький sidebar з ключовими цифрами справи |
+| `RelatedCasesPanel.jsx` | panels/ | пов'язані справи (той самий клієнт, той самий суддя) |
+| `DeadlineSentinel.jsx` | panels/ | вертикальна шкала найближчих дедлайнів |
+
+#### Підпапка `services/` — локальні сервіси досьє
+
+| Сервіс | Файл | Тригер |
+|---|---|---|
+| `contextGenerator.js` | services/ | (вже у Фазі 4) формування case_context.md для AI |
+| `caseAnalytics.js` | services/ | агрегації для FinancesTab і QuickStatsSidebar |
+| `caseLinker.js` | services/ | алгоритм пошуку пов'язаних справ для RelatedCasesPanel |
+
+#### Папка `modals/` (нова, за потребою)
+
+| Модалка | Файл | Тригер |
+|---|---|---|
+| `ShareCaseModal.jsx` | modals/ | поширення доступу (external collaborator) |
+| `MergeCasesModal.jsx` | modals/ | злиття дублікатів (ЄСІТС + ручна — одна справа) |
+| `ArchiveModal.jsx` | modals/ | архівування з підтвердженням |
+
 ---
 
 ## 7. Dashboard/index.jsx — 2710 → ~1100 + 6-7 файлів
@@ -449,6 +767,43 @@ src/components/Dashboard/
 Орієнтовно **один-два вечори** з тестами + окремий міні-TASK на
 нормалізацію TimePicker (двох → одного).
 
+### 7.6 Які компоненти ймовірно додаватимуться в майбутньому
+
+#### Підпапка `views/` — нові режими перегляду
+
+| Вид | Файл | Тригер |
+|---|---|---|
+| `WeekView.jsx` | views/ | детальний тижневий вид (зараз тільки day + month) |
+| `YearView.jsx` | views/ | загальний річний — для планування і статистики |
+| `AgendaView.jsx` | views/ | список всіх засідань без візуальної сітки |
+| `CourtroomView.jsx` | views/ | групування за судом, не за датою |
+
+#### Підпапка `widgets/` — окремі віджети дашборду
+
+| Віджет | Файл | Тригер |
+|---|---|---|
+| `ConflictsWidget.jsx` | widgets/ | окремий блок із колізіями розкладу |
+| `DeadlineSentinel.jsx` | widgets/ | дзеркало DeadlineSentinel з CaseDossier на верхньому рівні |
+| `BillingSummary.jsx` | widgets/ | Billing UI — годин/день, тиждень |
+| `TodaysFocus.jsx` | widgets/ | AI-генероване «що зараз найважливіше» |
+| `TravelMap.jsx` | widgets/ | мапа поточних виїздів |
+
+#### Підпапка `helpers/` — нові утиліти
+
+| Хелпер | Файл | Тригер |
+|---|---|---|
+| `recurringEvents.js` | helpers/ | повторювані події (зараз тільки одиничні) |
+| `multiDayEvents.js` | helpers/ | події що тривають >1 дня (триденне слухання) |
+| `travelOptimizer.js` | helpers/ | AI-помічник для розрахунку оптимального маршруту |
+
+#### Папка `panels/` (нова, за потребою)
+
+| Панель | Файл | Тригер |
+|---|---|---|
+| `FilterPanel.jsx` | panels/ | бічна панель фільтрів (case, court, type, status) |
+| `SearchPanel.jsx` | panels/ | jump-to-date, пошук події |
+| `NotificationsPanel.jsx` | panels/ | випадаюча панель з повідомленнями |
+
 ---
 
 ## 8. AddDocumentModal.jsx — 1039 → ~330 + 5 файлів
@@ -507,6 +862,41 @@ src/components/CaseDossier/
 ### 8.5 Час
 
 Орієнтовно **пів-день** з тестами.
+
+### 8.6 Які компоненти ймовірно додаватимуться в майбутньому
+
+#### Папка `AddDocumentModal/` (верхній рівень)
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `BatchUploadProgress.jsx` | AddDocumentModal/ | прогрес при пакетному додаванні |
+| `MetadataAutofill.jsx` | AddDocumentModal/ | AI-підказки полів на основі імені файлу/OCR |
+| `DuplicateWarning.jsx` | AddDocumentModal/ | попередження «такий документ вже є» |
+
+#### Підпапка `DrivePicker/` (всередині AddDocumentModal)
+
+| Компонент | Файл | Тригер |
+|---|---|---|
+| `RecentsList.jsx` | DrivePicker/ | список нещодавніх папок Drive |
+| `Favorites.jsx` | DrivePicker/ | улюблені папки адвоката |
+| `DriveSearch.jsx` | DrivePicker/ | пошук по Drive (зараз тільки browse) |
+| `SharedDrivesPanel.jsx` | DrivePicker/ | Shared Drives (тенант може мати корпоративний) |
+| `ThumbnailPreview.jsx` | DrivePicker/ | прев'ю файлу перед вибором |
+
+#### Розширення `SourceSwitcher`
+
+| Джерело | Файл | Тригер |
+|---|---|---|
+| `TelegramSource.jsx` | DrivePicker/sources/ | Telegram бот вже синхронізує — show inbox |
+| `EmailSource.jsx` | DrivePicker/sources/ | додавання з email вкладень |
+| `ScannerSource.jsx` | DrivePicker/sources/ | прямий захват з камери (на десктопі через WebRTC) |
+
+#### Папка `shared/` (можлива міграція)
+
+Якщо при виносі побачимо що `DrivePicker` справді спільний з
+`DocumentProcessorV2/DrivePicker` — створиться `components/UI/DrivePicker/`
+як спільний UI-компонент. Тоді обидва місця імпортують його замість мати
+свій. **Це окремий мікро-TASK**, не разом з винесенням.
 
 ---
 

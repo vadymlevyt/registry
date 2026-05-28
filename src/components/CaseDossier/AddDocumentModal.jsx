@@ -18,7 +18,7 @@ import { Modal, Input, Select, Toggle, Button, DatePicker } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { driveRequest } from '../../services/driveAuth.js';
 import { toast } from '../../services/toast.js';
-import { ImageMergePanel } from './ImageMergePanel.jsx';
+import { ImageMergePanel } from './ImageMergePanel/index.jsx';
 import './AddDocumentModal.css';
 import './ImageMergePanel.css';
 
