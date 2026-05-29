@@ -1,4 +1,4 @@
-// ── ImageMergePanel · PreviewPopup ───────────────────────────────────────────
+// ── ImageEditor · PreviewPopup ───────────────────────────────────────────────
 // Full-screen crop editor (Apple Photos/Google Photos UX):
 //   - Full-screen overlay (займає весь viewport)
 //   - Top bar: ✕ Cancel (закрити без застосування), title, ✓ Apply
@@ -24,7 +24,7 @@ import {
   Square as FrameIcon,
 } from 'lucide-react';
 import { CropperHost } from './CropperHost.jsx';
-import { rotateRectCW, rotateRectCCW } from './geometry.js';
+import { rotateRectCW, rotateRectCCW } from '../../services/imageDocument/geometry.js';
 
 export function PreviewPopup({
   origIdx, url, sourceBlob, autoRotation: autoRotationProp, userRotation: userRotationOnly,
@@ -130,7 +130,7 @@ export function PreviewPopup({
     let createdUrl = null;
     (async () => {
       try {
-        const { computeRenderedBlob } = await import('../../../services/sortation/imageRenderer.js');
+        const { computeRenderedBlob } = await import('../../services/sortation/imageRenderer.js');
         // Контекст для renderer'у складаємо тут — у popup props ми отримали
         // все потрібне (sourceBlob як raw, cropOverride, processedEntry).
         // userRotation і detectedOrientations — обгортки Map/Array з одним

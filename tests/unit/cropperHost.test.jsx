@@ -21,7 +21,7 @@ vi.mock('react-advanced-cropper', () => ({
 }));
 vi.mock('react-advanced-cropper/dist/style.css', () => ({}));
 
-import { CropperHost } from '../../src/components/CaseDossier/ImageMergePanel/CropperHost.jsx';
+import { CropperHost } from '../../src/components/ImageEditor/CropperHost.jsx';
 
 // Wrapper щоб надати bakedUserRotationRef як ref (CropperHost очікує ref-об'єкт
 // з .current, не голе число).

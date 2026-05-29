@@ -1,6 +1,8 @@
-// ── ImageMergePanel · pdfRebuild ─────────────────────────────────────────────
+// ── imageDocument · pdfRebuild ───────────────────────────────────────────────
 // Async helper для збірки фінального PDF з orderedIndices + userRotation +
-// crops + processedBlobs. Без React. Використовується index.jsx у handleSubmit.
+// crops + processedBlobs. Без React. Чиста async-функція — спільне місце для
+// усіх споживачів image-merge (ImageMergePanel handleSubmit та майбутній DP
+// image-merge flow).
 //
 // Фінальний кут обертання = (autoOrientation + userRotation) mod 360 — сума
 // автоматичного визначення системи і ручного докручування адвокатом.
@@ -48,7 +50,7 @@ export async function rebuildFromOcrResults({
       })
     : null;
 
-  const { computeRenderedBlob } = await import('../../../services/sortation/imageRenderer.js');
+  const { computeRenderedBlob } = await import('../sortation/imageRenderer.js');
   const jspdfMod = await import('jspdf');
   const JsPDF = jspdfMod.jsPDF || jspdfMod.default;
 

@@ -1,4 +1,4 @@
-// ── ImageMergePanel · CropperHost ────────────────────────────────────────────
+// ── ImageEditor · CropperHost ────────────────────────────────────────────────
 // Оболонка над react-advanced-cropper з lazy load.
 // Cropper обробляє жести: pinch-zoom, pan, drag handles на 4 кутах + 4 ребрах.
 // Free aspect (stencilProps.aspectRatio={undefined}). Повертає coords у

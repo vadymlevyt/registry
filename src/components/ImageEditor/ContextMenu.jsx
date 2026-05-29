@@ -1,9 +1,9 @@
-// ── ImageMergePanel · ContextMenu ────────────────────────────────────────────
+// ── ImageEditor · ContextMenu ────────────────────────────────────────────────
 // Контекстне меню (desktop right-click) для thumbnail у grid.
 // Адвокат правокліком на зображення → меню «Переглянути / Повернути / Видалити».
 
 import { Eye, RotateCw, Trash2 } from 'lucide-react';
-import { ICON_SIZE } from '../../UI/icons.js';
+import { ICON_SIZE } from '../UI/icons.js';
 
 export function ContextMenu({ x, y, onView, onRotate, onRemove }) {
   // Корекція позиції щоб меню не вилазило за межі екрану.

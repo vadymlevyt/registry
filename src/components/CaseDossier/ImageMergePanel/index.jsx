@@ -12,21 +12,24 @@
 // Drag-and-drop через @dnd-kit/core + @dnd-kit/sortable (touch + a11y).
 // Попап перегляду через react-zoom-pan-pinch (lazy chunk).
 //
-// Структура файлів (Roadmap Фаза 1):
-//   index.jsx         — головний компонент (цей файл)
-//   PreviewView.jsx   — фаза preview, оркеструє grid/popup/form
-//   PreviewPopup.jsx  — full-screen crop editor
-//   RenderItem.jsx    — рендер картки grid
-//   Thumbnail.jsx     — мініатюра з HEIC-логікою
-//   CropperHost.jsx   — react-advanced-cropper з lazy load (export для тестів)
-//   ContextMenu.jsx   — right-click menu
-//   ProcessingView.jsx — індикатор фази processing
-//   SingleFileWarning.jsx — модалка "1 файл — використайте Додати"
-//   constants.js      — CATEGORY_OPTIONS, AUTHOR_OPTIONS, MAX_IMAGES_WARN, PHASES
-//   geometry.js       — rotateRectCW / rotateRectCCW
-//   pdfRebuild.js     — rebuildFromOcrResults (фінальна збірка PDF)
-//   grid/             — drag-and-drop (SortableGrid, DndGrid, SortableItem)
-//   tools/, annotations/, ai/, export/ — ДНК-папки для майбутніх розширень
+// Структура файлів (Roadmap Фаза 1 + TASK 1A image_merge_unify):
+//   ImageMergePanel/   — модалка «1 батч = 1 документ» (специфічне):
+//     index.jsx         — головний компонент (цей файл, forwardRef + handleSubmit)
+//     PreviewView.jsx   — фаза preview модалки, оркеструє grid/popup/form
+//     ProcessingView.jsx — індикатор фази processing
+//     SingleFileWarning.jsx — модалка "1 файл — використайте Додати"
+//   components/ImageEditor/ — спільне reusable (модалка + майбутній DP image-merge):
+//     PreviewPopup.jsx  — full-screen crop editor
+//     RenderItem.jsx    — рендер картки grid
+//     Thumbnail.jsx     — мініатюра з HEIC-логікою
+//     CropperHost.jsx   — react-advanced-cropper з lazy load (export для тестів)
+//     ContextMenu.jsx   — right-click menu
+//     constants.js      — CATEGORY_OPTIONS, AUTHOR_OPTIONS, MAX_IMAGES_WARN, PHASES, isImageFile
+//     grid/             — drag-and-drop (SortableGrid, DndGrid, SortableItem)
+//   services/imageDocument/ — чисті сервісні функції (без React):
+//     geometry.js       — rotateRectCW / rotateRectCCW
+//     pdfRebuild.js     — rebuildFromOcrResults (фінальна збірка PDF)
+//   tools/, annotations/, ai/, export/ — ДНК-папки під майбутні розширення модалки
 
 import {
   useState,
@@ -49,11 +52,11 @@ import { toast } from '../../../services/toast.js';
 import { convertImagesToPdf } from '../../../services/converter/converterService.js';
 import { ensureUniqueName } from '../../../services/sortation/imageSortingAgent.js';
 import { detectDocumentEdges } from '../../../services/sortation/edgeDetection.js';
-import { MAX_IMAGES_WARN, isImageFile } from './constants.js';
+import { MAX_IMAGES_WARN, isImageFile } from '../../ImageEditor/constants.js';
 import { ProcessingView } from './ProcessingView.jsx';
 import { PreviewView } from './PreviewView.jsx';
 import { SingleFileWarning } from './SingleFileWarning.jsx';
-import { rebuildFromOcrResults } from './pdfRebuild.js';
+import { rebuildFromOcrResults } from '../../../services/imageDocument/pdfRebuild.js';
 
 /**
  * @param {{caseData, onSubmit, onCancel, onOpenDrivePicker}} props

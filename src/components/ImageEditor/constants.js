@@ -1,6 +1,11 @@
-// ── ImageMergePanel · constants ──────────────────────────────────────────────
-// Спільні константи і чисті хелпери для всіх частин ImageMergePanel.
+// ── ImageEditor · constants ──────────────────────────────────────────────────
+// Спільні константи і чисті хелпери для всіх частин ImageEditor (модалка
+// «Склеїти зображення» — ImageMergePanel — і майбутній DP image-merge flow).
 // Без React, без сайд-ефектів.
+//
+// CATEGORY_OPTIONS / AUTHOR_OPTIONS лишаються тут тимчасово (борг —
+// канонічний дім у schemas/documentSchema.js; tracking_debt.md, тригер:
+// окремий backfill TASK класифікації).
 
 export const CATEGORY_OPTIONS = [
   { value: 'pleading', label: 'Заява по суті' },

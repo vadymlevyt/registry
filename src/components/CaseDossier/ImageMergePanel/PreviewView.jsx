@@ -15,10 +15,10 @@ import {
 } from 'lucide-react';
 import { Input, Select, Toggle, Button, DatePicker } from '../../UI';
 import { ICON_SIZE } from '../../UI/icons.js';
-import { CATEGORY_OPTIONS, AUTHOR_OPTIONS } from './constants.js';
-import { SortableGrid } from './grid/SortableGrid.jsx';
-import { PreviewPopup } from './PreviewPopup.jsx';
-import { ContextMenu } from './ContextMenu.jsx';
+import { CATEGORY_OPTIONS, AUTHOR_OPTIONS } from '../../ImageEditor/constants.js';
+import { SortableGrid } from '../../ImageEditor/grid/SortableGrid.jsx';
+import { PreviewPopup } from '../../ImageEditor/PreviewPopup.jsx';
+import { ContextMenu } from '../../ImageEditor/ContextMenu.jsx';
 
 export function PreviewView({
   pipelineResult,

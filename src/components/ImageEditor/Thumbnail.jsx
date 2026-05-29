@@ -1,4 +1,4 @@
-// ── ImageMergePanel · Thumbnail ──────────────────────────────────────────────
+// ── ImageEditor · Thumbnail ──────────────────────────────────────────────────
 // Мініатюра одного зображення у grid. Підтримує HEIC (через previewUrls що
 // генеруються async у головному компоненті). Має:
 //   - rotation badge (CSS transform для плавної анімації user rotation)
@@ -21,7 +21,7 @@ import {
   X,
   GripVertical,
 } from 'lucide-react';
-import { ICON_SIZE } from '../../UI/icons.js';
+import { ICON_SIZE } from '../UI/icons.js';
 
 export function Thumbnail({
   origIdx, position, url, isProcessed = false, warning, duplicateInfo, rotation, isUncertain,

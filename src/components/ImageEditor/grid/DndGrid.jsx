@@ -1,4 +1,4 @@
-// ── ImageMergePanel · grid · DndGrid ─────────────────────────────────────────
+// ── ImageEditor · grid · DndGrid ─────────────────────────────────────────────
 // DndContext wrapper з sensor конфігурацією (PointerSensor + TouchSensor).
 // Touch — delay 200ms tolerance 5px (тримай-щоб-перетягти). Mouse — distance 5px.
 // onDragEnd: arrayMove у displayItems і onReorder з новим items array.

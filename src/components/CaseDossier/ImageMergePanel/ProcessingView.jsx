@@ -2,7 +2,7 @@
 // Сторінка-індикатор фази processing: spinner + phase label + progress bar +
 // stepper по 6 фазах pipeline (preparing / heic / ocr / sort / rotate / pdf).
 
-import { PHASES } from './constants.js';
+import { PHASES } from '../../ImageEditor/constants.js';
 
 export function ProcessingView({ progress }) {
   const currentIdx = PHASES.findIndex((p) => p.key === progress.phase);

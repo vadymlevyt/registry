@@ -1,6 +1,7 @@
-// ── ImageMergePanel · geometry helpers ───────────────────────────────────────
+// ── imageDocument · geometry helpers ─────────────────────────────────────────
 // Конверсії crop rect між raw natural image space і rotated image space.
-// Без React, чисті функції.
+// Чиста математика, без React, без сайд-ефектів. Спільне місце для всіх
+// споживачів image-merge (ImageEditor/PreviewPopup та майбутній DP image-merge).
 
 // rotateRectCW: rect (x,y,w,h) у (natW × natH) → новий rect у (rotated dims).
 // 90: (natH - y - h, x, h, w) у (natH × natW) space.

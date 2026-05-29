@@ -1,4 +1,4 @@
-// ── ImageMergePanel · grid · SortableItem ────────────────────────────────────
+// ── ImageEditor · grid · SortableItem ────────────────────────────────────────
 // Sortable одиниця для @dnd-kit/sortable. Обгортає RenderItem дет-залежним
 // transform/transition і передає sortable listeners у RenderItem.
 //

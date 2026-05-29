@@ -1,4 +1,4 @@
-// ── ImageMergePanel · grid · SortableGrid ────────────────────────────────────
+// ── ImageEditor · grid · SortableGrid ────────────────────────────────────────
 // @dnd-kit lazy load + рендер DndGrid коли бібліотеки готові. Поки lazy load —
 // показуємо звичайний grid (без drag handles, але thumbnail'и видимі).
 //
