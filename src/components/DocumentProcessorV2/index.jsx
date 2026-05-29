@@ -15,7 +15,7 @@ import { ICON_SIZE } from '../UI/icons.js';
 import { Button, Toggle, Tabs } from '../UI';
 import { toast } from '../../services/toast.js';
 import { driveRequest } from '../../services/driveAuth.js';
-import { readDriveFileBytes } from '../../services/driveService.js';
+import { readDriveFileBytes, findOrCreateFolder, uploadBytesToDrive } from '../../services/driveService.js';
 import { getSplitterDatasetEnabled, setSplitterDatasetEnabled } from '../../services/tenantService.js';
 import { useDocumentPipeline } from '../../contexts/DocumentPipelineContext.jsx';
 import { DrivePicker } from './DrivePicker.jsx';
@@ -23,7 +23,19 @@ import { RecognizeTextModal } from './modals/RecognizeTextModal.jsx';
 import { CompressFilesModal } from './modals/CompressFilesModal.jsx';
 import { InboxConflictModal } from './modals/InboxConflictModal.jsx';
 import { CancelDecisionModal } from './modals/CancelDecisionModal.jsx';
+import { DpImageMergeEditor } from './DpImageMergeEditor.jsx';
+import { isImageFile } from '../ImageEditor/constants.js';
+import { prepareImagesForMerge } from '../../services/imageDocument/prepareImagesForMerge.js';
+import { groupImagesIntoDocuments } from '../../services/sortation/imageDocumentGrouper.js';
+import { rebuildFromOcrResults } from '../../services/imageDocument/pdfRebuild.js';
+import { createDocument } from '../../services/documentFactory.js';
+import { ensureUniqueName } from '../../services/sortation/imageSortingAgent.js';
+import * as ocrService from '../../services/ocrService.js';
 import './styles.css';
+
+function getApiKey() {
+  try { return localStorage.getItem('claude_api_key'); } catch { return null; }
+}
 
 const INBOX_FOLDER = '00_INBOX_СПРАВИ';
 
@@ -74,6 +86,15 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   const [compressOpen, setCompressOpen] = useState(false);
   const [inboxConflict, setInboxConflict] = useState(null); // {newCount} | null
   const [cancelInfo, setCancelInfo] = useState(null);        // {jobId,readyCount} | null
+
+  // ── 1B image_merge_unify: окремий під-флоу для all-image вхідного набору ──
+  // Коли всі обрані файли — image/*, DP перехоплює запуск ДО pipeline.run і
+  // веде у власний редактор (prepareImagesForMerge + imageDocumentGrouper +
+  // N-doc editor). PERSIST виконується ТІЛЬКИ після «Виконати» (правка плану
+  // адвокатом — §4.1 DP візії, локально для image-merge сценарію). Стан
+  // imageMerge={pre, groups, files, …} активний поки адвокат у редакторі;
+  // null = звичайний DP flow (нарізка PDF / мікс).
+  const [imageMerge, setImageMerge] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -182,11 +203,251 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     };
   };
 
+  // ── 1B image_merge_unify: чи весь батч — фото? ─────────────────────────
+  // Детермінований вибір сценарію НА ВХОДІ. Корінь падіння який лагодимо:
+  // streamingExecutor.streamFile жене кожен файл через chunk-OCR PDF до
+  // вибору route — фото нема PDF header → крах «No PDF header found».
+  // Фікс: для all-image обходимо весь pipeline.run і ведемо у DP image-merge
+  // editor (prepareImagesForMerge + imageDocumentGrouper).
+  const isAllImagesInput = () => {
+    if (selected.length === 0) return false;
+    // INBOX зараз ігноруємо у image-merge детекції: дозволяємо тільки чисті
+    // device/drive батчі фото. Якщо адвокат відмітив щось з INBOX — звичайний
+    // pipeline (mix scope боргу — див. tracking_debt).
+    if (inboxSelected.length > 0) return false;
+    return selected.every((s) => isImageFile({ name: s.name, type: s.mime }));
+  };
+  const hasAnyImage = () => selected.some((s) => isImageFile({ name: s.name, type: s.mime }))
+    || inboxSelected.some((f) => isImageFile({ name: f.name, type: f.mimeType }));
+  const hasAnyNonImage = () => selected.some((s) => !isImageFile({ name: s.name, type: s.mime }))
+    || inboxSelected.some((f) => !isImageFile({ name: f.name, type: f.mimeType }));
+
+  // ── 1B: запуск image-merge сценарію (повз pipeline.run) ─────────────────
+  const startImageMergeProcessing = async () => {
+    if (running) return;
+    // Конфлікт INBOX: тимчасово веземо новий батч у image-merge, лишаємо INBOX
+    // як є (адвокат потім окремо).
+    setRunning(true);
+    setResult(null);
+    setImageMerge(null);
+    pipeline.expandProgress?.();
+    try {
+      // Конвертуємо selected у File[] (device → file; drive → blob).
+      const files = [];
+      for (const s of selected) {
+        if (s.origin === 'device' && s.file) {
+          files.push(s.file);
+        } else if (s.driveId) {
+          try {
+            const res = await driveRequest(
+              `https://www.googleapis.com/drive/v3/files/${s.driveId}?alt=media`,
+            );
+            if (!res.ok) throw new Error(`Drive HTTP ${res.status}`);
+            const blob = await res.blob();
+            const file = new File([blob], s.name, { type: s.mime || blob.type || 'image/jpeg' });
+            files.push(file);
+          } catch (e) {
+            toast.error(`Не вдалось завантажити з Drive: ${s.name}`, { description: e?.message });
+            setRunning(false);
+            pipeline.minimizeProgress?.();
+            return;
+          }
+        }
+      }
+      if (files.length === 0) {
+        toast.warning('Немає фото для обробки');
+        setRunning(false);
+        pipeline.minimizeProgress?.();
+        return;
+      }
+
+      // Phase 1 — pre-assembly (HEIC + OCR + orientation) у спільному сервісі.
+      // jobProgressStore TODO: тут немає jobId, прогрес лише локальний toast.
+      const pre = await prepareImagesForMerge(files, {
+        onProgress: (phase, done, total) => {
+          // Локальний прогрес — toast.info не потрібен (UI Зона 4 поки не
+          // отримує сигнал для image-merge режиму; деталі — у tracking_debt).
+          // Можна логувати у console для діагностики.
+          // eslint-disable-next-line no-console
+          console.log(`[DP image-merge] ${phase} ${done}/${total}`);
+        },
+      });
+
+      // Phase 2 — grouper (Haiku). Якщо API ключа немає / агент падає —
+      // fallback один документ з усіх фото (адвокат поділить вручну).
+      const apiKey = getApiKey();
+      let grouperResult;
+      try {
+        const items = pre.normalizedFiles.map((f, i) => ({
+          index: i,
+          name: f?.name || `IMG_${i + 1}.jpg`,
+          mime: f?.type || 'image/jpeg',
+          ocrText: pre.ocrResults[i]?.text || '',
+        }));
+        grouperResult = await groupImagesIntoDocuments(items, {
+          apiKey,
+          caseId: caseData?.id,
+        });
+      } catch (e) {
+        console.warn('[DP image-merge] grouper failed, single-group fallback:', e?.message);
+        grouperResult = {
+          groups: [{ pages: pre.normalizedFiles.map((_, i) => i), type: null, suggestedName: '' }],
+          fallback: true,
+          fallbackReason: e?.message || 'unknown',
+        };
+      }
+      if (grouperResult.fallback) {
+        toast.info('AI не зміг визначити межі — один документ з усіх фото; розділіть вручну.');
+      }
+
+      setImageMerge({ files, pre, initialGroups: grouperResult.groups });
+      pipeline.minimizeProgress?.();
+    } catch (e) {
+      console.error('[DP image-merge] startup failed:', e);
+      toast.error('Не вдалось підготувати фото', { description: e?.message });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  // ── 1B: «Виконати» з image-merge editor ────────────────────────────────
+  // Для кожної групи: rebuildFromOcrResults у PDF → upload у 01_ОРИГІНАЛИ →
+  // executeAction('document_processor_agent','add_documents'). Текст і layout
+  // у 02_ОБРОБЛЕНІ (best-effort, не блокує).
+  const handleImageMergeSubmit = async ({
+    groups, userRotation, cropOverrides, cropProposals, cropDisabled,
+    cropAppliedSet, processedBlobs, pre,
+  }) => {
+    if (!onExecuteAction) {
+      throw new Error('Немає onExecuteAction — додавання неможливе');
+    }
+    const existingNames = (caseData?.documents || []).map((d) => d.name).filter(Boolean);
+    const documents = [];
+    const usedNames = new Set(existingNames);
+
+    // 01_ОРИГІНАЛИ folder ID (per case)
+    let originalsFolderId = caseData?.storage?.subFolders?.['01_ОРИГІНАЛИ'] || null;
+    if (!originalsFolderId) {
+      const root = caseData?.storage?.driveFolderId || null;
+      const f = await findOrCreateFolder('01_ОРИГІНАЛИ', root, null);
+      originalsFolderId = f?.id;
+    }
+    if (!originalsFolderId) throw new Error('Не знайдено папку 01_ОРИГІНАЛИ');
+
+    for (const g of groups) {
+      if (g.pageIndices.length === 0) continue;
+      const rebuilt = await rebuildFromOcrResults({
+        orderedIndices: g.pageIndices,
+        realFiles: pre.normalizedFiles,
+        ocrResults: pre.ocrResults,
+        detectedOrientations: pre.detectedOrientations,
+        userRotation,
+        cropOverrides,
+        cropProposals,
+        cropDisabled,
+        cropAppliedSet,
+        processedBlobs,
+      });
+      const baseName = (g.name || '').trim() || 'Документ';
+      const uniqueName = ensureUniqueName(baseName, Array.from(usedNames));
+      usedNames.add(uniqueName);
+      const pdfName = `${uniqueName}.pdf`;
+
+      // Upload PDF
+      const bytes = new Uint8Array(await rebuilt.pdfBlob.arrayBuffer());
+      const up = await uploadBytesToDrive(originalsFolderId, pdfName, bytes, 'application/pdf');
+      const driveId = up.id;
+
+      // 02_ОБРОБЛЕНІ best-effort (text + layout)
+      try {
+        if (rebuilt.extractedText && rebuilt.extractedText.trim()) {
+          await ocrService.writeExtractedTextArtifact(
+            { id: driveId, name: pdfName, subFolders: caseData?.storage?.subFolders },
+            rebuilt.extractedText,
+          );
+        }
+        if (rebuilt.layoutJson) {
+          const layoutObj = typeof rebuilt.layoutJson === 'string'
+            ? JSON.parse(rebuilt.layoutJson)
+            : rebuilt.layoutJson;
+          await ocrService.writeLayoutArtifact(
+            { id: driveId, name: pdfName, subFolders: caseData?.storage?.subFolders },
+            layoutObj,
+          );
+        }
+      } catch (e) {
+        console.warn('[DP image-merge] 02_ОБРОБЛЕНІ write failed (non-fatal):', e?.message);
+      }
+
+      const document = createDocument({
+        name: uniqueName,
+        category: g.type || null,
+        author: g.author || null,
+        procId: g.procId || null,
+        date: g.date || null,
+        isKey: !!g.isKey,
+        driveId,
+        driveUrl: `https://drive.google.com/file/d/${driveId}/view`,
+        size: bytes.byteLength,
+        pageCount: g.pageIndices.length,
+        originalName: pdfName,
+        originalDriveId: null,
+        originalMime: 'application/pdf',
+        folder: '01_ОРИГІНАЛИ',
+        addedBy: 'user',
+        namingStatus: g.name ? 'manual' : 'auto',
+        documentNature: 'scanned',
+        source: 'manual',
+      });
+      documents.push(document);
+    }
+
+    if (documents.length === 0) {
+      toast.warning('Жодного документа не створено');
+      return;
+    }
+
+    const res = await onExecuteAction('document_processor_agent', 'add_documents', {
+      caseId: caseData.id, documents,
+    });
+    if (!res?.success) {
+      throw new Error(res?.error || 'add_documents failed');
+    }
+    toast.success(`Додано ${documents.length} ${documents.length === 1 ? 'документ' : 'документ(и)'}`);
+    setImageMerge(null);
+    setSelected([]);
+    setInboxChecked(new Set());
+    loadInbox();
+  };
+
+  const cancelImageMerge = () => {
+    setImageMerge(null);
+  };
+
   const startProcessing = async () => {
     if (totalCount === 0 || running) return;
     // Конфлікт INBOX: є нові (device/drive) файли і INBOX непорожній.
     if (selected.length > 0 && inboxFiles.length > 0 && !inboxConflict?.resolved) {
       setInboxConflict({ newCount: selected.length });
+      return;
+    }
+    // 1B image_merge_unify — детермінований вибір сценарію НА ВХОДІ:
+    //   • all-image (device/drive) + toggle skipPdfSlicing=false → DP image-merge editor
+    //   • all-image + toggle skipPdfSlicing=true → звичайний pipeline (per-file
+    //     image_merge solo, без grouper'а — адвокат каже «не групувати»)
+    //   • мікс photo+PDF — toast + борг (1B scope boundary, не latch)
+    //   • all-PDF / mix без фото — звичайний pipeline
+    if (isAllImagesInput() && !settings.skipPdfSlicing) {
+      await startImageMergeProcessing();
+      return;
+    }
+    if (hasAnyImage() && hasAnyNonImage()) {
+      // Мікс — поза scope 1B. Акуратний toast (без крах) + лишаємо адвоката
+      // вирішити: або зняти non-image файли і отримати editor, або зняти
+      // фото і добавити PDF окремо.
+      toast.warning('Мікс фото + PDF: оберіть або тільки фото, або тільки PDF', {
+        description: 'Інтерактивна склейка фото у DP працює лише для чистих наборів фото. PDF-нарізку запускайте окремо.',
+      });
       return;
     }
     setRunning(true);
@@ -263,6 +524,32 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   const ATTENTION_TYPES = ['text_clean_failed', 'document_split_skipped', 'duplicate_skipped', 'duplicate_review', 'triage_whole_volume'];
   const attentionDecisions = decisions.filter((d) => ATTENTION_TYPES.includes(d.type));
   const attentionCount = errors.length + attentionDecisions.length;
+
+  // ── 1B image_merge_unify — рендеримо DP image-merge editor поверх Zone 3 ─
+  // Editor показується ПОВЕРХ звичайного DP UI, коли imageMerge активний.
+  // Адвокат у Editor може натиснути «Назад» (cancelImageMerge) → повернутись
+  // до звичайного DP UI, або «Виконати» → handleImageMergeSubmit створить
+  // N документів і вийде з editor'а.
+  if (imageMerge) {
+    return (
+      <div className="dpv2">
+        <div className="dpv2-header">
+          <span className="dpv2-title">
+            <Wrench size={ICON_SIZE.md} aria-hidden="true" />
+            Робота з документами · склейка фото
+          </span>
+        </div>
+        <DpImageMergeEditor
+          caseData={caseData}
+          proceedings={caseData?.proceedings || []}
+          pre={imageMerge.pre}
+          initialGroups={imageMerge.initialGroups}
+          onSubmit={handleImageMergeSubmit}
+          onCancel={cancelImageMerge}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="dpv2">

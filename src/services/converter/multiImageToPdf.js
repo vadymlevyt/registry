@@ -49,116 +49,18 @@
 //
 // Caller передає progress callback (onProgress) для UI прогрес-бара.
 
-import { heicToJpeg } from './heicToJpeg.js';
-import * as ocrService from '../ocrService.js';
 import { sortImages, ensureUniqueName } from '../sortation/imageSortingAgent.js';
 import {
   extractPageOrientation,
   rotateImageBlob,
-  readExifOrientation,
-  resolveOrientation,
-  getImageDimensions,
 } from '../sortation/orientationCorrector.js';
+import { prepareImagesForMerge } from '../imageDocument/prepareImagesForMerge.js';
 
 const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
 const A4_MARGIN_MM = 10;
 const PX_TO_MM = 0.264583; // 1px ≈ 0.264583 мм (72 dpi)
 const JPEG_QUALITY = 0.92;
-
-const OCR_CONCURRENCY = 3; // Б2=B: 3-5 паралельних, обираємо 3 як безпечний baseline
-
-// ── HEIC pre-conversion ────────────────────────────────────────────────────
-
-function isHeic(file) {
-  const name = (file?.name || '').toLowerCase();
-  const mime = (file?.type || '').toLowerCase();
-  return mime === 'image/heic' || mime === 'image/heif' || /\.heic$/i.test(name);
-}
-
-async function preConvertHeic(files) {
-  const out = [];
-  for (const f of files) {
-    if (isHeic(f)) {
-      try {
-        const conv = await heicToJpeg(f);
-        out.push(conv.jpegFile);
-      } catch (e) {
-        // HEIC fail — пропускаємо файл, caller бачить у warnings
-        out.push({ ...f, _heicFailed: e?.message || 'HEIC conversion failed' });
-      }
-    } else {
-      out.push(f);
-    }
-  }
-  return out;
-}
-
-// ── Concurrency-обмежений OCR ──────────────────────────────────────────────
-
-/**
- * Запускає таск-функції з обмеженням concurrency. Кожен таск отримує (item, idx).
- * Повертає масив результатів у тому ж порядку що вхідні items.
- * onProgress(doneCount, totalCount) викликається при завершенні кожного.
- */
-async function runWithConcurrency(items, taskFn, concurrency, onProgress) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  let done = 0;
-  async function worker() {
-    while (true) {
-      const myIdx = cursor++;
-      if (myIdx >= items.length) return;
-      try {
-        results[myIdx] = await taskFn(items[myIdx], myIdx);
-      } catch (e) {
-        results[myIdx] = { __error: e };
-      }
-      done++;
-      if (typeof onProgress === 'function') {
-        try { onProgress(done, items.length); } catch {}
-      }
-    }
-  }
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
-  await Promise.all(workers);
-  return results;
-}
-
-// ── OCR pipeline для одного зображення ─────────────────────────────────────
-
-/**
- * Обгортка над ocrService.extractText. Файл який ще НЕ на Drive (адвокат
- * вибрав з пристрою) — у нас немає driveId. Передаємо локальний blob через
- * file.localBlob = file. ocrService.documentAi уміє це у extract().
- *
- * Якщо файл уже на Drive (з multi-select picker'а) — передаємо `id` + `mimeType`.
- */
-async function ocrOneImage(file, options) {
-  const ocrFile = file._isDriveSource && file._driveId
-    ? {
-        id: file._driveId,
-        name: file.name,
-        mimeType: file.type,
-        // subFolders не передаємо — кеш у 02_ОБРОБЛЕНІ робить інакше
-        // (по сесії merge — спочатку OCR кожне у пам'яті, потім єдиний .txt)
-      }
-    : {
-        // Локальний файл — ocrService витягне через FileReader / Document AI
-        id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        name: file.name,
-        mimeType: file.type || 'image/jpeg',
-        localBlob: file,
-      };
-  // skipCache=true — не читаємо .txt з 02_ОБРОБЛЕНІ. Файл щойно адвокат вибрав,
-  // у нас немає persistent ID. Запис кеша теж пропускаємо (caller сам напише
-  // об'єднаний .txt після склейки).
-  return await ocrService.extractText(ocrFile, {
-    skipCache: true,
-    skipCacheWrite: true,
-    ...options,
-  });
-}
 
 // ── jsPDF склейка ──────────────────────────────────────────────────────────
 
@@ -292,45 +194,23 @@ export async function convertImagesToPdf(files, options = {}) {
   }
 
   const t0 = Date.now();
-  const warnings = [];
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
 
-  // 1. HEIC pre-conversion
-  onProgress('heic', 0, files.length);
-  const normalized = await preConvertHeic(files);
-  for (const f of normalized) {
-    if (f._heicFailed) warnings.push(`HEIC ${f.name}: ${f._heicFailed}`);
-  }
-  onProgress('heic', files.length, files.length);
-
-  // 2. OCR кожне зображення (один раз) з обмеженням concurrency
-  onProgress('ocr', 0, normalized.length);
-  const ocrTaskFn = async (file, idx) => {
-    if (file._heicFailed) {
-      return { text: '', pageStructure: null, warnings: [`HEIC fail: ${file._heicFailed}`] };
-    }
-    try {
-      const result = await ocrOneImage(file, options.ocrOptions);
-      return result;
-    } catch (e) {
-      // Г1=A: OCR fail для одного → продовжуємо з рештою, text=""
-      warnings.push(`OCR fail для ${file.name}: ${e?.message || e}`);
-      return { text: '', pageStructure: null, warnings: [`OCR failed: ${e?.message || e}`] };
-    }
-  };
-  const ocrResultsRaw = await runWithConcurrency(
-    normalized,
-    ocrTaskFn,
-    OCR_CONCURRENCY,
-    (done, total) => onProgress('ocr', done, total)
-  );
-  // Перевіряємо що жоден результат не залишився __error (runWithConcurrency
-  // ловить throw — додатковий захист)
-  const ocrResults = ocrResultsRaw.map((r, i) =>
-    r && r.__error
-      ? { text: '', pageStructure: null, warnings: [`OCR error: ${r.__error.message}`] }
-      : (r || { text: '', pageStructure: null, warnings: [] })
-  );
+  // ── Phase 1 · спільний pre-assembly (HEIC + OCR + orientation) ──────────
+  // Винесено у services/imageDocument/prepareImagesForMerge.js (TASK 1B), щоб
+  // той самий шар використовував і DP image-merge. Тут хвіст модалки: глобальний
+  // sort + застосування auto-rotation + buildPdfFromImages. Поведінка
+  // behavior-preserving — той самий контракт, ті самі тести.
+  const pre = await prepareImagesForMerge(files, {
+    onProgress: (phase, done, total) => onProgress(phase, done, total),
+    ocrOptions: options.ocrOptions,
+  });
+  const normalized = pre.normalizedFiles;
+  const ocrResults = pre.ocrResults;
+  const detectedOrientations = pre.detectedOrientations;
+  const orientationDebug = pre.orientationDebug;
+  const uncertainOrientationIndices = pre.uncertainOrientationIndices;
+  const warnings = [...pre.warnings];
 
   // 3. Семантичне сортування агентом (якщо >1)
   onProgress('sort', 0, 1);
@@ -377,25 +257,16 @@ export async function convertImagesToPdf(files, options = {}) {
 
   const finalOrder = sortResult?.order || normalized.map((_, i) => i);
 
-  // 4. Корекція orientation per image — тільки якщо != 0 (Розумна економія)
-  // Пріоритет: EXIF (фото з телефону) → Document AI orientation → aspect heuristic → 0.
+  // 4. Застосування auto-orientation per image (detectedOrientations прийшло
+  // з prepareImagesForMerge — спільний resolveOrientation каскад EXIF →
+  // Document AI → aspect heuristic). Тут ХВІСТ модалки: запікаємо rotation у
+  // blob ДО jsPDF assembly, бо модалка пише ОДИН PDF одразу. DP цього не робить
+  // — там rotation запікається per-group у rebuildFromOcrResults на «Виконати».
   //
-  // КОРІНЬ ПРОБЛЕМИ TASK B fix round 1: фото надіслані через месенджер
-  // (Telegram/WhatsApp/Viber/Signal) — strip EXIF при пересилці. JFIF без
-  // APP1 marker. Тому EXIF parser коректно повертає null. Document AI
-  // часто теж не повертає orientation для таких фото. Залишається тільки
-  // aspect ratio як остання heuristic — якщо image landscape, а юридичний
-  // документ зазвичай A4 portrait, пропонуємо 270° з marker uncertain=true,
-  // який UI показує адвокату як warning "Перевірте — кнопка ↻ виправить".
-  //
-  // detectedOrientations повертається наверх щоб ImageMergePanel міг скласти
-  // фінальну rotation = (autoOrientation + userRotation) mod 360 у preview.
-  // orientationDebug повертається теж — для debug toggle у UI.
+  // НЕ викликаємо resolveOrientation повторно — це порушення Розумної економії
+  // (двічі EXIF + двічі getImageDimensions). detectedOrientations stable.
   onProgress('rotate', 0, normalized.length);
   const rotatedBlobs = new Array(normalized.length);
-  const detectedOrientations = new Array(normalized.length).fill(0);
-  const orientationDebug = new Array(normalized.length).fill(null);
-  const uncertainOrientationIndices = [];
   for (let i = 0; i < normalized.length; i++) {
     const file = normalized[i];
     if (file._heicFailed) {
@@ -403,40 +274,10 @@ export async function convertImagesToPdf(files, options = {}) {
       onProgress('rotate', i + 1, normalized.length);
       continue;
     }
-    let exifResult = null;
+    const deg = detectedOrientations[i] || 0;
     try {
-      exifResult = await readExifOrientation(file);
-    } catch (e) {
-      console.warn(`[multiImageToPdf] EXIF read fail для ${file.name}:`, e?.message || e);
-    }
-    // Aspect ratio — потрібен для heuristic коли EXIF/docAi провалюються
-    let imageDimensions = null;
-    try {
-      imageDimensions = await getImageDimensions(file);
-    } catch (e) {
-      console.warn(`[multiImageToPdf] image dimensions fail для ${file.name}:`, e?.message || e);
-    }
-    const firstPage = Array.isArray(ocrResults[i]?.pageStructure)
-      ? ocrResults[i].pageStructure[0]
-      : null;
-    const resolved = resolveOrientation({
-      exifResult,
-      docAiPage: firstPage,
-      imageDimensions,
-      fileName: file.name,
-    });
-    for (const line of resolved.logs) console.log(line);
-    detectedOrientations[i] = resolved.degrees;
-    orientationDebug[i] = {
-      source: resolved.source,
-      degrees: resolved.degrees,
-      uncertain: resolved.uncertain,
-      ...resolved.debug,
-    };
-    if (resolved.uncertain) uncertainOrientationIndices.push(i);
-    try {
-      rotatedBlobs[i] = resolved.degrees !== 0
-        ? await rotateImageBlob(file, resolved.degrees)
+      rotatedBlobs[i] = deg !== 0
+        ? await rotateImageBlob(file, deg)
         : file;
     } catch (e) {
       warnings.push(`Rotation fail для ${file.name}: ${e?.message || e}. Залишаємо без обертання.`);
@@ -509,11 +350,10 @@ export async function convertImagesToPdf(files, options = {}) {
   };
 }
 
-// Експорт для тестів
+// Експорт для тестів. preConvertHeic / runWithConcurrency переїхали у
+// services/imageDocument/prepareImagesForMerge.js (TASK 1B) і доступні
+// з її __test__.
 export const __test__ = {
-  OCR_CONCURRENCY,
-  preConvertHeic,
-  runWithConcurrency,
   mergeLayouts,
   serializeMergedLayout,
   buildPdfFromImages,

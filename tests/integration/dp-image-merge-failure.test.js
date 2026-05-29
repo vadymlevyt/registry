@@ -110,18 +110,15 @@ describe('B3 Provider-integration — image_merge помилка не валит
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('3 image_merge документи, 1 кривий → 2 валідні зберігаються, 1 у decisions', async () => {
-    // 1C.1 (2026-05-29): набір з самих фото тепер інтерсептиться
-    // allImagesRoute → 1 image_merge документ. Регресія «один кривий не
-    // вбиває pipeline» все ще активна; щоб перевірити її у конфігурації
-    // «3 image_merge документи від AI Triage», додаємо технічний PDF-файл
-    // у вхід → allImagesRoute не спрацьовує, stubTriageFetch повертає
-    // оригінальний 3-документний план. PDF у плані позначений to_fragments,
-    // щоб не з'являвся серед канонічних документів справи.
+    // 1B (2026-05-29): allImagesRoute видалено. All-image вхід тут проходить
+    // через AI Triage (stubTriageFetch) — DP image-merge editor живе на
+    // рівні DocumentProcessorV2 і не торкає триаж-стадії. Регресія «один
+    // кривий не вбиває pipeline» перевіряється через 3 image_merge документи
+    // які повертає AI Triage stub.
     stubTriageFetch({ documents: [
       { documentId: 'd1', name: 'Договір', type: 'contract', route: 'image_merge', fragments: [{ fileId: 'a', startPage: 1, endPage: 1 }] },
       { documentId: 'd2', name: 'Паспорт', type: 'identification', route: 'image_merge', fragments: [{ fileId: 'b', startPage: 1, endPage: 1 }] },
       { documentId: 'd3', name: 'Довідка', type: 'evidence', route: 'image_merge', fragments: [{ fileId: 'c', startPage: 1, endPage: 1 }] },
-      { documentId: 'd4', name: 'мікс-сигнал', route: 'discard', fragments: [{ fileId: 'mix', startPage: 1, endPage: 1 }] },
     ], unusedPages: [] });
 
     // mergeImagesToPdf кидає на «Паспорт» (HEIC що canvas не декодує —
@@ -141,7 +138,6 @@ describe('B3 Provider-integration — image_merge помилка не валит
         await file('a', 1, 'image/jpeg', 'A.jpg'),
         await file('b', 1, 'image/heic', 'B.heic'),
         await file('c', 1, 'image/jpeg', 'C.jpg'),
-        await file('mix', 1, 'application/pdf', 'mix-signal.pdf'),
       ],
     });
 
@@ -164,12 +160,11 @@ describe('B3 Provider-integration — image_merge помилка не валит
   it('перший документ image_merge кидає → наступні все одно завершуються', async () => {
     // Корінь bug: раніше fatal:true === early return → індекси після
     // помилкового документа не оброблялись. Тест ловить регресію навіть
-    // якщо ordering у плані інший. 1C.1 — мікс-PDF щоб defeat allImagesRoute
-    // (інакше allImagesRoute детермінований план з 1 image_merge документа).
+    // якщо ordering у плані інший. 1B (2026-05-29): allImagesRoute видалено —
+    // AI Triage stub повертає 2 image_merge документи напряму.
     stubTriageFetch({ documents: [
       { documentId: 'd1', name: 'Паспорт', route: 'image_merge', fragments: [{ fileId: 'a', startPage: 1, endPage: 1 }] },
       { documentId: 'd2', name: 'Договір', route: 'image_merge', fragments: [{ fileId: 'b', startPage: 1, endPage: 1 }] },
-      { documentId: 'd3', name: 'мікс-сигнал', route: 'discard', fragments: [{ fileId: 'mix', startPage: 1, endPage: 1 }] },
     ], unusedPages: [] });
 
     const mergeSpy = vi.fn(async ({ docName }) => {
@@ -184,7 +179,6 @@ describe('B3 Provider-integration — image_merge помилка не валит
       files: [
         await file('a', 1, 'image/heic', 'A.heic'),
         await file('b', 1, 'image/jpeg', 'B.jpg'),
-        await file('mix', 1, 'application/pdf', 'mix-signal.pdf'),
       ],
     });
 

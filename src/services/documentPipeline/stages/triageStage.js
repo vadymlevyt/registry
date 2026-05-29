@@ -76,37 +76,6 @@ function trivialImagePlan(live) {
   };
 }
 
-// 1C.1 — allImagesRoute: усі живі файли — image/* (N≥1) → детермінований
-// image_merge план БЕЗ AI Triage (cheap-before-expensive: межі PDF не дороге
-// AI-рішення, бо PDF тут немає; групування фото у N документів — окремий
-// агент imageDocumentGrouper всередині сценарію DP image-merge, не НАД).
-// Поки 1B (N-doc grouper у DP) не вкатано — повертаємо один документ image_merge
-// з усіх фото (як AI Triage би повернув для типового набору). Окрема функція
-// від trivialImagePlan (правило #11): два різні наміри — trivial single-image
-// passthrough vs N-image multi-photo батч, що піде через grouping у 1B.
-// Не покриває mix (image+PDF) — там лишається AI Triage / skipPdfSlicing.
-function allImagesRoute(live) {
-  if (!Array.isArray(live) || live.length === 0) return null;
-  const allImage = live.every((f) => (f.originalMime || '').toLowerCase().startsWith('image/'));
-  if (!allImage) return null;
-  if (live.length === 1) return null;                       // single → trivialImagePlan
-  return {
-    documents: [{
-      documentId: 'd1',
-      name: null,
-      type: null,
-      route: 'image_merge',
-      fragments: live.map((f) => ({
-        fileId: f.fileId,
-        startPage: 1,
-        endPage: f.pageCount == null ? 1 : f.pageCount,
-      })),
-      open: false,
-    }],
-    unusedPages: [],
-  };
-}
-
 // 1C.2 — skipPdfSlicingPlan: тумблер «Просто додати файли» — per-file
 // маршрутизація БЕЗ виклику AI Triage. Кожен живий файл = окремий
 // документ; image/* → image_merge solo (одна сторінка = один документ),
@@ -279,12 +248,22 @@ export function createTriageStage(stageDeps = {}) {
     // Порядок:
     //   1. skipPdfSlicing toggle (per-file, override) — найвищий пріоритет;
     //      адвокат явно сказав «не різати», AI Triage не викликаємо взагалі.
-    //   2. allImagesRoute (всі фото, toggle OFF) — 1 image_merge документ
-    //      (1B grouper розгорне на N документів).
-    //   3. trivialImagePlan (1 фото, legacy) — 1 image_merge документ.
-    //   4. AI Triage (мікс / pure-PDF з toggle OFF).
+    //   2. trivialImagePlan (1 фото, legacy single-image passthrough) — 1
+    //      image_merge документ без AI.
+    //   3. AI Triage (мікс / pure-PDF з toggle OFF).
     // Cheap-before-Expensive (§4.1 візії DP): дороге AI-рішення про межі —
     // лише коли детермінований намір неоднозначний.
+    //
+    // 1B image_merge_unify — ВИДАЛЕНО allImagesRoute (мертвий код): DP тепер
+    // перехоплює all-image вхід ДО pipeline.run у DocumentProcessorV2.start
+    // Processing (детермінований вибір сценарію на ВХОДІ, повз PDF-OCR
+    // streamingExecutor — це і був корінь падіння «No PDF header found» для
+    // фото). N-документна склейка живе на рівні DP-компонента: prepareImages
+    // ForMerge + imageDocumentGrouper + per-group rebuild. allImagesRoute
+    // (1 image_merge документ з N фрагментами для 1B grouper) став
+    // недосяжний — видалено. trivialImagePlan лишається як fallback на випадок
+    // якщо хтось викличе pipeline з одним зображенням поза DP (наразі тільки
+    // ecitsInboxWatcher → run потенційно може; behavior-preserve).
     if (skipPdfSlicing) {
       const skipPlan = skipPdfSlicingPlan(live);
       if (skipPlan) {
@@ -302,23 +281,6 @@ export function createTriageStage(stageDeps = {}) {
           }],
         };
       }
-    }
-
-    const allImages = allImagesRoute(live);
-    if (allImages) {
-      return {
-        ok: true,
-        ctx: { ...ctx, reconstructionPlan: allImages, unusedPages: allImages.unusedPages },
-        decisions: [{
-          type: 'document_boundaries',
-          scope: 'triage',
-          deterministic: true,
-          documentCount: allImages.documents.length,
-          proposals: allImages.documents,
-          unusedPages: [],
-          message: `Усі ${live.length} файлів — фото → image_merge без AI Triage (детермінована сітка).`,
-        }],
-      };
     }
 
     const trivial = trivialImagePlan(live);

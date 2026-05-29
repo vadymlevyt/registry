@@ -28,36 +28,29 @@ describe('createTriageStage — детермінована сітка', () => {
   });
 });
 
-describe('createTriageStage — 1C.1 allImagesRoute (всі файли — фото)', () => {
-  it('N images (N≥2) → image_merge БЕЗ AI Triage, 1 документ з N фрагментами', async () => {
-    const triage = vi.fn();
-    const stage = createTriageStage({ triage });
-    const res = await stage(ctxOf([
-      { fileId: 'p1', name: 'IMG_1.jpg', originalMime: 'image/jpeg', pageCount: 1 },
-      { fileId: 'p2', name: 'IMG_2.heic', originalMime: 'image/heic', pageCount: 1 },
-      { fileId: 'p3', name: 'IMG_3.png', originalMime: 'image/png', pageCount: 1 },
-    ]));
-    expect(triage).not.toHaveBeenCalled();              // AI Triage пропущено
-    const plan = res.ctx.reconstructionPlan;
-    expect(plan.documents).toHaveLength(1);
-    expect(plan.documents[0].route).toBe('image_merge');
-    expect(plan.documents[0].fragments).toHaveLength(3);
-    expect(plan.documents[0].fragments.map((f) => f.fileId)).toEqual(['p1', 'p2', 'p3']);
-    expect(res.decisions[0].deterministic).toBe(true);
-    expect(res.decisions[0].message).toMatch(/Усі 3 файлів — фото/);
-  });
-
-  it('міксований набір (image + PDF) → AI Triage ВСЕ Ж викликається', async () => {
+// 1B image_merge_unify — allImagesRoute видалено як мертвий код. DP перехоплює
+// all-image вхід ДО pipeline.run (DocumentProcessorV2.startProcessing вмикає
+// окремий під-флоу з prepareImagesForMerge + imageDocumentGrouper + per-group
+// rebuild). triageStage більше не зустрічає all-image батчі — якщо хтось
+// зробить це поза DP, AI Triage спрацює як для PDF (поведінка fallback, не
+// крах). Тести на all-image поведінку triageStage не потрібні — це сценарій
+// якого більше нема. trivialImagePlan лишається (legacy single-image у
+// випадку ecitsInboxWatcher / runtime fallback).
+describe('createTriageStage — all-image fallback (без allImagesRoute, 1B)', () => {
+  it('all-image вхід (N≥2) → AI Triage викликається як для PDF (DP перехоплює раніше)', async () => {
+    // Сценарій якого не повинно бути у нормальній роботі: DP перехоплює
+    // all-image у DocumentProcessorV2. Якщо все ж дійшло сюди — AI Triage
+    // не падає, повертає що-небудь або passthrough.
     const triage = vi.fn(async () => ({ documents: [], unusedPages: [] }));
     const stage = createTriageStage({ triage });
     await stage(ctxOf([
       { fileId: 'p1', name: 'IMG_1.jpg', originalMime: 'image/jpeg', pageCount: 1 },
-      { fileId: 'pdf1', name: 'doc.pdf', originalMime: 'application/pdf', pageCount: 3 },
+      { fileId: 'p2', name: 'IMG_2.png', originalMime: 'image/png', pageCount: 1 },
     ]));
     expect(triage).toHaveBeenCalledTimes(1);
   });
 
-  it('усі PDF (немає image) → allImagesRoute НЕ спрацьовує', async () => {
+  it('усі PDF (немає image) → детермінована сітка не спрацьовує, AI Triage', async () => {
     const triage = vi.fn(async () => ({ documents: [], unusedPages: [] }));
     const stage = createTriageStage({ triage });
     await stage(ctxOf([
@@ -65,19 +58,6 @@ describe('createTriageStage — 1C.1 allImagesRoute (всі файли — фо�
       { fileId: 'pdf2', name: 'b.pdf', originalMime: 'application/pdf', pageCount: 5 },
     ]));
     expect(triage).toHaveBeenCalledTimes(1);
-  });
-
-  it('фрагменти отримують endPage = pageCount джерела (мульти-сторінкові зображення)', async () => {
-    const triage = vi.fn();
-    const stage = createTriageStage({ triage });
-    const res = await stage(ctxOf([
-      { fileId: 'p1', name: 'multipage.tiff', originalMime: 'image/tiff', pageCount: 4 },
-      { fileId: 'p2', name: 'IMG.jpg', originalMime: 'image/jpeg', pageCount: 1 },
-    ]));
-    expect(triage).not.toHaveBeenCalled();
-    const frags = res.ctx.reconstructionPlan.documents[0].fragments;
-    expect(frags[0]).toEqual({ fileId: 'p1', startPage: 1, endPage: 4 });
-    expect(frags[1]).toEqual({ fileId: 'p2', startPage: 1, endPage: 1 });
   });
 });
 
@@ -119,9 +99,10 @@ describe('createTriageStage — 1C.2 skipPdfSlicing тумблер (per-file)', 
   });
 
   it('skipPdfSlicing=true + усі image → per-file image_merge, кожне фото окремий документ', async () => {
-    // Toggle ON має пріоритет над allImagesRoute (правило #11: один прапор —
-    // одне рішення, "не групувати"). allImagesRoute дав би 1 документ для
-    // майбутнього grouper'а; toggle ON каже «не груповати взагалі».
+    // Toggle ON каже «не різати, не групувати — кожен файл окремо як є».
+    // У DP-сценарії all-image зазвичай перехоплюється ДО pipeline.run (DP image-
+    // merge editor — 1B), але toggle ON має пріоритет: адвокат явно вимкнув
+    // групування, тому навіть якщо щось дійшло до triageStage, тут per-file.
     const triage = vi.fn();
     const stage = createTriageStage({ triage, skipPdfSlicing: true });
     const res = await stage(ctxOf([
@@ -130,7 +111,7 @@ describe('createTriageStage — 1C.2 skipPdfSlicing тумблер (per-file)', 
     ]));
     expect(triage).not.toHaveBeenCalled();
     const docs = res.ctx.reconstructionPlan.documents;
-    expect(docs).toHaveLength(2);                             // НЕ 1 (як без toggle)
+    expect(docs).toHaveLength(2);
     expect(docs.map((d) => d.route)).toEqual(['image_merge', 'image_merge']);
   });
 
@@ -141,18 +122,6 @@ describe('createTriageStage — 1C.2 skipPdfSlicing тумблер (per-file)', 
       { fileId: 'pdf1', name: 'a.pdf', originalMime: 'application/pdf', pageCount: 3 },
     ]));
     expect(triage).toHaveBeenCalledTimes(1);
-  });
-
-  it('skipPdfSlicing=false (default) + усі image → allImagesRoute виграє (1 документ для майбутнього grouper)', async () => {
-    const triage = vi.fn();
-    const stage = createTriageStage({ triage });
-    const res = await stage(ctxOf([
-      { fileId: 'p1', originalMime: 'image/jpeg', pageCount: 1 },
-      { fileId: 'p2', originalMime: 'image/png', pageCount: 1 },
-    ]));
-    expect(triage).not.toHaveBeenCalled();
-    expect(res.ctx.reconstructionPlan.documents).toHaveLength(1);
-    expect(res.ctx.reconstructionPlan.documents[0].route).toBe('image_merge');
   });
 });
 

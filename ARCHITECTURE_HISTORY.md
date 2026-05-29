@@ -23,6 +23,9 @@
 | DocAI ліміт 20→40 МБ + imagelessMode (2026-05-26) | без bump | `TASK_documentai_limit_40mb_imageless.md`, `report_task_documentai_limit_40mb_imageless.md` |
 | Revert imagelessMode (регресія Triage) (2026-05-26 вечір) | без bump | `TASK_revert_imagelessmode.md`, `report_task_revert_imagelessmode.md` |
 | Triage max_tokens 4000→16000 + діагностичний лог (2026-05-26 вечір) | без bump | `TASK_triage_maxtokens_diagnostic.md`, `report_task_triage_maxtokens_diagnostic.md` |
+| TASK 1A image_merge_unify (винос reusable) | без bump | `report_task_image_merge_unify_1A.md` |
+| TASK 1C image_merge_unify (deterministicRoute + skipPdfSlicing) | без bump | `report_task_image_merge_unify_1C.md` |
+| TASK 1B image_merge_unify (N-doc склейка фото в DP) | без bump | `report_task_image_merge_unify_1B.md` |
 
 ---
 
@@ -1029,3 +1032,132 @@ Rich-профіль на 70+ стор. більше не видається — 
   Не критично, не зачіпає production (Provider це робить через інший шлях).
 - Per-tenant калібровка `RICH_PASSPORT_MAX_PAGES_DEFAULT` через UI —
   override hook готовий, активація — окремим TASK при потребі.
+
+---
+
+## TASK 1 image_merge_unify — N-документна склейка фото в DP (2026-05-29)
+
+**TASK 1 = три фази (1A, 1C, 1B) однієї продуктової функції.** Адвокат
+фотографує матеріали телефоном (10 фото = 3 документи: паспорт + договір
++ квитанція); DP отримує інтерактивну склейку «AI пропонує групи → адвокат
+править → Виконати → N окремих PDF». Перший сценарій, де image-merge
+доходить до повноти «адвокат-диригент» візії §4.1.
+
+### Корінь падіння який лагодимо
+
+`streamingExecutor.streamFile` жене кожен файл через chunk-OCR PDF ДО
+вибору сценарію. Для фото нема PDF header → «No PDF header found» крах.
+Фікс — вибір сценарію на ВХОДІ, повз PDF-OCR.
+
+### Три фази / три коміти
+
+| Фаза | Що | schemaVersion | Звіт |
+|------|-----|---------------|------|
+| 1A | Винос reusable у `components/ImageEditor/` + `services/imageDocument/` | без bump | `report_task_image_merge_unify_1A.md` |
+| 1C | `allImagesRoute` + `skipPdfSlicing` toggle + warning-fix | без bump | `report_task_image_merge_unify_1C.md` |
+| 1B | N-doc grouper (Haiku) + DP image-merge editor + видалення `allImagesRoute` | без bump | `report_task_image_merge_unify_1B.md` |
+
+### Що 1B робить (серце TASK 1)
+
+**Новий шар: `prepareImagesForMerge`** (`src/services/imageDocument/`)
+— спільний phase-1 pre-assembly: HEIC + concurrency OCR + orientation per image.
+Виносить дублікат з `multiImageToPdf.js`. Контракт `convertImagesToPdf`
+незмінний (модалка `ImageMergePanel` не зачіпається).
+
+**Новий AI-агент: `imageDocumentGrouper`** (Haiku, `services/sortation/`)
+— межі ДОКУМЕНТІВ між фото. Окремий від `imageSortingAgent` (правило #11:
+сортує сторінки в межах документа vs визначає межі між документами — два
+наміри). Обов'язкове білінгове логування `logAiUsageViaSink` +
+`activityTracker.report` — закриває **C7 для нового агента** з народження.
+
+**Новий agentType у `modelResolver.SYSTEM_DEFAULTS`:**
+`imageDocumentGrouper: 'claude-haiku-4-5-20251001'`.
+
+**Новий компонент: `DpImageMergeEditor`**
+(`src/components/DocumentProcessorV2/DpImageMergeEditor.jsx`) — N-doc
+editor у Zone 3. Reuse атомарних `ImageEditor/`: `Thumbnail`, `RenderItem`,
+`PreviewPopup`, `CropperHost`, `ContextMenu`. Multi-container @dnd-kit
+(один `DndContext`, N `SortableContext` per group). Drag фото між групами,
+rotate/crop/dedup/rename/type per group. **PERSIST тільки на «Виконати»**
+(адвокат-диригент локально для image-merge).
+
+**Wire у `DocumentProcessorV2.startProcessing`** — детермінований вибір
+сценарію НА ВХОДІ:
+- all-image (toggle skipPdfSlicing=false) → DP image-merge editor (повз
+  `pipeline.run`, фікс root-cause).
+- all-image (toggle ON) → звичайний pipeline per-file (без grouper'а).
+- мікс photo+PDF → toast warning + борг #27 (scope boundary 1B).
+- all-PDF / mix без фото → звичайний pipeline.
+
+**Видалено `allImagesRoute` з `triageStage.js`** — мертвий код після 1B
+(DP перехоплює all-image вхід ДО pipeline.run). `trivialImagePlan`
+лишається як legacy fallback. Інтеграційні тести `dp-image-merge-failure`
+і `dp-persist-routes` повернено до pre-1C форми (workaround з
+`mix-signal.pdf` більше не потрібен).
+
+### Чотири seam'и реалізації
+
+1. **`prepareImagesForMerge(files, opts)`** — pre-assembly без sort/без
+   PDF, ОДИН раз HEIC+OCR+orientation. Reused модалкою (`convertImagesToPdf`
+   тепер тонший: prepareImagesForMerge → sortImages → buildPdfFromImages)
+   і DP (prepareImagesForMerge → grouper → editor → per-group rebuild).
+2. **`groupImagesIntoDocuments(items, opts)`** — Haiku JSON-output агент,
+   повертає `{groups: [{pages, type, suggestedName}]}`. Fallback на AI
+   fail = один документ з усіх фото (адвокат поділить вручну).
+3. **`rebuildFromOcrResults({orderedIndices, ...})`** — той самий що
+   модалка (з 1A). DP викликає для кожної групи окремо, передаючи
+   `orderedIndices: group.pageIndices`.
+4. **`add_documents` ACTION** — атомарне додавання N документів через
+   `executeAction('document_processor_agent', 'add_documents', {caseId,
+   documents})`. PERMISSIONS дозволяє (вже з v3).
+
+### Стан тестів і build
+
+- Baseline (до 1B): 1593 passed (після 1C).
+- Після 1B: **1615 passed** (+22 нових: 21 grouper unit + 4 DP integration,
+  -3 видалених 1C.1 allImagesRoute тестів). 120 test files.
+- `npm run build` success, ~17s, без warnings крім вже-відомого «chunk > 500 kB».
+
+### SAAS / Multi-user / Billing готовність
+
+- Нових полів у структурах нема. Документи через `createDocument()` —
+  повна канонічна схема SaaS (tenantId, ownerId, addedBy, source). 
+- Нових ACTIONS нема. `add_documents` уже в allowlist
+  `document_processor_agent` (з v3).
+- `imageDocumentGrouper` НЕ ACTION (не змінює дані, лише пропонує) —
+  permissions не потрібні.
+- Білінг: `logAiUsageViaSink` + `activityTracker.report('agent_call',
+  operation:'image_document_grouping')` — паралельно у gruper'і. НЕ
+  дублюється з `images_merged` (та лишається в `convertImagesToPdf` для
+  модалки; DP свій канал).
+- `tenant.modelPreferences.imageDocumentGrouper` — готова точка ієрархії
+  user → tenant → system (через `resolveModel('imageDocumentGrouper')`).
+
+### Що НЕ зачеплено
+
+- `convertImagesToPdf` публічний контракт — без змін (тести модалки
+  20 → 20 passed).
+- `ImageMergePanel` модалка — без змін.
+- Линійний диригент `pipeline.run` для нарізки PDF — без змін
+  (autoConfirm:true лишається).
+- `imageSortingAgent` — без змін (sort у межах документа).
+- `triageStage` AI Triage path — без змін.
+- schemaVersion / `registry_data.json` структура — без змін.
+
+### Поза скоупом → tracking_debt
+
+- **#27** Мікс photo+PDF у DP image-merge: toast warning, не реалізовано
+  (свідома межа UX).
+- **#28** Cross-group drag тільки на existing item (not empty container
+  drop-zone) — окремий UX-cleanup TASK через `useDroppable` per group.
+
+### Перевірка адвокатом
+
+1. Справа → «Робота з документами» (DP).
+2. Закинути 6-10 фото з телефону (HEIC/JPEG) = 2-3 документи.
+3. AI пропонує групи; Triage НЕ ганявся (швидко).
+4. Перетягнути фото між групами, обернути, обрізати, перейменувати, тип.
+5. «Виконати» → N окремих PDF з .txt у справі.
+6. Закинути PDF + увімкнути «Просто додати файли» (1C) → кожен PDF =
+   1 документ, без нарізки.
+7. Модалка «Склеїти зображення» (старий шлях у CaseDossier) — як раніше.

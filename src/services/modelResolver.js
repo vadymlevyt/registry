@@ -24,6 +24,16 @@ export const SYSTEM_DEFAULTS = {
   // (TASK B: склейка фото у PDF з виявленням підмінених сторінок).
   // Готова точка ієрархії user → tenant → system. Поки не використовується.
   imageSorter: 'claude-sonnet-4-20250514',
+
+  // imageDocumentGrouper — AI-агент межі ДОКУМЕНТІВ між фото у DP image-merge
+  // сценарії (TASK 1B image_merge_unify). Адвокат фотографує N сторінок =
+  // M документів (паспорт + договір + квитанція); grouper пропонує які фото
+  // складають один документ. Тільки межі — порядок сторінок в межах документа
+  // лишається за imageSortingAgent (інший намір, правило #11).
+  // Haiku — структурна задача, дешевша і швидша за Sonnet, §4.1 DP візії
+  // (cheap-before-expensive: межі документів — pattern matching, не глибокий
+  // reasoning).
+  imageDocumentGrouper: 'claude-haiku-4-5-20251001',
 };
 
 const FALLBACK_MODEL = 'claude-sonnet-4-20250514';
