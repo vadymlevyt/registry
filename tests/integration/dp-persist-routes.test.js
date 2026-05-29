@@ -122,13 +122,17 @@ describe('Ф3 Provider-integration — PERSIST виконує кожен route',
   });
 
   it('image_merge → mergeImagesToPdf seam з джерелами у порядку плану → 1 документ', async () => {
+    // 1C.1 (2026-05-29): з allImagesRoute усі image-входи отримують
+    // детермінований план БЕЗ AI Triage. stubTriageFetch ігнорується.
+    // План: 1 image_merge документ з name=null → 'd1.pdf' як generic.
+    // mergeImagesToPdf seam і порядок images перевіряємо як раніше.
     stubTriageFetch({ documents: [{ documentId: 'd1', name: 'Договір', type: 'contract', route: 'image_merge', fragments: [{ fileId: 'p1', startPage: 1, endPage: 1 }, { fileId: 'p2', startPage: 1, endPage: 1 }] }], unusedPages: [] });
     const res = await run([await file('p1', 1, 'image/jpeg', 'IMG_1.jpg'), await file('p2', 1, 'image/jpeg', 'IMG_2.jpg')]);
     expect(res.ok).toBe(true);
     expect(mergeSpy).toHaveBeenCalledTimes(1);
     expect(mergeSpy.mock.calls[0][0].images.map((i) => i.name)).toEqual(['IMG_1.jpg', 'IMG_2.jpg']);
     expect(docs()).toHaveLength(1);
-    expect(docs()[0].name).toBe('Договір.pdf');
+    expect(docs()[0].name).toBe('d1.pdf');
   });
 
   it('to_fragments → 03_ФРАГМЕНТИ (без канонічного документа)', async () => {

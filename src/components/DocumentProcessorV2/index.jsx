@@ -36,6 +36,11 @@ const DEFAULT_SETTINGS = {
   suggestDeadlines: false,       // 6
   updateCaseContext: true,       // 7
   fillCaseCard: false,           // 8
+  // 1C.2 — skipPdfSlicing: пропустити AI-нарізку (Triage) і per-file
+  // маршрутизувати кожен живий файл: фото → image_merge solo, інше →
+  // add_as_is solo. Працює і у міксі PDF+фото (інакше AI Triage поріже
+  // PDF попри toggle). НЕ вимикає OCR, метадані, класифікацію.
+  skipPdfSlicing: false,         // 9
 };
 
 let keySeq = 0;
@@ -356,6 +361,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
             <div className="dpv2-section-label">ОРГАНІЗАЦІЯ</div>
             <Toggle label="Розкласти по провадженнях" checked={settings.organizeByProceedings} onChange={setToggle('organizeByProceedings')} />
             <Toggle label="Перевірка цілісності перед обробкою" checked={settings.integrityCheck} onChange={setToggle('integrityCheck')} />
+            <Toggle
+              label="Просто додати файли"
+              description="кожен PDF — окремий документ, без AI-нарізки"
+              checked={settings.skipPdfSlicing}
+              onChange={setToggle('skipPdfSlicing')}
+            />
           </div>
           <div className="dpv2-settings-group">
             <div className="dpv2-section-label">ЯКІСТЬ ТЕКСТУ</div>

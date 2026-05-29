@@ -584,6 +584,26 @@ function sliceProcessedArtifacts(planDoc, live) {
   return { text, layoutJson, usedFallback, anyPaged };
 }
 
+// 1C.3 — `.txt` у 02_ОБРОБЛЕНІ потрібен ТІЛЬКИ для сканів (де нема тексту в
+// файлі). text-layer PDF самодостатній — `.txt` ми НЕ пишемо. Але warning
+// `text_slice_fallback` раніше спрацьовував для будь-якого `usedFallback`,
+// а для whole-file add_as_is з text-layer PDF (1 фрагмент, ціла сторінкова
+// покривка) це не «slice failed», просто нема per-page layout — і не повинно
+// бути. Warning лишаємо тільки для реального slicing (multi-fragment або
+// частковий діапазон), де відсутність per-page layout справді ризик.
+function isWholeFileAddAsIs(planDoc, live) {
+  if (!planDoc || planDoc.route !== 'add_as_is') return false;
+  const frs = Array.isArray(planDoc.fragments) ? planDoc.fragments : [];
+  if (frs.length !== 1) return false;
+  const fr = frs[0];
+  const src = live.find((f) => f.fileId === fr.fileId);
+  if (!src) return false;
+  const pc = src.pageCount == null ? 1 : src.pageCount;
+  const s = Number(fr.startPage) || 1;
+  const e = Number(fr.endPage) || s;
+  return s === 1 && e >= pc;
+}
+
 async function writeProcessedArtifacts(stageDeps, ctx, document, planDoc, live, decisions) {
   const { text, layoutJson, usedFallback } = sliceProcessedArtifacts(planDoc, live);
   if (text && typeof stageDeps.writeText02 === 'function') {
@@ -599,7 +619,9 @@ async function writeProcessedArtifacts(stageDeps, ctx, document, planDoc, live, 
       await stageDeps.writeLayout02({ caseData: ctx.job.caseData, driveId: document.driveId, name: document.name, layoutJson });
     } catch { /* layout кеш не критичний */ }
   }
-  if (usedFallback && Array.isArray(decisions)) {
+  // 1C.3 — для whole-file add_as_is warning не пишемо: це не slice fallback,
+  // це text-layer / DOCX-конвертований PDF без per-page layout (нормально).
+  if (usedFallback && !isWholeFileAddAsIs(planDoc, live) && Array.isArray(decisions)) {
     decisions.push({
       type: 'text_slice_fallback',
       documentName: document.name,

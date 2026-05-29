@@ -76,6 +76,65 @@ function trivialImagePlan(live) {
   };
 }
 
+// 1C.1 — allImagesRoute: усі живі файли — image/* (N≥1) → детермінований
+// image_merge план БЕЗ AI Triage (cheap-before-expensive: межі PDF не дороге
+// AI-рішення, бо PDF тут немає; групування фото у N документів — окремий
+// агент imageDocumentGrouper всередині сценарію DP image-merge, не НАД).
+// Поки 1B (N-doc grouper у DP) не вкатано — повертаємо один документ image_merge
+// з усіх фото (як AI Triage би повернув для типового набору). Окрема функція
+// від trivialImagePlan (правило #11): два різні наміри — trivial single-image
+// passthrough vs N-image multi-photo батч, що піде через grouping у 1B.
+// Не покриває mix (image+PDF) — там лишається AI Triage / skipPdfSlicing.
+function allImagesRoute(live) {
+  if (!Array.isArray(live) || live.length === 0) return null;
+  const allImage = live.every((f) => (f.originalMime || '').toLowerCase().startsWith('image/'));
+  if (!allImage) return null;
+  if (live.length === 1) return null;                       // single → trivialImagePlan
+  return {
+    documents: [{
+      documentId: 'd1',
+      name: null,
+      type: null,
+      route: 'image_merge',
+      fragments: live.map((f) => ({
+        fileId: f.fileId,
+        startPage: 1,
+        endPage: f.pageCount == null ? 1 : f.pageCount,
+      })),
+      open: false,
+    }],
+    unusedPages: [],
+  };
+}
+
+// 1C.2 — skipPdfSlicingPlan: тумблер «Просто додати файли» — per-file
+// маршрутизація БЕЗ виклику AI Triage. Кожен живий файл = окремий
+// документ; image/* → image_merge solo (одна сторінка = один документ),
+// решта → add_as_is solo (без нарізки). Працює і у міксі PDF+фото — інакше
+// AI Triage поріже PDF попри toggle, що суперечить наміру тумблера.
+// НЕ вимикає OCR/.txt/метадані/класифікацію (це інші стадії extract/persist).
+function skipPdfSlicingPlan(live) {
+  if (!Array.isArray(live) || live.length === 0) return null;
+  return {
+    documents: live.map((f, i) => {
+      const isImg = (f.originalMime || '').toLowerCase().startsWith('image/');
+      return {
+        documentId: `d${i + 1}`,
+        name: f.name || null,
+        type: null,
+        route: isImg ? 'image_merge' : 'add_as_is',
+        fragments: [{
+          fileId: f.fileId,
+          startPage: 1,
+          endPage: f.pageCount == null ? 1 : f.pageCount,
+        }],
+        open: false,
+      };
+    }),
+    unusedPages: [],
+  };
+}
+
 // ── G3 (bug 1) · plan-level dedup перекритих діапазонів ─────────────────────
 // Корінь bug 1: Triage над-сегментував — той самий фізичний діапазон сторінок
 // віддавався кількома документами (квитанція з 3 назвами; «Позовна заява»
@@ -206,14 +265,62 @@ function normalizePlan(raw) {
 //     Triage (Haiku, поверх toolUseRunner; ін'єкт). Обов'язковий для актив.
 //   getStreamedText(fileId) / getStreamedLayout(fileId) — потоковий OCR
 //     текст / per-page layout (executor-accessor; як detectBoundariesV3).
+//   skipPdfSlicing? boolean — DP-4 тумблер «Просто додати файли»: ON →
+//     детермінований план add_as_is per file для не-image наборів (1C.2).
 export function createTriageStage(stageDeps = {}) {
   const { triage, getStreamedText, getStreamedLayout } = stageDeps;
+  const skipPdfSlicing = stageDeps.skipPdfSlicing === true;
 
   return async function triageStage(ctx) {
     const live = ctx.files.filter((f) => !f.skipped);
     if (live.length === 0) return { ok: true };
 
     // ── Детермінована сітка (без AI, лише однозначне) ────────────────────
+    // Порядок:
+    //   1. skipPdfSlicing toggle (per-file, override) — найвищий пріоритет;
+    //      адвокат явно сказав «не різати», AI Triage не викликаємо взагалі.
+    //   2. allImagesRoute (всі фото, toggle OFF) — 1 image_merge документ
+    //      (1B grouper розгорне на N документів).
+    //   3. trivialImagePlan (1 фото, legacy) — 1 image_merge документ.
+    //   4. AI Triage (мікс / pure-PDF з toggle OFF).
+    // Cheap-before-Expensive (§4.1 візії DP): дороге AI-рішення про межі —
+    // лише коли детермінований намір неоднозначний.
+    if (skipPdfSlicing) {
+      const skipPlan = skipPdfSlicingPlan(live);
+      if (skipPlan) {
+        return {
+          ok: true,
+          ctx: { ...ctx, reconstructionPlan: skipPlan, unusedPages: skipPlan.unusedPages },
+          decisions: [{
+            type: 'document_boundaries',
+            scope: 'triage',
+            deterministic: true,
+            documentCount: skipPlan.documents.length,
+            proposals: skipPlan.documents,
+            unusedPages: [],
+            message: `«Просто додати файли»: ${skipPlan.documents.length} файл(ів) → ${skipPlan.documents.length} окремих документів, AI-нарізку пропущено.`,
+          }],
+        };
+      }
+    }
+
+    const allImages = allImagesRoute(live);
+    if (allImages) {
+      return {
+        ok: true,
+        ctx: { ...ctx, reconstructionPlan: allImages, unusedPages: allImages.unusedPages },
+        decisions: [{
+          type: 'document_boundaries',
+          scope: 'triage',
+          deterministic: true,
+          documentCount: allImages.documents.length,
+          proposals: allImages.documents,
+          unusedPages: [],
+          message: `Усі ${live.length} файлів — фото → image_merge без AI Triage (детермінована сітка).`,
+        }],
+      };
+    }
+
     const trivial = trivialImagePlan(live);
     if (trivial) {
       return {

@@ -28,6 +28,134 @@ describe('createTriageStage — детермінована сітка', () => {
   });
 });
 
+describe('createTriageStage — 1C.1 allImagesRoute (всі файли — фото)', () => {
+  it('N images (N≥2) → image_merge БЕЗ AI Triage, 1 документ з N фрагментами', async () => {
+    const triage = vi.fn();
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([
+      { fileId: 'p1', name: 'IMG_1.jpg', originalMime: 'image/jpeg', pageCount: 1 },
+      { fileId: 'p2', name: 'IMG_2.heic', originalMime: 'image/heic', pageCount: 1 },
+      { fileId: 'p3', name: 'IMG_3.png', originalMime: 'image/png', pageCount: 1 },
+    ]));
+    expect(triage).not.toHaveBeenCalled();              // AI Triage пропущено
+    const plan = res.ctx.reconstructionPlan;
+    expect(plan.documents).toHaveLength(1);
+    expect(plan.documents[0].route).toBe('image_merge');
+    expect(plan.documents[0].fragments).toHaveLength(3);
+    expect(plan.documents[0].fragments.map((f) => f.fileId)).toEqual(['p1', 'p2', 'p3']);
+    expect(res.decisions[0].deterministic).toBe(true);
+    expect(res.decisions[0].message).toMatch(/Усі 3 файлів — фото/);
+  });
+
+  it('міксований набір (image + PDF) → AI Triage ВСЕ Ж викликається', async () => {
+    const triage = vi.fn(async () => ({ documents: [], unusedPages: [] }));
+    const stage = createTriageStage({ triage });
+    await stage(ctxOf([
+      { fileId: 'p1', name: 'IMG_1.jpg', originalMime: 'image/jpeg', pageCount: 1 },
+      { fileId: 'pdf1', name: 'doc.pdf', originalMime: 'application/pdf', pageCount: 3 },
+    ]));
+    expect(triage).toHaveBeenCalledTimes(1);
+  });
+
+  it('усі PDF (немає image) → allImagesRoute НЕ спрацьовує', async () => {
+    const triage = vi.fn(async () => ({ documents: [], unusedPages: [] }));
+    const stage = createTriageStage({ triage });
+    await stage(ctxOf([
+      { fileId: 'pdf1', name: 'a.pdf', originalMime: 'application/pdf', pageCount: 2 },
+      { fileId: 'pdf2', name: 'b.pdf', originalMime: 'application/pdf', pageCount: 5 },
+    ]));
+    expect(triage).toHaveBeenCalledTimes(1);
+  });
+
+  it('фрагменти отримують endPage = pageCount джерела (мульти-сторінкові зображення)', async () => {
+    const triage = vi.fn();
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([
+      { fileId: 'p1', name: 'multipage.tiff', originalMime: 'image/tiff', pageCount: 4 },
+      { fileId: 'p2', name: 'IMG.jpg', originalMime: 'image/jpeg', pageCount: 1 },
+    ]));
+    expect(triage).not.toHaveBeenCalled();
+    const frags = res.ctx.reconstructionPlan.documents[0].fragments;
+    expect(frags[0]).toEqual({ fileId: 'p1', startPage: 1, endPage: 4 });
+    expect(frags[1]).toEqual({ fileId: 'p2', startPage: 1, endPage: 1 });
+  });
+});
+
+describe('createTriageStage — 1C.2 skipPdfSlicing тумблер (per-file)', () => {
+  it('skipPdfSlicing=true + чистий PDF набір → per-file add_as_is, AI Triage пропущено', async () => {
+    const triage = vi.fn();
+    const stage = createTriageStage({ triage, skipPdfSlicing: true });
+    const res = await stage(ctxOf([
+      { fileId: 'pdf1', name: 'a.pdf', originalMime: 'application/pdf', pageCount: 3 },
+      { fileId: 'pdf2', name: 'b.pdf', originalMime: 'application/pdf', pageCount: 7 },
+    ]));
+    expect(triage).not.toHaveBeenCalled();
+    const docs = res.ctx.reconstructionPlan.documents;
+    expect(docs).toHaveLength(2);
+    expect(docs.map((d) => d.route)).toEqual(['add_as_is', 'add_as_is']);
+    expect(docs[0].fragments[0]).toEqual({ fileId: 'pdf1', startPage: 1, endPage: 3 });
+    expect(docs[1].fragments[0]).toEqual({ fileId: 'pdf2', startPage: 1, endPage: 7 });
+    expect(docs[0].name).toBe('a.pdf');
+    expect(res.decisions[0].deterministic).toBe(true);
+    expect(res.decisions[0].message).toMatch(/Просто додати файли/);
+  });
+
+  it('skipPdfSlicing=true + мікс PDF+фото → per-file (фото→image_merge, PDF→add_as_is), AI Triage пропущено', async () => {
+    // Ключовий кейс правки: у міксі toggle повинен спрацювати, інакше AI
+    // Triage поріже PDF попри toggle. Кожен файл → свій документ зі своїм
+    // route (image_merge для image/*, add_as_is для решти).
+    const triage = vi.fn();
+    const stage = createTriageStage({ triage, skipPdfSlicing: true });
+    const res = await stage(ctxOf([
+      { fileId: 'p1', name: 'photo.jpg', originalMime: 'image/jpeg', pageCount: 1 },
+      { fileId: 'pdf1', name: 'doc.pdf', originalMime: 'application/pdf', pageCount: 5 },
+      { fileId: 'p2', name: 'photo2.heic', originalMime: 'image/heic', pageCount: 1 },
+    ]));
+    expect(triage).not.toHaveBeenCalled();
+    const docs = res.ctx.reconstructionPlan.documents;
+    expect(docs).toHaveLength(3);
+    expect(docs.map((d) => d.route)).toEqual(['image_merge', 'add_as_is', 'image_merge']);
+    expect(docs[1].fragments[0]).toEqual({ fileId: 'pdf1', startPage: 1, endPage: 5 });
+  });
+
+  it('skipPdfSlicing=true + усі image → per-file image_merge, кожне фото окремий документ', async () => {
+    // Toggle ON має пріоритет над allImagesRoute (правило #11: один прапор —
+    // одне рішення, "не групувати"). allImagesRoute дав би 1 документ для
+    // майбутнього grouper'а; toggle ON каже «не груповати взагалі».
+    const triage = vi.fn();
+    const stage = createTriageStage({ triage, skipPdfSlicing: true });
+    const res = await stage(ctxOf([
+      { fileId: 'p1', name: 'photo1.jpg', originalMime: 'image/jpeg', pageCount: 1 },
+      { fileId: 'p2', name: 'photo2.png', originalMime: 'image/png', pageCount: 1 },
+    ]));
+    expect(triage).not.toHaveBeenCalled();
+    const docs = res.ctx.reconstructionPlan.documents;
+    expect(docs).toHaveLength(2);                             // НЕ 1 (як без toggle)
+    expect(docs.map((d) => d.route)).toEqual(['image_merge', 'image_merge']);
+  });
+
+  it('skipPdfSlicing=false (default) + PDF → AI Triage викликається як раніше', async () => {
+    const triage = vi.fn(async () => ({ documents: [], unusedPages: [] }));
+    const stage = createTriageStage({ triage });
+    await stage(ctxOf([
+      { fileId: 'pdf1', name: 'a.pdf', originalMime: 'application/pdf', pageCount: 3 },
+    ]));
+    expect(triage).toHaveBeenCalledTimes(1);
+  });
+
+  it('skipPdfSlicing=false (default) + усі image → allImagesRoute виграє (1 документ для майбутнього grouper)', async () => {
+    const triage = vi.fn();
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([
+      { fileId: 'p1', originalMime: 'image/jpeg', pageCount: 1 },
+      { fileId: 'p2', originalMime: 'image/png', pageCount: 1 },
+    ]));
+    expect(triage).not.toHaveBeenCalled();
+    expect(res.ctx.reconstructionPlan.documents).toHaveLength(1);
+    expect(res.ctx.reconstructionPlan.documents[0].route).toBe('image_merge');
+  });
+});
+
 describe('createTriageStage — нормалізація AI-плану', () => {
   it('кожен документ дістає валідний route + fragments; unusedPages нормалізуються', async () => {
     const triage = vi.fn(async () => ({

@@ -104,6 +104,111 @@ describe('splitDocumentsV3 — B. fallback (нема плану, behavior-preser
   });
 });
 
+describe('splitDocumentsV3 — 1C.3 warning text_slice_fallback логіка (whole-file vs partial-slice)', () => {
+  // Контракт 1C.3 (фінальний):
+  //   • text-layer PDF самодостатній → `.txt` для нього НЕ пишеться у 02_ОБРОБЛЕНІ.
+  //     `.txt` потрібен ТІЛЬКИ для сканів (де нема тексту в файлі).
+  //   • Але warning `text_slice_fallback` раніше спрацьовував для будь-якого
+  //     usedFallback — це false-positive для whole-file add_as_is text-PDF
+  //     (нормальна поведінка, не помилка). Подавляємо warning у такому випадку.
+  //   • Реальний slicing (multi-fragment або частковий діапазон) із
+  //     fallback-текстом — warning лишається (регресія від bug 2 не повернулась).
+
+  it('plan add_as_is whole-file, text-layer (без layoutJson) → БЕЗ warning text_slice_fallback', async () => {
+    const port = createMemDrivePort();
+    const d1 = await seedSource(port, 'f1', 3);
+    const writeText02 = vi.fn(async () => {});
+    const writeLayout02 = vi.fn(async () => {});
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'doc1', driveId: 'drv', ...m }),
+      persistDocument: async () => ({ success: true }),
+      writeText02, writeLayout02,
+    });
+    const res = await stage(baseCtx(port, {
+      plan: { confirmed: true, documents: [{
+        documentId: 'd1', name: 'TextPdf', route: 'add_as_is',
+        fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }],
+      }], unusedPages: [] },
+      files: [{
+        fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {},
+        processedText: 'Це text-layer PDF з витягнутим текстом адвокатом.',
+        layoutJson: null,                                     // text-PDF: layout відсутній
+        pageCount: 3,
+      }],
+    }));
+    expect(res.ok).toBe(true);
+    expect(writeLayout02).not.toHaveBeenCalled();             // text-PDF не має layout
+    const fallbackDecision = (res.decisions || []).find((x) => x.type === 'text_slice_fallback');
+    expect(fallbackDecision).toBeUndefined();                 // ключова перевірка 1C.3
+  });
+
+  it('OCR (layoutJson.pages непорожній) → пишеться і .txt, і .layout.json', async () => {
+    const port = createMemDrivePort();
+    const d1 = await seedSource(port, 'f1', 2);
+    const writeText02 = vi.fn(async () => {});
+    const writeLayout02 = vi.fn(async () => {});
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'doc1', driveId: 'drv', ...m }),
+      persistDocument: async () => ({ success: true }),
+      writeText02, writeLayout02,
+    });
+    const res = await stage(baseCtx(port, {
+      plan: { confirmed: true, documents: [{
+        documentId: 'd1', name: 'Scan', route: 'add_as_is',
+        fragments: [{ fileId: 'f1', startPage: 1, endPage: 2 }],
+      }], unusedPages: [] },
+      files: [{
+        fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {},
+        layoutJson: { schemaVersion: 1, pages: [
+          { _text: 'page 1 text', dimension: { width: 595, height: 842 } },
+          { _text: 'page 2 text', dimension: { width: 595, height: 842 } },
+        ] },
+        pageCount: 2,
+      }],
+    }));
+    expect(res.ok).toBe(true);
+    expect(writeText02).toHaveBeenCalledTimes(1);
+    expect(writeLayout02).toHaveBeenCalledTimes(1);
+    const fallbackDecision = (res.decisions || []).find((x) => x.type === 'text_slice_fallback');
+    expect(fallbackDecision).toBeUndefined();
+  });
+
+  it('реальний slicing (частковий діапазон) з fallback-текстом → warning ВСЕ Ж публікується (захист від bug 2)', async () => {
+    // 1 фрагмент 1..2 при pageCount=5 — це slice, а не whole-file. usedFallback
+    // тут небезпечний (можемо помилково записати весь текст для 2 сторінок).
+    const port = createMemDrivePort();
+    const d1 = await seedSource(port, 'f1', 5);
+    const writeText02 = vi.fn(async () => {});
+    const stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'd1', driveId: 'drv', ...m }),
+      persistDocument: async () => ({ success: true }),
+      writeText02,
+    });
+    const res = await stage(baseCtx(port, {
+      plan: { confirmed: true, documents: [{
+        documentId: 'd1', name: 'PartialSlice', route: 'slice',
+        fragments: [{ fileId: 'f1', startPage: 1, endPage: 2 }],
+      }], unusedPages: [] },
+      files: [{
+        fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {},
+        processedText: 'big whole text дуже багато',
+        layoutJson: null,
+        pageCount: 5,
+      }],
+    }));
+    expect(res.ok).toBe(true);
+    const fallbackDecision = (res.decisions || []).find((x) => x.type === 'text_slice_fallback');
+    expect(fallbackDecision).toBeDefined();
+    expect(fallbackDecision.documentName).toBe('PartialSlice.pdf');
+  });
+});
+
 describe('splitDocumentsV3 — DP-4 bugfix (Bug 6/7 + класифікація)', () => {
   let port;
   beforeEach(() => { port = createMemDrivePort(); });

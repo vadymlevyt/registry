@@ -188,6 +188,9 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             triage: aiTriage,
             getStreamedText,
             getStreamedLayout,
+            // 1C.2 — DP-4 toggle «Просто додати файли»: ON → детермінований
+            // план add_as_is per PDF, AI Triage пропускається.
+            skipPdfSlicing: opt.skipPdfSlicing === true,
           }),
           extract: createExtractV3({
             cleanForReading: opt.cleanForReading === true,
