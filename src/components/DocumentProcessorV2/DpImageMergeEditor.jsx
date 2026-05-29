@@ -104,6 +104,17 @@ export function DpImageMergeEditor({
   const [cropAppliedSet, setCropAppliedSet] = useState(() => new Set());
   const [processedBlobs, setProcessedBlobs] = useState(() => new Map());
 
+  // previewUrls (баг 2026-05-29 round 2): для сітки Zone 3 показуємо ЗАПЕЧЕНІ
+  // baked blob'и так само як модалка ImageMergePanel. Без них сітка показувала
+  // СИРИЙ файл, тоді як попап (CropperHost) — обрізаний. Виправлення дзеркалить
+  // модалковий patern (`PreviewView` через `computeRenderedBlob` у
+  // ImageMergePanel/index.jsx). User rotation НЕ запікається — лишається CSS
+  // transform (плавна анімація 0.3s); baked лише auto-rotation + applied crop.
+  // Map<origIdx, blobUrl>. Старі URL revoke'аються через 1000ms delayed (щоб
+  // displayed image не зникало під час swap).
+  const [previewUrls, setPreviewUrls] = useState(() => new Map());
+  const previewUrlsToRevokeRef = useRef([]);
+
   // Thumb URLs — створюємо ОДИН раз для всіх фото
   const thumbUrlsRef = useRef(new Map());
   useEffect(() => {
@@ -122,6 +133,32 @@ export function DpImageMergeEditor({
       map.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // previewUrlsRef — дзеркало активного `previewUrls` стану для unmount-cleanup.
+  // React не дає прочитати останній state у cleanup-функції unmount-only ефекту;
+  // тримаємо ref що оновлюється на КОЖНУ зміну previewUrls. На unmount cleanup
+  // нижче читає з ref'у і revoke'ає всі активні blob URL — інакше leak (модалка
+  // має аналогічну діру, тут робимо чистіше).
+  const previewUrlsRef = useRef(new Map());
+  useEffect(() => { previewUrlsRef.current = previewUrls; }, [previewUrls]);
+
+  // Unmount-only cleanup для previewUrls: revoke і активні URL з Map'а, і
+  // ще-не-revoke'нуті URL з delayed-черги (`previewUrlsToRevokeRef`). Без цього
+  // адвокат закриває editor → blob URLs лишаються в пам'яті браузера до
+  // повного зачинення вкладки. Деп-масив порожній — спрацьовує саме на
+  // unmount, не на кожен render.
+  useEffect(() => {
+    return () => {
+      for (const url of previewUrlsRef.current.values()) {
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+      }
+      previewUrlsRef.current = new Map();
+      for (const url of previewUrlsToRevokeRef.current) {
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+      }
+      previewUrlsToRevokeRef.current = [];
+    };
   }, []);
 
   // Edge detection — пасивна пропозиція AI у фоні (така ж як у модалці).
@@ -145,6 +182,91 @@ export function DpImageMergeEditor({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Preview URL generation (баг 2026-05-29 round 2) ────────────────────
+  // Дзеркало модалкового useEffect (`ImageMergePanel/index.jsx` ~173-252):
+  // коли cropOverride/processedBlob/applied-crop змінюється для idx — згенерувати
+  // baked blob (auto-rotation + crop) і покласти URL у previewUrls. Сітка Zone 3
+  // отримує `previewUrls` (замість `null` як було до фіксу) і відображає
+  // обрізане/повернуте у thumbnail так само як попап. User rotation НЕ запікається
+  // — лишається CSS transform у Thumbnail (плавна анімація). Тому userRotation
+  // НЕ в deps — зміна userRotation не регенерує blob.
+  //
+  // Стратегія targets: тільки фото з реальною трансформацією на blob-рівні —
+  // auto-rotation != 0 АБО processedBlob АБО applied crop. Без proposal-only
+  // (адвокат ще не підтвердив через ✓ Готово — preview лишається сирим).
+  // Cropper proposals (cropProposals без override) НЕ генерують preview.
+  useEffect(() => {
+    if (!Array.isArray(normalizedFiles) || normalizedFiles.length === 0) return;
+
+    // Контекст для unified renderer — той самий що модалка. ОДНЕ місце де живе
+    // логіка трансформації (правило #11 — один сенс на «що бачить адвокат»).
+    const ctx = {
+      realFiles: normalizedFiles,
+      detectedOrientations,
+      userRotation,
+      processedBlobs,
+      cropOverrides,
+      cropProposals,
+      cropDisabled,
+      cropAppliedSet,
+    };
+
+    const targets = new Set();
+    for (let i = 0; i < normalizedFiles.length; i++) {
+      const autoDeg = Number.isFinite(detectedOrientations[i]) ? detectedOrientations[i] : 0;
+      const hasProc = processedBlobs.has(i);
+      const hasAppliedCrop = cropAppliedSet.has(i) && cropOverrides.has(i) && !cropDisabled.has(i);
+      if (autoDeg !== 0 || hasProc || hasAppliedCrop) targets.add(i);
+    }
+
+    let cancelled = false;
+    (async () => {
+      const { computeRenderedBlob } = await import('../../services/sortation/imageRenderer.js');
+      const newUrls = new Map();
+      for (const idx of targets) {
+        if (cancelled) break;
+        try {
+          // applyUserRotation:false — user rotation шарується через CSS у Thumbnail.
+          // applyCrop:true з includeProposalRect:false — crop запікається ЛИШЕ
+          // коли cropAppliedSet.has(idx) (логіка всередині computeRenderedBlob).
+          const blob = await computeRenderedBlob(
+            { ...ctx, idx },
+            { applyUserRotation: false, applyCrop: true, includeProposalRect: false },
+          );
+          if (cancelled) break;
+          if (blob && blob !== normalizedFiles[idx]) {
+            newUrls.set(idx, URL.createObjectURL(blob));
+          }
+        } catch (e) {
+          console.warn('[DpImageMergeEditor] preview generation failed for idx', idx, e);
+        }
+      }
+      if (cancelled) {
+        for (const u of newUrls.values()) { try { URL.revokeObjectURL(u); } catch { /* noop */ } }
+        return;
+      }
+      // Atomic replace — старі URL у delayed-revoke черзі (1s) щоб не зникало
+      // зображення під час React swap'у. Той самий patern що модалка.
+      setPreviewUrls((prev) => {
+        for (const [, oldUrl] of prev) previewUrlsToRevokeRef.current.push(oldUrl);
+        return newUrls;
+      });
+      setTimeout(() => {
+        const toRevoke = previewUrlsToRevokeRef.current;
+        previewUrlsToRevokeRef.current = [];
+        for (const u of toRevoke) { try { URL.revokeObjectURL(u); } catch { /* noop */ } }
+      }, 1000);
+    })();
+    return () => { cancelled = true; };
+  }, [
+    cropOverrides, cropProposals, cropDisabled, cropAppliedSet,
+    processedBlobs,
+    normalizedFiles, detectedOrientations,
+  ]);
+  // userRotation НЕ у deps — запікаємо БЕЗ user rotation (тільки auto + crop).
+  // Зміна userRotation не повинна регенерувати blob URL — це б ламало CSS
+  // transition. Той самий принцип що модалка.
 
   // ── Drag-and-drop (lazy @dnd-kit) ─────────────────────────────────────────
   const [dndReady, setDndReady] = useState(null);
@@ -440,6 +562,7 @@ export function DpImageMergeEditor({
           dndReady={dndReady}
           groups={groups}
           thumbUrls={thumbUrlsRef.current}
+          previewUrls={previewUrls}
           warningsByIndex={new Map()}
           duplicateMembership={new Map()}
           userRotation={cssRotationMap}
@@ -535,7 +658,7 @@ export function DpImageMergeEditor({
 
 // ── DndOrchestrator: один DndContext, N SortableContext (по групі) ─────────
 function DndOrchestrator({
-  dndReady, groups, thumbUrls, warningsByIndex, duplicateMembership,
+  dndReady, groups, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex,
   onDragEnd, onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
   updateGroup, removeGroup, proceedingOptions,
@@ -568,6 +691,7 @@ function DndOrchestrator({
             groupIndex={gIdx}
             dndReady={dndReady}
             thumbUrls={thumbUrls}
+            previewUrls={previewUrls}
             warningsByIndex={warningsByIndex}
             duplicateMembership={duplicateMembership}
             userRotation={userRotation}
@@ -591,7 +715,7 @@ function DndOrchestrator({
 
 // ── GroupSection: header (форма) + SortableContext (фото) ──────────────────
 function GroupSection({
-  group, groupIndex, dndReady, thumbUrls, warningsByIndex, duplicateMembership,
+  group, groupIndex, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
   updateGroup, removeGroup, proceedingOptions,
@@ -671,6 +795,7 @@ function GroupSection({
               origIdx={origIdx}
               dndReady={dndReady}
               thumbUrls={thumbUrls}
+              previewUrls={previewUrls}
               warningsByIndex={warningsByIndex}
               duplicateMembership={duplicateMembership}
               userRotation={userRotation}
@@ -697,7 +822,7 @@ function GroupSection({
 
 // ── DpSortableItem: обгортка над RenderItem зі своїм useSortable ───────────
 function DpSortableItem({
-  docId, origIdx, dndReady, thumbUrls, warningsByIndex, duplicateMembership,
+  docId, origIdx, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
 }) {
@@ -712,7 +837,7 @@ function DpSortableItem({
     <RenderItem
       item={item}
       thumbUrls={thumbUrls}
-      previewUrls={null}
+      previewUrls={previewUrls}
       warningsByIndex={warningsByIndex}
       duplicateMembership={duplicateMembership}
       userRotation={userRotation}
