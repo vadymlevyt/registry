@@ -28,6 +28,7 @@
 | TASK 1B image_merge_unify (N-doc склейка фото в DP) | без bump | `report_task_image_merge_unify_1B.md` |
 | TASK 2 context_generator_unify (винос генерації case_context + робочий DP-тумблер) | без bump | `report_task_context_generator_unify.md` |
 | TASK DP context fixes (джерело=реєстр SSOT, фото-подія, сигнал, дата+час) | без bump | `report_task_dp_context_fixes.md`, `bugs_found_during_dp_testing.md` |
+| TASK DP image parity (#1 дублі+сортування через спільну sortImageDocument, #9 банер обрізки, #4 portal попапа) | без bump | `report_task_dp_image_parity.md`, `bugs_found_during_dp_testing.md` |
 
 ---
 
