@@ -1,11 +1,13 @@
-// Юніт-тести спільного сервісу contextGenerator (TASK 2 context_generator_unify).
-// Перевіряють КОНТРАКТ виносу:
-//   • повна генерація нарису (mock Drive/OCR/AI) + збереження на Drive;
-//   • C7 — AI usage логування (logAiUsage + activityTracker) збережено при виносі;
-//   • джерело тексту: беремо самі документи (НЕ лише .txt) → extractTextBatch;
-//     text-layer PDF без .txt НЕ випадає (рішення адвоката, наслідок 1C);
-//   • структуровані коди розвилок (NO_FILES / AUTH / NO_API_KEY / EMPTY / SAVE_FAILED)
-//     замість toast/systemConfirm — UI лишається у компоненті (#11).
+// Юніт-тести спільного сервісу contextGenerator.
+// TASK 2 (винос) + TASK DP context fixes (#7 джерело=реєстр, #6 дата+час).
+// Перевіряють КОНТРАКТ:
+//   • #7 джерело документів = caseData.documents (канонічний SSOT), НЕ folder-scan
+//     → лік = documents.length, нуль .layout.json/folder-артефактів;
+//   • текст береться через ocrService (кеш/OCR) — text-layer PDF без .txt не губиться;
+//   • документ без driveId → пропущено з warning у stats.skipped;
+//   • C7 — AI usage логування (logAiUsage + activityTracker) збережено;
+//   • #6 — у системний промпт підставляється дата+час генерації;
+//   • структуровані коди розвилок (NO_FILES / AUTH / NO_API_KEY / EMPTY / SAVE_FAILED).
 import { describe, it, expect, vi } from 'vitest';
 
 // Сервіс статично імпортує реальний ocrService (дефолтний DI-шов), а той тягне
@@ -21,6 +23,8 @@ vi.mock('../../src/services/ocr/pdfjsLocal.js', () => makeProvider('pdfjsLocal')
 
 import { generateCaseContext } from '../../src/components/CaseDossier/services/contextGenerator.js';
 
+// Канонічний реєстр справи: 3 реальні документи (SSOT). Жодних folder-артефактів
+// (.layout.json, копії 01/02) — їх більше не існує у джерелі генерації (#7).
 const CASE = {
   id: 'case_ctx_1',
   name: 'Брановський',
@@ -29,10 +33,13 @@ const CASE = {
   client: 'Брановський І.І.',
   storage: { driveFolderId: 'folder_root' },
   pinnedNoteIds: [],
+  documents: [
+    { id: 'doc_1', driveId: 'drive_1', name: 'Позовна заява', documentNature: 'searchable' },
+    { id: 'doc_2', driveId: 'drive_2', name: 'Ухвала суду', documentNature: 'scanned' },
+    { id: 'doc_3', driveId: 'drive_3', name: 'Висновок експертизи', documentNature: 'scanned' },
+  ],
 };
 
-// Стандартний набір DI-стабів. driveRequest віддає список файлів для
-// collectFromFolder і ковтає copy/delete. Тести перевизначають точково.
 function makeDeps(over = {}) {
   const aiUsageEntries = [];
   const aiUsageSink = vi.fn((updater) => {
@@ -41,30 +48,24 @@ function makeDeps(over = {}) {
     aiUsageEntries.push(...(Array.isArray(next) ? next : []));
   });
 
-  // driveRequest: розрізняємо за URL. Список файлів у підпапці → 1 PDF (без .txt),
-  // 1 .txt-кеш, agent_history.json, case_context.md (останні три — мають відсіятись).
-  const folderFiles = over.folderFiles || [
-    { id: 'f_pdf', name: 'Позов.pdf', size: 1000, mimeType: 'application/pdf' },
-    { id: 'f_txt', name: 'Позов.txt', size: 50, mimeType: 'text/plain' },
-    { id: 'f_hist', name: 'agent_history.json', size: 10, mimeType: 'application/json' },
-    { id: 'f_ctx', name: 'case_context.md', size: 10, mimeType: 'text/markdown' },
-  ];
-  const driveRequest = over.driveRequest || vi.fn(async (url) => {
-    // Лістинг підпапки: q закодований (encodeURIComponent → пробіли %20), але
-    // id підпапки (orig_id/proc_id) лишається літерально. 01_ОРИГІНАЛИ повертає
-    // файли, 02_ОБРОБЛЕНІ — порожньо.
-    if (typeof url === 'string' && url.includes('orig_id')) {
-      return { ok: true, status: 200, json: async () => ({ files: folderFiles }) };
-    }
-    if (typeof url === 'string' && url.includes('proc_id')) {
-      return { ok: true, status: 200, json: async () => ({ files: [] }) };
-    }
-    // copy / delete
-    return { ok: true, status: 200, json: async () => ({}) };
+  // driveRequest тепер обслуговує ЛИШЕ архівацію (copy/delete) — folder-scan
+  // джерела документів більше немає (#7).
+  const driveRequest = over.driveRequest || vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+
+  const fetchCalls = [];
+  const fetchImpl = over.fetchImpl || vi.fn(async (url, opts) => {
+    fetchCalls.push({ url, opts, body: opts?.body ? JSON.parse(opts.body) : null });
+    return {
+      ok: true,
+      json: async () => ({
+        content: [{ type: 'text', text: '# Справа Брановський №760/1234/25\nнарис...' }],
+        usage: { input_tokens: 123, output_tokens: 456 },
+      }),
+    };
   });
 
   return {
-    caseData: CASE,
+    caseData: over.caseData || CASE,
     notes: [],
     folderId: 'folder_root',
     subFolders: { '01_ОРИГІНАЛИ': 'orig_id', '02_ОБРОБЛЕНІ': 'proc_id' },
@@ -86,52 +87,104 @@ function makeDeps(over = {}) {
     uploadFileToDrive: over.uploadFileToDrive || vi.fn(async () => ({ id: 'uploaded_ctx' })),
     logAiUsage: vi.fn(),
     activityTracker: { report: vi.fn() },
-    fetchImpl: over.fetchImpl || vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        content: [{ type: 'text', text: '# Справа Брановський №760/1234/25\nнарис...' }],
-        usage: { input_tokens: 123, output_tokens: 456 },
-      }),
-    })),
+    fetchImpl,
+    _fetchCalls: fetchCalls,
     _aiUsageEntries: aiUsageEntries,
     ...over,
   };
 }
 
-describe('contextGenerator.generateCaseContext — щасливий шлях', () => {
-  it('повна генерація: збирає документи, OCR, AI, зберігає, повертає saved:true', async () => {
+describe('contextGenerator — #7 джерело = реєстр cases[].documents (SSOT)', () => {
+  it('лік = caseData.documents.length, OCR кличеться рівно по документах реєстру', async () => {
     const deps = makeDeps();
     const res = await generateCaseContext(deps);
 
     expect(res.saved).toBe(true);
+    expect(res.stats).toEqual({ count: 3, fromCache: 0, failed: 0, skipped: 0 });
+
+    expect(deps.ocrService.extractTextBatch).toHaveBeenCalledOnce();
+    const passed = deps.ocrService.extractTextBatch.mock.calls[0][0];
+    // рівно 3 документи реєстру, по driveId — жодних folder-артефактів
+    expect(passed).toHaveLength(3);
+    expect(passed.map(f => f.id).sort()).toEqual(['drive_1', 'drive_2', 'drive_3']);
+    expect(passed.map(f => f.name)).toEqual(['Позовна заява', 'Ухвала суду', 'Висновок експертизи']);
+    // нуль .layout.json / .txt / case_context.md серед джерела
+    expect(passed.some(f => /\.layout\.json$|\.txt$|case_context\.md/.test(f.name))).toBe(false);
+  });
+
+  it('text-layer документ не губиться: текст береться через ocrService навіть без .txt-кешу', async () => {
+    // OCR повертає свіжий текст (fromCache:false) для searchable-PDF без .txt —
+    // саме те що дає pdfjsLocal на text-layer. Документ присутній у нарисі.
+    const ocrService = {
+      extractTextBatch: vi.fn(async (files) => files.map(f => ({
+        file: f,
+        result: { text: `повний текст ${f.name}`, provider: 'pdfjsLocal', fromCache: false },
+      }))),
+      localizeOcrError: (c) => `err:${c}`,
+    };
+    const deps = makeDeps({ ocrService });
+    const res = await generateCaseContext(deps);
+    expect(res.saved).toBe(true);
+    expect(res.stats.count).toBe(3);
+    // у тіло AI пішли всі 3 документи (текст у user-content)
+    const body = deps._fetchCalls[0].body;
+    const userText = JSON.stringify(body.messages[0].content);
+    expect(userText).toContain('Позовна заява');
+    expect(userText).toContain('Висновок експертизи');
+  });
+
+  it('документ без driveId → пропущено з warning, рахується у stats.skipped', async () => {
+    const caseData = {
+      ...CASE,
+      documents: [
+        { id: 'doc_1', driveId: 'drive_1', name: 'Позов' },
+        { id: 'doc_2', driveId: null, name: 'Без файлу' },     // ще не вивантажено на Drive
+      ],
+    };
+    const deps = makeDeps({ caseData });
+    const res = await generateCaseContext(deps);
+    expect(res.saved).toBe(true);
+    expect(res.stats.count).toBe(1);
+    expect(res.stats.skipped).toBe(1);
+    const passed = deps.ocrService.extractTextBatch.mock.calls[0][0];
+    expect(passed).toHaveLength(1);
+    expect(passed[0].id).toBe('drive_1');
+  });
+
+  it('порожній реєстр (нема документів з driveId) → NO_FILES', async () => {
+    const deps = makeDeps({ caseData: { ...CASE, documents: [] } });
+    const res = await generateCaseContext(deps);
+    expect(res).toEqual({ saved: false, error: { code: 'NO_FILES' } });
+    expect(deps.fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('contextGenerator — #6 дата+час у нарисі', () => {
+  it('системний промпт містить «Сьогодні:» з датою І часом (YYYY-MM-DD HH:MM)', async () => {
+    const deps = makeDeps();
+    await generateCaseContext(deps);
+    const sys = deps._fetchCalls[0].body.system;
+    expect(sys).toMatch(/Сьогодні:\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+    // шапка інструктує писати дату І час у Створено/Оновлено
+    expect(sys).toContain('Створено: [ISO дата і час');
+  });
+});
+
+describe('contextGenerator — щасливий шлях (збереження, C7, архів)', () => {
+  it('зберігає case_context.md у корінь справи', async () => {
+    const deps = makeDeps();
+    const res = await generateCaseContext(deps);
+    expect(res.saved).toBe(true);
     expect(res.contextText).toContain('# Справа Брановський');
-    expect(res.stats).toEqual({ count: 1, fromCache: 0, failed: 0 });
     expect(deps.uploadFileToDrive).toHaveBeenCalledOnce();
-    // upload іде у корінь справи з канонічним імʼям
     const [name, , folderId] = deps.uploadFileToDrive.mock.calls[0];
     expect(name).toBe('case_context.md');
     expect(folderId).toBe('folder_root');
   });
 
-  it('джерело тексту: бере документи (PDF без .txt), .txt/agent_history/case_context відсіюються', async () => {
+  it('C7: logAiUsage (case_context_generator) + activityTracker.report', async () => {
     const deps = makeDeps();
     await generateCaseContext(deps);
-
-    expect(deps.ocrService.extractTextBatch).toHaveBeenCalledOnce();
-    const passedFiles = deps.ocrService.extractTextBatch.mock.calls[0][0];
-    const names = passedFiles.map(f => f.name);
-    // text-layer PDF (без .txt) ПОТРАПЛЯЄ в OCR-набір
-    expect(names).toContain('Позов.pdf');
-    // службові/кеш — відсіяні
-    expect(names).not.toContain('Позов.txt');
-    expect(names).not.toContain('agent_history.json');
-    expect(names).not.toContain('case_context.md');
-  });
-
-  it('C7: логує AI usage (logAiUsage case_context_generator) + activityTracker.report', async () => {
-    const deps = makeDeps();
-    await generateCaseContext(deps);
-
     expect(deps.logAiUsage).toHaveBeenCalledOnce();
     const [entry, sink] = deps.logAiUsage.mock.calls[0];
     expect(entry).toMatchObject({
@@ -141,8 +194,7 @@ describe('contextGenerator.generateCaseContext — щасливий шлях', (
       outputTokens: 456,
       context: { caseId: 'case_ctx_1', operation: 'generate_context' },
     });
-    expect(sink).toBe(deps.aiUsageSink);    // той самий sink, без дублювання шляху
-
+    expect(sink).toBe(deps.aiUsageSink);
     expect(deps.activityTracker.report).toHaveBeenCalledWith(
       'agent_call',
       expect.objectContaining({
@@ -152,13 +204,11 @@ describe('contextGenerator.generateCaseContext — щасливий шлях', (
     );
   });
 
-  it('архівує існуючий case_context.md перед перезаписом', async () => {
+  it('#2 архівує існуючий case_context.md перед перезаписом (спільний сервіс — обидва шляхи)', async () => {
     const listFolderFiles = vi.fn(async () => [{ id: 'old_ctx', name: 'case_context.md' }]);
     const deps = makeDeps({ listFolderFiles });
     await generateCaseContext(deps);
-
     expect(deps.findOrCreateFolder).toHaveBeenCalledWith('archive', 'folder_root', 'tok');
-    // copy + delete старого через driveRequest
     const urls = deps.driveRequest.mock.calls.map(c => c[0]);
     expect(urls.some(u => u.includes('/copy'))).toBe(true);
     expect(urls.some(u => u.includes('old_ctx') && !u.includes('/copy'))).toBe(true);
@@ -171,25 +221,21 @@ describe('contextGenerator.generateCaseContext — щасливий шлях', (
         : { file: f, error: { code: 'NETWORK', message: 'fail' } })),
       localizeOcrError: (c) => `err:${c}`,
     };
-    const folderFiles = [
-      { id: 'a', name: 'a.pdf', mimeType: 'application/pdf' },
-      { id: 'b', name: 'b.pdf', mimeType: 'application/pdf' },
-    ];
-    const deps = makeDeps({ ocrService, folderFiles });
+    const caseData = {
+      ...CASE,
+      documents: [
+        { id: 'd1', driveId: 'a', name: 'a' },
+        { id: 'd2', driveId: 'b', name: 'b' },
+      ],
+    };
+    const deps = makeDeps({ ocrService, caseData });
     const res = await generateCaseContext(deps);
     expect(res.saved).toBe(true);
-    expect(res.stats).toEqual({ count: 2, fromCache: 1, failed: 1 });
+    expect(res.stats).toEqual({ count: 2, fromCache: 1, failed: 1, skipped: 0 });
   });
 });
 
-describe('contextGenerator.generateCaseContext — структуровані розвилки (UI у компоненті)', () => {
-  it('NO_FILES: жодного джерельного файлу', async () => {
-    const deps = makeDeps({ folderFiles: [] });
-    const res = await generateCaseContext(deps);
-    expect(res).toEqual({ saved: false, error: { code: 'NO_FILES' } });
-    expect(deps.fetchImpl).not.toHaveBeenCalled();
-  });
-
+describe('contextGenerator — структуровані розвилки (UI у компоненті)', () => {
   it('AUTH: ВСІ OCR-результати AUTH → код AUTH, без AI-виклику', async () => {
     const ocrService = {
       extractTextBatch: vi.fn(async (files) => files.map(f => ({ file: f, error: { code: 'AUTH', message: 'no scope' } }))),
@@ -205,7 +251,7 @@ describe('contextGenerator.generateCaseContext — структуровані р
     const deps = makeDeps({ apiKey: null });
     const res = await generateCaseContext(deps);
     expect(res).toEqual({ saved: false, error: { code: 'NO_API_KEY' } });
-    expect(deps.ocrService.extractTextBatch).toHaveBeenCalledOnce(); // OCR відпрацював
+    expect(deps.ocrService.extractTextBatch).toHaveBeenCalledOnce();
     expect(deps.fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -223,7 +269,7 @@ describe('contextGenerator.generateCaseContext — структуровані р
     const res = await generateCaseContext(deps);
     expect(res.saved).toBe(false);
     expect(res.error).toEqual({ code: 'SAVE_FAILED', message: 'quota' });
-    expect(res.contextText).toContain('# Справа');   // текст є, лише не зберігся
+    expect(res.contextText).toContain('# Справа');
   });
 
   it('AI HTTP-помилка — кидає (компонент ловить у свій catch)', async () => {
