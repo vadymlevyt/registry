@@ -2251,6 +2251,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               caseData={caseData}
               onExecuteAction={onExecuteAction}
               driveConnected={driveConnected}
+              aiUsageSink={setAiUsage}
             />
           )}
           {["position", "templates"].includes(activeTab) && (

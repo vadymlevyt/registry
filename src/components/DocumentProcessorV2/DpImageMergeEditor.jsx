@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, Play, Plus, Trash2, AlertTriangle, Crop as CropIcon,
+  X, Check, Copy as CopyIcon,
 } from 'lucide-react';
 import { ICON_SIZE } from '../UI/icons.js';
 import { Button, Input, Select, Toggle, DatePicker } from '../UI';
@@ -61,6 +62,10 @@ function ItemIdDecode(id) {
  * }} props.pre — output of prepareImagesForMerge
  * @param {Array<{pages: number[], type: string|null, suggestedName: string}>} props.initialGroups
  *        — output of imageDocumentGrouper
+ * @param {Array<{group: number[], recommended: number, reason: string}>} [props.initialDuplicates]
+ *        — групи дублів (global indices) зі spільної обгортки sortImageDocument
+ *          (per-group sortImages). Editor малює жовту рамку/зелений рекомендований
+ *          (як модалка) і дає зняти/залишити. Порожньо — дублів нема.
  * @param {Function} props.onSubmit — async ({ groups, userRotation, cropOverrides, cropProposals, cropDisabled, cropAppliedSet, processedBlobs }) => void
  * @param {Function} props.onCancel
  */
@@ -69,6 +74,7 @@ export function DpImageMergeEditor({
   proceedings = [],
   pre,
   initialGroups,
+  initialDuplicates = [],
   onSubmit,
   onCancel,
 }) {
@@ -103,6 +109,10 @@ export function DpImageMergeEditor({
   const [cropDisabled, setCropDisabled] = useState(() => new Set());
   const [cropAppliedSet, setCropAppliedSet] = useState(() => new Set());
   const [processedBlobs, setProcessedBlobs] = useState(() => new Map());
+  // dismissedDuplicateGroupIds — групи дублів, які адвокат позначив «це не
+  // дублікати» (groupId = індекс у initialDuplicates). Виключаються з
+  // duplicateMembership і з банера. Той самий сенс що у модалці (PreviewView).
+  const [dismissedDuplicateGroupIds, setDismissedDuplicateGroupIds] = useState(() => new Set());
 
   // previewUrls (баг 2026-05-29 round 2): для сітки Zone 3 показуємо ЗАПЕЧЕНІ
   // baked blob'и так само як модалка ImageMergePanel. Без них сітка показувала
@@ -379,6 +389,57 @@ export function DpImageMergeEditor({
     });
   }, []);
 
+  // #9 — «Не обрізати жодну»: вимикає всі AI-пропозиції обрізки (proposal +
+  // override). Адвокат може повернути окремі тапом на ✂️. Дзеркало модалки
+  // (ImageMergePanel handleDisableAllCrops). Фінальна збірка PDF
+  // (rebuildFromOcrResults) ігнорує rect для idx у cropDisabled → той самий
+  // PDF що модалка за тих самих умов.
+  const handleDisableAllCrops = useCallback(() => {
+    setCropDisabled((prev) => {
+      const next = new Set(prev);
+      for (const idx of cropProposals.keys()) next.add(idx);
+      for (const idx of cropOverrides.keys()) next.add(idx);
+      return next;
+    });
+  }, [cropProposals, cropOverrides]);
+
+  // #1 — обробка дублів (дзеркало модалки ImageMergePanel). «Видалити з групи»
+  // у DP = прибрати origIdx з pageIndices своєї групи (та сама механіка що
+  // handleRemove). Порожні групи відсіюються.
+  const removeIndicesFromGroups = useCallback((toRemoveSet) => {
+    if (!toRemoveSet || toRemoveSet.size === 0) return;
+    setGroups((prev) => prev
+      .map((g) => ({ ...g, pageIndices: g.pageIndices.filter((i) => !toRemoveSet.has(i)) }))
+      .filter((g) => g.pageIndices.length > 0));
+  }, []);
+
+  // «Залишити цей, видалити інші» (на рекомендованому thumbnail) — прибирає
+  // не-рекомендовані фото групи дублів.
+  const handleKeepRecommendedDuplicate = useCallback((groupIndices, recommended) => {
+    const toRemove = new Set((groupIndices || []).filter((i) => i !== recommended));
+    removeIndicesFromGroups(toRemove);
+  }, [removeIndicesFromGroups]);
+
+  // «Залишити рекомендовані» (банер) — для всіх НЕ-dismissed груп лишає тільки
+  // recommended, решту прибирає.
+  const handleKeepAllRecommendedDuplicates = useCallback(() => {
+    const toRemove = new Set();
+    (initialDuplicates || []).forEach((g, groupId) => {
+      if (dismissedDuplicateGroupIds.has(groupId)) return;
+      for (const i of g.group) if (i !== g.recommended) toRemove.add(i);
+    });
+    removeIndicesFromGroups(toRemove);
+  }, [initialDuplicates, dismissedDuplicateGroupIds, removeIndicesFromGroups]);
+
+  // «Це не дублікати» — група розпадається (перестає показуватись як дублі).
+  const handleDismissDuplicateGroup = useCallback((groupId) => {
+    setDismissedDuplicateGroupIds((prev) => {
+      const next = new Set(prev);
+      next.add(groupId);
+      return next;
+    });
+  }, []);
+
   const handleCropOverride = useCallback((origIdx, rect, opts = {}) => {
     const applied = opts.applied === true;
     setCropOverrides((prev) => {
@@ -526,6 +587,41 @@ export function DpImageMergeEditor({
     return map;
   }, [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs]);
 
+  // duplicateMembership: origIdx → { groupId, recommended, reason, groupIndices }.
+  // Дзеркало модалки (PreviewView:119). Виключаємо dismissed групи. Grid
+  // (Thumbnail/RenderItem) уже малює жовту рамку на дублях і зелений на
+  // recommended за цим props — DP лише постачає дані.
+  const duplicateMembership = useMemo(() => {
+    const map = new Map();
+    (initialDuplicates || []).forEach((g, groupId) => {
+      if (dismissedDuplicateGroupIds.has(groupId)) return;
+      if (!Array.isArray(g.group)) return;
+      for (const idx of g.group) {
+        map.set(idx, {
+          groupId,
+          recommended: g.recommended,
+          reason: g.reason,
+          groupIndices: g.group,
+        });
+      }
+    });
+    return map;
+  }, [initialDuplicates, dismissedDuplicateGroupIds]);
+
+  // Кількість фото з активною (не вимкненою, не застосованою) обрізкою — для
+  // тексту банера #9. Той самий підрахунок що модалка (PreviewView activeCropCount).
+  const activeCropCount = useMemo(() => {
+    let n = 0;
+    for (const state of cropStateByIndex.values()) if (state === 'active') n++;
+    return n;
+  }, [cropStateByIndex]);
+
+  // Кількість активних (не-dismissed) груп дублів — для банера #1.
+  const activeDuplicateGroupsCount = useMemo(
+    () => (initialDuplicates || []).filter((_, gid) => !dismissedDuplicateGroupIds.has(gid)).length,
+    [initialDuplicates, dismissedDuplicateGroupIds],
+  );
+
   const uncertainSet = useMemo(() => new Set(uncertainOrientationIndices), [uncertainOrientationIndices]);
   const proceedingOptions = useMemo(
     () => (proceedings || []).map((p) => ({ value: p.id, label: p.title })),
@@ -564,7 +660,7 @@ export function DpImageMergeEditor({
           thumbUrls={thumbUrlsRef.current}
           previewUrls={previewUrls}
           warningsByIndex={new Map()}
-          duplicateMembership={new Map()}
+          duplicateMembership={duplicateMembership}
           userRotation={cssRotationMap}
           uncertainSet={uncertainSet}
           cropStateByIndex={cropStateByIndex}
@@ -572,6 +668,8 @@ export function DpImageMergeEditor({
           onRemove={handleRemove}
           onRotate={handleRotate}
           onToggleCropDisabled={handleToggleCropDisabled}
+          onKeepRecommendedDuplicate={handleKeepRecommendedDuplicate}
+          onDismissDuplicateGroup={handleDismissDuplicateGroup}
           onOpenPopup={openPopup}
           onContextMenu={(e, origIdx) => {
             e.preventDefault();
@@ -581,6 +679,43 @@ export function DpImageMergeEditor({
           removeGroup={removeGroup}
           proceedingOptions={proceedingOptions}
         />
+      )}
+
+      {(activeCropCount > 0 || activeDuplicateGroupsCount > 0) && (
+        <div className="image-merge-panel__alerts">
+          {activeCropCount > 0 && (
+            <div className="image-merge-panel__alert image-merge-panel__alert--crop">
+              <CropIcon size={ICON_SIZE.sm} />
+              <span>
+                Обрізку буде застосовано до {activeCropCount} {activeCropCount === 1 ? 'сторінки' : 'сторінок'} (іконка ✂️ на thumbnail). Тапни на іконку щоб вимкнути для окремої.
+              </span>
+              <button
+                type="button"
+                className="image-merge-panel__remove-suspicious image-merge-panel__remove-suspicious--crop"
+                onClick={handleDisableAllCrops}
+              >
+                <X size={14} />
+                Не обрізати жодну
+              </button>
+            </div>
+          )}
+          {activeDuplicateGroupsCount > 0 && (
+            <div className="image-merge-panel__alert image-merge-panel__alert--dup">
+              <CopyIcon size={ICON_SIZE.sm} />
+              <span>
+                Знайдено {activeDuplicateGroupsCount} {activeDuplicateGroupsCount === 1 ? 'групу' : 'групи'} дублікатів (жовта рамка). Рекомендовані варіанти позначені зеленим.
+              </span>
+              <button
+                type="button"
+                className="image-merge-panel__remove-suspicious image-merge-panel__remove-suspicious--dup"
+                onClick={handleKeepAllRecommendedDuplicates}
+              >
+                <Check size={14} />
+                Залишити рекомендовані
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       <div className="dp-image-merge-editor__add-group">
@@ -619,7 +754,7 @@ export function DpImageMergeEditor({
           position={allOrderedIndices.indexOf(popupOrigIdx)}
           total={allOrderedIndices.length}
           warning={null}
-          duplicateInfo={null}
+          duplicateInfo={duplicateMembership.get(popupOrigIdx) || null}
           isUncertain={uncertainSet.has(popupOrigIdx)}
           cropProposal={cropProposals.get(popupOrigIdx) || null}
           cropOverride={cropOverrides.get(popupOrigIdx) || null}
@@ -660,7 +795,8 @@ export function DpImageMergeEditor({
 function DndOrchestrator({
   dndReady, groups, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex,
-  onDragEnd, onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
+  onDragEnd, onRemove, onRotate, onToggleCropDisabled,
+  onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
   updateGroup, removeGroup, proceedingOptions,
 }) {
   const {
@@ -701,6 +837,8 @@ function DndOrchestrator({
             onRemove={onRemove}
             onRotate={onRotate}
             onToggleCropDisabled={onToggleCropDisabled}
+            onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+            onDismissDuplicateGroup={onDismissDuplicateGroup}
             onOpenPopup={onOpenPopup}
             onContextMenu={onContextMenu}
             updateGroup={updateGroup}
@@ -717,7 +855,8 @@ function DndOrchestrator({
 function GroupSection({
   group, groupIndex, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
-  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
+  onRemove, onRotate, onToggleCropDisabled,
+  onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
   updateGroup, removeGroup, proceedingOptions,
 }) {
   const { SortableContext, rectSortingStrategy } = dndReady;
@@ -805,6 +944,8 @@ function GroupSection({
               onRemove={onRemove}
               onRotate={onRotate}
               onToggleCropDisabled={onToggleCropDisabled}
+              onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+              onDismissDuplicateGroup={onDismissDuplicateGroup}
               onOpenPopup={onOpenPopup}
               onContextMenu={onContextMenu}
             />
@@ -824,7 +965,8 @@ function GroupSection({
 function DpSortableItem({
   docId, origIdx, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
-  onRemove, onRotate, onToggleCropDisabled, onOpenPopup, onContextMenu,
+  onRemove, onRotate, onToggleCropDisabled,
+  onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
 }) {
   const { useSortable, CSS } = dndReady;
   const sortable = useSortable({ id: ItemIdEncode(docId, origIdx) });
@@ -849,8 +991,8 @@ function DpSortableItem({
       onToggleCropDisabled={onToggleCropDisabled}
       onOpenPopup={onOpenPopup}
       onContextMenu={onContextMenu}
-      onKeepRecommendedDuplicate={null}
-      onDismissDuplicateGroup={null}
+      onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+      onDismissDuplicateGroup={onDismissDuplicateGroup}
       sortableRef={sortable.setNodeRef}
       sortableStyle={style}
       sortableListeners={sortable.listeners}

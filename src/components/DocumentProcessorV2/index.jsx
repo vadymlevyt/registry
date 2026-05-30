@@ -29,7 +29,9 @@ import { DpImageMergeEditor } from './DpImageMergeEditor.jsx';
 import { isImageFile } from '../ImageEditor/constants.js';
 import { prepareImagesForMerge } from '../../services/imageDocument/prepareImagesForMerge.js';
 import { groupImagesIntoDocuments } from '../../services/sortation/imageDocumentGrouper.js';
+import { sortImageDocument } from '../../services/imageDocument/sortImageDocument.js';
 import { rebuildFromOcrResults } from '../../services/imageDocument/pdfRebuild.js';
+import { MODULES } from '../../services/moduleNames.js';
 import { createDocument } from '../../services/documentFactory.js';
 import { ensureUniqueName } from '../../services/sortation/imageSortingAgent.js';
 import * as ocrService from '../../services/ocrService.js';
@@ -67,7 +69,7 @@ function humanSize(b) {
   return `${(b / 1024 / 1024).toFixed(1)} МБ`;
 }
 
-export default function DocumentProcessorV2({ caseData, onExecuteAction, driveConnected }) {
+export default function DocumentProcessorV2({ caseData, onExecuteAction, driveConnected, aiUsageSink }) {
   const pipeline = useDocumentPipeline();
 
   const [selected, setSelected] = useState([]);
@@ -289,6 +291,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
         grouperResult = await groupImagesIntoDocuments(items, {
           apiKey,
           caseId: caseData?.id,
+          aiUsageSink,
         });
       } catch (e) {
         console.warn('[DP image-merge] grouper failed, single-group fallback:', e?.message);
@@ -302,7 +305,65 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
         toast.info('AI не зміг визначити межі — один документ з усіх фото; розділіть вручну.');
       }
 
-      setImageMerge({ files, pre, initialGroups: grouperResult.groups });
+      // Phase 3 — сортування сторінок + виявлення дублів ПЕР-ГРУПА через спільну
+      // обгортку sortImageDocument (той самий шлях що модалка, правило #11 +
+      // Rule of Three). До цього TASK DP цього кроку не робив узагалі — тому в
+      // DP не було ні дублів, ні сортування сторінок усередині документа.
+      // Кличемо лише для груп >1 фото (нема що сортувати/дедупити у 1-фото).
+      // Виклики свідомо додають AI-вартість (логуються C7 через обгортку) —
+      // рішення адвоката 2026-05-30 заради паритету з модалкою.
+      const initialDuplicates = [];
+      try {
+        for (const g of grouperResult.groups) {
+          const pages = Array.isArray(g.pages) ? g.pages : [];
+          if (pages.length < 2) continue;
+          const groupItems = pages.map((origIdx) => ({
+            index: origIdx,
+            name: pre.normalizedFiles[origIdx]?.name || `IMG_${origIdx + 1}.jpg`,
+            mime: pre.normalizedFiles[origIdx]?.type || 'image/jpeg',
+            sizeBytes: pre.normalizedFiles[origIdx]?.size,
+            ocrText: pre.ocrResults[origIdx]?.text || '',
+            pageStructure: pre.ocrResults[origIdx]?.pageStructure || null,
+            // detectedOrientations уже пораховано у prepareImagesForMerge —
+            // НЕ перераховуємо (Розумна економія).
+            orientation: pre.detectedOrientations[origIdx] || 0,
+          }));
+          const sortRes = await sortImageDocument(groupItems, {
+            apiKey,
+            caseContext: {
+              existingDocumentNames: (caseData?.documents || []).map((d) => d.name).filter(Boolean),
+              categoryHint: g.type || null,
+            },
+            billing: {
+              caseId: caseData?.id || null,
+              module: MODULES.DOCUMENT_PROCESSOR,
+              aiUsageSink,
+            },
+          });
+          if (!sortRes) continue; // fallback (агент впав/timeout) — лишаємо порядок групи
+          // Застосовуємо порядок сторінок усередині документа (валідна
+          // перестановка індексів цієї групи).
+          if (Array.isArray(sortRes.order)
+              && sortRes.order.length === pages.length
+              && sortRes.order.every((i) => pages.includes(i))) {
+            g.pages = sortRes.order;
+          }
+          // suggestedName зі sort — лише як fallback, коли grouper не дав назви.
+          if (!g.suggestedName && sortRes.suggestedName) {
+            g.suggestedName = sortRes.suggestedName;
+          }
+          // Дублі (global indices) — у спільний список для editor'а.
+          for (const d of sortRes.duplicates || []) {
+            if (Array.isArray(d.group) && d.group.length >= 2) {
+              initialDuplicates.push({ group: d.group, recommended: d.recommended, reason: d.reason });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[DP image-merge] per-group sort failed (non-fatal):', e?.message);
+      }
+
+      setImageMerge({ files, pre, initialGroups: grouperResult.groups, initialDuplicates });
       pipeline.minimizeProgress?.();
     } catch (e) {
       console.error('[DP image-merge] startup failed:', e);
@@ -567,6 +628,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           proceedings={caseData?.proceedings || []}
           pre={imageMerge.pre}
           initialGroups={imageMerge.initialGroups}
+          initialDuplicates={imageMerge.initialDuplicates || []}
           onSubmit={handleImageMergeSubmit}
           onCancel={cancelImageMerge}
         />
