@@ -49,12 +49,13 @@
 //
 // Caller передає progress callback (onProgress) для UI прогрес-бара.
 
-import { sortImages, ensureUniqueName } from '../sortation/imageSortingAgent.js';
+import { ensureUniqueName } from '../sortation/imageSortingAgent.js';
 import {
   extractPageOrientation,
   rotateImageBlob,
 } from '../sortation/orientationCorrector.js';
 import { prepareImagesForMerge } from '../imageDocument/prepareImagesForMerge.js';
+import { sortImageDocument } from '../imageDocument/sortImageDocument.js';
 
 const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
@@ -229,28 +230,21 @@ export async function convertImagesToPdf(files, options = {}) {
           : null
       ),
     }));
-    try {
-      // Hard timeout щоб stale Anthropic call не зависив pipeline. 90 сек
-      // вистачає для 50 зображень (~1.5 KB ocrText кожне × 50 ≈ 75 KB вхід).
-      // Якщо агент не відповів — fallback identity order, pipeline продовжує.
-      const SORT_TIMEOUT_MS = 90_000;
-      sortResult = await Promise.race([
-        sortImages(items, {
-          apiKey: options.apiKey,
-          callApi: options.callApi, // для тестів
-          caseContext: {
-            existingDocumentNames: options.context?.existingDocumentNames || [],
-            categoryHint: options.context?.categoryHint || null,
-          },
-        }),
-        new Promise((_, rej) =>
-          setTimeout(() => rej(new Error(`sortImages timeout after ${SORT_TIMEOUT_MS}ms`)), SORT_TIMEOUT_MS)
-        ),
-      ]);
-    } catch (e) {
-      console.warn('[multiImageToPdf] sort agent failed, falling back to identity order:', e?.message);
-      warnings.push(`Sorting agent fail: ${e?.message || e}`);
-      sortResult = null;
+    // Сортування+дублі через СПІЛЬНУ обгортку (timeout/fallback усередині).
+    // Той самий шлях що DP image-merge (правило #11 «один сенс» + Rule of Three).
+    // Модалка НЕ передає billing → C7-логування не активується тут (білінг
+    // модалки — images_merged у converterService, поведінка ІДЕНТИЧНА).
+    sortResult = await sortImageDocument(items, {
+      apiKey: options.apiKey,
+      callApi: options.callApi, // для тестів
+      caseContext: {
+        existingDocumentNames: options.context?.existingDocumentNames || [],
+        categoryHint: options.context?.categoryHint || null,
+      },
+    });
+    if (sortResult === null) {
+      // Агент впав або timeout → fallback identity order, pipeline продовжує.
+      warnings.push('Sorting agent fail: fallback to identity order');
     }
   }
   onProgress('sort', 1, 1);
