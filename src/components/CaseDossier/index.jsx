@@ -754,7 +754,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         aiUsageSink: setAiUsage,
       });
       if (result?.saved) {
-        toast.show(messages.context.created(result.stats));
+        // #3 — окремий сигнал «нарис оновлено» (не плутати з DP-тостом
+        // «Оброблено N документів» — це різні події: нарізка ≠ контекст).
+        toast.show(messages.context.updated(result.stats));
         try {
           const fresh = await loadCaseContext();
           if (fresh) setCaseContext(fresh);

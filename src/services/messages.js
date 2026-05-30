@@ -126,6 +126,18 @@ export const messages = {
       ].filter(Boolean).join(', ') + '.',
     }),
 
+    // #3 — окремий сигнал фонового оновлення нарису (DP-тригер), щоб НЕ
+    // плутати з тостом нарізки «Оброблено N документів». Свій заголовок.
+    updated: ({ count, fromCache, failed } = {}) => ({
+      variant: 'success',
+      title: '✓ Нарис справи оновлено',
+      description: [
+        count != null ? `${count} ${pluralUk(count, 'документ', 'документи', 'документів')} у нарисі` : 'case_context.md освіжено',
+        fromCache > 0 ? `${fromCache} з кешу` : null,
+        failed > 0 ? `${failed} ${pluralUk(failed, 'помилка', 'помилки', 'помилок')}` : null,
+      ].filter(Boolean).join(', ') + '.',
+    }),
+
     emptyResult: () => ({
       variant: 'error',
       title: 'Claude не повернув результат',
