@@ -270,10 +270,17 @@ export function DpImageMergeEditor({
     })();
     return () => { cancelled = true; };
   }, [
-    cropOverrides, cropProposals, cropDisabled, cropAppliedSet,
+    cropOverrides, cropDisabled, cropAppliedSet,
     processedBlobs,
     normalizedFiles, detectedOrientations,
   ]);
+  // cropProposals НЕ у deps: proposal-only (без override у cropAppliedSet) НЕ
+  // запікається у blob (applyCrop спрацьовує лише коли cropAppliedSet.has(idx)) —
+  // як сказано вище «Cropper proposals НЕ генерують preview». Тримати його в deps
+  // спричиняло ЗАЙВИЙ повторний прогін ефекту коли async edge-detection
+  // дозаповнює cropProposals (setCropProposals) — той самий blob генерувався
+  // двічі (на повільному CI computeRenderedBlob фіксувався 2× замість 1×).
+  // ctx.cropProposals всередині рендера лишається — read-only, не тригер.
   // userRotation НЕ у deps — запікаємо БЕЗ user rotation (тільки auto + crop).
   // Зміна userRotation не повинна регенерувати blob URL — це б ламало CSS
   // transition. Той самий принцип що модалка.
