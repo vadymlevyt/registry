@@ -16,7 +16,9 @@ import { Button, Toggle, Tabs } from '../UI';
 import { toast } from '../../services/toast.js';
 import { driveRequest } from '../../services/driveAuth.js';
 import { readDriveFileBytes, findOrCreateFolder, uploadBytesToDrive } from '../../services/driveService.js';
-import { getSplitterDatasetEnabled, setSplitterDatasetEnabled } from '../../services/tenantService.js';
+import { getSplitterDatasetEnabled, setSplitterDatasetEnabled, getCurrentUserId, getCurrentTenantId } from '../../services/tenantService.js';
+import * as eventBus from '../../services/eventBus.js';
+import { DOCUMENT_BATCH_PROCESSED } from '../../services/eventBusTopics.js';
 import { useDocumentPipeline } from '../../contexts/DocumentPipelineContext.jsx';
 import { DrivePicker } from './DrivePicker.jsx';
 import { RecognizeTextModal } from './modals/RecognizeTextModal.jsx';
@@ -414,6 +416,27 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       throw new Error(res?.error || 'add_documents failed');
     }
     toast.success(`Додано ${documents.length} ${documents.length === 1 ? 'документ' : 'документ(и)'}`);
+
+    // #5 — фото-шлях (image-merge) обходить pipeline.run → emitStage НЕ
+    // публікує DOCUMENT_BATCH_PROCESSED. Публікуємо тут вручну тією самою
+    // формою (як emitStage у documentPipeline.js), щоб для ФОТО теж спрацював
+    // слухач контексту у CaseDossier: оновлення нарису + сигнал. Прапор
+    // updateCaseContext — зі стану тумблера тієї ж DP-сесії. Ізольовано від
+    // успіху додавання (publish не валить UX).
+    try {
+      eventBus.publish(DOCUMENT_BATCH_PROCESSED, {
+        caseId: caseData.id,
+        documentIds: documents.map((d) => d.id),
+        count: documents.length,
+        tenantId: getCurrentTenantId() || null,
+        userId: getCurrentUserId() || null,
+        updateCaseContext: settings.updateCaseContext === true,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn('[DP image-merge] publish DOCUMENT_BATCH_PROCESSED failed:', e?.message || e);
+    }
+
     setImageMerge(null);
     setSelected([]);
     setInboxChecked(new Set());
