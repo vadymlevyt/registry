@@ -121,6 +121,17 @@ export function PreviewPopup({
   // Lock pattern зберігається: ↻ всередині попапу робить cropper.rotateImage(90)
   // напряму, parent userRotation інкрементується — lock пропускає цей цикл
   // useEffect'у щоб не подвоїти обертання.
+  //
+  // ── #11 fix: володіння об'єктним URL у ref, ревокація лише при ЗАМІНІ ──────
+  // ownedDisplayUrlRef — об'єктний URL, який ми створили і ЗАРАЗ показуємо у
+  // displayUrl (null якщо показуємо сирий `url` з thumbUrls батька — його НЕ
+  // ревокуємо). Раніше revoke жив у per-run cleanup ефекту: на ↻ lock-гілка
+  // рано виходила, не створювала новий blob, а cleanup попереднього запуску
+  // встигав ревокнути createdUrl, на який displayUrl досі вказував → мертвий
+  // blob URL у <img>/cropper (чорний/сире, регрес #11). Тепер ревокуємо
+  // ПОПЕРЕДНІЙ власний URL лише коли реально замінили його новим — активний
+  // показаний URL ніколи не ревокується «наввипередки».
+  const ownedDisplayUrlRef = useRef(null);
   const [displayUrl, setDisplayUrl] = useState(url);
   useEffect(() => {
     if (popupRotationLockRef.current) {
@@ -128,7 +139,6 @@ export function PreviewPopup({
       return;
     }
     let cancelled = false;
-    let createdUrl = null;
     (async () => {
       try {
         const { computeRenderedBlob } = await import('../../services/sortation/imageRenderer.js');
@@ -171,25 +181,42 @@ export function PreviewPopup({
         // Blob перегенеровано саме під цей userRotation → стає новим baseline
         // для CSS-delta (поки lock не пропустить наступний ↻ у view-only).
         bakedUserRotationRef.current = userRotation;
+        const prevOwned = ownedDisplayUrlRef.current;
         if (blob) {
-          createdUrl = URL.createObjectURL(blob);
-          setDisplayUrl(createdUrl);
+          const newUrl = URL.createObjectURL(blob);
+          ownedDisplayUrlRef.current = newUrl;
+          setDisplayUrl(newUrl);
         } else {
+          ownedDisplayUrlRef.current = null;
           setDisplayUrl(url);
+        }
+        // Ревокуємо ПОПЕРЕДНІЙ власний URL — він щойно замінений новим
+        // displayUrl (або сирим url). Поточний показаний URL не чіпаємо.
+        if (prevOwned && prevOwned !== ownedDisplayUrlRef.current) {
+          try { URL.revokeObjectURL(prevOwned); } catch { /* noop */ }
         }
       } catch (e) {
         console.warn('[PreviewPopup] displayUrl render failed:', e);
         if (!cancelled) { bakedUserRotationRef.current = userRotation; setDisplayUrl(url); }
       }
     })();
-    return () => {
-      cancelled = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
-    };
+    // Cleanup НЕ ревокує: revoke прив'язаний до ЗАМІНИ URL (вище), не до
+    // життєвого циклу окремого запуску ефекту — інакше lock-гілка лишала б
+    // активний displayUrl на ревокнутому URL (#11).
+    return () => { cancelled = true; };
   }, [
     autoRotation, userRotation, sourceBlob, url, processedEntry,
     cropOverride, cropProposal, cropDisabled, cropApplied,
   ]);
+
+  // Фінальна ревокація власного об'єктного URL на unmount попапа — без цього
+  // останній згенерований blob URL лишався б у пам'яті до зачинення вкладки.
+  useEffect(() => () => {
+    if (ownedDisplayUrlRef.current) {
+      try { URL.revokeObjectURL(ownedDisplayUrlRef.current); } catch { /* noop */ }
+      ownedDisplayUrlRef.current = null;
+    }
+  }, []);
 
   // Local pending state — чекає на ✓ Apply.
   const [pendingRect, setPendingRect] = useState(effectiveRect || null);

@@ -30,6 +30,7 @@ export function RenderItem({
           position={flatPositions.get(origIdx) ?? 0}
           url={displayUrl}
           isProcessed={isProcessed}
+          inGroup={item.inGroup || false}
           warning={warningsByIndex.get(origIdx) || null}
           duplicateInfo={duplicateMembership.get(origIdx) || null}
           rotation={userRotation.get(origIdx) || 0}

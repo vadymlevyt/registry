@@ -57,6 +57,7 @@ import { ProcessingView } from './ProcessingView.jsx';
 import { PreviewView } from './PreviewView.jsx';
 import { SingleFileWarning } from './SingleFileWarning.jsx';
 import { rebuildFromOcrResults } from '../../../services/imageDocument/pdfRebuild.js';
+import { selectRecommendedDuplicateRemovals } from '../../../services/imageDocument/duplicateSelection.js';
 
 /**
  * @param {{caseData, onSubmit, onCancel, onOpenDrivePicker}} props
@@ -604,24 +605,26 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     setOrderedIndices((prev) => prev.filter((i) => !toRemove.includes(i)));
   }, []);
 
+  // #12: «Видалити всі дублікати» поважає ручний вибір — чіпає лише незаймані
+  // групи (не dismissed і де жоден член не видалений вручну). Спільна логіка
+  // у selectRecommendedDuplicateRemovals (та сама що у DP). Присутність члена
+  // = він ще в orderedIndices (handleRemoveIndex прибирає звідти видалені).
   const handleKeepAllRecommendedDuplicates = useCallback(() => {
     const groups = pipelineResult?.sortResult?.duplicates || [];
     if (groups.length === 0) return;
-    const toRemove = [];
-    for (const g of groups) {
-      for (const i of g.group) {
-        if (i !== g.recommended) toRemove.push(i);
-      }
-    }
-    if (toRemove.length === 0) return;
-    const removeSet = new Set(toRemove);
+    const present = new Set(orderedIndices);
+    const removeSet = selectRecommendedDuplicateRemovals(groups, {
+      dismissedGroupIds: dismissedDuplicateGroupIds,
+      isMemberPresent: (idx) => present.has(idx),
+    });
+    if (removeSet.size === 0) return;
     setRemovedIndices((prev) => {
       const next = new Set(prev);
       for (const i of removeSet) next.add(i);
       return next;
     });
     setOrderedIndices((prev) => prev.filter((i) => !removeSet.has(i)));
-  }, [pipelineResult?.sortResult?.duplicates]);
+  }, [pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds, orderedIndices]);
 
   const handleSubmit = async () => {
     if (submitting) return;

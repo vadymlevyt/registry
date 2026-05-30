@@ -135,3 +135,76 @@ describe('DpImageMergeEditor — #9 контроль обрізки (банер 
     await waitFor(() => expect(screen.queryByText('Не обрізати жодну')).toBeNull());
   });
 });
+
+describe('DpImageMergeEditor — #10 групова рамка дублів (паритет з модалкою)', () => {
+  it('2 суміжні члени однієї групи → спільна рамка .image-merge-panel__dup-group', async () => {
+    const DpImageMergeEditor = await importEditor();
+    const { container } = render(
+      <DpImageMergeEditor
+        caseData={{ id: 'c1', proceedings: [] }}
+        proceedings={[]}
+        pre={makePre(2)}
+        initialGroups={[{ pages: [0, 1], type: null, suggestedName: 'Doc' }]}
+        initialDuplicates={[{ group: [0, 1], recommended: 0, reason: 'чіткіше' }]}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    // Рамка зʼявляється у сітці після dndReady.
+    await waitFor(() => {
+      expect(container.querySelector('.image-merge-panel__dup-group')).toBeTruthy();
+    });
+    // Хедер рамки + кнопка розгрупування (як у модалці).
+    const frame = container.querySelector('.image-merge-panel__dup-group');
+    expect(frame.querySelector('.image-merge-panel__dup-group-label')).toBeTruthy();
+    expect(frame.textContent).toMatch(/Це не дублікати/);
+  });
+
+  it('«Це не дублікати» прибирає рамку (розгруповано)', async () => {
+    const DpImageMergeEditor = await importEditor();
+    const { container } = render(
+      <DpImageMergeEditor
+        caseData={{ id: 'c1', proceedings: [] }}
+        proceedings={[]}
+        pre={makePre(2)}
+        initialGroups={[{ pages: [0, 1], type: null, suggestedName: 'Doc' }]}
+        initialDuplicates={[{ group: [0, 1], recommended: 0, reason: 'чіткіше' }]}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(container.querySelector('.image-merge-panel__dup-group')).toBeTruthy());
+    fireEvent.click(screen.getByText('Це не дублікати'));
+    await waitFor(() => expect(container.querySelector('.image-merge-panel__dup-group')).toBeNull());
+  });
+});
+
+describe('DpImageMergeEditor — #12 «Залишити рекомендовані» поважає ручний вибір', () => {
+  it('після ручного видалення члена групи «Залишити рекомендовані» НЕ чіпає решту групи', async () => {
+    const DpImageMergeEditor = await importEditor();
+    render(
+      <DpImageMergeEditor
+        caseData={{ id: 'c1', proceedings: [] }}
+        proceedings={[]}
+        pre={makePre(3)}
+        initialGroups={[{ pages: [0, 1, 2], type: null, suggestedName: 'Doc' }]}
+        initialDuplicates={[{ group: [0, 1, 2], recommended: 1, reason: 'чіткіше' }]}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    // Чекаємо grid (рамка з 3 членами).
+    await waitFor(() => expect(screen.getByText('Рекомендую залишити')).toBeTruthy());
+    // Ручне видалення останнього члена (idx 2) → група «торкнута».
+    const removeButtons = screen.getAllByLabelText('Видалити');
+    fireEvent.click(removeButtons[removeButtons.length - 1]);
+    // Лишилось 2 члени (0,1) — обидва ще у рамці, idx 0 = «Дублікат».
+    await waitFor(() => expect(screen.getByText('Дублікат')).toBeTruthy());
+    // «Залишити рекомендовані» — група торкнута вручну → НЕ виносить idx 0.
+    fireEvent.click(screen.getByText('Залишити рекомендовані'));
+    // Без фіксу idx 0 був би видалений (бейдж «Дублікат» зник би). З фіксом —
+    // лишається.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.getByText('Дублікат')).toBeTruthy();
+  });
+});
