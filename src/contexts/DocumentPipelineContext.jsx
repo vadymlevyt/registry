@@ -246,6 +246,10 @@ export function DocumentPipelineProvider({ executeAction, children }) {
         createDocument,
         eventBus,
         topics: { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED },
+        // TASK 2: рішення адвоката з DP-тумблера «Оновити case_context.md».
+        // emitStage кладе його у payload DOCUMENT_BATCH_PROCESSED; CaseDossier
+        // слухає і регенерує нарис справи лише коли true.
+        updateCaseContext: opt.updateCaseContext === true,
         getActor,
       };
     };

@@ -342,6 +342,10 @@ async function emitStage(ctx, deps) {
       count: ctx.documents.length,
       tenantId: actor.tenantId ?? null,
       userId: actor.userId ?? null,
+      // TASK 2: чи перегенерувати case_context.md після цієї партії — рішення
+      // адвоката з DP-тумблера «Оновити case_context.md». Слухач (CaseDossier)
+      // регенерує нарис ТІЛЬКИ якщо true. Дефолт false (manual add не чіпає).
+      updateCaseContext: deps.updateCaseContext === true,
       timestamp: new Date().toISOString(),
     };
     try { deps.eventBus.publish(deps.topics.DOCUMENT_BATCH_PROCESSED, batchPayload); } catch (e) { /* ізольовано */ }
