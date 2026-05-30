@@ -19,6 +19,7 @@
 //     ✂️ toggle parent state одразу (не залежить від apply).
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X, Check, AlertTriangle, RotateCw, Trash2,
   Square as FrameIcon,
@@ -393,7 +394,15 @@ export function PreviewPopup({
     onCropOverride(defaultRect);
   }, [cropApplied, frameVisible, effectiveRect, naturalDims, onToggleCropDisabled, onCropOverride]);
 
-  return (
+  // #4 overlay fix: рендеримо через portal у document.body. У DP-контексті
+  // (всередині досьє) попап був замкнений у локальному stacking context —
+  // chrome досьє (агент-панель/меню) налазив поверх. Portal виносить overlay
+  // на рівень body → position:fixed + z-index:1000 (ImageMergePanel.css)
+  // перекриває весь chrome. Модалці портал не шкодить (overlay так само
+  // full-screen fixed) — той самий спільний компонент, один фікс для обох.
+  // Esc/←/→/R обробляються у батьку (PreviewView/DpImageMergeEditor) через
+  // window-listener — portal не впливає (React-події спливають крізь portal).
+  const popupContent = (
     <div className="image-merge-panel__popup-overlay image-merge-panel__popup-overlay--full" role="dialog" aria-modal="true">
       <div className="image-merge-panel__popup image-merge-panel__popup--full">
         <div className="image-merge-panel__popup-topbar">
@@ -566,4 +575,10 @@ export function PreviewPopup({
       </div>
     </div>
   );
+
+  // Guard для не-браузерних середовищ (SSR); у браузері і jsdom document.body є.
+  if (typeof document !== 'undefined' && document.body) {
+    return createPortal(popupContent, document.body);
+  }
+  return popupContent;
 }
