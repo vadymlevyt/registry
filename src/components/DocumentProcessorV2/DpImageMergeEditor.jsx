@@ -37,51 +37,33 @@ import { CATEGORY_OPTIONS, AUTHOR_OPTIONS } from '../ImageEditor/constants.js';
 import { PreviewPopup } from '../ImageEditor/PreviewPopup.jsx';
 import { ContextMenu } from '../ImageEditor/ContextMenu.jsx';
 import { RenderItem } from '../ImageEditor/RenderItem.jsx';
+import { buildDuplicateMembership, buildDisplayItems } from '../ImageEditor/grid/displayItems.js';
 import { detectDocumentEdges } from '../../services/sortation/edgeDetection.js';
 import { selectRecommendedDuplicateRemovals } from '../../services/imageDocument/duplicateSelection.js';
 
 let docIdSeq = 0;
 const nextDocId = () => `dpg_${Date.now()}_${docIdSeq++}`;
 
+// ── Item ID кодування для DnD ────────────────────────────────────────────────
+// Одиниця сортування = displayItem (single АБО група дублів), не завжди фото.
+//   single → g::<docId>::p::<origIdx>
+//   group  → g::<docId>::grp::<gIdx>   (gIdx — індекс групи у initialDuplicates)
+// Жодної логіки дублів тут — лише (де)серіалізація id. Групування/membership
+// живуть у СПІЛЬНОМУ grid/displayItems.js (buildDisplayItems/buildDuplicateMembership).
 function ItemIdEncode(docId, origIdx) {
   return `g::${docId}::p::${origIdx}`;
 }
-function ItemIdDecode(id) {
-  // Format: g::<docId>::p::<origIdx>
-  const m = /^g::(.+?)::p::(\d+)$/.exec(id || '');
-  if (!m) return null;
-  return { docId: m[1], origIdx: Number(m[2]) };
+function GroupIdEncode(docId, gIdx) {
+  return `g::${docId}::grp::${gIdx}`;
 }
-
-// #10 — розклад pageIndices групи на сегменти для рендера. Суміжний run членів
-// одного активного дубль-groupId довжиною ≥2 → `dupGroup` сегмент (спільна
-// рамка). Решта → `single`. duplicateMembership уже виключає dismissed-групи.
-// Рамкуємо лише ≥2 поруч: один член (відділений drag'ом чи видаленням сусіда)
-// читається як звичайна картка з per-card бейджем, не як «група».
-function buildDuplicateSegments(pageIndices, duplicateMembership) {
-  const segments = [];
-  let i = 0;
-  while (i < pageIndices.length) {
-    const idx = pageIndices[i];
-    const info = duplicateMembership?.get?.(idx);
-    if (info) {
-      const gid = info.groupId;
-      const run = [idx];
-      let j = i + 1;
-      while (j < pageIndices.length && duplicateMembership.get(pageIndices[j])?.groupId === gid) {
-        run.push(pageIndices[j]);
-        j++;
-      }
-      if (run.length >= 2) {
-        segments.push({ type: 'dupGroup', groupId: gid, indices: run });
-        i = j;
-        continue;
-      }
-    }
-    segments.push({ type: 'single', idx });
-    i++;
-  }
-  return segments;
+function ItemIdDecode(id) {
+  let m = /^g::(.+?)::p::(\d+)$/.exec(id || '');
+  if (m) return { kind: 'single', docId: m[1], origIdx: Number(m[2]) };
+  m = /^g::(.+?)::grp::(\d+)$/.exec(id || '');
+  if (m) return { kind: 'group', docId: m[1], gIdx: Number(m[2]) };
+  m = /^g::(.+)::container$/.exec(id || '');
+  if (m) return { kind: 'container', docId: m[1] };
+  return null;
 }
 
 /**
@@ -145,6 +127,15 @@ export function DpImageMergeEditor({
   // дублікати» (groupId = індекс у initialDuplicates). Виключаються з
   // duplicateMembership і з банера. Той самий сенс що у модалці (PreviewView).
   const [dismissedDuplicateGroupIds, setDismissedDuplicateGroupIds] = useState(() => new Set());
+
+  // duplicateMembership: origIdx → { groupId, recommended, reason, groupIndices }.
+  // СПІЛЬНА логіка (buildDuplicateMembership) — те саме джерело що модалка. DP НЕ
+  // обчислює членство сам. Оголошено тут (до handleDragEnd), бо drag-юніт групи
+  // читає членство щоб перенести всіх членів разом.
+  const duplicateMembership = useMemo(
+    () => buildDuplicateMembership(initialDuplicates, dismissedDuplicateGroupIds),
+    [initialDuplicates, dismissedDuplicateGroupIds],
+  );
 
   // previewUrls (баг 2026-05-29 round 2): для сітки Zone 3 показуємо ЗАПЕЧЕНІ
   // baked blob'и так само як модалка ImageMergePanel. Без них сітка показувала
@@ -351,27 +342,20 @@ export function DpImageMergeEditor({
   }, []);
 
   // ── DnD handlers ──────────────────────────────────────────────────────────
-  // Multi-container: active.id і over.id обидва кодують docId і origIdx.
-  // Same group → arrayMove. Different group → видалити з source, вставити у
-  // target за позицією drop'а.
+  // Multi-container: drag МІЖ документами лишається (один DndContext). Одиниця
+  // перетягування = displayItem: фото (single) АБО ціла група дублів (group).
+  // Коли тягнуть групу — переносимо ВСІХ її членів разом (членство читаємо зі
+  // СПІЛЬНОГО duplicateMembership; DP не визначає групи сам). Дублі-група
+  // консолідується поруч у точці drop'а.
   const handleDragEnd = useCallback((event) => {
     if (!dndReady) return;
     const { active, over } = event;
-    if (!over) return;
+    if (!over || active.id === over.id) return;
     const a = ItemIdDecode(active.id);
-    const b = ItemIdDecode(over.id);
-    if (!a) return;
-    // Якщо drop на сам контейнер групи (порожня група-droppable) — over.id буде
-    // спецключем `g::<docId>::container`; обробляємо нижче.
-    let targetDocId = b?.docId || null;
-    let targetIdx = b?.origIdx ?? null;
-    const containerMatch = /^g::(.+)::container$/.exec(over.id || '');
-    if (containerMatch) {
-      targetDocId = containerMatch[1];
-      targetIdx = null;
-    }
+    const o = ItemIdDecode(over.id);
+    if (!a || a.kind === 'container') return;
+    const targetDocId = o?.docId || null;
     if (!targetDocId) return;
-    if (a.docId === targetDocId && a.origIdx === targetIdx) return;
 
     setGroups((prev) => {
       const next = prev.map((g) => ({ ...g, pageIndices: [...g.pageIndices] }));
@@ -379,30 +363,39 @@ export function DpImageMergeEditor({
       const targetGroup = next.find((g) => g.docId === targetDocId);
       if (!sourceGroup || !targetGroup) return prev;
 
-      const sourceIdx = sourceGroup.pageIndices.indexOf(a.origIdx);
-      if (sourceIdx < 0) return prev;
+      // Які origIdx рухаються: фото → одне; група → всі її члени у цьому документі.
+      const movedIndices = a.kind === 'group'
+        ? sourceGroup.pageIndices.filter((i) => duplicateMembership.get(i)?.groupId === a.gIdx)
+        : [a.origIdx];
+      if (movedIndices.length === 0) return prev;
 
-      // Remove from source
-      sourceGroup.pageIndices.splice(sourceIdx, 1);
-
-      if (sourceGroup === targetGroup) {
-        // Same group reorder: insert at target position
-        const insertAt = targetIdx == null
-          ? targetGroup.pageIndices.length
-          : Math.max(0, targetGroup.pageIndices.indexOf(targetIdx));
-        targetGroup.pageIndices.splice(insertAt, 0, a.origIdx);
-      } else {
-        // Cross-group: insert у target за позицією
-        const insertAt = targetIdx == null
-          ? targetGroup.pageIndices.length
-          : Math.max(0, targetGroup.pageIndices.indexOf(targetIdx));
-        targetGroup.pageIndices.splice(insertAt, 0, a.origIdx);
+      // Якір у target (вставляємо ПЕРЕД ним): фото → саме воно; група → перший
+      // присутній член тієї групи; container/порожньо → у кінець.
+      let anchorIdx = null;
+      if (o.kind === 'single') anchorIdx = o.origIdx;
+      else if (o.kind === 'group') {
+        const found = targetGroup.pageIndices.find(
+          (i) => duplicateMembership.get(i)?.groupId === o.gIdx,
+        );
+        anchorIdx = found === undefined ? null : found;
       }
+      // No-op: drop юніта самого на себе.
+      if (anchorIdx != null && movedIndices.includes(anchorIdx)) return prev;
+
+      const movedSet = new Set(movedIndices);
+      // sourceGroup===targetGroup коли той самий документ — це один об'єкт у next,
+      // тож target бачить уже відфільтрований масив.
+      sourceGroup.pageIndices = sourceGroup.pageIndices.filter((i) => !movedSet.has(i));
+
+      const insertAt = anchorIdx == null
+        ? targetGroup.pageIndices.length
+        : Math.max(0, targetGroup.pageIndices.indexOf(anchorIdx));
+      targetGroup.pageIndices.splice(insertAt, 0, ...movedIndices);
 
       // Видаляємо порожні групи (адвокат міг витягнути всі фото)
       return next.filter((g) => g.pageIndices.length > 0);
     });
-  }, [dndReady]);
+  }, [dndReady, duplicateMembership]);
 
   // ── Per-photo actions ─────────────────────────────────────────────────────
   const handleRotate = useCallback((origIdx) => {
@@ -629,27 +622,6 @@ export function DpImageMergeEditor({
     return map;
   }, [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs]);
 
-  // duplicateMembership: origIdx → { groupId, recommended, reason, groupIndices }.
-  // Дзеркало модалки (PreviewView:119). Виключаємо dismissed групи. Grid
-  // (Thumbnail/RenderItem) уже малює жовту рамку на дублях і зелений на
-  // recommended за цим props — DP лише постачає дані.
-  const duplicateMembership = useMemo(() => {
-    const map = new Map();
-    (initialDuplicates || []).forEach((g, groupId) => {
-      if (dismissedDuplicateGroupIds.has(groupId)) return;
-      if (!Array.isArray(g.group)) return;
-      for (const idx of g.group) {
-        map.set(idx, {
-          groupId,
-          recommended: g.recommended,
-          reason: g.reason,
-          groupIndices: g.group,
-        });
-      }
-    });
-    return map;
-  }, [initialDuplicates, dismissedDuplicateGroupIds]);
-
   // Кількість фото з активною (не вимкненою, не застосованою) обрізкою — для
   // тексту банера #9. Той самий підрахунок що модалка (PreviewView activeCropCount).
   const activeCropCount = useMemo(() => {
@@ -703,6 +675,8 @@ export function DpImageMergeEditor({
           previewUrls={previewUrls}
           warningsByIndex={new Map()}
           duplicateMembership={duplicateMembership}
+          duplicateGroups={initialDuplicates}
+          dismissedGroupIds={dismissedDuplicateGroupIds}
           userRotation={cssRotationMap}
           uncertainSet={uncertainSet}
           cropStateByIndex={cropStateByIndex}
@@ -836,6 +810,7 @@ export function DpImageMergeEditor({
 // ── DndOrchestrator: один DndContext, N SortableContext (по групі) ─────────
 function DndOrchestrator({
   dndReady, groups, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
+  duplicateGroups, dismissedGroupIds,
   userRotation, uncertainSet, cropStateByIndex,
   onDragEnd, onRemove, onRotate, onToggleCropDisabled,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
@@ -872,6 +847,8 @@ function DndOrchestrator({
             previewUrls={previewUrls}
             warningsByIndex={warningsByIndex}
             duplicateMembership={duplicateMembership}
+            duplicateGroups={duplicateGroups}
+            dismissedGroupIds={dismissedGroupIds}
             userRotation={userRotation}
             uncertainSet={uncertainSet}
             cropStateByIndex={cropStateByIndex}
@@ -896,21 +873,26 @@ function DndOrchestrator({
 // ── GroupSection: header (форма) + SortableContext (фото) ──────────────────
 function GroupSection({
   group, groupIndex, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
+  duplicateGroups, dismissedGroupIds,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
   updateGroup, removeGroup, proceedingOptions,
 }) {
   const { SortableContext, rectSortingStrategy } = dndReady;
-  const itemIds = group.pageIndices.map((origIdx) => ItemIdEncode(group.docId, origIdx));
 
-  // #10 — групова РАМКА дублів (паритет з модалкою). Розкладаємо pageIndices на
-  // сегменти: суміжний run членів одного активного дубль-groupId (≥2 поруч) стає
-  // обрамленим сегментом (та сама жовта рамка `.image-merge-panel__dup-group` що
-  // у модалці RenderItem). Поодинокі / розділені члени лишаються звичайними
-  // картками (per-card бейдж/рамка через Thumbnail). DnD не змінюється — кожна
-  // картка лишається власним sortable (рамка лише візуальна обгортка).
-  const segments = buildDuplicateSegments(group.pageIndices, duplicateMembership);
+  // displayItems — СПІЛЬНА логіка групування (та сама що модалка). Дублі (навіть
+  // розкидані по pageIndices) стягуються в ОДИН group-item; решта — single.
+  // Жодного власного розкладу сегментів у DP — buildDuplicateSegments видалено.
+  const displayItems = buildDisplayItems(group.pageIndices, duplicateGroups, dismissedGroupIds);
+
+  // Sortable-одиниці = displayItems: фото-single за id фото, група за id групи
+  // (тягнеться як одне ціле; члени всередині поодинці не сортуються).
+  const itemIds = displayItems.map((it) => (
+    it.type === 'group'
+      ? GroupIdEncode(group.docId, it.gIdx)
+      : ItemIdEncode(group.docId, it.idx)
+  ));
 
   return (
     <section className="dp-image-merge-editor__group">
@@ -977,59 +959,29 @@ function GroupSection({
 
       <SortableContext items={itemIds} strategy={rectSortingStrategy}>
         <div className="dp-image-merge-editor__group-grid image-merge-panel__grid">
-          {segments.map((seg) => {
-            const renderItem = (origIdx, inGroup) => (
-              <DpSortableItem
-                key={`${group.docId}::${origIdx}`}
-                docId={group.docId}
-                origIdx={origIdx}
-                dndReady={dndReady}
-                thumbUrls={thumbUrls}
-                previewUrls={previewUrls}
-                warningsByIndex={warningsByIndex}
-                duplicateMembership={duplicateMembership}
-                userRotation={userRotation}
-                uncertainSet={uncertainSet}
-                cropStateByIndex={cropStateByIndex}
-                flatPositions={flatPositions}
-                onRemove={onRemove}
-                onRotate={onRotate}
-                onToggleCropDisabled={onToggleCropDisabled}
-                onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
-                onDismissDuplicateGroup={onDismissDuplicateGroup}
-                onOpenPopup={onOpenPopup}
-                onContextMenu={onContextMenu}
-                inGroup={inGroup}
-              />
-            );
-            if (seg.type === 'dupGroup') {
-              return (
-                <div
-                  key={`dupframe_${seg.groupId}`}
-                  className="image-merge-panel__dup-group dp-image-merge-editor__dup-group"
-                >
-                  <div className="image-merge-panel__dup-group-header">
-                    <span className="image-merge-panel__dup-group-label">
-                      Дублікати ({seg.indices.length}) — рекомендую залишити зелений
-                    </span>
-                    <button
-                      type="button"
-                      className="image-merge-panel__dup-group-dismiss"
-                      onClick={() => onDismissDuplicateGroup(seg.groupId)}
-                      title="Якщо це насправді різні сторінки — розгрупувати"
-                    >
-                      <X size={12} />
-                      Це не дублікати
-                    </button>
-                  </div>
-                  <div className="image-merge-panel__dup-group-body">
-                    {seg.indices.map((origIdx) => renderItem(origIdx, true))}
-                  </div>
-                </div>
-              );
-            }
-            return renderItem(seg.idx, false);
-          })}
+          {displayItems.map((item) => (
+            <DpSortableItem
+              key={item.id}
+              docId={group.docId}
+              item={item}
+              dndReady={dndReady}
+              thumbUrls={thumbUrls}
+              previewUrls={previewUrls}
+              warningsByIndex={warningsByIndex}
+              duplicateMembership={duplicateMembership}
+              userRotation={userRotation}
+              uncertainSet={uncertainSet}
+              cropStateByIndex={cropStateByIndex}
+              flatPositions={flatPositions}
+              onRemove={onRemove}
+              onRotate={onRotate}
+              onToggleCropDisabled={onToggleCropDisabled}
+              onKeepRecommendedDuplicate={onKeepRecommendedDuplicate}
+              onDismissDuplicateGroup={onDismissDuplicateGroup}
+              onOpenPopup={onOpenPopup}
+              onContextMenu={onContextMenu}
+            />
+          ))}
           {group.pageIndices.length === 0 && (
             <div className="dpv2-muted dp-image-merge-editor__group-empty">
               Перетягніть фото сюди
@@ -1041,23 +993,25 @@ function GroupSection({
   );
 }
 
-// ── DpSortableItem: обгортка над RenderItem зі своїм useSortable ───────────
+// ── DpSortableItem: обгортка над спільним RenderItem зі своїм useSortable ───
+// item — displayItem (single АБО group) зі спільного buildDisplayItems. Group
+// рендериться спільним RenderItem (type:'group') — рамка + заголовок «Дублікати
+// (N)» + «Це не дублікати» + члени всередині. Жодного власного групового JSX у DP.
 function DpSortableItem({
-  docId, origIdx, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
+  docId, item, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
-  inGroup = false,
 }) {
   const { useSortable, CSS } = dndReady;
-  const sortable = useSortable({ id: ItemIdEncode(docId, origIdx) });
+  const sortableId = item.type === 'group'
+    ? GroupIdEncode(docId, item.gIdx)
+    : ItemIdEncode(docId, item.idx);
+  const sortable = useSortable({ id: sortableId });
   const style = {
     transform: CSS.Transform.toString(sortable.transform),
     transition: sortable.transition,
   };
-  // inGroup — картка всередині спільної рамки дублів (#10): Thumbnail прибирає
-  // власну жовту рамку (вона на рамці групи), лишає зелену для recommended.
-  const item = { type: 'single', id: `single_${origIdx}`, idx: origIdx, inGroup };
   return (
     <RenderItem
       item={item}

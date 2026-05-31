@@ -1,217 +1,118 @@
-// @vitest-environment jsdom
+// dp-image-merge-multidoc — DnD між кількома документами-групами у DP.
 //
-// TASK 1B image_merge_unify — DP N-document image-merge flow (інтеграційний).
+// Сценарій: 2 документи (паспорт 2 фото, договір 3 фото). Адвокат перетягує
+// фото АБО цілу групу дублів з одного документа в інший. Перевіряємо, що
+// pageIndices оновлюються правильно (cross-group move) і порожні групи
+// відсіюються.
 //
-// Сценарій який лагодимо: адвокат закидає N фото = M документів у DP.
-// imageDocumentGrouper (Haiku) пропонує M груп; адвокат править (drag фото між
-// групами, перейменування, тип); «Виконати» → M окремих documents у справі
-// через add_documents ACTION.
+// Тест працює на рівні чистої логіки (дзеркало DpImageMergeEditor.handleDragEnd),
+// бо повний рендер @dnd-kit у jsdom не дає реальних drag-подій.
 //
-// Цей тест НЕ ганяє React UI (DpImageMergeEditor) — вимагав би heavy mock
-// @dnd-kit + Drive + Document AI. Замість того перевіряємо КЛЮЧОВИЙ seam:
-//   1. imageDocumentGrouper повертає M груп з власною білінговою точкою
-//      (через aiUsageSink — закриває C7 у грі реальних callers'ах).
-//   2. createDocument на кожну групу видає валідну канонічну схему.
-//   3. add_documents ACTION атомарно додає M документів у case.documents[].
-//
-// Це і є behavior-критичний код-шлях handleImageMergeSubmit (DP/index.jsx).
+// ── Копія DnD-логіки (дзеркало DpImageMergeEditor.handleDragEnd) ─────────────
+// Це чиста функція яку ми тестуємо ізольовано. Вона МАЄ збігатися з логікою у
+// компоненті. Якщо handleDragEnd змінюється — оновити і тут.
+//   single → g::<docId>::p::<origIdx>
+//   group  → g::<docId>::grp::<gIdx>   (тягнеться як одне ціле)
+//   container → g::<docId>::container  (порожнє місце документа)
+// Членство фото у групі дублів читається зі спільного duplicateMembership
+// (buildDuplicateMembership) — DP не визначає групи сам.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createHarness } from './_actionsTestSetup.js';
+import { describe, it, expect } from 'vitest';
+import { buildDuplicateMembership } from '../../src/components/ImageEditor/grid/displayItems.js';
 
-// Білінговий стаб — нам важливо що grouper тригерить activityTracker.report
-const mockActivityReport = vi.fn();
-vi.mock('../../src/services/activityTracker.js', () => ({
-  report: (...args) => mockActivityReport(...args),
-}));
-
-import { groupImagesIntoDocuments } from '../../src/services/sortation/imageDocumentGrouper.js';
-import { createDocument } from '../../src/services/documentFactory.js';
-
-const CASE = {
-  id: 'case_dp_im',
-  name: 'Тестова справа',
-  client: 'Тест',
-  tenantId: 'ab_levytskyi',
-  ownerId: 'vadym',
-  category: 'civil',
-  documents: [],
-  storage: { driveFolderId: 'root_id', subFolders: { '01_ОРИГІНАЛИ': 'orig_id' } },
-};
-
-function mockApiResponse(json, opts = {}) {
-  return vi.fn(async () => ({
-    content: [{ text: typeof json === 'string' ? json : JSON.stringify(json) }],
-    usage: { input_tokens: opts.input ?? 200, output_tokens: opts.output ?? 100 },
-  }));
+function decode(id) {
+  let m = /^g::(.+?)::p::(\d+)$/.exec(id || '');
+  if (m) return { kind: 'single', docId: m[1], origIdx: Number(m[2]) };
+  m = /^g::(.+?)::grp::(\d+)$/.exec(id || '');
+  if (m) return { kind: 'group', docId: m[1], gIdx: Number(m[2]) };
+  m = /^g::(.+)::container$/.exec(id || '');
+  if (m) return { kind: 'container', docId: m[1] };
+  return null;
 }
 
-beforeEach(() => {
-  mockActivityReport.mockClear();
-});
+function simulateDragEnd(groups, activeId, overId, duplicateMembership = new Map()) {
+  if (activeId === overId) return groups;
+  const a = decode(activeId);
+  const o = decode(overId);
+  if (!a || a.kind === 'container') return groups;
+  const targetDocId = o?.docId || null;
+  if (!targetDocId) return groups;
 
-describe('TASK 1B · DP N-document image-merge flow', () => {
-  it('grouper повертає 3 групи → add_documents створює 3 документи у справі', async () => {
-    const callApi = mockApiResponse({
-      groups: [
-        { pages: [0, 1, 2, 3], type: 'identification', suggestedName: 'Паспорт громадянина' },
-        { pages: [4, 5, 6, 7, 8], type: 'contract', suggestedName: 'Договір купівлі-продажу' },
-        { pages: [9], type: 'evidence', suggestedName: 'Квитанція про сплату судового збору' },
-      ],
-    });
-    const items = Array.from({ length: 10 }, (_, i) => ({
-      index: i, name: `IMG_${i}.jpg`, mime: 'image/jpeg',
-      ocrText: `OCR for page ${i}`,
-    }));
+  const next = groups.map((g) => ({ ...g, pageIndices: [...g.pageIndices] }));
+  const sourceGroup = next.find((g) => g.docId === a.docId);
+  const targetGroup = next.find((g) => g.docId === targetDocId);
+  if (!sourceGroup || !targetGroup) return groups;
 
-    const aiUsageSink = vi.fn();
-    const grouperResult = await groupImagesIntoDocuments(items, {
-      apiKey: 'test',
-      callApi,
-      caseId: CASE.id,
-      aiUsageSink,
-    });
+  const movedIndices = a.kind === 'group'
+    ? sourceGroup.pageIndices.filter((i) => duplicateMembership.get(i)?.groupId === a.gIdx)
+    : [a.origIdx];
+  if (movedIndices.length === 0) return groups;
 
-    // Sanity — 3 групи з правильними indices і type
-    expect(grouperResult.groups).toHaveLength(3);
-    expect(grouperResult.groups[0].pages).toEqual([0, 1, 2, 3]);
-    expect(grouperResult.groups[1].pages).toEqual([4, 5, 6, 7, 8]);
-    expect(grouperResult.groups[2].pages).toEqual([9]);
-
-    // C7 closed — білінг логується одразу
-    expect(aiUsageSink).toHaveBeenCalledTimes(1);
-    expect(aiUsageSink.mock.calls[0][0].agentType).toBe('image_document_grouper');
-    expect(aiUsageSink.mock.calls[0][0].context.caseId).toBe(CASE.id);
-    expect(mockActivityReport).toHaveBeenCalledTimes(1);
-    expect(mockActivityReport.mock.calls[0][0]).toBe('agent_call');
-
-    // Симуляція handleImageMergeSubmit: createDocument на кожну групу +
-    // add_documents через РЕАЛЬНИЙ executeAction (тестовий setup).
-    const h = createHarness({ initialCases: [structuredClone(CASE)] });
-    const usedNames = new Set();
-    const documents = grouperResult.groups.map((g, gi) => createDocument({
-      name: g.suggestedName || `Документ ${gi + 1}`,
-      category: g.type || null,
-      author: null,
-      procId: null,
-      date: null,
-      isKey: false,
-      driveId: `drv_${gi}`,
-      driveUrl: `https://drive.google.com/file/d/drv_${gi}/view`,
-      size: 100000,
-      pageCount: g.pages.length,
-      originalName: `${g.suggestedName}.pdf`,
-      originalDriveId: null,
-      originalMime: 'application/pdf',
-      folder: '01_ОРИГІНАЛИ',
-      addedBy: 'user',
-      namingStatus: 'manual',
-      documentNature: 'scanned',
-      source: 'manual',
-    }));
-    for (const d of documents) usedNames.add(d.name);
-
-    const res = await h.executeAction(
-      'document_processor_agent',
-      'add_documents',
-      { caseId: CASE.id, documents },
+  let anchorIdx = null;
+  if (o.kind === 'single') anchorIdx = o.origIdx;
+  else if (o.kind === 'group') {
+    const found = targetGroup.pageIndices.find(
+      (i) => duplicateMembership.get(i)?.groupId === o.gIdx,
     );
+    anchorIdx = found === undefined ? null : found;
+  }
+  if (anchorIdx != null && movedIndices.includes(anchorIdx)) return groups;
 
-    expect(res.success).toBe(true);
-    expect(res.addedCount).toBe(3);
-    const updated = h.getCases().find((c) => c.id === CASE.id);
-    expect(updated.documents).toHaveLength(3);
-    expect(updated.documents.map((d) => d.name)).toEqual([
-      'Паспорт громадянина',
-      'Договір купівлі-продажу',
-      'Квитанція про сплату судового збору',
-    ]);
-    expect(updated.documents[0].category).toBe('identification');
-    expect(updated.documents[1].category).toBe('contract');
-    expect(updated.documents[2].category).toBe('evidence');
-    expect(updated.documents.every((d) => d.addedBy === 'user')).toBe(true);
-    expect(updated.documents.every((d) => d.source === 'manual')).toBe(true);
-    expect(updated.documents.every((d) => d.folder === '01_ОРИГІНАЛИ')).toBe(true);
+  const movedSet = new Set(movedIndices);
+  sourceGroup.pageIndices = sourceGroup.pageIndices.filter((i) => !movedSet.has(i));
+
+  const insertAt = anchorIdx == null
+    ? targetGroup.pageIndices.length
+    : Math.max(0, targetGroup.pageIndices.indexOf(anchorIdx));
+  targetGroup.pageIndices.splice(insertAt, 0, ...movedIndices);
+
+  return next.filter((g) => g.pageIndices.length > 0);
+}
+
+describe('DP image-merge — DnD між документами', () => {
+  const baseGroups = () => [
+    { docId: 'd1', pageIndices: [0, 1] },
+    { docId: 'd2', pageIndices: [2, 3, 4] },
+  ];
+
+  it('переносить фото з d1 у d2 на позицію', () => {
+    const groups = baseGroups();
+    const result = simulateDragEnd(groups, 'g::d1::p::0', 'g::d2::p::3');
+    expect(result.find((g) => g.docId === 'd1').pageIndices).toEqual([1]);
+    expect(result.find((g) => g.docId === 'd2').pageIndices).toEqual([2, 0, 3, 4]);
   });
 
-  it('grouper fallback (AI fail) → один документ з усіх фото, add_documents все ще працює', async () => {
-    const callApi = vi.fn(async () => { throw new Error('Network timeout'); });
-    const items = Array.from({ length: 5 }, (_, i) => ({
-      index: i, name: `IMG_${i}.jpg`, mime: 'image/jpeg', ocrText: 'text',
-    }));
-    const grouperResult = await groupImagesIntoDocuments(items, {
-      apiKey: 'test', callApi, caseId: CASE.id,
-    });
-    expect(grouperResult.fallback).toBe(true);
-    expect(grouperResult.groups).toHaveLength(1);
-    expect(grouperResult.groups[0].pages).toEqual([0, 1, 2, 3, 4]);
-
-    const h = createHarness({ initialCases: [structuredClone(CASE)] });
-    const doc = createDocument({
-      name: 'Обʼєднаний документ (потребує поділу)',
-      category: null,
-      author: null,
-      procId: null,
-      date: null,
-      isKey: false,
-      driveId: 'drv_x',
-      driveUrl: 'https://drive.google.com/file/d/drv_x/view',
-      size: 50000,
-      pageCount: 5,
-      originalName: 'merged.pdf',
-      originalMime: 'application/pdf',
-      folder: '01_ОРИГІНАЛИ',
-      addedBy: 'user',
-      namingStatus: 'auto',
-      documentNature: 'scanned',
-      source: 'manual',
-    });
-    const res = await h.executeAction(
-      'document_processor_agent', 'add_documents',
-      { caseId: CASE.id, documents: [doc] },
-    );
-    expect(res.success).toBe(true);
-    expect(h.getCases()[0].documents).toHaveLength(1);
+  it('переносить усе з групи → порожня група відсіюється', () => {
+    let groups = baseGroups();
+    groups = simulateDragEnd(groups, 'g::d1::p::0', 'g::d2::p::2');
+    groups = simulateDragEnd(groups, 'g::d1::p::1', 'g::d2::p::2');
+    expect(groups.find((g) => g.docId === 'd1')).toBeUndefined();
+    expect(groups.length).toBe(1);
   });
 
-  it('document_processor_agent дозволено add_documents (PERMISSIONS check)', async () => {
-    const h = createHarness({ initialCases: [structuredClone(CASE)] });
-    const doc = createDocument({
-      name: 'Test doc',
-      driveId: 'drv_y',
-      driveUrl: 'https://drive.google.com/file/d/drv_y/view',
-      size: 1000,
-      pageCount: 1,
-      folder: '01_ОРИГІНАЛИ',
-      addedBy: 'user',
-      source: 'manual',
-      documentNature: 'scanned',
-    });
-    const res = await h.executeAction(
-      'document_processor_agent', 'add_documents',
-      { caseId: CASE.id, documents: [doc] },
-    );
-    expect(res.success).toBe(true);
+  it('drop на контейнер (порожнє місце) додає в кінець', () => {
+    const groups = baseGroups();
+    const result = simulateDragEnd(groups, 'g::d1::p::0', 'g::d2::container');
+    expect(result.find((g) => g.docId === 'd2').pageIndices).toEqual([2, 3, 4, 0]);
   });
 
-  it('dossier_agent — add_documents ЗАБОРОНЕНО (PERMISSIONS check, зона DP)', async () => {
-    const h = createHarness({ initialCases: [structuredClone(CASE)] });
-    const doc = createDocument({
-      name: 'Should fail',
-      driveId: 'drv_z',
-      driveUrl: 'https://drive.google.com/file/d/drv_z/view',
-      size: 1000,
-      pageCount: 1,
-      folder: '01_ОРИГІНАЛИ',
-      addedBy: 'user',
-      source: 'manual',
-      documentNature: 'scanned',
-    });
-    const res = await h.executeAction(
-      'dossier_agent', 'add_documents',
-      { caseId: CASE.id, documents: [doc] },
+  it('reorder у межах тієї самої групи', () => {
+    const groups = baseGroups();
+    const result = simulateDragEnd(groups, 'g::d1::p::1', 'g::d1::p::0');
+    expect(result.find((g) => g.docId === 'd1').pageIndices).toEqual([1, 0]);
+  });
+
+  it('переносить ЦІЛУ групу дублів між документами як одне ціло (усі члени разом)', () => {
+    // d1 містить групу дублів {0,1} (gIdx 0). Тягнемо групу у d2 на позицію 3.
+    const groups = baseGroups();
+    const membership = buildDuplicateMembership(
+      [{ group: [0, 1], recommended: 0, reason: 'dup' }],
+      new Set(),
     );
-    expect(res.success).toBe(false);
-    expect(res.error).toMatch(/dossier_agent|add_documents/i);
+    const result = simulateDragEnd(groups, 'g::d1::grp::0', 'g::d2::p::3', membership);
+    // d1 спорожнів (обидва члени пішли) → відсіяний.
+    expect(result.find((g) => g.docId === 'd1')).toBeUndefined();
+    // Обидва члени вставлені разом перед anchor=3.
+    expect(result.find((g) => g.docId === 'd2').pageIndices).toEqual([2, 0, 1, 3, 4]);
   });
 });

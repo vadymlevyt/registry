@@ -19,6 +19,11 @@ import { CATEGORY_OPTIONS, AUTHOR_OPTIONS } from '../../ImageEditor/constants.js
 import { SortableGrid } from '../../ImageEditor/grid/SortableGrid.jsx';
 import { PreviewPopup } from '../../ImageEditor/PreviewPopup.jsx';
 import { ContextMenu } from '../../ImageEditor/ContextMenu.jsx';
+import {
+  buildDuplicateMembership,
+  buildDisplayItems,
+  flattenDisplayItems,
+} from '../../ImageEditor/grid/displayItems.js';
 
 export function PreviewView({
   pipelineResult,
@@ -113,94 +118,31 @@ export function PreviewView({
     return map;
   }, [pipelineResult?.sortResult?.warnings]);
 
-  // Мапа origIdx → { groupId, recommended, reason }. groupId — порядковий
-  // номер групи у sortResult.duplicates. Виключаємо dismissed групи —
-  // адвокат натиснув «Це не дублікати», вважаємо що це окремі сторінки.
-  const duplicateMembership = useMemo(() => {
-    const map = new Map();
-    const groups = pipelineResult?.sortResult?.duplicates || [];
-    groups.forEach((g, groupId) => {
-      if (dismissedDuplicateGroupIds?.has?.(groupId)) return;
-      for (const idx of g.group) {
-        map.set(idx, {
-          groupId,
-          recommended: g.recommended,
-          reason: g.reason,
-          groupIndices: g.group,
-        });
-      }
-    });
-    return map;
-  }, [pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds]);
+  // Мапа origIdx → { groupId, recommended, reason }. Спільна логіка
+  // (buildDuplicateMembership) — те саме джерело що DP. Виключає dismissed групи.
+  const duplicateMembership = useMemo(
+    () => buildDuplicateMembership(
+      pipelineResult?.sortResult?.duplicates,
+      dismissedDuplicateGroupIds,
+    ),
+    [pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds],
+  );
 
-  // ── DisplayItems (TASK B fix Problem 4) ──────────────────────────────
-  // Перетворюємо плоский orderedIndices у список items де дублікати йдуть
-  // ОДНИМ item-групою. Це дає:
-  //   - Стабільне розташування: дублікати завжди разом
-  //   - Drag-and-drop по групі: тягнемо всю групу одним рухом
-  //   - Стабільне сортування групи: за original index (deterministic)
-  //
-  // Item shape:
-  //   { type: 'single', id: 'single_<idx>', idx }
-  //   { type: 'group',  id: 'group_<gIdx>', gIdx, indices: [origIdx,...],
-  //                     recommended, reason }
-  //
-  // Stability: коли AI повторює запуск і повертає різні order, групи лишаються
-  // разом + члени всередині відсортовані за origIdx. Однаковий вхід → той самий
-  // displayItems.
-  const displayItems = useMemo(() => {
-    const groups = pipelineResult?.sortResult?.duplicates || [];
-    const activeGroups = groups
-      .map((g, gIdx) => ({ g, gIdx }))
-      .filter(({ gIdx }) => !dismissedDuplicateGroupIds?.has?.(gIdx));
+  // displayItems — плоский orderedIndices у список items, де дублікати йдуть
+  // ОДНИМ item-групою (стабільно разом, члени відсортовані за origIdx). Спільна
+  // логіка (buildDisplayItems) — те саме джерело що DP.
+  const displayItems = useMemo(
+    () => buildDisplayItems(
+      orderedIndices,
+      pipelineResult?.sortResult?.duplicates,
+      dismissedDuplicateGroupIds,
+    ),
+    [orderedIndices, pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds],
+  );
 
-    if (activeGroups.length === 0) {
-      return orderedIndices.map((idx) => ({ type: 'single', id: `single_${idx}`, idx }));
-    }
-
-    // index → group meta
-    const indexToGroup = new Map();
-    for (const { g, gIdx } of activeGroups) {
-      for (const idx of g.group) indexToGroup.set(idx, { gIdx, g });
-    }
-
-    const items = [];
-    const seenGroups = new Set();
-    for (const idx of orderedIndices) {
-      const meta = indexToGroup.get(idx);
-      if (!meta) {
-        items.push({ type: 'single', id: `single_${idx}`, idx });
-        continue;
-      }
-      if (seenGroups.has(meta.gIdx)) continue;
-      seenGroups.add(meta.gIdx);
-      // Stable order у групі: за original index (deterministic)
-      const sortedMembers = [...meta.g.group]
-        .filter((i) => orderedIndices.includes(i))
-        .sort((a, b) => a - b);
-      items.push({
-        type: 'group',
-        id: `group_${meta.gIdx}`,
-        gIdx: meta.gIdx,
-        indices: sortedMembers,
-        recommended: meta.g.recommended,
-        reason: meta.g.reason,
-      });
-    }
-    return items;
-  }, [orderedIndices, pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds]);
-
-  // Конвертує displayItems зворотньо у плоский array оригінальних індексів —
-  // використовується drag-and-drop handler'ом коли треба зберегти новий
-  // порядок у orderedIndices.
-  const flattenItems = useCallback((items) => {
-    const flat = [];
-    for (const it of items) {
-      if (it.type === 'single') flat.push(it.idx);
-      else flat.push(...it.indices);
-    }
-    return flat;
-  }, []);
+  // displayItems → плоский array оригінальних індексів (для drag-and-drop
+  // reorder). Спільна логіка (flattenDisplayItems).
+  const flattenItems = useCallback((items) => flattenDisplayItems(items), []);
 
   const hasSuspicious = (pipelineResult?.sortResult?.warnings || []).length > 0;
   const duplicateGroupsCount = (pipelineResult?.sortResult?.duplicates || []).length;
