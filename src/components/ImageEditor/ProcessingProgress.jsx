@@ -12,7 +12,10 @@
 //
 // Чиста презентація: жодного стану/ефектів. Прогрес приходить пропами
 // (phase/done/total) — той самий контракт onProgress(phase, done, total), що
-// в pipeline/edge-detection. Стилі — у спільному imageEditor.css.
+// в pipeline/edge-detection. Стилі — у спільному imageEditor.css (імпортуємо тут,
+// щоб компонент був самодостатній незалежно від порядку маунту споживача).
+
+import './imageEditor.css';
 
 const STATE_BY_POSITION = (idx, currentIdx) =>
   (idx < currentIdx ? 'done' : idx === currentIdx ? 'active' : 'pending');

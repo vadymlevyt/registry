@@ -1194,3 +1194,17 @@
   justify-content: center;
   margin-bottom: var(--space-2);
 }
+
+/* Повноекранний оверлей для ProcessingProgress variant="screen" (важка
+   фото-обробка image-merge). Дзеркалить конвенцію .dpv2-progress-overlay
+   (fixed/inset/z-modal/center) — окремий клас, бо споживач у ImageEditor. */
+.image-editor__progress-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+}
