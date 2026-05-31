@@ -23,7 +23,13 @@ import {
   buildDuplicateMembership,
   buildDisplayItems,
   flattenDisplayItems,
+  countActiveDuplicateGroups,
 } from '../../ImageEditor/grid/displayItems.js';
+import {
+  buildCropStateByIndex,
+  countActiveCrop,
+  buildUncertainSet,
+} from '../../../services/imageDocument/cropState.js';
 
 export function PreviewView({
   pipelineResult,
@@ -78,38 +84,14 @@ export function PreviewView({
   }, [userRotation, processedBlobs, pipelineResult?.realFiles?.length]);
 
   // Маппінг origIdx → crop state ('none' | 'active' | 'disabled' | 'applied').
-  // 'none'     = немає proposal/override → іконка не показується.
-  // 'active'   = є rect і не disabled, НЕ applied → сіра ✂️ (стан 2).
-  // 'disabled' = адвокат вимкнув → іконка тьмяна, обрізка НЕ застосовується.
-  // 'applied'  = адвокат тапнув ✓ Готово АБО processedBlob через straighten
-  //              → зелена ✓ замість ✂️. Sources of truth: cropAppliedSet
-  //              (явний крок адвоката) і processedBlobs (canvas-baked crop).
-  const cropStateByIndex = useMemo(() => {
-    const map = new Map();
-    const allIds = new Set([
-      ...(cropProposals?.keys?.() || []),
-      ...(cropOverrides?.keys?.() || []),
-      ...(processedBlobs?.keys?.() || []),
-    ]);
-    for (const idx of allIds) {
-      if (cropAppliedSet?.has?.(idx) || processedBlobs?.has?.(idx)) {
-        map.set(idx, 'applied');
-      } else if (cropDisabled?.has?.(idx)) {
-        map.set(idx, 'disabled');
-      } else {
-        map.set(idx, 'active');
-      }
-    }
-    return map;
-  }, [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs]);
+  // СПІЛЬНА логіка (buildCropStateByIndex) — те саме джерело що DP. Інлайн-копію
+  // видалено (борг #33). Семантику станів див. у cropState.js.
+  const cropStateByIndex = useMemo(
+    () => buildCropStateByIndex(cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs),
+    [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs],
+  );
 
-  const activeCropCount = useMemo(() => {
-    let n = 0;
-    for (const state of cropStateByIndex.values()) {
-      if (state === 'active') n++;
-    }
-    return n;
-  }, [cropStateByIndex]);
+  const activeCropCount = useMemo(() => countActiveCrop(cropStateByIndex), [cropStateByIndex]);
   const warningsByIndex = useMemo(() => {
     const map = new Map();
     for (const w of pipelineResult?.sortResult?.warnings || []) {
@@ -145,7 +127,15 @@ export function PreviewView({
   const flattenItems = useCallback((items) => flattenDisplayItems(items), []);
 
   const hasSuspicious = (pipelineResult?.sortResult?.warnings || []).length > 0;
-  const duplicateGroupsCount = (pipelineResult?.sortResult?.duplicates || []).length;
+  // Лічильник активних (не-dismissed) груп дублів — СПІЛЬНА логіка
+  // (countActiveDuplicateGroups), те саме джерело що DP. Збігається з кількістю
+  // намальованих жовтих рамок: коли адвокат натискає «Це не дублікати», рамка
+  // зникає І банер оновлюється (раніше тут було сире .length без урахування
+  // dismissed — лишався стейл після розгрупування).
+  const duplicateGroupsCount = useMemo(
+    () => countActiveDuplicateGroups(pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds),
+    [pipelineResult?.sortResult?.duplicates, dismissedDuplicateGroupIds],
+  );
   const missing = pipelineResult?.sortResult?.missing;
 
   // Індекси з невпевненою orientation (aspect heuristic) — показуємо warning
@@ -153,7 +143,7 @@ export function PreviewView({
   const uncertainIndices = useMemo(() => {
     return pipelineResult?.uncertainOrientationIndices || [];
   }, [pipelineResult?.uncertainOrientationIndices]);
-  const uncertainSet = useMemo(() => new Set(uncertainIndices), [uncertainIndices]);
+  const uncertainSet = useMemo(() => buildUncertainSet(uncertainIndices), [uncertainIndices]);
 
   const proceedingOptions = (proceedings || []).map((p) => ({ value: p.id, label: p.title }));
 

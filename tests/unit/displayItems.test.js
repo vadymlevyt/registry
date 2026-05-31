@@ -7,6 +7,8 @@ import {
   buildDuplicateMembership,
   buildDisplayItems,
   flattenDisplayItems,
+  buildFlatPositions,
+  countActiveDuplicateGroups,
 } from '../../src/components/ImageEditor/grid/displayItems.js';
 
 describe('buildDisplayItems', () => {
@@ -117,5 +119,67 @@ describe('buildDuplicateMembership', () => {
   it('порожній/undefined вхід → порожня мапа', () => {
     expect(buildDuplicateMembership(undefined, new Set()).size).toBe(0);
     expect(buildDuplicateMembership([], new Set()).size).toBe(0);
+  });
+});
+
+describe('buildFlatPositions', () => {
+  it('усі single → послідовна нумерація у порядку displayItems', () => {
+    const items = buildDisplayItems([2, 0, 1], [], new Set());
+    const pos = buildFlatPositions(items);
+    // Порядок items: single 2, single 0, single 1.
+    expect(pos.get(2)).toBe(0);
+    expect(pos.get(0)).toBe(1);
+    expect(pos.get(1)).toBe(2);
+  });
+
+  it('члени групи дублів нумеруються ПОСПІЛЬ за візуальним порядком сітки (а не сирим)', () => {
+    // Група {0,3,5} розкидана у orderedIndices [0,1,2,3,4,5]. Візуально група
+    // стягується на позицію першого члена: [G(0,3,5), 1, 2, 4].
+    const items = buildDisplayItems([0, 1, 2, 3, 4, 5], [{ group: [5, 0, 3], recommended: 0, reason: 'x' }], new Set());
+    const pos = buildFlatPositions(items);
+    // Члени групи отримують 0,1,2 (поспіль), потім singles 1,2,4 → 3,4,5.
+    expect(pos.get(0)).toBe(0);
+    expect(pos.get(3)).toBe(1);
+    expect(pos.get(5)).toBe(2);
+    expect(pos.get(1)).toBe(3);
+    expect(pos.get(2)).toBe(4);
+    expect(pos.get(4)).toBe(5);
+  });
+
+  it('кожен origIdx має унікальну позицію 0..N-1', () => {
+    const items = buildDisplayItems([0, 1, 2, 3], [{ group: [2, 0], recommended: 0, reason: 'x' }], new Set());
+    const pos = buildFlatPositions(items);
+    const vals = [...pos.values()].sort((a, b) => a - b);
+    expect(vals).toEqual([0, 1, 2, 3]);
+  });
+
+  it('порожній/undefined вхід → порожня мапа', () => {
+    expect(buildFlatPositions([]).size).toBe(0);
+    expect(buildFlatPositions(undefined).size).toBe(0);
+  });
+});
+
+describe('countActiveDuplicateGroups', () => {
+  it('рахує всі групи коли нічого не dismissed', () => {
+    const groups = [
+      { group: [0, 1], recommended: 0, reason: 'a' },
+      { group: [2, 3], recommended: 2, reason: 'b' },
+    ];
+    expect(countActiveDuplicateGroups(groups, new Set())).toBe(2);
+  });
+
+  it('виключає dismissed групи (збігається з намальованими рамками)', () => {
+    const groups = [
+      { group: [0, 1], recommended: 0, reason: 'a' }, // dismissed
+      { group: [2, 3], recommended: 2, reason: 'b' },
+    ];
+    expect(countActiveDuplicateGroups(groups, new Set([0]))).toBe(1);
+    expect(countActiveDuplicateGroups(groups, new Set([0, 1]))).toBe(0);
+  });
+
+  it('порожній/undefined вхід → 0', () => {
+    expect(countActiveDuplicateGroups(undefined, new Set())).toBe(0);
+    expect(countActiveDuplicateGroups([], new Set())).toBe(0);
+    expect(countActiveDuplicateGroups([{ group: [0, 1], recommended: 0, reason: 'a' }], undefined)).toBe(1);
   });
 });

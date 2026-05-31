@@ -7,9 +7,10 @@
 // АБО всю групу одним рухом. Адвокат не може перетягти один член групи
 // окремо — це правильно бо дублікати мають лишатись поруч.
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { RenderItem } from '../RenderItem.jsx';
 import { DndGrid } from './DndGrid.jsx';
+import { buildFlatPositions } from './displayItems.js';
 
 export function SortableGrid({
   displayItems,
@@ -61,21 +62,9 @@ export function SortableGrid({
     return () => { cancelled = true; };
   }, []);
 
-  // Помічник: для одиночного thumbnail position у плоскому списку
-  // (для відображення «#N» лейбла). Для group items — масив positions членів.
-  const computeFlatPositions = useCallback(() => {
-    const map = new Map();
-    let pos = 0;
-    for (const item of displayItems) {
-      if (item.type === 'single') {
-        map.set(item.idx, pos++);
-      } else {
-        for (const idx of item.indices) map.set(idx, pos++);
-      }
-    }
-    return map;
-  }, [displayItems]);
-  const flatPositions = computeFlatPositions();
+  // Позиції «#N» у плоскому списку — СПІЛЬНА логіка (buildFlatPositions), те саме
+  // джерело що DP. Інлайн-копію видалено (борг #33).
+  const flatPositions = buildFlatPositions(displayItems);
 
   if (!dndReady) {
     return (
