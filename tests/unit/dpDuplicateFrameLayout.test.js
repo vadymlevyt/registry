@@ -21,8 +21,11 @@ const dpCss = readFileSync(
   fileURLToPath(new URL('../../src/components/DocumentProcessorV2/styles.css', import.meta.url)),
   'utf8'
 );
-const modalCss = readFileSync(
-  fileURLToPath(new URL('../../src/components/CaseDossier/ImageMergePanel.css', import.meta.url)),
+// Спільні правила рамки дублів (`.image-merge-panel__dup-group*`) після
+// TASK imageeditor_css_extraction живуть у ImageEditor/imageEditor.css (раніше
+// були в модалковому ImageMergePanel.css). Еталон-інваріант читаємо звідти.
+const sharedCss = readFileSync(
+  fileURLToPath(new URL('../../src/components/ImageEditor/imageEditor.css', import.meta.url)),
   'utf8'
 );
 
@@ -47,15 +50,15 @@ describe('DP рамка дублів — розмір клітинок (прод
     }
   });
 
-  it('модаль-еталон: .image-merge-panel__dup-group не задає grid-column (член = ширина треку)', () => {
-    const body = ruleBody(modalCss, '.image-merge-panel__dup-group {');
+  it('спільний еталон: .image-merge-panel__dup-group не задає grid-column (член = ширина треку)', () => {
+    const body = ruleBody(sharedCss, '.image-merge-panel__dup-group {');
     expect(body).not.toBeNull();
     expect(body).not.toMatch(/grid-column/);
   });
 
   it('тіло рамки лишається flex-контейнером (спільний клас, члени стандартного розміру)', () => {
     // Спільний body-клас керує розміром членів однаково для модалки і DP.
-    const body = ruleBody(modalCss, '.image-merge-panel__dup-group-body ');
+    const body = ruleBody(sharedCss, '.image-merge-panel__dup-group-body ');
     expect(body).toMatch(/display\s*:\s*flex/);
   });
 });
