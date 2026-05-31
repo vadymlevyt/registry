@@ -355,12 +355,12 @@
 .dp-image-merge-editor__group-grid {
   min-height: 100px;
 }
-/* #10 — спільна рамка дублів у DP-сітці займає весь рядок (auto-fill grid),
-   щоб 2-3 члени групи читались як одне ціле, як у модалці. Сама рамка/хедер —
-   спільні класи .image-merge-panel__dup-group* (ImageMergePanel.css). */
-.dp-image-merge-editor__dup-group {
-  grid-column: 1 / -1;
-}
+/* #10 (follow-up): рамка дублів НЕ має власного grid-column — лишається
+   звичайною клітинкою auto-fill треку, рівно як `.image-merge-panel__dup-group`
+   у модалці (яка теж не задає grid-column). Так члени групи того ж розміру, що
+   й одиночні аркуші; рамка лише обіймає суміжні клітинки стандартного треку,
+   а не розтягує їх на весь рядок. Розмір/розкладку членів задає спільний
+   `.image-merge-panel__dup-group-body` (ImageMergePanel.css). */
 .dp-image-merge-editor__group-empty {
   grid-column: 1 / -1;
   text-align: center;
