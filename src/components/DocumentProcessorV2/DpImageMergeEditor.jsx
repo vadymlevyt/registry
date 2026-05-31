@@ -67,6 +67,11 @@ function ItemIdEncode(docId, origIdx) {
 function GroupIdEncode(docId, gIdx) {
   return `g::${docId}::grp::${gIdx}`;
 }
+// Контейнер документа як drop-ціль (для вільного перетягування у порожню/будь-яку
+// групу — борг #36/#28). over.id === цей id → handleDragEnd додає у КІНЕЦЬ групи.
+function GroupContainerId(docId) {
+  return `g::${docId}::container`;
+}
 function ItemIdDecode(id) {
   let m = /^g::(.+?)::p::(\d+)$/.exec(id || '');
   if (m) return { kind: 'single', docId: m[1], origIdx: Number(m[2]) };
@@ -224,6 +229,9 @@ export function DpImageMergeEditor({
           useSensor: core.useSensor,
           useSensors: core.useSensors,
           closestCenter: core.closestCenter,
+          pointerWithin: core.pointerWithin,
+          rectIntersection: core.rectIntersection,
+          useDroppable: core.useDroppable,
           DragOverlay: core.DragOverlay,
           SortableContext: sortable.SortableContext,
           rectSortingStrategy: sortable.rectSortingStrategy,
@@ -289,8 +297,11 @@ export function DpImageMergeEditor({
         : Math.max(0, targetGroup.pageIndices.indexOf(anchorIdx));
       targetGroup.pageIndices.splice(insertAt, 0, ...movedIndices);
 
-      // Видаляємо порожні групи (адвокат міг витягнути всі фото)
-      return next.filter((g) => g.pageIndices.length > 0);
+      // Прибираємо ЛИШЕ source-групу, якщо вона спорожніла внаслідок переносу.
+      // Інші порожні групи (свідомо додані як drop-цілі — борг #36) лишаються:
+      // адвокат додав їх щоб перетягнути аркуші в новий документ. Прибрати
+      // зайву порожню можна кнопкою-кошиком.
+      return next.filter((g) => g.docId !== a.docId || g.pageIndices.length > 0);
     });
   }, [dndReady, duplicateMembership]);
 
@@ -304,10 +315,16 @@ export function DpImageMergeEditor({
     });
   }, []);
 
+  // Видалення фото: прибираємо групу автоматично ЛИШЕ якщо вона спорожніла через
+  // видалення цього (останнього) фото. Інші порожні групи (свідомо додані як
+  // drop-цілі — борг #36) лишаються недоторканими.
   const handleRemove = useCallback((origIdx) => {
-    setGroups((prev) => prev
-      .map((g) => ({ ...g, pageIndices: g.pageIndices.filter((i) => i !== origIdx) }))
-      .filter((g) => g.pageIndices.length > 0));
+    setGroups((prev) => prev.reduce((acc, g) => {
+      if (!g.pageIndices.includes(origIdx)) { acc.push(g); return acc; }
+      const pageIndices = g.pageIndices.filter((i) => i !== origIdx);
+      if (pageIndices.length > 0) acc.push({ ...g, pageIndices });
+      return acc;
+    }, []));
   }, []);
 
   const handleToggleCropDisabled = useCallback((origIdx) => {
@@ -334,12 +351,17 @@ export function DpImageMergeEditor({
 
   // #1 — обробка дублів (дзеркало модалки ImageMergePanel). «Видалити з групи»
   // у DP = прибрати origIdx з pageIndices своєї групи (та сама механіка що
-  // handleRemove). Порожні групи відсіюються.
+  // handleRemove). Прибираємо групу ЛИШЕ якщо вона спорожніла внаслідок цього
+  // видалення; свідомо додані порожні drop-цілі (борг #36) лишаються.
   const removeIndicesFromGroups = useCallback((toRemoveSet) => {
     if (!toRemoveSet || toRemoveSet.size === 0) return;
-    setGroups((prev) => prev
-      .map((g) => ({ ...g, pageIndices: g.pageIndices.filter((i) => !toRemoveSet.has(i)) }))
-      .filter((g) => g.pageIndices.length > 0));
+    setGroups((prev) => prev.reduce((acc, g) => {
+      const hadAny = g.pageIndices.some((i) => toRemoveSet.has(i));
+      if (!hadAny) { acc.push(g); return acc; }
+      const pageIndices = g.pageIndices.filter((i) => !toRemoveSet.has(i));
+      if (pageIndices.length > 0) acc.push({ ...g, pageIndices });
+      return acc;
+    }, []));
   }, []);
 
   // «Залишити цей, видалити інші» (на рекомендованому thumbnail) — прибирає
@@ -702,12 +724,29 @@ function DndOrchestrator({
   updateGroup, removeGroup, proceedingOptions,
 }) {
   const {
-    DndContext, PointerSensor, TouchSensor, useSensor, useSensors, closestCenter,
+    DndContext, PointerSensor, TouchSensor, useSensor, useSensors,
+    pointerWithin, rectIntersection, DragOverlay,
   } = dndReady;
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   );
+
+  // Collision detection (борг #36): даємо пріоритет конкретному фото/групі під
+  // курсором (reorder / вставка перед), а коли курсор над порожнім місцем групи
+  // (вкл. порожню групу) — падаємо на контейнер (`...::container`) → drop у
+  // КІНЕЦЬ цієї групи. closestCenter сам не таргетив порожні групи (нема
+  // sortable-елементів), тому порожня група була марною drop-ціллю.
+  const collisionDetection = useCallback((args) => {
+    const pointer = pointerWithin(args);
+    const base = pointer.length > 0 ? pointer : rectIntersection(args);
+    const items = base.filter((c) => !String(c.id).endsWith('::container'));
+    return items.length > 0 ? items : base;
+  }, [pointerWithin, rectIntersection]);
+
+  // activeId — id одиниці, що зараз тягнеться (для DragOverlay прев'ю). Чистимо
+  // на end/cancel.
+  const [activeId, setActiveId] = useState(null);
 
   // displayItems кожної групи — СПІЛЬНА логіка групування (buildDisplayItems),
   // та сама що модалка. Обчислюємо ОДИН раз тут і прокидаємо у GroupSection
@@ -716,6 +755,18 @@ function DndOrchestrator({
     () => groups.map((g) => buildDisplayItems(g.pageIndices, duplicateGroups, dismissedGroupIds)),
     [groups, duplicateGroups, dismissedGroupIds],
   );
+
+  // Активна одиниця для DragOverlay — знаходимо displayItem за decoded activeId.
+  const activeItem = useMemo(() => {
+    const dec = ItemIdDecode(activeId);
+    if (!dec || dec.kind === 'container') return null;
+    const gi = groups.findIndex((g) => g.docId === dec.docId);
+    if (gi < 0) return null;
+    const items = groupDisplayItems[gi] || [];
+    return dec.kind === 'group'
+      ? items.find((it) => it.type === 'group' && it.gIdx === dec.gIdx) || null
+      : items.find((it) => it.type === 'single' && it.idx === dec.origIdx) || null;
+  }, [activeId, groups, groupDisplayItems]);
 
   // flatPositions — позиція кожного origIdx у єдиному списку для лейбла #N.
   // СПІЛЬНА логіка (buildFlatPositions) над глобальним displayItems: нумерація
@@ -727,7 +778,13 @@ function DndOrchestrator({
   );
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={collisionDetection}
+      onDragStart={(e) => setActiveId(e.active.id)}
+      onDragEnd={(e) => { setActiveId(null); onDragEnd(e); }}
+      onDragCancel={() => setActiveId(null)}
+    >
       <div className="dp-image-merge-editor__groups">
         {groups.map((g, gIdx) => (
           <GroupSection
@@ -757,6 +814,38 @@ function DndOrchestrator({
           />
         ))}
       </div>
+
+      {/* Прев'ю одиниці, що тягнеться (борг #36) — поверх сітки, спільний
+          RenderItem без sortable-обгорток. */}
+      <DragOverlay>
+        {activeItem ? (
+          <div className="dp-image-merge-editor__drag-overlay">
+            <RenderItem
+              item={activeItem}
+              thumbUrls={thumbUrls}
+              previewUrls={previewUrls}
+              warningsByIndex={warningsByIndex}
+              duplicateMembership={duplicateMembership}
+              userRotation={userRotation}
+              uncertainSet={uncertainSet}
+              cropStateByIndex={cropStateByIndex}
+              flatPositions={flatPositions}
+              onRemove={() => {}}
+              onRotate={() => {}}
+              onToggleCropDisabled={() => {}}
+              onOpenPopup={() => {}}
+              onContextMenu={() => {}}
+              onKeepRecommendedDuplicate={() => {}}
+              onDismissDuplicateGroup={() => {}}
+              sortableRef={null}
+              sortableStyle={null}
+              sortableListeners={null}
+              sortableAttributes={null}
+              isDragging={false}
+            />
+          </div>
+        ) : null}
+      </DragOverlay>
     </DndContext>
   );
 }
@@ -769,7 +858,7 @@ function GroupSection({
   onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
   updateGroup, removeGroup, proceedingOptions,
 }) {
-  const { SortableContext, rectSortingStrategy } = dndReady;
+  const { SortableContext, rectSortingStrategy, useDroppable } = dndReady;
 
   // displayItems — СПІЛЬНА логіка групування (buildDisplayItems у DndOrchestrator,
   // та сама що модалка). Дублі (навіть розкидані по pageIndices) стягуються в ОДИН
@@ -782,6 +871,13 @@ function GroupSection({
       ? GroupIdEncode(group.docId, it.gIdx)
       : ItemIdEncode(group.docId, it.idx)
   ));
+
+  // Контейнер групи як drop-ціль (борг #36/#28): робить ВСЮ область сітки (вкл.
+  // порожню групу) придатною ціллю. Раніше drop працював лише НА фото, тож у
+  // порожню/нову групу нічого не перетягувалось. over.id === containerId →
+  // handleDragEnd додає у кінець групи.
+  const containerId = GroupContainerId(group.docId);
+  const { setNodeRef: setDroppableRef, isOver } = useDroppable({ id: containerId });
 
   return (
     <section className="dp-image-merge-editor__group">
@@ -847,7 +943,17 @@ function GroupSection({
       </div>
 
       <SortableContext items={itemIds} strategy={rectSortingStrategy}>
-        <div className="dp-image-merge-editor__group-grid image-merge-panel__grid">
+        <div
+          ref={setDroppableRef}
+          className="dp-image-merge-editor__group-grid image-merge-panel__grid"
+          // Підсвічування активної drop-цілі — інлайн (клас dp-* у styles.css поза
+          // смугою B). Тонка рамка акцентом, коли курсор над цією групою.
+          style={isOver ? {
+            outline: '2px dashed var(--color-accent)',
+            outlineOffset: '2px',
+            borderRadius: 'var(--radius-sm)',
+          } : undefined}
+        >
           {displayItems.map((item) => (
             <DpSortableItem
               key={item.id}
