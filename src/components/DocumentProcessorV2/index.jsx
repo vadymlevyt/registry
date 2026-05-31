@@ -27,6 +27,7 @@ import { InboxConflictModal } from './modals/InboxConflictModal.jsx';
 import { CancelDecisionModal } from './modals/CancelDecisionModal.jsx';
 import { DpImageMergeEditor } from './DpImageMergeEditor.jsx';
 import { isImageFile } from '../ImageEditor/constants.js';
+import { ProcessingProgress } from '../ImageEditor/ProcessingProgress.jsx';
 import { prepareImagesForMerge } from '../../services/imageDocument/prepareImagesForMerge.js';
 import { groupImagesIntoDocuments } from '../../services/sortation/imageDocumentGrouper.js';
 import { sortImageDocument } from '../../services/imageDocument/sortImageDocument.js';
@@ -69,6 +70,17 @@ function humanSize(b) {
   return `${(b / 1024 / 1024).toFixed(1)} МБ`;
 }
 
+// Фази важкої фото-обробки image-merge (для повноекранного ProcessingProgress).
+// Ключі збігаються з phase із prepareImagesForMerge.onProgress (heic/ocr/rotate)
+// + два кроки index.jsx після prepare (grouper/sort) — їх живимо вручну.
+const IMAGE_MERGE_PHASES = [
+  { key: 'heic', label: 'HEIC → JPEG' },
+  { key: 'ocr', label: 'OCR' },
+  { key: 'rotate', label: 'Орієнтація' },
+  { key: 'grouper', label: 'Групування' },
+  { key: 'sort', label: 'Сортування сторінок' },
+];
+
 export default function DocumentProcessorV2({ caseData, onExecuteAction, driveConnected, aiUsageSink }) {
   const pipeline = useDocumentPipeline();
 
@@ -99,6 +111,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   // imageMerge={pre, groups, files, …} активний поки адвокат у редакторі;
   // null = звичайний DP flow (нарізка PDF / мікс).
   const [imageMerge, setImageMerge] = useState(null);
+  // mergeProgress — видимий прогрес важкої фото-обробки (prepare/grouper/sort)
+  // для image-merge режиму. { phase, done, total } | null. Локальний оверлей з
+  // ProcessingProgress (variant="screen") — НЕ через jobProgressStore: image-merge
+  // обходить pipeline.run, тож jobs порожні і Зона 4 (топбар/ProgressFullScreen)
+  // тут інертна; цей оверлей заповнює прогалину, не дублюючи їх.
+  const [mergeProgress, setMergeProgress] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -234,6 +252,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     setRunning(true);
     setResult(null);
     setImageMerge(null);
+    setMergeProgress({ phase: 'heic', done: 0, total: 0 });
     pipeline.expandProgress?.();
     try {
       // Конвертуємо selected у File[] (device → file; drive → blob).
@@ -266,19 +285,19 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       }
 
       // Phase 1 — pre-assembly (HEIC + OCR + orientation) у спільному сервісі.
-      // jobProgressStore TODO: тут немає jobId, прогрес лише локальний toast.
+      // onProgress (phase=heic/ocr/rotate, done/total) живить видимий
+      // ProcessingProgress-оверлей (mergeProgress). Job-система не задіяна —
+      // image-merge обходить pipeline.run (див. коментар біля mergeProgress).
       const pre = await prepareImagesForMerge(files, {
         onProgress: (phase, done, total) => {
-          // Локальний прогрес — toast.info не потрібен (UI Зона 4 поки не
-          // отримує сигнал для image-merge режиму; деталі — у tracking_debt).
-          // Можна логувати у console для діагностики.
-          // eslint-disable-next-line no-console
-          console.log(`[DP image-merge] ${phase} ${done}/${total}`);
+          setMergeProgress({ phase, done, total });
         },
       });
 
       // Phase 2 — grouper (Haiku). Якщо API ключа немає / агент падає —
       // fallback один документ з усіх фото (адвокат поділить вручну).
+      // total:0 → ProcessingProgress показує spinner+лейбл без бару (один await).
+      setMergeProgress({ phase: 'grouper', done: 0, total: 0 });
       const apiKey = getApiKey();
       let grouperResult;
       try {
@@ -313,6 +332,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       // Виклики свідомо додають AI-вартість (логуються C7 через обгортку) —
       // рішення адвоката 2026-05-30 заради паритету з модалкою.
       const initialDuplicates = [];
+      // Прогрес sort — лише по групах що реально сортуються (>1 фото).
+      const groupsToSort = grouperResult.groups.filter(
+        (g) => (Array.isArray(g.pages) ? g.pages.length : 0) >= 2,
+      ).length;
+      let sortedCount = 0;
+      if (groupsToSort > 0) setMergeProgress({ phase: 'sort', done: 0, total: groupsToSort });
       try {
         for (const g of grouperResult.groups) {
           const pages = Array.isArray(g.pages) ? g.pages : [];
@@ -340,6 +365,8 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
               aiUsageSink,
             },
           });
+          sortedCount += 1;
+          setMergeProgress({ phase: 'sort', done: sortedCount, total: groupsToSort });
           if (!sortRes) continue; // fallback (агент впав/timeout) — лишаємо порядок групи
           // Застосовуємо порядок сторінок усередині документа (валідна
           // перестановка індексів цієї групи).
@@ -370,6 +397,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       toast.error('Не вдалось підготувати фото', { description: e?.message });
     } finally {
       setRunning(false);
+      setMergeProgress(null);
     }
   };
 
@@ -638,6 +666,21 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
 
   return (
     <div className="dpv2">
+      {/* Видимий прогрес важкої фото-обробки image-merge (борг #34, фото-частина).
+          Повноекранний оверлей зі спільним ProcessingProgress. Показується поки
+          mergeProgress активний (prepare/grouper/sort), до маунту редактора. */}
+      {mergeProgress && (
+        <div className="image-editor__progress-overlay" role="dialog" aria-modal="true">
+          <ProcessingProgress
+            variant="screen"
+            phase={mergeProgress.phase}
+            done={mergeProgress.done}
+            total={mergeProgress.total}
+            steps={IMAGE_MERGE_PHASES}
+          />
+        </div>
+      )}
+
       {/* Header — Wrench + назва + швидкі функції (Варіант 1) */}
       <div className="dpv2-header">
         <span className="dpv2-title">
