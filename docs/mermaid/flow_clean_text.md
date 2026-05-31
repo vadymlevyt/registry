@@ -54,7 +54,7 @@ graph TD
 
 ```mermaid
 flowchart TD
-    Start([cleanDocument для одного документа]) --> LoadLayout{"Є .layout.json<br/>на Drive?"}
+    Start(["cleanDocument для одного документа"]) --> LoadLayout{"Є .layout.json<br/>на Drive?"}
 
     LoadLayout -->|"Так (скан через Document AI)"| Step1
     LoadLayout -->|"Ні (DOCX/HTML/старі — тільки .txt)"| LoadTxt["Завантажити сирий .txt"]
@@ -87,7 +87,7 @@ flowchart TD
         DelLayout --> Meta["Оновити метадані документа:<br/>textFormat='md', cleanedAt, attentionNotes"]
     end
 
-    Meta --> Done([Готово: повертає {ok, markdown, attentionNotes, warning}])
+    Meta --> Done(["Готово: повертає ok, markdown, attentionNotes, warning"])
 
     style KROK1 fill:#1a3a2a,color:#fff
     style KROK2 fill:#2d4a7c,color:#fff
@@ -107,7 +107,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Click([Адвокат: «Очистити тексти» в Огляді]) --> Scan["Зібрати документи справи з 02_ОБРОБЛЕНІ"]
+    Click(["Адвокат: «Очистити тексти» в Огляді"]) --> Scan["Зібрати документи справи з 02_ОБРОБЛЕНІ"]
     Scan --> Filter{"Для кожного документа:<br/>який формат тексту?"}
 
     Filter -->|"вже .md (очищений)"| Skip["ПРОПУСТИТИ<br/>(не чіпати — захист від подвійної обробки)"]
