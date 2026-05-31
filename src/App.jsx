@@ -32,6 +32,7 @@ import { getForExtension as getEntitlementsForExtension } from './services/entit
 import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/documentSchema';
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
+import { evaluateRegistryWriteGuard, arrLen } from './services/registryWriteGuard';
 import { resolveModel } from './services/modelResolver';
 import * as activityTracker from './services/activityTracker';
 import * as masterTimer from './services/masterTimer';
@@ -2909,6 +2910,13 @@ const driveService = {
   // Останній успішно прочитаний reflection — для write-guard.
   // Дозволяє блокувати запис, якщо новий payload "значно менший" за прочитаний.
   lastReadCasesCount: 0,
+  // Лічильники монотонних/критичних масивів — для shrink-guard (registryWriteGuard).
+  // ai_usage/auditLog ростуть і не худнуть; users/tenants не порожніють.
+  // time_entries СВІДОМО НЕ тут — легітимно худне при місячній ротації.
+  lastReadAiUsageCount: 0,
+  lastReadAuditLogCount: 0,
+  lastReadUsersCount: 0,
+  lastReadTenantsCount: 0,
   // Щоб writeRegistry знав, що йому дозволено створювати новий файл (POST).
   // Без цього прапора POST блокується — запобігає випадковому створенню
   // порожнього файлу при першому запуску, коли на Drive вже міг бути backup.
@@ -2921,6 +2929,10 @@ const driveService = {
     localStorage.removeItem('levytskyi_drive_token');
     this._fileId = null;
     this.lastReadCasesCount = 0;
+    this.lastReadAiUsageCount = 0;
+    this.lastReadAuditLogCount = 0;
+    this.lastReadUsersCount = 0;
+    this.lastReadTenantsCount = 0;
     this.allowFileCreation = false;
   },
 
@@ -3047,6 +3059,11 @@ const driveService = {
       ? data.length
       : (Array.isArray(data?.cases) ? data.cases.length : 0);
     this.lastReadCasesCount = cnt;
+    // Лічильники для shrink-guard. Legacy-формат (data — масив) не має цих полів → 0.
+    this.lastReadAiUsageCount = arrLen(data?.ai_usage);
+    this.lastReadAuditLogCount = arrLen(data?.auditLog);
+    this.lastReadUsersCount = arrLen(data?.users);
+    this.lastReadTenantsCount = arrLen(data?.tenants);
     this.allowFileCreation = false;
     return { status: 'ok', data };
   },
@@ -3063,15 +3080,22 @@ const driveService = {
   // ніж попередньо прочитана. Захищає від race condition і випадкового скидання.
   // Повертає { ok, status, reason? }.
   async writeRegistry(token, registry) {
-    const newCount = Array.isArray(registry?.cases) ? registry.cases.length : 0;
-    const prevCount = this.lastReadCasesCount || 0;
-    // Дозволяємо одну справу різниці (закриття/видалення) — більше блокуємо.
-    if (prevCount > 0 && newCount < prevCount - 1) {
+    // Shrink-guard: відмова перезаписати, якщо критичний масив підозріло схуднув
+    // (cases > prev-1, або колапс ai_usage/auditLog/users/tenants). time_entries
+    // свідомо поза guard'ом — місячна ротація легітимно його зменшує.
+    const guardReason = evaluateRegistryWriteGuard(registry, {
+      cases: this.lastReadCasesCount || 0,
+      ai_usage: this.lastReadAiUsageCount || 0,
+      auditLog: this.lastReadAuditLogCount || 0,
+      users: this.lastReadUsersCount || 0,
+      tenants: this.lastReadTenantsCount || 0,
+    });
+    if (guardReason) {
       console.error(
-        `[Drive write-guard] Заблоковано запис: cases ${newCount} < lastRead ${prevCount} - 1. ` +
+        `[Drive write-guard] Заблоковано запис: ${guardReason}. ` +
         `Можлива втрата даних — перевірте hydration або race condition.`
       );
-      return { ok: false, status: 'guard_blocked', reason: 'cases_count_decreased' };
+      return { ok: false, status: 'guard_blocked', reason: guardReason };
     }
     const body = JSON.stringify(registry);
     const id = await this._findFileId(token);
@@ -3088,9 +3112,9 @@ const driveService = {
           return { ok: false, status: 'file_missing', reason: 'patch_404' };
         }
         if (!res.ok) return { ok: false, status: 'http_error', reason: `status_${res.status}` };
-        // Після успішного запису оновлюємо lastReadCasesCount,
-        // щоб наступні writes порівнювалися з найсвіжішим payload.
-        this.lastReadCasesCount = newCount;
+        // Після успішного запису синхронізуємо лічильники з найсвіжішим payload,
+        // щоб наступні writes порівнювалися з ним, а не зі станом на момент read.
+        this._syncGuardCounters(registry);
         return { ok: true, status: 'patched' };
       } else {
         // POST = створення нового файлу. Дозволено тільки після свідомого рішення
@@ -3110,7 +3134,7 @@ const driveService = {
         if (!res.ok) return { ok: false, status: 'http_error', reason: `post_${res.status}` };
         const created = await res.json();
         this._fileId = created.id;
-        this.lastReadCasesCount = newCount;
+        this._syncGuardCounters(registry);
         // Після створення скидаємо прапор — наступні POST знов потребуватимуть свідомого consent.
         this.allowFileCreation = false;
         return { ok: true, status: 'created' };
@@ -3118,6 +3142,16 @@ const driveService = {
     } catch (e) {
       return { ok: false, status: 'exception', reason: e?.message || String(e) };
     }
+  },
+
+  // Синхронізує лічильники shrink-guard з payload щойно записаним на Drive.
+  // Викликається після успішного PATCH/POST і у відновленні з бекапу.
+  _syncGuardCounters(registry) {
+    this.lastReadCasesCount = arrLen(registry?.cases);
+    this.lastReadAiUsageCount = arrLen(registry?.ai_usage);
+    this.lastReadAuditLogCount = arrLen(registry?.auditLog);
+    this.lastReadUsersCount = arrLen(registry?.users);
+    this.lastReadTenantsCount = arrLen(registry?.tenants);
   },
 
   // ── LEGACY READER ──────────────────────────────────────────────────────────
@@ -4932,9 +4966,9 @@ function App() {
       if (registry.billing_meta && typeof registry.billing_meta === 'object') {
         setBillingMeta(registry.billing_meta);
       }
-      // Виставляємо лічильник lastReadCasesCount у кількість справ з бекапу,
-      // інакше write-guard міг би заблокувати наступний запис.
-      driveService.lastReadCasesCount = Array.isArray(registry.cases) ? registry.cases.length : 0;
+      // Синхронізуємо ВСІ лічильники shrink-guard з відновленим бекапом, інакше
+      // guard міг би заблокувати наступний запис (cases або ai_usage/auditLog/...).
+      driveService._syncGuardCounters(registry);
       // Якщо файлу нема (file_not_found) — дозволяємо POST один раз.
       driveService.allowFileCreation = true;
       // Запис в auditLog — сам факт відновлення з бекапу.
