@@ -58,6 +58,7 @@ import { PreviewView } from './PreviewView.jsx';
 import { SingleFileWarning } from './SingleFileWarning.jsx';
 import { rebuildFromOcrResults } from '../../../services/imageDocument/pdfRebuild.js';
 import { selectRecommendedDuplicateRemovals } from '../../../services/imageDocument/duplicateSelection.js';
+import { usePreviewUrls } from '../../ImageEditor/hooks/usePreviewUrls.js';
 
 /**
  * @param {{caseData, onSubmit, onCancel, onOpenDrivePicker}} props
@@ -114,12 +115,6 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
   // У rebuild цей blob використовується напряму (зі delta userRotation якщо
   // адвокат повертав ↻ після Apply).
   const [processedBlobs, setProcessedBlobs] = useState(() => new Map());
-  // previewUrls (TASK B fix Problem 1 round 2): URL до обрізаного фото для
-  // thumbnail. Генерується автоматично коли cropOverride або processedBlob
-  // змінюється для idx. Дає візуальний фідбек що адвокат застосував обрізку.
-  // Map<origIdx, string>. Старі URL revoke'аються при заміні чи на cleanup.
-  const [previewUrls, setPreviewUrls] = useState(() => new Map());
-  const previewUrlsToRevokeRef = useRef([]);
   // Debug toggle (TASK B fix 1 round 2) — увімкнення показує адвокату
   // діагностичну інформацію orientation у toast info після склейки. Перський
   // зберігається у localStorage щоб адвокат не вмикав щоразу.
@@ -146,111 +141,26 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
         try { URL.revokeObjectURL(url); } catch {}
       }
       thumbUrlsRef.current.clear();
-      // Cleanup preview URLs (acumulated через previewUrls life)
-      for (const u of previewUrlsToRevokeRef.current) {
-        try { URL.revokeObjectURL(u); } catch {}
-      }
-      previewUrlsToRevokeRef.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Preview URL generation (TASK B fix Problem 1 round 2) ──────────────
-  // Коли cropOverride/processedBlob/userRotation змінюється для idx —
-  // регенеруємо preview blob (cropped + rotated) і зберігаємо URL для
-  // thumbnail. Адвокат бачить обрізаний/повернутий результат у preview
-  // одразу після ✓ Готово, а не лише ✂️ icon.
-  //
-  // Стратегія:
-  //   1. Збираємо набір "потребує preview": idx з processedBlob АБО з
-  //      cropOverride (без processedBlob)
-  //   2. Для кожного — async generation: processed → rotation delta only;
-  //      cropOverride → cropImageBlob + rotateImageBlob (userRotation)
-  //   3. Атомарно встановлюємо новий previewUrls Map; старі URL revoke'аються
-  //      окремо через previewUrlsToRevokeRef (delayed), щоб displayed image
-  //      не зникало під час swap.
-  //   4. Cropper proposals (cropProposals без override) НЕ генерують preview —
-  //      адвокат їх ще не підтвердив.
-  useEffect(() => {
-    const realFiles = pipelineResult?.realFiles;
-    const detectedOrientations = pipelineResult?.detectedOrientations || [];
-    if (!Array.isArray(realFiles) || realFiles.length === 0) return;
-
-    // Контекст для unified renderer (computeRenderedBlob). Один об'єкт зі
-    // всім станом → одна реалізація логіки трансформації, ніяких локальних
-    // дублікатів формул.
-    const ctx = {
-      realFiles,
-      detectedOrientations,
-      userRotation,
-      processedBlobs,
-      cropOverrides,
-      cropProposals,
-      cropDisabled,
-      cropAppliedSet,
-    };
-
-    // Збираємо набір індексів які потребують rotated/cropped preview blob.
-    // Користувацька rotation у preview НЕ запікається у blob — застосовується
-    // через CSS transform для плавної анімації. Тому генеруємо preview blob
-    // лише коли є зміна на blob-рівні: auto rotation, crop (applied), або
-    // processedBlob. Якщо ні — фолбек на сирий thumbUrl + CSS rotation.
-    const targets = new Set();
-    for (let i = 0; i < realFiles.length; i++) {
-      const autoDeg = Number.isFinite(detectedOrientations[i]) ? detectedOrientations[i] : 0;
-      const hasProc = processedBlobs.has(i);
-      const hasAppliedCrop = cropAppliedSet.has(i) && cropOverrides.has(i) && !cropDisabled.has(i);
-      if (autoDeg !== 0 || hasProc || hasAppliedCrop) targets.add(i);
-    }
-
-    let cancelled = false;
-    (async () => {
-      const { computeRenderedBlob } = await import('../../../services/sortation/imageRenderer.js');
-      const newUrls = new Map();
-      for (const idx of targets) {
-        if (cancelled) break;
-        try {
-          // applyUserRotation:false — user rotation шарується через CSS
-          // transform у Thumbnail. applyCrop:true — crop запікається лише
-          // якщо cropAppliedSet.has(idx) (логіка всередині computeRenderedBlob).
-          const blob = await computeRenderedBlob(
-            { ...ctx, idx },
-            { applyUserRotation: false, applyCrop: true, includeProposalRect: false }
-          );
-          if (cancelled) break;
-          if (blob && blob !== realFiles[idx]) {
-            newUrls.set(idx, URL.createObjectURL(blob));
-          }
-        } catch (e) {
-          console.warn('[preview] generation failed for idx', idx, e);
-        }
-      }
-      if (cancelled) {
-        for (const u of newUrls.values()) { try { URL.revokeObjectURL(u); } catch {} }
-        return;
-      }
-      // Replace previewUrls atomically. Old URLs queued for delayed revoke
-      // (after React paints with new URLs).
-      setPreviewUrls((prev) => {
-        for (const [, oldUrl] of prev) previewUrlsToRevokeRef.current.push(oldUrl);
-        return newUrls;
-      });
-      setTimeout(() => {
-        const toRevoke = previewUrlsToRevokeRef.current;
-        previewUrlsToRevokeRef.current = [];
-        for (const u of toRevoke) { try { URL.revokeObjectURL(u); } catch {} }
-      }, 1000);
-    })();
-    return () => { cancelled = true; };
-  }, [
-    cropOverrides, cropProposals, cropDisabled, cropAppliedSet,
+  // previewUrls — URL до обрізаного/повернутого фото для thumbnail. СПІЛЬНИЙ хук
+  // usePreviewUrls (один шлях, нуль дубльованої логіки; борг #33). Хук сам
+  // володіє станом previewUrls, чергою revoke і unmount-cleanup. Регенерує при
+  // зміні crop/processedBlob/auto-orientation (НЕ при userRotation — той через
+  // CSS transform). На новий pipeline (pipelineResult.realFiles змінився) ефект
+  // хука reруниться і прев'ю оновлюються — окремий ручний reset не потрібен.
+  const previewUrls = usePreviewUrls({
+    realFiles: pipelineResult?.realFiles,
+    detectedOrientations: pipelineResult?.detectedOrientations,
+    userRotation,
     processedBlobs,
-    pipelineResult?.realFiles, pipelineResult?.detectedOrientations,
-  ]);
-  // ВАЖЛИВО: userRotation НЕ у deps. Preview blob запікається БЕЗ user rotation
-  // (тільки auto + crop), а user rotation шарується через CSS transform у
-  // Thumbnail для плавної анімації. Тому зміна userRotation не повинна
-  // регенерувати blob URL — це б ламало CSS transition.
+    cropOverrides,
+    cropProposals,
+    cropDisabled,
+    cropAppliedSet,
+  });
 
   const handleDeviceFiles = (e) => {
     const picked = Array.from(e.target.files || []);
@@ -386,12 +296,8 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
       setCropAppliedSet(new Set());
       setDismissedDuplicateGroupIds(new Set());
       setProcessedBlobs(new Map());
-      // Revoke попередніх preview URL якщо були (функціональний setState
-       // щоб отримати latest map)
-      setPreviewUrls((prev) => {
-        for (const u of prev.values()) { try { URL.revokeObjectURL(u); } catch {} }
-        return new Map();
-      });
+      // previewUrls тепер у спільному хуку usePreviewUrls — він reрунить ефект
+      // на зміну pipelineResult.realFiles і сам replace'ить/revoke'ає старі URL.
       setForm((prev) => ({
         ...prev,
         name: result.suggestedName || result.pdfName || prev.name,
