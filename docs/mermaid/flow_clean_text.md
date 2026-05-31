@@ -19,6 +19,32 @@
 
 ---
 
+## СКОУП — тільки `scanned` (перевірено по коду 2026-05-31)
+
+Функція очистки працює **виключно** з документами `documentNature==='scanned'`:
+скани (PDF/фото через Document AI) і фото, склеєні→PDF у Document Processor.
+Бо тільки Document AI повертає геометрію (`pageStructure` → `.layout.json`), а
+саме layout — паливо конденсатора.
+
+`documentNature==='searchable'` (DOCX, HTML, PDF з текстовим шаром) —
+**ПОВНІСТЮ ПОЗА ФУНКЦІЄЮ**: кнопка для них неактивна, цикл їх пропускає.
+Логіка: у них **уже чистий цифровий текст** з джерела (не OCR-сміття) — чистити
+нема чого, а AI-поліш на готовому тексті = марна трата токенів.
+
+| Формат | documentNature | `.txt` | `.layout.json` | Очистка |
+|--------|---------------|--------|----------------|---------|
+| Скан PDF/фото (Document AI) | `scanned` | ✅ | ✅ | ✅ повний гібрид |
+| Фото склеєні→PDF (DP) | `scanned` | ✅ | ✅ | ✅ повний гібрид |
+| DOCX / DOC | `searchable` | ✅ (mammoth) | ❌ | ❌ ігнор |
+| HTML | `searchable` | ✅ (innerText) | ❌ | ❌ ігнор |
+| PDF з текстовим шаром | `searchable` | ✅ (pdfjs) | ❌ | ❌ ігнор |
+
+DOCX/HTML конвертуються в PDF (TASK A — уніфікація: усі оригінали в
+`01_ОРИГІНАЛИ` як PDF), `.txt` пишеться напряму конвертером, `.layout.json` для
+них **не створюється взагалі** (`pdfjsLocal` за дизайном не дає pageStructure).
+
+---
+
 ## Архітектура: одне ядро — чотири точки виклику
 
 ```mermaid
@@ -54,17 +80,20 @@ graph TD
 
 ```mermaid
 flowchart TD
-    Start(["cleanDocument для одного документа"]) --> LoadLayout{"Є .layout.json<br/>на Drive?"}
+    Start(["cleanDocument для одного документа"]) --> Scope{"documentNature?"}
 
-    LoadLayout -->|"Так (скан через Document AI)"| Step1
-    LoadLayout -->|"Ні (DOCX/HTML/старі — тільки .txt)"| LoadTxt["Завантажити сирий .txt"]
+    Scope -->|"searchable (DOCX/HTML/текстовий PDF)"| Ignore["ІГНОР — поза функцією<br/>(уже чистий цифровий текст, чистити нема чого)"]
+    Scope -->|"scanned (скан/фото→PDF)"| LoadLayout{"Є .layout.json<br/>на Drive?"}
+
+    LoadLayout -->|"Так (нормальний випадок)"| Step1
+    LoadLayout -->|"Ні (старий скан до цієї функції)"| LoadTxt["Fallback: завантажити сирий .txt"]
 
     subgraph KROK1["КРОК 1 — Конденсатор (детермінований, 0 токенів AI)"]
         Step1["layout → компактна Markdown-чернетка<br/><b>ПОСТОРІНКОВО через page._text</b> (надійний завжди)<br/>+ геометрія blocks/paragraphs (boundingPoly)<br/>як дзеркало pageMarkers.js<br/>• текст сторінки = _text (НЕ offset у глоб. .txt)<br/>• заголовок/абзац/список — з геометрії+розміру<br/>• таблиці → GFM; шум (колонтитули) викинути"]
     end
 
     LoadTxt --> Draft
-    Step1 --> Draft["draft (Markdown-чернетка АБО плоский текст)"]
+    Step1 --> Draft["draft (Markdown-чернетка АБО плоский .txt для старих сканів)"]
 
     Draft --> HasKey{"Є API-ключ<br/>Claude?"}
     HasKey -->|Ні| Fallback["Fallback: зберегти draft як є<br/>(deterministic-only, без AI-поліша)<br/>warning «AI недоступний»"]
@@ -89,6 +118,7 @@ flowchart TD
 
     Meta --> Done(["Готово: повертає ok, markdown, attentionNotes, warning"])
 
+    style Ignore fill:#3a2a1a,color:#fff
     style KROK1 fill:#1a3a2a,color:#fff
     style KROK2 fill:#2d4a7c,color:#fff
     style KROK3 fill:#3a2a1a,color:#fff
@@ -107,24 +137,29 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Click(["Адвокат: «Очистити тексти» в Огляді"]) --> Scan["Зібрати документи справи з 02_ОБРОБЛЕНІ"]
-    Scan --> Filter{"Для кожного документа:<br/>який формат тексту?"}
+    Click(["Адвокат: «Очистити тексти» в Огляді"]) --> Scan["Зібрати документи справи"]
+    Scan --> ScopeF{"Для кожного документа:<br/>documentNature?"}
 
-    Filter -->|"вже .md (очищений)"| Skip["ПРОПУСТИТИ<br/>(не чіпати — захист від подвійної обробки)"]
-    Filter -->|"сирий .txt (необроблений)"| Queue["У чергу на очистку"]
+    ScopeF -->|"searchable (DOCX/HTML/текст. PDF)"| SkipS["ПРОПУСТИТИ — поза функцією"]
+    ScopeF -->|"scanned"| Filter{"Формат тексту?"}
+
+    Filter -->|"вже .md (очищений)"| Skip["ПРОПУСТИТИ<br/>(захист від подвійної обробки)"]
+    Filter -->|"сирий (.txt / layout)"| Queue["У чергу на очистку"]
 
     Queue --> Loop["Цикл по черзі: cleanDocument(кожен)<br/>прогрес «Чищу 12 з 43»"]
     Skip --> Loop
+    SkipS --> Loop
 
-    Loop --> Result["ResultCard:<br/>очищено N, пропущено M (вже .md),<br/>помилок K, attentionNotes згруповані"]
+    Loop --> Result["ResultCard:<br/>очищено N, пропущено M (вже .md / searchable),<br/>помилок K, attentionNotes згруповані"]
 
+    style SkipS fill:#3a2a1a,color:#fff
     style Skip fill:#3a2a1a,color:#fff
     style Loop fill:#2d4a7c,color:#fff
 ```
 
-**Змішаний кейс (важливо):** у справі можуть бути і `.md` (додані раніше з
-очисткою), і `.txt` (додані без неї). Кнопка в Огляді чіпає **ТІЛЬКИ сирі .txt**,
-готові `.md` не перезапускає.
+**Скоуп-фільтр (важливо):** Огляд-кнопка чіпає **тільки `scanned`** з сирим текстом.
+`searchable` (DOCX/HTML/текстовий PDF) пропускає завжди. Готові `.md` теж не
+перезапускає.
 
 ---
 
