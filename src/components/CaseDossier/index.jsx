@@ -32,6 +32,7 @@ import { ECITSBanner } from "../ECITSBanner";
 import { DeleteDocumentModal } from "./DeleteDocumentModal.jsx";
 import { ArchiveView } from "./ArchiveView.jsx";
 import { generateCaseContext } from "./services/contextGenerator.js";
+import { derivePendingRegen, shouldStartContextRegen } from "./services/contextRelay.js";
 import "./CaseDossier.css";
 
 const CATEGORY_LABELS = {
@@ -84,6 +85,13 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [contextLoading, setContextLoading] = useState(false);
   const [contextMsg, setContextMsg] = useState('');
   const [isCreatingContext, setIsCreatingContext] = useState(false);
+  // Естафетна паличка від Document Processor: { caseId, expectedDocIds: string[],
+  // scenarioRunId? } | null. Однозначність (#11): «DP-запуск з увімкненим тумблером
+  // передав естафету генератору контексту; чекаємо доки expectedDocIds приземляться
+  // в caseData.documents». Ставиться у КІНЦІ DP-забігу (на DOCUMENT_BATCH_PROCESSED
+  // з updateCaseContext===true), знімається коли генератор добіг свій фініш (успіх
+  // АБО помилка). Третього стану немає: паличка або передана, або викинута.
+  const [pendingContextRegen, setPendingContextRegen] = useState(null);
   const [editingNoteId, setEditingNoteId] = useState(null);
   const [editingNoteText, setEditingNoteText] = useState('');
 
@@ -727,27 +735,54 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   }
 
   // ── DP-тригер: перегенерація case_context.md після обробки документів ──────
-  // TASK 2 Вісь A (варіант A — через подію). DP після persist публікує
-  // DOCUMENT_BATCH_PROCESSED. Тут слухаємо: якщо подія для ПОТОЧНОЇ справи і
-  // адвокат лишив тумблер «Оновити case_context.md» увімкненим
-  // (payload.updateCaseContext === true) — повна регенерація нарису з
-  // поточного (вже оновленого) набору документів. Ненавʼязливо, у try/catch:
-  // помилка генерації НЕ валить обробку документів (DP вже завершив persist).
+  // Естафетна модель (TASK «Естафетний тригер генератора контексту після DP»).
+  // Замінила крихкий синхронний тригер, що ловив stale-стан: подія
+  // DOCUMENT_BATCH_PROCESSED публікувалась синхронно після add_documents, але
+  // слухач читав ще-не-перерендерений caseData → генерація бачила старий список.
   //
-  // Ref-патерн: підписка одна (mount), а актуальні caseData/функції беремо з
-  // ref — щоб не перепідписуватись на кожен render і не ловити stale-замикань.
+  // Тепер у три такти:
+  //   3.2 СЛУХАЧ — лише СТАВИТЬ паличку (не генерує). Нова подія перезатирає
+  //       попередню (self-heal стале). Ручне додавання/перейменування/видалення
+  //       не публікують DOCUMENT_BATCH_PROCESSED → нарис не чіпають.
+  //   3.3 ТРИГЕР — useEffect слухає caseData.documents; коли всі expectedDocIds
+  //       приземлились → стартує генератор з повного (вже оновленого) SSOT.
+  //   3.x ФІНІШ — runDpContextRegen на завершенні (успіх АБО помилка) сам знімає
+  //       паличку. ЖОДНОГО таймауту: обробка може йти 10+ хв.
+  //
+  // Ref-патерн для слухача: підписка одна (mount), актуальний caseId беремо з ref
+  // — щоб не перепідписуватись на кожен render і не ловити stale-замикань.
   const dpContextHandlerRef = useRef(null);
-  dpContextHandlerRef.current = async (payload) => {
-    if (!payload || payload.updateCaseContext !== true) return;
-    if (payload.caseId !== caseData?.id) return;
-    if (isCreatingContext) return;            // уже йде генерація — не дублюємо
+  dpContextHandlerRef.current = (payload) => {
+    // 3.2 — чистий вирішувач (contextRelay.derivePendingRegen) каже, чи приймати
+    // паличку для ПОТОЧНОЇ справи; тут лише фіксуємо її у стані.
+    const pending = derivePendingRegen(payload, caseData?.id);
+    if (!pending) return;
+    setPendingContextRegen(pending);
+  };
+
+  useEffect(() => {
+    const unsub = eventBus.subscribe(DOCUMENT_BATCH_PROCESSED, (payload) => {
+      try { dpContextHandlerRef.current && dpContextHandlerRef.current(payload); }
+      catch (e) { console.warn('[CaseDossier] DP context handler error:', e?.message || e); }
+    });
+    return () => { try { unsub && unsub(); } catch {} };
+  }, []);
+
+  // 3.x — генератор підхоплює паличку, біжить, на фініші викидає. Винесене тіло
+  // старого синхронного хендлера, але з гарантовано ОНОВЛЕНИМ caseData.documents
+  // (ефект нижче спрацював ПІСЛЯ ре-рендеру з новими документами).
+  //
+  // [BILLING] Свідомо НЕ репортимо context_regenerated (на відміну від кнопкового
+  // handleCreateContext): DP-естафетна генерація — автоматичне продовження обробки,
+  // а не окрема дія адвоката. Токени і так пишуться у ai_usage[] через aiUsageSink;
+  // дублювати білінг не треба (рішення §6 TASK).
+  async function runDpContextRegen(pending) {
     setIsCreatingContext(true);
     setContextLoading(true);
     try {
       const token = localStorage.getItem("levytskyi_drive_token");
       const folderId = storageState?.driveFolderId;
       if (!token || !folderId) {
-        // Раніше — тихий return (адвокат не бачив чому нарис не оновився).
         toast.show({ variant: 'warning', title: 'Нарис не оновлено', description: 'Drive не підключено або у справи немає папки.' });
         return;
       }
@@ -777,8 +812,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           if (fresh) setCaseContext(fresh);
         } catch (e) { console.log('[CaseContext] DP refresh failed:', e); }
       } else {
-        // Раніше — лише console.warn (на планшеті невидимий). Тепер чесний
-        // тост: адвокат бачить, що нарис НЕ оновлено, і чому.
+        // Реальні помилки генерації — чесний тост (на планшеті консолі немає).
+        // NO_FILES після приземлення документів теоретично неможливий (усі
+        // expectedDocIds мають driveId), але лишаємо обробку про всяк випадок.
         const code = result?.error?.code;
         const reason = {
           NO_FILES: 'У справі немає документів з файлами на Drive.',
@@ -794,18 +830,26 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       console.error('[CaseDossier] DP context regen error:', err);
       toast.error('Помилка оновлення нарису', { description: err?.message ? String(err.message).slice(0, 200) : 'Невідома помилка.' });
     } finally {
+      // Генератор «викинув паличку на фініші» — успіх чи помилка, без хвостів.
+      setPendingContextRegen(null);
       setContextLoading(false);
       setIsCreatingContext(false);
     }
-  };
+  }
 
+  // 3.3 — «місце, що кричить»: коли паличка стоїть і всі expectedDocIds реально
+  // приземлились у caseData.documents — стартуємо генерацію. Не на будь-яку зміну
+  // метаданих (перейменування/видалення/ручне додавання), а саме під естафету DP.
   useEffect(() => {
-    const unsub = eventBus.subscribe(DOCUMENT_BATCH_PROCESSED, (payload) => {
-      try { dpContextHandlerRef.current && dpContextHandlerRef.current(payload); }
-      catch (e) { console.warn('[CaseDossier] DP context handler error:', e?.message || e); }
-    });
-    return () => { try { unsub && unsub(); } catch {} };
-  }, []);
+    if (!shouldStartContextRegen({
+      pendingContextRegen,
+      caseId: caseData?.id,
+      documents: caseData?.documents,
+      isCreatingContext,
+    })) return;
+    runDpContextRegen(pendingContextRegen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caseData?.documents, pendingContextRegen, isCreatingContext]);
 
   // Agent panel state (agentMessages — вище, біля caseContext)
   const [agentOpen, setAgentOpen] = useState(true);
