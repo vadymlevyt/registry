@@ -37,7 +37,17 @@ import { CATEGORY_OPTIONS, AUTHOR_OPTIONS } from '../ImageEditor/constants.js';
 import { PreviewPopup } from '../ImageEditor/PreviewPopup.jsx';
 import { ContextMenu } from '../ImageEditor/ContextMenu.jsx';
 import { RenderItem } from '../ImageEditor/RenderItem.jsx';
-import { buildDuplicateMembership, buildDisplayItems } from '../ImageEditor/grid/displayItems.js';
+import {
+  buildDuplicateMembership,
+  buildDisplayItems,
+  buildFlatPositions,
+  countActiveDuplicateGroups,
+} from '../ImageEditor/grid/displayItems.js';
+import {
+  buildCropStateByIndex,
+  countActiveCrop,
+  buildUncertainSet,
+} from '../../services/imageDocument/cropState.js';
 import { detectDocumentEdges } from '../../services/sortation/edgeDetection.js';
 import { selectRecommendedDuplicateRemovals } from '../../services/imageDocument/duplicateSelection.js';
 
@@ -607,36 +617,24 @@ export function DpImageMergeEditor({
     return m;
   }, [userRotation, processedBlobs, normalizedFiles.length]);
 
-  const cropStateByIndex = useMemo(() => {
-    const map = new Map();
-    const allIds = new Set([
-      ...cropProposals.keys(),
-      ...cropOverrides.keys(),
-      ...processedBlobs.keys(),
-    ]);
-    for (const idx of allIds) {
-      if (cropAppliedSet.has(idx) || processedBlobs.has(idx)) map.set(idx, 'applied');
-      else if (cropDisabled.has(idx)) map.set(idx, 'disabled');
-      else map.set(idx, 'active');
-    }
-    return map;
-  }, [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs]);
+  // СПІЛЬНА логіка (buildCropStateByIndex) — те саме джерело що модалка
+  // (PreviewView). Інлайн-копію видалено (борг #33). Семантику станів — у cropState.js.
+  const cropStateByIndex = useMemo(
+    () => buildCropStateByIndex(cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs),
+    [cropProposals, cropOverrides, cropDisabled, cropAppliedSet, processedBlobs],
+  );
 
-  // Кількість фото з активною (не вимкненою, не застосованою) обрізкою — для
-  // тексту банера #9. Той самий підрахунок що модалка (PreviewView activeCropCount).
-  const activeCropCount = useMemo(() => {
-    let n = 0;
-    for (const state of cropStateByIndex.values()) if (state === 'active') n++;
-    return n;
-  }, [cropStateByIndex]);
+  // Кількість фото з активною обрізкою — банер #9. СПІЛЬНА логіка (countActiveCrop).
+  const activeCropCount = useMemo(() => countActiveCrop(cropStateByIndex), [cropStateByIndex]);
 
-  // Кількість активних (не-dismissed) груп дублів — для банера #1.
+  // Кількість активних (не-dismissed) груп дублів — банер #1. СПІЛЬНА логіка
+  // (countActiveDuplicateGroups), те саме джерело що модалка.
   const activeDuplicateGroupsCount = useMemo(
-    () => (initialDuplicates || []).filter((_, gid) => !dismissedDuplicateGroupIds.has(gid)).length,
+    () => countActiveDuplicateGroups(initialDuplicates, dismissedDuplicateGroupIds),
     [initialDuplicates, dismissedDuplicateGroupIds],
   );
 
-  const uncertainSet = useMemo(() => new Set(uncertainOrientationIndices), [uncertainOrientationIndices]);
+  const uncertainSet = useMemo(() => buildUncertainSet(uncertainOrientationIndices), [uncertainOrientationIndices]);
   const proceedingOptions = useMemo(
     () => (proceedings || []).map((p) => ({ value: p.id, label: p.title })),
     [proceedings],
@@ -824,15 +822,22 @@ function DndOrchestrator({
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   );
 
+  // displayItems кожної групи — СПІЛЬНА логіка групування (buildDisplayItems),
+  // та сама що модалка. Обчислюємо ОДИН раз тут і прокидаємо у GroupSection
+  // (раніше GroupSection рахував сам — щоб flatPositions і рендер не розходились).
+  const groupDisplayItems = useMemo(
+    () => groups.map((g) => buildDisplayItems(g.pageIndices, duplicateGroups, dismissedGroupIds)),
+    [groups, duplicateGroups, dismissedGroupIds],
+  );
+
   // flatPositions — позиція кожного origIdx у єдиному списку для лейбла #N.
-  const flatPositions = useMemo(() => {
-    const map = new Map();
-    let pos = 0;
-    for (const g of groups) {
-      for (const idx of g.pageIndices) map.set(idx, pos++);
-    }
-    return map;
-  }, [groups]);
+  // СПІЛЬНА логіка (buildFlatPositions) над глобальним displayItems: нумерація
+  // йде ВІЗУАЛЬНИМ порядком сітки (члени групи дублів стягнуті разом), а не сирим
+  // порядком pageIndices — те саме джерело що модалка (SortableGrid).
+  const flatPositions = useMemo(
+    () => buildFlatPositions(groupDisplayItems.flat()),
+    [groupDisplayItems],
+  );
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
@@ -842,13 +847,12 @@ function DndOrchestrator({
             key={g.docId}
             group={g}
             groupIndex={gIdx}
+            displayItems={groupDisplayItems[gIdx]}
             dndReady={dndReady}
             thumbUrls={thumbUrls}
             previewUrls={previewUrls}
             warningsByIndex={warningsByIndex}
             duplicateMembership={duplicateMembership}
-            duplicateGroups={duplicateGroups}
-            dismissedGroupIds={dismissedGroupIds}
             userRotation={userRotation}
             uncertainSet={uncertainSet}
             cropStateByIndex={cropStateByIndex}
@@ -872,8 +876,7 @@ function DndOrchestrator({
 
 // ── GroupSection: header (форма) + SortableContext (фото) ──────────────────
 function GroupSection({
-  group, groupIndex, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
-  duplicateGroups, dismissedGroupIds,
+  group, groupIndex, displayItems, dndReady, thumbUrls, previewUrls, warningsByIndex, duplicateMembership,
   userRotation, uncertainSet, cropStateByIndex, flatPositions,
   onRemove, onRotate, onToggleCropDisabled,
   onKeepRecommendedDuplicate, onDismissDuplicateGroup, onOpenPopup, onContextMenu,
@@ -881,10 +884,9 @@ function GroupSection({
 }) {
   const { SortableContext, rectSortingStrategy } = dndReady;
 
-  // displayItems — СПІЛЬНА логіка групування (та сама що модалка). Дублі (навіть
-  // розкидані по pageIndices) стягуються в ОДИН group-item; решта — single.
-  // Жодного власного розкладу сегментів у DP — buildDuplicateSegments видалено.
-  const displayItems = buildDisplayItems(group.pageIndices, duplicateGroups, dismissedGroupIds);
+  // displayItems — СПІЛЬНА логіка групування (buildDisplayItems у DndOrchestrator,
+  // та сама що модалка). Дублі (навіть розкидані по pageIndices) стягуються в ОДИН
+  // group-item; решта — single. Жодного власного розкладу сегментів у DP.
 
   // Sortable-одиниці = displayItems: фото-single за id фото, група за id групи
   // (тягнеться як одне ціле; члени всередині поодинці не сортуються).

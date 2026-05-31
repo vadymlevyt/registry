@@ -96,3 +96,30 @@ export function flattenDisplayItems(items) {
   }
   return flat;
 }
+
+// displayItems → Map<origIdx, pos>: позиція кожного origIdx у плоскому списку
+// для лейбла «#N». Член групи дублів отримує позицію у порядку появи у
+// displayItems (group члени відсортовані за origIdx у buildDisplayItems), тому
+// нумерація йде ВІЗУАЛЬНИМ порядком сітки, а не сирим порядком pageIndices.
+// СПІЛЬНЕ для модалки (SortableGrid) і DP. (SortableGrid:66-78)
+export function buildFlatPositions(displayItems) {
+  const map = new Map();
+  let pos = 0;
+  for (const item of (displayItems || [])) {
+    if (item.type === 'single') {
+      map.set(item.idx, pos++);
+    } else {
+      for (const idx of item.indices) map.set(idx, pos++);
+    }
+  }
+  return map;
+}
+
+// Лічильник активних (НЕ-dismissed) груп дублів — для тексту банера «Знайдено N
+// груп дублікатів». dismissedGroupIds — Set порядкових індексів груп у
+// duplicateGroups (адвокат натиснув «Це не дублікати»). СПІЛЬНЕ: модалка і DP
+// показують той самий лічильник, що збігається з кількістю намальованих жовтих
+// рамок. (DpImageMergeEditor:634)
+export function countActiveDuplicateGroups(duplicateGroups, dismissedGroupIds) {
+  return (duplicateGroups || []).filter((_, gIdx) => !dismissedGroupIds?.has?.(gIdx)).length;
+}
