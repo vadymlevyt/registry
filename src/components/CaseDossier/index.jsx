@@ -710,7 +710,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     } catch (err) {
       console.error("Context creation error:", err);
       console.error('[CaseDossier] context error:', err);
-      toast.error('Не вдалось створити контекст', { description: 'Перевірте API ключ і підключення Drive.' });
+      // Раніше тут був захардкоджений текст «Перевірте API ключ» — він
+      // показувався на БУДЬ-який виняток (напр. API 400/429/529) і маскував
+      // справжню причину. Тепер показуємо реальне err.message (на планшеті
+      // консолі немає — це єдиний спосіб для адвоката побачити статус).
+      toast.error('Не вдалось створити контекст', {
+        description: err?.message
+          ? String(err.message).slice(0, 200)
+          : 'Невідома помилка. Перевірте API ключ і підключення Drive.',
+      });
       setContextMsg('');
     } finally {
       setContextLoading(false);
@@ -738,9 +746,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     try {
       const token = localStorage.getItem("levytskyi_drive_token");
       const folderId = storageState?.driveFolderId;
-      if (!token || !folderId) return;
+      if (!token || !folderId) {
+        // Раніше — тихий return (адвокат не бачив чому нарис не оновився).
+        toast.show({ variant: 'warning', title: 'Нарис не оновлено', description: 'Drive не підключено або у справи немає папки.' });
+        return;
+      }
       const subFolders = await ensureSubFolders(caseData);
-      if (!subFolders?.['01_ОРИГІНАЛИ'] && !subFolders?.['02_ОБРОБЛЕНІ']) return;
+      if (!subFolders?.['01_ОРИГІНАЛИ'] && !subFolders?.['02_ОБРОБЛЕНІ']) {
+        toast.show({ variant: 'warning', title: 'Нарис не оновлено', description: 'Не знайдено папок 01_ОРИГІНАЛИ / 02_ОБРОБЛЕНІ.' });
+        return;
+      }
       toast.show({ variant: 'info', title: 'Оновлюю нарис справи…', description: 'Document Processor освіжає case_context.md.' });
       const apiKey = localStorage.getItem("claude_api_key");
       const result = await generateCaseContext({
@@ -762,11 +777,22 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           if (fresh) setCaseContext(fresh);
         } catch (e) { console.log('[CaseContext] DP refresh failed:', e); }
       } else {
-        // Ненавʼязливо: не зривати UX DP докладними діалогами.
-        console.warn('[CaseDossier] DP context regen skipped:', result?.error?.code);
+        // Раніше — лише console.warn (на планшеті невидимий). Тепер чесний
+        // тост: адвокат бачить, що нарис НЕ оновлено, і чому.
+        const code = result?.error?.code;
+        const reason = {
+          NO_FILES: 'У справі немає документів з файлами на Drive.',
+          NO_API_KEY: 'Не задано API ключ Claude.',
+          AUTH: 'Потрібна повторна авторизація Google (OCR).',
+          EMPTY: 'Claude не повернув результат.',
+          SAVE_FAILED: 'Не вдалось зберегти case_context.md на Drive.',
+        }[code] || (result?.error?.message ? String(result.error.message).slice(0, 200) : 'Невідома причина.');
+        console.warn('[CaseDossier] DP context regen skipped:', code);
+        toast.show({ variant: 'warning', title: 'Нарис справи не оновлено', description: reason });
       }
     } catch (err) {
       console.error('[CaseDossier] DP context regen error:', err);
+      toast.error('Помилка оновлення нарису', { description: err?.message ? String(err.message).slice(0, 200) : 'Невідома помилка.' });
     } finally {
       setContextLoading(false);
       setIsCreatingContext(false);
