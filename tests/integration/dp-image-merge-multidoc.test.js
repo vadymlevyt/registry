@@ -66,7 +66,9 @@ function simulateDragEnd(groups, activeId, overId, duplicateMembership = new Map
     : Math.max(0, targetGroup.pageIndices.indexOf(anchorIdx));
   targetGroup.pageIndices.splice(insertAt, 0, ...movedIndices);
 
-  return next.filter((g) => g.pageIndices.length > 0);
+  // Прибираємо лише source-групу, якщо вона спорожніла; інші порожні (свідомо
+  // додані drop-цілі — борг #36) лишаються.
+  return next.filter((g) => g.docId !== a.docId || g.pageIndices.length > 0);
 }
 
 describe('DP image-merge — DnD між документами', () => {
@@ -114,5 +116,40 @@ describe('DP image-merge — DnD між документами', () => {
     expect(result.find((g) => g.docId === 'd1')).toBeUndefined();
     // Обидва члени вставлені разом перед anchor=3.
     expect(result.find((g) => g.docId === 'd2').pageIndices).toEqual([2, 0, 1, 3, 4]);
+  });
+});
+
+describe('DP image-merge — drop у порожню/нову групу (борг #36/#28)', () => {
+  it('drop фото на контейнер ПОРОЖНЬОЇ групи → фото переноситься туди', () => {
+    const groups = [
+      { docId: 'd1', pageIndices: [0, 1] },
+      { docId: 'dNew', pageIndices: [] },
+    ];
+    const result = simulateDragEnd(groups, 'g::d1::p::0', 'g::dNew::container');
+    expect(result.find((g) => g.docId === 'd1').pageIndices).toEqual([1]);
+    expect(result.find((g) => g.docId === 'dNew').pageIndices).toEqual([0]);
+  });
+
+  it('розділення набору на N документів: послідовно тягнемо аркуші у нову групу', () => {
+    let groups = [
+      { docId: 'd1', pageIndices: [0, 1, 2, 3] },
+      { docId: 'dNew', pageIndices: [] },
+    ];
+    groups = simulateDragEnd(groups, 'g::d1::p::2', 'g::dNew::container');
+    groups = simulateDragEnd(groups, 'g::d1::p::3', 'g::dNew::container');
+    expect(groups.find((g) => g.docId === 'd1').pageIndices).toEqual([0, 1]);
+    expect(groups.find((g) => g.docId === 'dNew').pageIndices).toEqual([2, 3]);
+  });
+
+  it('свідомо додана порожня група ВИЖИВАЄ при перетягуванні між іншими групами', () => {
+    // dEmpty — щойно додана drop-ціль. Тягнемо фото між d1 і d2 — dEmpty не зникає.
+    const groups = [
+      { docId: 'd1', pageIndices: [0, 1] },
+      { docId: 'd2', pageIndices: [2] },
+      { docId: 'dEmpty', pageIndices: [] },
+    ];
+    const result = simulateDragEnd(groups, 'g::d1::p::0', 'g::d2::p::2');
+    expect(result.find((g) => g.docId === 'dEmpty')).toBeDefined();
+    expect(result.find((g) => g.docId === 'dEmpty').pageIndices).toEqual([]);
   });
 });
