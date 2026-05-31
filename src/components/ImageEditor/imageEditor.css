@@ -1043,3 +1043,154 @@
   border-color: #2563eb;
   color: #1e3a8a;
 }
+
+/* ── ProcessingProgress (спільний індикатор прогресу, борг #34) ───────────────
+   Самодостатні стилі спільного компонента ProcessingProgress.jsx (модалка
+   screen-фаза + DP badge-стартап). Не залежить від модалкових
+   image-merge-panel__processing* (ті лишаються лише для legacy-розмітки). */
+.image-editor__progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.image-editor__progress--screen {
+  justify-content: center;
+  padding: var(--space-6) var(--space-3);
+  min-height: 240px;
+}
+
+/* Badge — компактний неблокуючий поп-ап поверх редактора. */
+.image-editor__progress--badge {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 12px;
+  background: var(--color-surface-1, #fff);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: var(--text-sm);
+}
+
+.image-editor__progress-spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 4px solid var(--color-surface-3, #e5e7eb);
+  border-top-color: var(--color-accent);
+  animation: image-editor-progress-spin 0.8s linear infinite;
+}
+
+.image-editor__progress--badge .image-editor__progress-spinner {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+}
+
+@keyframes image-editor-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
+.image-editor__progress-label {
+  font-size: var(--text-base, 16px);
+  font-weight: var(--weight-medium);
+}
+
+.image-editor__progress--badge .image-editor__progress-label {
+  font-size: var(--text-sm);
+}
+
+.image-editor__progress-counter {
+  color: var(--color-text-muted, #6b7280);
+  font-weight: normal;
+  font-size: var(--text-sm);
+}
+
+.image-editor__progress-bar {
+  width: 100%;
+  max-width: 360px;
+  height: 6px;
+  background: var(--color-surface-3, #e5e7eb);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.image-editor__progress--badge .image-editor__progress-bar {
+  width: 120px;
+  height: 4px;
+}
+
+.image-editor__progress-bar-fill {
+  height: 100%;
+  background: var(--color-accent);
+  transition: width 0.3s ease;
+}
+
+.image-editor__progress-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  max-width: 480px;
+}
+
+.image-editor__progress-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.image-editor__progress-step--done {
+  color: var(--color-success, #059669);
+  background: rgba(5, 150, 105, 0.08);
+}
+
+.image-editor__progress-step--active {
+  color: var(--color-accent);
+  background: var(--color-accent-subtle, rgba(59, 130, 246, 0.12));
+  font-weight: var(--weight-medium);
+}
+
+.image-editor__progress-step--pending {
+  color: var(--color-text-muted, #9ca3af);
+}
+
+.image-editor__progress-step-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+}
+
+.image-editor__progress-step--done .image-editor__progress-step-dot {
+  background: var(--color-success, #059669);
+  color: #fff;
+}
+
+.image-editor__progress-step--active .image-editor__progress-step-dot {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.image-editor__progress-step--pending .image-editor__progress-step-dot {
+  background: var(--color-surface-3, #e5e7eb);
+}
+
+/* DP startup badge — неблокуючий, праворуч у потоці під заголовком. */
+.dp-image-merge-editor__startup-progress {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-2);
+}

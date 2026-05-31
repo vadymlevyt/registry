@@ -37,6 +37,7 @@ import { CATEGORY_OPTIONS, AUTHOR_OPTIONS } from '../ImageEditor/constants.js';
 import { PreviewPopup } from '../ImageEditor/PreviewPopup.jsx';
 import { ContextMenu } from '../ImageEditor/ContextMenu.jsx';
 import { RenderItem } from '../ImageEditor/RenderItem.jsx';
+import { ProcessingProgress } from '../ImageEditor/ProcessingProgress.jsx';
 import {
   buildDuplicateMembership,
   buildDisplayItems,
@@ -173,23 +174,36 @@ export function DpImageMergeEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // edgeProgress — прогрес стартового аналізу країв (фото-обробка startup, #34).
+  // { done, total }: total>0 і done<total → показуємо неблокуючий бейдж через
+  // спільний ProcessingProgress. Edge detection НЕ блокує редагування — бейдж
+  // лише інформує що ✂️-пропозиції ще дозавантажуються.
+  const [edgeProgress, setEdgeProgress] = useState({ done: 0, total: 0 });
+
   // Edge detection — пасивна пропозиція AI у фоні (така ж як у модалці).
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const total = normalizedFiles.length;
+      setEdgeProgress({ done: 0, total });
       const proposals = new Map();
       for (let i = 0; i < normalizedFiles.length; i++) {
         if (cancelled) return;
         const f = normalizedFiles[i];
-        if (!(f instanceof Blob)) continue;
-        try {
-          const rect = await detectDocumentEdges(f, f.name || `#${i}`);
-          if (rect) proposals.set(i, rect);
-        } catch (e) {
-          console.warn('[DpImageMergeEditor] edge detection failed for idx', i, e);
+        if (f instanceof Blob) {
+          try {
+            const rect = await detectDocumentEdges(f, f.name || `#${i}`);
+            if (rect) proposals.set(i, rect);
+          } catch (e) {
+            console.warn('[DpImageMergeEditor] edge detection failed for idx', i, e);
+          }
         }
+        if (!cancelled) setEdgeProgress({ done: i + 1, total });
       }
-      if (!cancelled) setCropProposals(proposals);
+      if (!cancelled) {
+        setCropProposals(proposals);
+        setEdgeProgress({ done: total, total });
+      }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -560,6 +574,19 @@ export function DpImageMergeEditor({
           {totalPhotos} фото
         </span>
       </div>
+
+      {/* Стартовий прогрес фото-обробки (#34) — неблокуючий бейдж, поки фоновий
+          аналіз країв дозаповнює ✂️-пропозиції. Спільний ProcessingProgress. */}
+      {edgeProgress.total > 0 && edgeProgress.done < edgeProgress.total && (
+        <div className="dp-image-merge-editor__startup-progress">
+          <ProcessingProgress
+            variant="badge"
+            label="Аналіз країв документів…"
+            done={edgeProgress.done}
+            total={edgeProgress.total}
+          />
+        </div>
+      )}
 
       {uncertainOrientationIndices.length > 0 && (
         <div className="dpv2-attention-card">
