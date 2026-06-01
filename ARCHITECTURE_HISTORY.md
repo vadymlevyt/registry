@@ -45,10 +45,15 @@ Markdown, не міняючи юридичний зміст. `src/services/clean
 
 **Скоуп:** ТІЛЬКИ `documentNature==='scanned'` (searchable повністю поза функцією).
 
-**DP-консолідація:** inline-дубль `aiCleanText` у `DocumentPipelineContext.jsx` ліквідовано
-— DP став споживачем #1 через ядро (`billAsUserAction:false` — автопродовження). C7 один
+**DP-інтеграція (ПОСТ-КРОК, нова філософія адвоката):** тумблер «Очистити для читання» —
+це той самий `cleanDocument`, підключений ОСТАННІМ кроком у `splitDocumentsV3` (після
+`writeProcessedArtifacts`) по кожному готовому `scanned`-документу. `extractV3` більше не
+чистить; inline-дубль `aiCleanText` ліквідовано. Очистка строго ПІСЛЯ нарізки/склейки →
+працює однаково для slice і image_merge, конфлікту меж нема. Drive-шви ядра — у
+`cleanTextDriveAdapter.js` (`buildCleanDocumentDriveDeps`) поверх `ocrService` +
+`executeAction update_document` + `documentsExtended`; **перевикористає 3.2**. C7 один
 шлях: agentType `text_cleaner` (Haiku), `logAiUsage` завжди + `activityTracker` лише при
-`billAsUserAction`.
+`billAsUserAction` (DP — false).
 
 **schemaVersion 10:** `document.textFormat` (`'txt'|'md'`, required default `'txt'`),
 `document.cleanedAt` (ISO|null), `attentionNotes` → extended. `migrateToVersion10`
@@ -58,10 +63,12 @@ Markdown, не міняючи юридичний зміст. `src/services/clean
 **Viewer:** `ocrService.getCleanOrRawText` (`.md` → `.txt`) + `MarkdownRenderer.jsx`
 (легкий MD→HTML, без npm-залежності).
 
-**Знахідка (борг #42):** cleaned-MD не персиститься для slice-документів DP — інтеграція
-clean+нарізка відкладена (рішення Варіант 1/2/3 після підтвердження page-precise slicing).
+**Борги розчинено:** #16 (Варіант 1/2/3 clean+slice) і колишній «cleaned-MD не персиститься»
+— розчинені пост-кроком (очистка ПІСЛЯ нарізки). Новий борг #43 — винос геометрії у спільний
+`layoutGeometry`.
 
-**Тести:** 1753 → 1799 (+46). Фази 3.2 (кнопки) / 3.3 (вибір+видалення) — наступні.
+**Тести:** 1753 → 1800 (+47). Фази 3.2 (кнопки — тягнуть adapter+ядро) / 3.3 (вибір+видалення)
+— наступні.
 
 ---
 

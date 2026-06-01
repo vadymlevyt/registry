@@ -256,6 +256,93 @@ export async function writeLayoutArtifact(file, layout) {
   return await writeArtifact(file, layoutCacheFileName(file), serialized, 'application/json');
 }
 
+// ── Артефакти очистки тексту (TASK 3.1 cleanTextService Drive-шви) ───────────
+// Ці функції — реалізація Drive-швів cleanDocument: читач layout/txt,
+// запис .md, прибирання .txt/.layout. Їх же перевикористовує adapter для
+// кнопок 3.2 (cleanTextDriveAdapter.js). Усі — best-effort (cleanDocument
+// сам трактує move/delete як некритичні).
+
+// getCachedLayout — прочитати <basename>_<id>.layout.json з 02_ОБРОБЛЕНІ і
+// розпарсити (fetchLayout-шов). Повертає об'єкт { pages:[...] } або null.
+export async function getCachedLayout(file) {
+  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return null;
+  try {
+    const matches = await listFolderFilesByName(subFolderId, layoutCacheFileName(file));
+    if (matches.length === 0) return null;
+    const raw = await readDriveFileText(matches[0].id);
+    const obj = JSON.parse(raw);
+    return obj && Array.isArray(obj.pages) ? obj : null;
+  } catch {
+    return null;
+  }
+}
+
+// writeMarkdownArtifact — записати <basename>_<id>.md у 02_ОБРОБЛЕНІ (saveMarkdown-шов).
+export async function writeMarkdownArtifact(file, markdown) {
+  if (!markdown || !String(markdown).trim()) return false;
+  return await writeArtifact(file, markdownCacheFileName(file), String(markdown), 'text/markdown');
+}
+
+// findOrCreateSubfolder — знайти/створити підпапку name під parentId. name —
+// латиниця (`_raw_txt`) → q= безпечне (rule #8: фільтр по mimeType, не кирилиця).
+async function findOrCreateSubfolder(parentId, name) {
+  const q = `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const res = await driveRequest(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
+  );
+  if (res.ok) {
+    const data = await res.json();
+    const found = (data.files || []).find((f) => f.name === name);
+    if (found) return found.id;
+  }
+  const meta = { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] };
+  const create = await driveRequest('https://www.googleapis.com/drive/v3/files?fields=id', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(meta),
+  });
+  if (!create.ok) return null;
+  const created = await create.json();
+  return created.id || null;
+}
+
+// archiveRawTxt — перемістити <basename>_<id>.txt з 02_ОБРОБЛЕНІ у
+// 02_ОБРОБЛЕНІ/_raw_txt/ (moveRawTxtToArchive-шов). Best-effort: нема .txt → false.
+export async function archiveRawTxt(file) {
+  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return false;
+  try {
+    const matches = await listFolderFilesByName(subFolderId, textCacheFileName(file));
+    if (matches.length === 0) return false;
+    const rawFolderId = await findOrCreateSubfolder(subFolderId, '_raw_txt');
+    if (!rawFolderId) return false;
+    const res = await driveRequest(
+      `https://www.googleapis.com/drive/v3/files/${matches[0].id}?addParents=${rawFolderId}&removeParents=${subFolderId}&fields=id,parents`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// deleteLayoutArtifact — видалити <basename>_<id>.layout.json з 02_ОБРОБЛЕНІ
+// (deleteLayout-шов). Паливо конденсатора відпрацювало.
+export async function deleteLayoutArtifact(file) {
+  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return false;
+  try {
+    const matches = await listFolderFilesByName(subFolderId, layoutCacheFileName(file));
+    for (const m of matches) {
+      await driveRequest(`https://www.googleapis.com/drive/v3/files/${m.id}`, { method: 'DELETE' }).catch(() => {});
+    }
+    return matches.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 // hasOcrSupport — чи існує хоч один OCR-провайдер для цього типу файла.
 // Викликається у CaseDossier:onSubmit перед запуском OCR pipeline щоб
 // для непідтримуваних форматів одразу пропустити OCR крок без warning-тоста.

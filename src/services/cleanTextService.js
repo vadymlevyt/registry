@@ -462,7 +462,7 @@ export async function cleanDocument({
     try { await deleteLayout(document, caseData); } catch { /* паливо відпрацювало */ }
   }
   if (typeof updateDocumentMeta === 'function') {
-    await updateDocumentMeta(document, { textFormat: 'md', cleanedAt, attentionNotes });
+    await updateDocumentMeta(document, caseData, { textFormat: 'md', cleanedAt, attentionNotes });
   }
 
   return {

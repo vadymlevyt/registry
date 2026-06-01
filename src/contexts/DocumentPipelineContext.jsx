@@ -45,7 +45,8 @@ import * as ocrService from '../services/ocrService.js';
 import { findOrCreateFolder, uploadBytesToDrive } from '../services/driveService.js';
 import { callAPIWithRetry } from '../services/toolUseRunner.js';
 import { resolveModel } from '../services/modelResolver.js';
-import { polishToMarkdown as cleanTextPolishToMarkdown } from '../services/cleanTextService.js';
+import { cleanDocument as cleanTextCleanDocument } from '../services/cleanTextService.js';
+import { buildCleanDocumentDriveDeps } from '../services/cleanTextDriveAdapter.js';
 import {
   getCurrentUserId, getCurrentTenantId, getEcitsAutoProcess, getSplitterDatasetEnabled,
 } from '../services/tenantService.js';
@@ -101,24 +102,6 @@ async function aiTriage({ artifacts, userHint, caseId }) {
   if (!apiKey) throw new Error('Немає API ключа для Triage');
   const { analyzeTriageViaToolUse } = await import('../services/documentBoundary/analyzeTriageViaToolUse.js');
   return analyzeTriageViaToolUse({ artifacts, userHint, caseId, apiKey });
-}
-
-// DP-консолідація (TASK 3.1): inline-дубль очистки прибрано — DP став першим
-// реальним споживачем спільного ядра cleanTextService. Тонка обгортка тримає
-// контракт extractV3 cleanText(text,{fileName}) → string: ядро повертає
-// {markdown, attentionNotes}, беремо markdown. DP — автоматичне продовження
-// обробки, НЕ окрема оплачувана дія адвоката (parent §C7) → billAsUserAction:
-// false (токени в ai_usage[] пишуться завжди; activityTracker як дію — ні).
-async function aiCleanText(text, { fileName } = {}) {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error('Немає API ключа для очистки');
-  const { markdown } = await cleanTextPolishToMarkdown({
-    draft: text,
-    fileName,
-    apiKey,
-    billAsUserAction: false,
-  });
-  return markdown || '';
 }
 
 // OCR одного chunk: байти приходять з _temp (streamingExecutor читає, потім
@@ -181,6 +164,25 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       getEnabled: () => getSplitterDatasetEnabled(),
     });
 
+    // TASK 3.1 — очистка тексту для читання як ПОСТ-КРОК на готових документах.
+    // Drive-шви ядра cleanDocument будуються ОДИН раз (executeAction стабільний);
+    // splitDocumentsV3 кличе cleanFinalizedDocument по кожному scanned-документу
+    // ПІСЛЯ фіналізації. billAsUserAction:false — автопродовження обробки, не
+    // окрема оплачувана дія адвоката (parent §C7): токени завжди, activityTracker
+    // як дію — ні. Ті ж Drive-шви перевикористає 3.2 (кнопки).
+    const cleanDriveDeps = buildCleanDocumentDriveDeps({
+      executeAction,
+      agentId: 'document_processor_agent',
+    });
+    const cleanFinalizedDocument = ({ document, caseData }) => cleanTextCleanDocument({
+      document,
+      caseData,
+      apiKey: getApiKey(),
+      billAsUserAction: false,
+      aiUsageSink: null,
+      ...cleanDriveDeps,
+    });
+
     const buildPipelineDeps = ({ getStreamedText, getStreamedLayout }) => {
       const opt = runOptionsRef.current || {};
       return {
@@ -199,8 +201,8 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             skipPdfSlicing: opt.skipPdfSlicing === true,
           }),
           extract: createExtractV3({
-            cleanForReading: opt.cleanForReading === true,
-            cleanText: aiCleanText,
+            // TASK 3.1: extract БІЛЬШЕ не чистить (очистка — пост-крок у persist
+            // на готових документах). Лишає сирий OCR-текст (txt).
             getStreamedText,
             getStreamedLayout,
           }),
@@ -245,6 +247,10 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             topics: { DOCUMENT_FRAGMENT_SAVED },
             datasetCollector: opt.collectDataset ? datasetCollector : null,
             fragmentsMode: opt.fragmentsCombined ? 'combined' : 'separate',
+            // TASK 3.1 — тумблер «Очистити для читання»: ПОСТ-КРОК очистки на
+            // готових scanned-документах (.txt→.md через ядро cleanDocument).
+            cleanForReading: opt.cleanForReading === true,
+            cleanFinalizedDocument,
           }),
         },
         convertToPdf,

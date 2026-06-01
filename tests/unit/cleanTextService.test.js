@@ -227,7 +227,7 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
     expect(d.moveRawTxtToArchive).toHaveBeenCalledTimes(1);
     expect(d.deleteLayout).toHaveBeenCalledTimes(1);          // usedLayout → видаляємо
     expect(d.updateDocumentMeta).toHaveBeenCalledTimes(1);
-    const [, meta] = d.updateDocumentMeta.mock.calls[0];
+    const [, , meta] = d.updateDocumentMeta.mock.calls[0];   // (document, caseData, meta)
     expect(meta.textFormat).toBe('md');
     expect(typeof meta.cleanedAt).toBe('string');
     expect(meta.attentionNotes).toEqual([{ page: null, note: 'увага' }]);

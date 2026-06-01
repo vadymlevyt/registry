@@ -403,6 +403,38 @@ export function createSplitDocumentsV3(stageDeps = {}) {
       }
     }
 
+    // ── Очистка тексту для читання (TASK 3.1, ПОСТ-КРОК) ─────────────────────
+    // Філософія адвоката: тумблер «Очистити для читання» — це НЕ очистка до
+    // нарізки, а той самий cleanDocument, підключений ОСТАННІМ кроком — коли
+    // нарізка/склейка вже розклала ФІНАЛЬНІ документи і їхні .txt+.layout у 02.
+    // Тоді по кожному готовому scanned-документу запускаємо cleanFinalizedDocument
+    // (= ядро cleanTextService.cleanDocument через Drive-шви, billAsUserAction:false).
+    // Працює однаково для slice і image_merge. Скоуп — лише scanned (гард у ядрі
+    // дублюється тут дешевою перевіркою). НЕ міняємо запис сирого .txt/.layout
+    // вище — пост-крок іде ПІСЛЯ і перетворює .txt→.md, не замість.
+    if (stageDeps.cleanForReading === true && typeof stageDeps.cleanFinalizedDocument === 'function') {
+      for (const document of newDocuments) {
+        if (!document || document.documentNature !== 'scanned') continue;
+        try {
+          const r = await stageDeps.cleanFinalizedDocument({ document, caseData: ctx.job.caseData });
+          if (r && r.ok === false && !r.skipped && r.error) {
+            decisions.push({
+              type: 'text_clean_failed',
+              documentName: document.name,
+              message: `Очистка тексту "${document.name}" не виконалась (${r.error}) — лишився сирий .txt.`,
+            });
+          }
+        } catch (err) {
+          // Очистка не критична — документ уже збережений з сирим .txt.
+          decisions.push({
+            type: 'text_clean_failed',
+            documentName: document.name,
+            message: `Очистка тексту "${document.name}" не вдалась — збережено сирий OCR: ${err?.message || err}`,
+          });
+        }
+      }
+    }
+
     // ── saveFragments (sub-стадія): невикористані сторінки → 03_ФРАГМЕНТИ ──
     // route to_fragments додає свої сторінки до unusedPages плану (один потік
     // збереження фрагментів — не дублюємо логіку, правило #11).
