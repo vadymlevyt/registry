@@ -30,6 +30,7 @@ export const MAX_IMAGES_WARN = 50;
 export const PHASES = [
   { key: 'preparing', label: 'Підготовка' },
   { key: 'heic', label: 'HEIC → JPEG' },
+  { key: 'downscale', label: 'Зменшення' },
   { key: 'ocr', label: 'OCR' },
   { key: 'sort', label: 'Сортування' },
   { key: 'rotate', label: 'Орієнтація' },

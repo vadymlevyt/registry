@@ -71,10 +71,12 @@ function humanSize(b) {
 }
 
 // Фази важкої фото-обробки image-merge (для повноекранного ProcessingProgress).
-// Ключі збігаються з phase із prepareImagesForMerge.onProgress (heic/ocr/rotate)
-// + два кроки index.jsx після prepare (grouper/sort) — їх живимо вручну.
+// Ключі збігаються з phase із prepareImagesForMerge.onProgress
+// (heic/downscale/ocr/rotate) + два кроки index.jsx після prepare
+// (grouper/sort) — їх живимо вручну.
 const IMAGE_MERGE_PHASES = [
   { key: 'heic', label: 'HEIC → JPEG' },
+  { key: 'downscale', label: 'Зменшення' },
   { key: 'ocr', label: 'OCR' },
   { key: 'rotate', label: 'Орієнтація' },
   { key: 'grouper', label: 'Групування' },
