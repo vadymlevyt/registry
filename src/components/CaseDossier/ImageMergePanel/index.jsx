@@ -213,6 +213,16 @@ export const ImageMergePanel = forwardRef(function ImageMergePanel(
     setPhase('processing');
     setProgress({ phase: 'preparing', done: 0, total: files.length });
 
+    // Swap-гігієна: повторний запуск обробки (назад у selecting → знову
+    // «Обробити») перевикористовує ті самі індекси. Без скидання старі
+    // thumb-URL ніколи не відкликались би (leak до unmount) і нові не
+    // створювались би (guard !has(i) нижче). Відкликаємо і чистимо мапу —
+    // нижче створяться свіжі для нового набору файлів.
+    for (const url of thumbUrlsRef.current.values()) {
+      try { URL.revokeObjectURL(url); } catch { /* noop */ }
+    }
+    thumbUrlsRef.current.clear();
+
     const realFiles = [];
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
