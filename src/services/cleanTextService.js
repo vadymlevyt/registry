@@ -45,6 +45,45 @@ const TEXT_CLEANER_AGENT = 'textCleaner';
 const TEXT_CLEANER_USAGE_AGENT = 'text_cleaner';
 const FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
 
+// ── Бюджети токенів (flow_clean_text_chunking.md) ───────────────────────────
+// Два РІЗНІ ліміти: ВХІД (читання, вікно Haiku 200K) і ВИХІД (генерація, стеля
+// Haiku 4.5 = 64K — API відхилить >64000). Очистку обмежує менший — ВИХІД,
+// тому документ чистимо ПАЧКАМИ сторінок під вихідну стелю.
+const HAIKU_MAX_OUTPUT_TOKENS = 64000;   // стеля Haiku 4.5 — НЕ перевищувати (API відхилить)
+const MAX_BATCH_OUTPUT_TOKENS = 24000;   // цільовий вихід однієї пачки (~8-15 стор.)
+const CYRILLIC_CHARS_PER_TOKEN = 2;      // щільність кирилиці (passport_scale дослідження)
+const OUTPUT_HEADROOM = 1.5;             // markdown додає форматування → запас на max_tokens
+const MIN_OUTPUT_TOKENS = 2000;          // floor max_tokens (коротка пачка)
+const INPUT_CHAR_CAP = 200000;           // безпечний cap входу (~100K ток, під вікно 200K)
+
+// Оцінка вихідних токенів для тексту (кирилиця ~2 симв/ток).
+function estimateTokens(str) {
+  return Math.ceil(String(str || '').length / CYRILLIC_CHARS_PER_TOKEN);
+}
+function estimatePageTokens(page) {
+  return estimateTokens(page && page._text);
+}
+// max_tokens під обсяг пачки: оцінка × запас + буфер, у межах [MIN, 64000].
+function maxTokensForEstimate(estTok) {
+  const v = Math.ceil((estTok || 0) * OUTPUT_HEADROOM) + 1000;
+  return Math.max(MIN_OUTPUT_TOKENS, Math.min(HAIKU_MAX_OUTPUT_TOKENS, v));
+}
+// Пакування сторінок у пачки за вихідним бюджетом (лік плаває за щільністю).
+function packPagesIntoBatches(pages) {
+  const batches = [];
+  let cur = [];
+  let curTok = 0;
+  for (const p of pages) {
+    const t = estimatePageTokens(p);
+    if (cur.length > 0 && curTok + t > MAX_BATCH_OUTPUT_TOKENS) {
+      batches.push(cur); cur = []; curTok = 0;
+    }
+    cur.push(p); curTok += t;
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
 // ── КРОК 1 · КОНДЕНСАТОР (детермінований, 0 токенів) ────────────────────────
 
 // Геометрія блоку: vertical bounds + горизонтальний центр/ширина з
@@ -246,6 +285,8 @@ function extractJsonObject(text) {
 // Консервативний промпт (перенесено + посилено з inline aiCleanText DP).
 // §6 design: AI чистить ФОРМАТУВАННЯ, НЕ зміст. Повертає JSON {markdown,
 // attentionNotes}. attentionNotes — що привернуло увагу БЕЗ зміни документа.
+// Вхід обмежений INPUT_CHAR_CAP (безпека під вікно 200K; пачкування тримає
+// реальні чернетки малими — cap спрацьовує лише на патологічно великий flat-txt).
 function buildCleanPrompt(draft, fileName) {
   return `Ти форматуєш сирий OCR-текст судового документа${fileName ? ` "${fileName}"` : ''} у гарний читабельний Markdown.
 
@@ -264,16 +305,20 @@ function buildCleanPrompt(draft, fileName) {
 Якщо нічого не привернуло увагу — "attentionNotes": [].
 
 Сира чернетка тексту:
-${String(draft).slice(0, 120000)}`;
+${String(draft).slice(0, INPUT_CHAR_CAP)}`;
 }
 
 /**
- * КРОК 2 — AI-поліш. Чернетка → фінальний Markdown + attentionNotes.
- * C7-логування один шлях (logAiUsage завжди при usage; activityTracker лише
- * коли billAsUserAction — окрема оплачувана дія адвоката, parent §C7).
+ * КРОК 2 — AI-поліш ОДНІЄЇ пачки. Чернетка → фінальний Markdown + attentionNotes.
+ * max_tokens рахується від обсягу пачки (caller), стеля HAIKU_MAX_OUTPUT_TOKENS.
+ * Детектує обрізання (stop_reason==='max_tokens') → truncated:true.
  *
- * @returns {Promise<{markdown, attentionNotes, warning, usage}>}
- *   markdown=draft + warning якщо нема ключа / AI кинув / повернув порожнє.
+ * C7: logAiUsage (токени) ЗАВЖДИ при usage. activityTracker (оплачувана ДІЯ
+ * адвоката) тут НЕ викликається — він раз на документ у cleanDocument (інакше
+ * пачкування над-рахувало б одну дію як N).
+ *
+ * @returns {Promise<{markdown, attentionNotes, warning, usage, truncated}>}
+ *   markdown=draft + warning якщо нема ключа / AI кинув / порожнє.
  */
 export async function polishToMarkdown({
   draft,
@@ -282,28 +327,33 @@ export async function polishToMarkdown({
   caseId = null,
   documentId = null,
   module = MODULES.DOCUMENT_PROCESSOR,
-  billAsUserAction = true,
+  maxTokens = null,
   aiUsageSink = null,
   // DI-шви (дефолти — реальні; тести стабують):
   callAI = defaultCallAPIWithRetry,
   resolveModel = defaultResolveModel,
   logAiUsage = defaultLogAiUsage,
-  activityTracker = defaultActivityTracker,
 } = {}) {
   const draftStr = String(draft || '');
   if (!apiKey) {
-    return { markdown: draftStr, attentionNotes: [], warning: 'AI недоступний — збережено чернетку без поліша', usage: null };
+    return { markdown: draftStr, attentionNotes: [], warning: 'AI недоступний — збережено чернетку без поліша', usage: null, truncated: false };
   }
   if (!draftStr.trim()) {
-    return { markdown: '', attentionNotes: [], warning: 'Порожня чернетка', usage: null };
+    return { markdown: '', attentionNotes: [], warning: 'Порожня чернетка', usage: null, truncated: false };
   }
 
   const model = resolveModel(TEXT_CLEANER_AGENT) || FALLBACK_MODEL;
+  // max_tokens: переданий caller'ом (пачка) або оцінений від чернетки; стеля 64K.
+  const max_tokens = Math.min(
+    HAIKU_MAX_OUTPUT_TOKENS,
+    maxTokens || maxTokensForEstimate(estimateTokens(draftStr)),
+  );
+
   let res;
   try {
     res = await callAI({
       model,
-      max_tokens: 8000,
+      max_tokens,
       messages: [{ role: 'user', content: buildCleanPrompt(draftStr, fileName) }],
     }, { apiKey });
   } catch (err) {
@@ -312,11 +362,11 @@ export async function polishToMarkdown({
       attentionNotes: [],
       warning: `Очистка не вдалась (${err?.message || err}) — збережено чернетку`,
       usage: null,
+      truncated: false,
     };
   }
 
-  // C7 — токени пишемо завжди коли є usage; activityTracker лише при
-  // billAsUserAction (окрема дія адвоката). Один шлях на всіх споживачів.
+  // C7 — токени пишемо завжди коли є usage (на КОЖЕН виклик пачки — точна вартість).
   const usage = res?.usage || null;
   try {
     logAiUsage({
@@ -326,16 +376,9 @@ export async function polishToMarkdown({
       outputTokens: usage?.output_tokens,
       context: { caseId, module, operation: 'clean_text', documentId },
     }, aiUsageSink);
-    if (billAsUserAction) {
-      activityTracker.report('agent_call', {
-        caseId,
-        module,
-        category: categoryForCase(caseId),
-        metadata: { agentType: TEXT_CLEANER_USAGE_AGENT, operation: 'clean_text', documentId },
-      });
-    }
   } catch { /* телеметрія не критична */ }
 
+  const truncated = res?.stop_reason === 'max_tokens';
   const out = res?.content?.[0]?.text || res?.content || '';
   const rawText = typeof out === 'string' ? out : '';
   const parsed = extractJsonObject(rawText);
@@ -347,41 +390,58 @@ export async function polishToMarkdown({
           .map((n) => ({ page: n.page ?? null, note: String(n.note || '').trim() }))
           .filter((n) => n.note)
       : [];
-    return { markdown: parsed.markdown, attentionNotes: notes, warning: null, usage };
+    return {
+      markdown: parsed.markdown,
+      attentionNotes: notes,
+      warning: truncated ? 'AI обрізав вивід (max_tokens)' : null,
+      usage,
+      truncated,
+    };
   }
 
   // AI повернув не-JSON або порожнє: якщо є непорожній сирий текст — взяти його
   // (краще ніж нічого), інакше fallback на чернетку.
   if (rawText.trim()) {
-    return { markdown: rawText, attentionNotes: [], warning: 'AI повернув не-JSON — збережено як plain', usage };
+    return { markdown: rawText, attentionNotes: [], warning: 'AI повернув не-JSON — збережено як plain', usage, truncated };
   }
-  return { markdown: draftStr, attentionNotes: [], warning: 'Очистка повернула порожнє — збережено чернетку', usage };
+  return { markdown: draftStr, attentionNotes: [], warning: 'Очистка повернула порожнє — збережено чернетку', usage, truncated };
 }
 
 // ── КРОК 3 · ОРКЕСТРАЦІЯ (cleanDocument) ────────────────────────────────────
 
 function noop() {}
 
+// Склейка частин документа через роздільник сторінок (межі зберігаються).
+const PAGE_SEP = '\n\n---\n\n';
+
 /**
  * cleanDocument — оркестрація очистки ОДНОГО документа (DI, без React-стану).
- * Скоуп-гард scanned → fetch layout/txt → КРОК1 конденсатор → КРОК2 AI-поліш
- * → долі артефактів (.md створити, .txt → _raw_txt/, .layout.json видалити)
- * → оновити метадані (textFormat:'md', cleanedAt, attentionNotes).
+ * Скоуп-гард scanned → fetch layout/txt → ПАЧКОВЕ очищення (КРОК1 конденсатор
+ * + КРОК2 поліш на КОЖНУ пачку сторінок під вихідну стелю Haiku, з halving-retry
+ * при обрізанні) → склейка через роздільник → долі артефактів (CRASH-SAFE,
+ * тільки при ПОВНОМУ успіху).
+ *
+ * Долі артефактів виконуються ТІЛЬКИ при повному успіху (AI відпрацював, не
+ * обрізало, не fallback на чернетку). Порядок crash-safe (метадані ДО руйнівних
+ * кроків; .layout видаляється ОСТАННІМ — він надмножина .txt і паливо повторної
+ * очистки): 1) saveMarkdown → 2) updateDocumentMeta → 3) moveRawTxtToArchive →
+ * 4) deleteLayout. При будь-якій проблемі джерела (.txt/.layout) НЕДОТОРКАНІ.
  *
  * DI-шви Drive (fetchLayout/fetchRawText/saveMarkdown/moveRawTxtToArchive/
- * deleteLayout/updateDocumentMeta) — БЕЗ дефолтів: реальне Drive-під'єднання
- * робить споживач (3.2 кнопки). 3.1 покриває оркестрацію тестами через spy.
- * AI/телеметрія-шви мають реальні дефолти.
+ * deleteLayout/updateDocumentMeta) — ін'єктує споживач (DP пост-крок / кнопки 3.2
+ * через cleanTextDriveAdapter). AI/телеметрія-шви мають реальні дефолти.
  *
  * @returns {Promise<object>}
  *   {ok:true, markdown, attentionNotes, warning, stats}
  *   {ok:false, skipped:true, reason:'not_scanned'}
- *   {ok:false, error:'NO_SOURCE'|...}
+ *   {ok:false, error:'NO_SOURCE'|'NO_DOCUMENT'}
+ *   {ok:false, degraded:true, needsRecleaning:true, warning, markdown, stats}
  */
 export async function cleanDocument({
   document,
   caseData = null,
   apiKey,
+  module = MODULES.DOCUMENT_PROCESSOR,
   onProgress = noop,
   aiUsageSink = null,
   billAsUserAction = true,
@@ -408,52 +468,137 @@ export async function cleanDocument({
   }
 
   const fileName = document.name || document.originalName || document.driveId || '';
+  const caseId = caseData?.id || null;
+  const documentId = document.id || null;
 
-  // 1. Джерело: layout → конденсатор; інакше сирий .txt → плоска чернетка.
+  // 1. Джерело: layout (посторінково, пачкуємо) → інакше сирий .txt (одна пачка).
   onProgress('Готую текст...');
-  let draft = '';
-  let usedLayout = false;
   let layout = null;
   if (typeof fetchLayout === 'function') {
     try { layout = await fetchLayout(document, caseData); } catch { layout = null; }
   }
-  if (layout && pagesOf(layout).length > 0) {
-    draft = layoutToMarkdownDraft(layout);
-    usedLayout = true;
+  const pages = layout ? pagesOf(layout) : [];
+  const usedLayout = pages.length > 0;
+
+  let flatDraft = '';
+  if (!usedLayout && typeof fetchRawText === 'function') {
+    try { const raw = await fetchRawText(document, caseData); if (raw && String(raw).trim()) flatDraft = String(raw); }
+    catch { flatDraft = ''; }
   }
-  if (!draft.trim() && typeof fetchRawText === 'function') {
-    let raw = '';
-    try { raw = await fetchRawText(document, caseData); } catch { raw = ''; }
-    if (raw && String(raw).trim()) draft = String(raw);
-  }
-  if (!draft.trim()) {
+  if (!usedLayout && !flatDraft.trim()) {
     return { ok: false, error: 'NO_SOURCE' };
   }
 
-  // 2. AI-поліш (КРОК 2). Нема ключа / AI кинув → markdown=draft + warning.
-  onProgress('Очищаю...');
-  const polished = await polishToMarkdown({
-    draft,
+  // Спільний поліш-виклик для пачки/тексту (КРОК 2), з оцінкою max_tokens.
+  const polishOne = (draftStr, estTok) => polishToMarkdown({
+    draft: draftStr,
     fileName,
     apiKey,
-    caseId: caseData?.id || null,
-    documentId: document.id || null,
-    billAsUserAction,
+    caseId,
+    documentId,
+    module,
+    maxTokens: maxTokensForEstimate(estTok),
     aiUsageSink,
     callAI,
     resolveModel,
     logAiUsage,
-    activityTracker,
   });
 
-  const markdown = polished.markdown || draft;
-  const attentionNotes = polished.attentionNotes || [];
-  const cleanedAt = new Date().toISOString();
+  // Рекурсивна очистка пачки сторінок: при обрізанні (truncated) і >1 сторінки —
+  // ділимо пачку навпіл і повторюємо (доки 1 сторінка). КРОК1 конденсатор +
+  // КРОК2 поліш. Повертає { markdown, attentionNotes, degraded, warning, aiCalled }.
+  async function cleanBatch(batchPages) {
+    const draftStr = layoutToMarkdownDraft(batchPages);
+    if (!draftStr.trim()) {
+      return { markdown: '', attentionNotes: [], degraded: false, warning: null, aiCalled: false, empty: true };
+    }
+    if (!apiKey) {
+      return { markdown: draftStr, attentionNotes: [], degraded: true, warning: 'AI недоступний', aiCalled: false };
+    }
+    const estTok = batchPages.reduce((s, p) => s + estimatePageTokens(p), 0);
+    const r = await polishOne(draftStr, estTok);
+    if (r.truncated && batchPages.length > 1) {
+      const mid = Math.ceil(batchPages.length / 2);
+      const a = await cleanBatch(batchPages.slice(0, mid));
+      const b = await cleanBatch(batchPages.slice(mid));
+      return {
+        markdown: [a.markdown, b.markdown].filter((s) => s && s.trim()).join(PAGE_SEP),
+        attentionNotes: [...a.attentionNotes, ...b.attentionNotes],
+        degraded: a.degraded || b.degraded,
+        warning: a.warning || b.warning,
+        aiCalled: true,
+      };
+    }
+    return {
+      markdown: r.markdown,
+      attentionNotes: r.attentionNotes,
+      degraded: !!(r.truncated || r.warning),
+      warning: r.warning || (r.truncated ? 'AI обрізав вивід (max_tokens)' : null),
+      aiCalled: true,
+    };
+  }
 
-  // 3. Долі артефактів (через DI-шви; кожен ізольований).
+  // 2. Пачкове очищення.
+  onProgress('Очищаю...');
+  const parts = [];
+  const allNotes = [];
+  let degraded = false;
+  let warning = null;
+  let aiCalledAny = false;
+
+  if (usedLayout) {
+    const batches = packPagesIntoBatches(pages);
+    let i = 0;
+    for (const batch of batches) {
+      i += 1;
+      onProgress(`Очищаю пачку ${i}/${batches.length}...`);
+      const res = await cleanBatch(batch);
+      if (res.empty) continue;
+      if (res.markdown && res.markdown.trim()) parts.push(res.markdown);
+      allNotes.push(...res.attentionNotes);
+      if (res.aiCalled) aiCalledAny = true;
+      if (res.degraded) { degraded = true; warning = warning || res.warning; }
+    }
+  } else {
+    // Flat .txt fallback (старий скан без layout): одна пачка, без посторінкового
+    // halving (нема меж сторінок). Обрізало → degraded (джерела недоторкані).
+    if (!apiKey) {
+      parts.push(flatDraft); degraded = true; warning = 'AI недоступний';
+    } else {
+      const r = await polishOne(flatDraft, estimateTokens(flatDraft));
+      aiCalledAny = true;
+      if (r.markdown && r.markdown.trim()) parts.push(r.markdown);
+      allNotes.push(...r.attentionNotes);
+      if (r.truncated || r.warning) { degraded = true; warning = r.warning || 'AI обрізав вивід (max_tokens)'; }
+    }
+  }
+
+  const markdown = parts.join(PAGE_SEP);
+  const fullSuccess = !!apiKey && aiCalledAny && !degraded && !!markdown.trim();
+  const stats = { usedLayout, pageCount: pages.length, batches: usedLayout ? packPagesIntoBatches(pages).length : 1, degraded, mdChars: markdown.length };
+
+  // 3a. ДЕГРАДОВАНО — джерела (.txt/.layout) НЕДОТОРКАНІ, .md НЕ фіналізуємо.
+  if (!fullSuccess) {
+    return {
+      ok: false,
+      degraded: true,
+      needsRecleaning: true,
+      warning: warning || 'Очистка не завершена — джерела збережено для повтору',
+      markdown,
+      attentionNotes: allNotes,
+      stats,
+    };
+  }
+
+  // 3b. ПОВНИЙ УСПІХ — долі артефактів у crash-safe порядку.
+  //   1) .md → 2) метадані (факт успіху) → 3) .txt у архів → 4) .layout видалити.
   onProgress('Зберігаю...');
+  const cleanedAt = new Date().toISOString();
   if (typeof saveMarkdown === 'function') {
     await saveMarkdown(document, caseData, markdown);
+  }
+  if (typeof updateDocumentMeta === 'function') {
+    await updateDocumentMeta(document, caseData, { textFormat: 'md', cleanedAt, attentionNotes: allNotes });
   }
   if (typeof moveRawTxtToArchive === 'function') {
     try { await moveRawTxtToArchive(document, caseData); } catch { /* страховка не критична */ }
@@ -461,15 +606,25 @@ export async function cleanDocument({
   if (usedLayout && typeof deleteLayout === 'function') {
     try { await deleteLayout(document, caseData); } catch { /* паливо відпрацювало */ }
   }
-  if (typeof updateDocumentMeta === 'function') {
-    await updateDocumentMeta(document, caseData, { textFormat: 'md', cleanedAt, attentionNotes });
+
+  // C7 — оплачувана ДІЯ адвоката РАЗ на документ (не на пачку), лише при
+  // billAsUserAction (кнопки/ACTION). DP пост-крок передає false (автопродовження).
+  if (billAsUserAction) {
+    try {
+      activityTracker.report('agent_call', {
+        caseId,
+        module,
+        category: categoryForCase(caseId),
+        metadata: { agentType: TEXT_CLEANER_USAGE_AGENT, operation: 'clean_text', documentId },
+      });
+    } catch { /* телеметрія не критична */ }
   }
 
   return {
     ok: true,
     markdown,
-    attentionNotes,
-    warning: polished.warning || null,
-    stats: { usedLayout, hadApiKey: !!apiKey, draftChars: draft.length, mdChars: markdown.length },
+    attentionNotes: allNotes,
+    warning: null,
+    stats,
   };
 }

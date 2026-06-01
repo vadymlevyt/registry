@@ -151,28 +151,47 @@ describe('КРОК 2 — polishToMarkdown (AI-поліш + C7)', () => {
     expect(r.warning).toBeNull();
   });
 
-  it('C7: logAiUsage agentType "text_cleaner", operation "clean_text"', async () => {
+  it('C7: logAiUsage agentType "text_cleaner", operation "clean_text" (токени завжди)', async () => {
     const d = deps();
-    await polishToMarkdown({ draft: 'x', apiKey: 'k', caseId: 'case_1', documentId: 'doc_1', aiUsageSink: vi.fn(), ...d });
+    await polishToMarkdown({ draft: 'x', apiKey: 'k', caseId: 'case_1', documentId: 'doc_1', module: 'document_processor', aiUsageSink: vi.fn(), ...d });
     expect(d.logAiUsage).toHaveBeenCalledTimes(1);
     const [params] = d.logAiUsage.mock.calls[0];
     expect(params.agentType).toBe('text_cleaner');
     expect(params.context.operation).toBe('clean_text');
     expect(params.context.caseId).toBe('case_1');
     expect(params.context.documentId).toBe('doc_1');
+    expect(params.context.module).toBe('document_processor');
   });
 
-  it('billAsUserAction=true → activityTracker.report викликається', async () => {
+  it('polishToMarkdown НЕ викликає activityTracker (дія — раз на документ у cleanDocument)', async () => {
     const d = deps();
-    await polishToMarkdown({ draft: 'x', apiKey: 'k', billAsUserAction: true, ...d });
-    expect(d.activityTracker.report).toHaveBeenCalledTimes(1);
+    // activityTracker не приймається polishToMarkdown — перевіряємо, що поліш не
+    // тягне його навіть якщо передати (ігнорується).
+    const at = { report: vi.fn() };
+    await polishToMarkdown({ draft: 'x', apiKey: 'k', activityTracker: at, ...d });
+    expect(at.report).not.toHaveBeenCalled();
   });
 
-  it('billAsUserAction=false (DP) → activityTracker.report НЕ викликається; токени все одно логуються', async () => {
+  it('max_tokens рахується від обсягу (не фіксований 8000) і не перевищує 64000', async () => {
     const d = deps();
-    await polishToMarkdown({ draft: 'x', apiKey: 'k', billAsUserAction: false, ...d });
-    expect(d.activityTracker.report).not.toHaveBeenCalled();
-    expect(d.logAiUsage).toHaveBeenCalledTimes(1);   // токени завжди
+    // велика чернетка (>128K симв ≈ >64K ток) → max_tokens впирається у стелю 64000
+    await polishToMarkdown({ draft: 'я'.repeat(200000), apiKey: 'k', ...d });
+    const [params] = d.callAI.mock.calls[0];
+    expect(params.max_tokens).toBeLessThanOrEqual(64000);
+    expect(params.max_tokens).toBeGreaterThan(8000);   // не спадковий фіксований 8000
+  });
+
+  it('передане maxTokens поважається (у межах стелі)', async () => {
+    const d = deps();
+    await polishToMarkdown({ draft: 'короткий', apiKey: 'k', maxTokens: 12345, ...d });
+    expect(d.callAI.mock.calls[0][0].max_tokens).toBe(12345);
+  });
+
+  it('stop_reason=max_tokens → truncated:true + warning', async () => {
+    const d = deps({ callAI: vi.fn(async () => ({ ...aiJsonResponse('# обрізано'), stop_reason: 'max_tokens' })) });
+    const r = await polishToMarkdown({ draft: 'x', apiKey: 'k', ...d });
+    expect(r.truncated).toBe(true);
+    expect(r.warning).toMatch(/обрізав/);
   });
 
   it('callAI кинув → markdown=draft + warning (не падає)', async () => {
@@ -217,20 +236,68 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
     expect(d.fetchLayout).not.toHaveBeenCalled();
   });
 
-  it('layout → конденсатор → AI → долі артефактів у правильному порядку', async () => {
+  it('повний успіх: долі артефактів у CRASH-SAFE порядку (md→meta→txt→layout)', async () => {
     const d = orchDeps();
     const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'case_1' }, apiKey: 'k', ...d });
     expect(r.ok).toBe(true);
     expect(r.markdown).toBe('# Очищено\n\nфінал');
     expect(r.attentionNotes).toEqual([{ page: null, note: 'увага' }]);
     expect(d.saveMarkdown).toHaveBeenCalledWith(scannedDoc, { id: 'case_1' }, '# Очищено\n\nфінал');
-    expect(d.moveRawTxtToArchive).toHaveBeenCalledTimes(1);
-    expect(d.deleteLayout).toHaveBeenCalledTimes(1);          // usedLayout → видаляємо
-    expect(d.updateDocumentMeta).toHaveBeenCalledTimes(1);
     const [, , meta] = d.updateDocumentMeta.mock.calls[0];   // (document, caseData, meta)
     expect(meta.textFormat).toBe('md');
     expect(typeof meta.cleanedAt).toBe('string');
     expect(meta.attentionNotes).toEqual([{ page: null, note: 'увага' }]);
+    // CRASH-SAFE порядок: .md → метадані → .txt у архів → .layout видалити.
+    const order = (fn) => fn.mock.invocationCallOrder[0];
+    expect(order(d.saveMarkdown)).toBeLessThan(order(d.updateDocumentMeta));
+    expect(order(d.updateDocumentMeta)).toBeLessThan(order(d.moveRawTxtToArchive));
+    expect(order(d.moveRawTxtToArchive)).toBeLessThan(order(d.deleteLayout));
+  });
+
+  it('великий документ → ПАЧКУВАННЯ: кілька викликів AI, склейка через роздільник', async () => {
+    // 3 сторінки по ~30000 симв (~15000 ток) → пачка ~24000 ток → 3 пачки.
+    const bigPage = (n) => ({ _text: `сторінка ${n} `.padEnd(30000, 'я'), blocks: [block(0.1, 0.4, 0.9, 0.5)] });
+    let call = 0;
+    const callAI = vi.fn(async () => { call += 1; return aiJsonResponse(`# Пачка ${call}`); });
+    const d = orchDeps({ callAI, fetchLayout: vi.fn(async () => ({ pages: [bigPage(1), bigPage(2), bigPage(3)] })) });
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', ...d });
+    expect(r.ok).toBe(true);
+    expect(callAI.mock.calls.length).toBeGreaterThanOrEqual(2);   // кілька пачок
+    expect(r.markdown).toContain('---');                          // склейка через роздільник
+    expect(r.stats.batches).toBeGreaterThanOrEqual(2);
+  });
+
+  it('TRUNCATION-GUARD: одна сторінка обрізана (max_tokens) → джерела НЕДОТОРКАНІ, ok:false', async () => {
+    const callAI = vi.fn(async () => ({ ...aiJsonResponse('# обрізок'), stop_reason: 'max_tokens' }));
+    const d = orchDeps({ callAI, fetchLayout: vi.fn(async () => ({ pages: [{ _text: 'одна сторінка', blocks: [block(0.1, 0.4, 0.9, 0.5)] }] })) });
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', ...d });
+    expect(r.ok).toBe(false);
+    expect(r.degraded).toBe(true);
+    expect(r.needsRecleaning).toBe(true);
+    // НІЧОГО не руйнуємо і не фіналізуємо.
+    expect(d.saveMarkdown).not.toHaveBeenCalled();
+    expect(d.updateDocumentMeta).not.toHaveBeenCalled();
+    expect(d.moveRawTxtToArchive).not.toHaveBeenCalled();
+    expect(d.deleteLayout).not.toHaveBeenCalled();
+  });
+
+  it('AI кинув → ДЕГРАДОВАНО: джерела недоторкані, .md НЕ фіналізується (ok:false)', async () => {
+    const d = orchDeps({ callAI: vi.fn(async () => { throw new Error('boom'); }) });
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', ...d });
+    expect(r.ok).toBe(false);
+    expect(r.degraded).toBe(true);
+    expect(d.saveMarkdown).not.toHaveBeenCalled();
+    expect(d.deleteLayout).not.toHaveBeenCalled();
+    expect(d.moveRawTxtToArchive).not.toHaveBeenCalled();
+  });
+
+  it('нема ключа → ДЕГРАДОВАНО: чернетка не фіналізується, джерела недоторкані', async () => {
+    const d = orchDeps();
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: null, ...d });
+    expect(r.ok).toBe(false);
+    expect(r.degraded).toBe(true);
+    expect(d.saveMarkdown).not.toHaveBeenCalled();
+    expect(d.deleteLayout).not.toHaveBeenCalled();
   });
 
   it('нема layout, але є сирий .txt → плоска чернетка; deleteLayout НЕ викликається', async () => {
@@ -238,7 +305,7 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
       fetchLayout: vi.fn(async () => null),
       fetchRawText: vi.fn(async () => 'сирий txt fallback'),
     });
-    const r = await cleanDocument({ document: scannedDoc, apiKey: 'k', ...d });
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', ...d });
     expect(r.ok).toBe(true);
     expect(d.deleteLayout).not.toHaveBeenCalled();            // usedLayout false
     expect(d.saveMarkdown).toHaveBeenCalledTimes(1);
@@ -251,20 +318,28 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
     expect(d.saveMarkdown).not.toHaveBeenCalled();
   });
 
-  it('AI кинув → markdown=draft, але артефакти все одно зберігаються (ok:true + warning)', async () => {
-    const d = orchDeps({ callAI: vi.fn(async () => { throw new Error('boom'); }) });
-    const r = await cleanDocument({ document: scannedDoc, apiKey: 'k', ...d });
-    expect(r.ok).toBe(true);
-    expect(r.warning).toMatch(/не вдалась/);
-    expect(d.saveMarkdown).toHaveBeenCalledTimes(1);
-    const [, , md] = d.saveMarkdown.mock.calls[0];
-    expect(md).toContain('сирий текст сторінки');             // чернетка з конденсатора
+  it('billAsUserAction:true → activityTracker РАЗ на документ (не на пачку)', async () => {
+    // 3 пачки, але дія адвоката рахується ОДИН раз.
+    const bigPage = (n) => ({ _text: `с${n} `.padEnd(30000, 'я'), blocks: [block(0.1, 0.4, 0.9, 0.5)] });
+    const d = orchDeps({ fetchLayout: vi.fn(async () => ({ pages: [bigPage(1), bigPage(2), bigPage(3)] })) });
+    await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', billAsUserAction: true, ...d });
+    expect(d.activityTracker.report).toHaveBeenCalledTimes(1);
+    // logAiUsage — на КОЖНУ пачку (точна вартість).
+    expect(d.logAiUsage.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('billAsUserAction передається у КРОК 2 (DP false → без activityTracker)', async () => {
+  it('billAsUserAction:false (DP) → activityTracker НЕ викликається; токени логуються', async () => {
     const d = orchDeps();
-    await cleanDocument({ document: scannedDoc, apiKey: 'k', billAsUserAction: false, ...d });
+    await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', billAsUserAction: false, ...d });
     expect(d.activityTracker.report).not.toHaveBeenCalled();
+    expect(d.logAiUsage).toHaveBeenCalled();
+  });
+
+  it('module прокидається у logAiUsage і activityTracker', async () => {
+    const d = orchDeps();
+    await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', module: 'case_dossier', billAsUserAction: true, ...d });
+    expect(d.logAiUsage.mock.calls[0][0].context.module).toBe('case_dossier');
+    expect(d.activityTracker.report.mock.calls[0][1].module).toBe('case_dossier');
   });
 
   it('документ відсутній → NO_DOCUMENT', async () => {
