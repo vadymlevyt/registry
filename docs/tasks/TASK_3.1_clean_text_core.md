@@ -96,15 +96,48 @@ export async function cleanDocument({
   не міняти зміст), повертає JSON `{markdown, attentionNotes:[{page?,note}]}`, depth-counter
   парсинг (НЕ regex).
 
-### 3.1.2 — DP-консолідація
-- **Видалити** inline `aiCleanText` з `DocumentPipelineContext.jsx`.
-- DI `cleanText` у `buildPipelineDeps` показує на ядро (тонка обгортка: DP вже має
-  текст+layout у пайплайні — передає у КРОК2 ядра; КРОК1 конденсатор у DP вже фактично
-  не потрібен бо текст є — АЛЕ якщо хочемо єдиний шлях, ядро приймає і готовий текст).
-  Рішення форми — за виконавцем, зафіксувати у звіті.
-- Тумблер «Очистити для читання» — поведінка ідентична, через ядро. **Один шлях логування**
-  (DP передає `billAsUserAction:false`, `aiUsageSink` — як зараз).
-- `extractV3.js` — DI-контракт `cleanText` лишається; міняється лише що під нього підставляють.
+### 3.1.2 — DP-інтеграція = очистка ПОСТ-КРОКОМ на готових документах
+
+> ⚠ **ПОПРАВКА 2026-06-01 (нова філософія адвоката).** Перша редакція 3.1 уже приземлилась
+> (гілка `clean-text-core-phase-3.1-YxOLP`, `fd8d913`, у main НЕ зведено): ядро/схема/viewer —
+> правильні, лишаються. Але DP-інтеграцію зроблено за **старою** моделлю (де-дубльовано
+> `polishToMarkdown`, проте `extractV3` досі чистить текст **ДО** нарізки/склейки, in-memory,
+> і результат не персиститься — борг #42). Це **переробити** під модель адвоката нижче.
+> Блокер, через який виконавець відклав це (гонка з паралельною image-merge сесією), **знятий** —
+> та сесія завершилась, `splitDocumentsV3.js` вільний.
+
+**Модель адвоката (єдино правильна):** тумблер «Очистити для читання» — це НЕ очистка
+до нарізки. Це **той самий виклик ядра `cleanDocument`, підключений ОСТАННІМ кроком** —
+коли нарізка/склейка вже розклала **фінальні** документи (у 01_ОРИГІНАЛИ) і їхні
+`.txt`+`.layout` (у 02_ОБРОБЛЕНІ). Тоді на кожному готовому документі запускається
+`cleanDocument` → `.md`. Тумблер вмикається перед стартом і означає рівно «цей крок
+підключено в кінці». Це буквально те саме, що зробила б кнопка 3.2 — просто автоматично.
+
+**Чому так** (дзеркало рішення з §«ВІДОМА WIP» і flow §256): очистка розчиняє межі
+сторінок; нарізка потребує точних меж. Тому очистка СТРОГО після нарізки/склейки, на вже
+роз'єднаних документах. Конфлікту «не можу розрізати MD» не існує → **борг #16 (Варіант
+1/2/3) і #42 розчиняються повністю.** Працює однаково для slice і для merge.
+
+**Що зробити:**
+1. **Прибрати** стару проводку очистки до нарізки: гілку `cleanForReading`+`cleanText`
+   у `extractV3.js` (рядки ~58-64, 80-81 `processedText`/`textFormat='md'`) і обгортку
+   `aiCleanText` у `DocumentPipelineContext.jsx`. Вона мертва (MD ніколи не персиститься —
+   `writeProcessedArtifacts` завжди пише `format:'txt'`). `extractV3` лишає текст сирим.
+2. **Додати пост-крок** після фіналізації документів у `splitDocumentsV3` (після
+   `writeProcessedArtifacts`, коли `.txt`+`.layout` у 02 готові): якщо тумблер увімкнено —
+   по кожному новоствореному `scanned`-документу викликати `cleanDocument(document, {
+   billAsUserAction:false, ...Drive-шви })`. Це **той самий виклик**, що й кнопки 3.2.
+3. **Drive-шви** `cleanDocument` (`fetchLayout`/`fetchRawText`/`saveMarkdown`/
+   `moveRawTxtToArchive`/`deleteLayout`/`updateDocumentMeta`) реалізувати тут поверх
+   `ocrService`/`driveService` — **їх же перевикористає 3.2** (кнопки стають тонкими).
+   fetchLayout читає `.layout.json` з 02; saveMarkdown пише `<basename>_<id>.md` у 02;
+   решта — долі артефактів (parent §«Долі артефактів»).
+4. **C7/білінг:** `billAsUserAction:false` (автопродовження обробки, не окрема дія) —
+   токени в `ai_usage[]` завжди, `activityTracker` як дію — ні. Один шлях логування.
+
+> Скоуп-межа: пост-крок чистить лише `scanned`-документи (гард уже в ядрі). DOCX/HTML
+> (searchable) DP пропускає. Якщо тумблер вимкнено — пост-крок не запускається, документи
+> лишаються з `.txt` (як сьогодні).
 
 ### 3.1.3 — schemaVersion 10 (structural)
 - Канонічна схема `documentSchema.js`: `textFormat` (`'txt'|'md'`, default `'txt'`, required+nullable?),
@@ -142,7 +175,12 @@ export async function cleanDocument({
 - [ ] `cleanDocument` оркестрація з DI; скоуп-гард scanned; fallback layout→txt→AI;
       AI-поліш консервативний з `attentionNotes` (JSON depth-counter); долі артефактів.
 - [ ] C7-лог (agentType `text_cleaner`) один шлях; `billAsUserAction` прапор.
-- [ ] DP: inline `aiCleanText` ВИДАЛЕНО; DP кличе ядро; тумблер ідентичний; один лог; не дубль.
+- [ ] DP (нова модель): стара очистка-до-нарізки ПРИБРАНА (`extractV3` гілка `cleanForReading`
+      + `aiCleanText`); очистка перенесена у ПОСТ-КРОК після `writeProcessedArtifacts` —
+      по кожному готовому `scanned`-документу `cleanDocument(billAsUserAction:false)`; Drive-шви
+      реалізовано (перевикористає 3.2); тумблер увімкнено → `.md` персиститься для slice І merge.
+- [ ] Борги #16 (Варіант 1/2/3) і #42 (cleaned-MD не персиститься) у `tracking_debt.md`
+      ПОЗНАЧЕНО вирішеними (пост-крок їх розчиняє); один лог.
 - [ ] schemaVersion 10: поля в схемі, `migrateToVersion10` ідемпотентна, бекап PreV10,
       EFFECT-A виклик+прапор, CURRENT_SCHEMA_VERSION/MIGRATION_VERSION оновлено.
 - [ ] `attentionNotes` у extended (не registry).
@@ -150,7 +188,8 @@ export async function cleanDocument({
 - [ ] Тест `cleanTextService.test.js` адаптовано під реальний shape (конденсатор на
       `_text`+`blocks`+`boundingPoly`, таблиці GFM, шум, посторінкова склейка; оркестрація:
       скоуп-гард, fallback, NO_SOURCE, AI-помилка→draft, артефакти+C7 через spy, billAsUserAction).
-- [ ] Інтеграція: DP-консолідація (`cleanForReading` → ядро, один лог, не дубль).
+- [ ] Інтеграція: DP пост-крок (`cleanForReading` увімкнено → нарізаний/склеєний документ
+      отримує `.md` персистентно; вимкнено → лишається `.txt`; скоуп scanned; один лог).
 - [ ] Міграційний тест: v9→v10 ідемпотентний, default `textFormat='txt'`.
 - [ ] `npm test` зелений, `npm run build` success.
 - [ ] CLAUDE.md оновлено (канонічна схема + #6 ланцюг до v10).
@@ -160,6 +199,10 @@ export async function cleanDocument({
 - ❌ Кнопки Огляд/Viewer/реєстр — це 3.2/3.3, НЕ тут.
 - ❌ ACTION `clean_document_text` — 3.2.
 - ❌ UI-вибір / видалення — 3.3.
+- ❌ НЕ лишати очистку до нарізки (стара модель). Очистка — СТРОГО пост-крок на готових
+  документах. НЕ намагатись різати/конкатити почищений MD по сторінках (через це й був борг).
+- ❌ НЕ міняти `writeProcessedArtifacts` логіку запису сирого `.txt`/`.layout` — пост-крок
+  іде ПІСЛЯ неї і перетворює `.txt`→`.md` через `cleanDocument`, не замість неї.
 
 ## ТЕСТИ (3.1)
 - Unit `cleanTextService.test.js` (адаптувати): конденсатор реальний shape + оркестрація (spy).
