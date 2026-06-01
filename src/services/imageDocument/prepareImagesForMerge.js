@@ -2,8 +2,15 @@
 // Спільна phase-1 pre-assembly для всіх image-merge сценаріїв (модалка
 // «🖼 Склеїти зображення» у CaseDossier і DP image-merge у DocumentProcessorV2).
 //
-// Точно ТРИ кроки (TASK 1B image_merge_unify):
+// Кроки (TASK 1B image_merge_unify + крок 1.5 image_downscale_blob_hygiene):
 //   1. HEIC → JPEG (heic2any) — браузер не вміє декодувати HEIC у <img>.
+//   1.5. Downscale роздільності (downscaleImage) — ПІСЛЯ HEIC→JPEG, ПЕРЕД OCR.
+//      Замінює normalizedFiles[i] на зменшений upright-blob → і OCR, і збірка
+//      PDF беруть легку версію (один шов, обидва споживачі виграють памʼять/
+//      швидкість). Guard за роздільністю всередині: малі фото лишаються як є.
+//      Drive-source файли пропускаються (їх OCR читає з Drive за id, не з
+//      локального blob — локальне запікання орієнтації розсинхронізувало б
+//      сигнал кроку 3).
 //   2. OCR кожного зображення ОДИН раз (Document AI через ocrService),
 //      concurrency=3 — Розумна економія + захист від rate-limit.
 //   3. Orientation detection per image (EXIF → Document AI → aspect heuristic)
@@ -39,6 +46,7 @@
 
 import { heicToJpeg } from '../converter/heicToJpeg.js';
 import * as ocrService from '../ocrService.js';
+import { downscaleImage } from './downscaleImage.js';
 import {
   readExifOrientation,
   resolveOrientation,
@@ -68,6 +76,38 @@ async function preConvertHeic(files) {
       }
     } else {
       out.push(f);
+    }
+  }
+  return out;
+}
+
+// ── Blob → File (збереження метаданих після downscale) ─────────────────────
+
+/**
+ * Обгортає зменшений Blob у File, переносячи name/type/lastModified з оригіналу,
+ * щоб downstream (OCR читає file.name/type; orientation логує file.name) бачив
+ * звичний File. Кастомні маркери (_isDriveSource/_driveId) теж переносяться —
+ * на випадок майбутнього розширення; зараз downscale їх не зачіпає (drive-
+ * source пропускається до виклику).
+ *
+ * @param {Blob} blob — зменшений blob
+ * @param {File|Blob} original — вхідний файл (джерело name/type)
+ * @returns {File|Blob}
+ */
+function blobToNamedFile(blob, original) {
+  const name = original?.name || 'image.jpg';
+  const type = blob.type || original?.type || 'image/jpeg';
+  let out;
+  try {
+    out = new File([blob], name, { type, lastModified: original?.lastModified || Date.now() });
+  } catch {
+    out = blob; // середовища без File-конструктора — лишаємо Blob
+  }
+  if (original && typeof original === 'object') {
+    for (const key of ['_isDriveSource', '_driveId']) {
+      if (original[key] !== undefined) {
+        try { out[key] = original[key]; } catch { /* noop */ }
+      }
     }
   }
   return out;
@@ -143,7 +183,7 @@ async function ocrOneImage(file, options) {
 /**
  * @typedef {Object} PrepareImagesOptions
  * @property {Function} [onProgress] — (phase, doneCount, totalCount) => void
- *           phase: 'heic' | 'ocr' | 'rotate'
+ *           phase: 'heic' | 'downscale' | 'ocr' | 'rotate'
  * @property {object} [ocrOptions] — додаткові опції для ocrService.extractText
  */
 
@@ -174,6 +214,29 @@ export async function prepareImagesForMerge(files, options = {}) {
     if (f._heicFailed) warnings.push(`HEIC ${f.name}: ${f._heicFailed}`);
   }
   onProgress('heic', files.length, files.length);
+
+  // 1.5. Downscale роздільності (памʼять/швидкість). ПІСЛЯ HEIC→JPEG (працюємо
+  //      на JPEG), ПЕРЕД OCR (і OCR, і збірка PDF беруть легку upright-версію).
+  //      Drive-source пропускаємо: OCR читає такий файл з Drive за id, не з
+  //      локального blob, тож локальне запікання upright розсинхронізувало б
+  //      orientation-сигнал кроку 3. Downscale fail — не фатально (лишаємо
+  //      оригінал). Guard за роздільністю — всередині downscaleImage.
+  onProgress('downscale', 0, normalizedFiles.length);
+  for (let i = 0; i < normalizedFiles.length; i++) {
+    const f = normalizedFiles[i];
+    if (!f || f._heicFailed || !(f instanceof Blob) || f._isDriveSource) {
+      onProgress('downscale', i + 1, normalizedFiles.length);
+      continue;
+    }
+    try {
+      const reduced = await downscaleImage(f);
+      if (reduced !== f) normalizedFiles[i] = blobToNamedFile(reduced, f);
+    } catch (e) {
+      warnings.push(`Downscale fail для ${f.name || 'image'}: ${e?.message || e}`);
+    }
+    onProgress('downscale', i + 1, normalizedFiles.length);
+  }
+  onProgress('downscale', normalizedFiles.length, normalizedFiles.length);
 
   // 2. OCR кожне зображення (один раз) з обмеженням concurrency
   onProgress('ocr', 0, normalizedFiles.length);
