@@ -855,7 +855,9 @@ export function createActions(deps) {
       const ALLOWED_UPDATE_FIELDS = [
         'name', 'category', 'author', 'documentNature', 'namingStatus',
         'isKey', 'procId', 'driveUrl', 'folder', 'pageCount', 'date',
-        'icon', 'status', 'lastOcrAt'
+        'icon', 'status', 'lastOcrAt',
+        // TASK 3.1 — формат витягнутого тексту після очистки (cleanTextService).
+        'textFormat', 'cleanedAt'
       ];
       const invalidFields = Object.keys(fields).filter(f => !ALLOWED_UPDATE_FIELDS.includes(f));
       if (invalidFields.length > 0) {
@@ -1630,6 +1632,9 @@ export function createActions(deps) {
       'update_processing_context',
       'update_document_source',
       'batch_update',
+      // TASK 3.1 — пост-крок очистки тексту оновлює textFormat/cleanedAt
+      // на щойно створеному документі (через cleanTextDriveAdapter).
+      'update_document',
     ],
 
     // TASK 0.3.5 v7 + TASK 0.4 Court Sync MVP — Court Sync agent для ЄСІТС.

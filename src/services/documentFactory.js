@@ -74,6 +74,11 @@ export function createDocument(metadata = {}) {
     addedBy: normalizeAddedBy(metadata.addedBy),
     status: metadata.status || 'active',
 
+    // textFormat / cleanedAt — формат витягнутого тексту (v10, TASK 3.1).
+    // Default 'txt' (сирий OCR) поки документ не почищено у .md.
+    textFormat: metadata.textFormat === 'md' ? 'md' : 'txt',
+    cleanedAt: metadata.cleanedAt ?? null,
+
     // source — канал ПОХОДЖЕННЯ файлу (TASK 0.3.5 v7).
     // Default 'manual' для нових документів. Legacy значення міграція переоновлює.
     source: normalizeSource(metadata.source),

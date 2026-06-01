@@ -29,6 +29,46 @@
 | TASK 2 context_generator_unify (винос генерації case_context + робочий DP-тумблер) | без bump | `report_task_context_generator_unify.md` |
 | TASK DP context fixes (джерело=реєстр SSOT, фото-подія, сигнал, дата+час) | без bump | `report_task_dp_context_fixes.md`, `bugs_found_during_dp_testing.md` |
 | TASK DP image parity (#1 дублі+сортування через спільну sortImageDocument, #9 банер обрізки, #4 portal попапа) | без bump | `report_task_dp_image_parity.md`, `bugs_found_during_dp_testing.md` |
+| Court Sync MVP (case.origin) v9 | 8 → 9 | `report_task_0_4_court_sync_mvp.md`, `TASK_0_4_court_sync_mvp.md` |
+| **TASK 3.1 clean_text core (ядро `cleanTextService` + DP-консолідація + viewer `.md`) v10** | **9 → 10** | `report_task3.1_clean_text_core.md`, `TASK_3.1_clean_text_core.md`, `TASK_3_clean_text.md`, `flow_clean_text.md`, `bugs_found_during_clean_text_core.md` |
+
+---
+
+## TASK 3.1 — CLEAN_TEXT CORE (schemaVersion 10, 2026-06-01)
+
+**Суть:** спільне ядро очистки сирого OCR-тексту сканованого документа → читабельний
+Markdown, не міняючи юридичний зміст. `src/services/cleanTextService.js`:
+`layoutToMarkdownDraft` (КРОК 1 детермінований конденсатор — посторінково через
+`page._text` + геометрія `boundingPoly`, дзеркало `pageMarkers.js`; НЕ offset'и в
+глобальний .txt) → `polishToMarkdown` (КРОК 2 Haiku, консервативний, JSON depth-counter,
+`{markdown, attentionNotes}`) → `cleanDocument` (КРОК 3 оркестрація DI + долі артефактів).
+
+**Скоуп:** ТІЛЬКИ `documentNature==='scanned'` (searchable повністю поза функцією).
+
+**DP-інтеграція (ПОСТ-КРОК, нова філософія адвоката):** тумблер «Очистити для читання» —
+це той самий `cleanDocument`, підключений ОСТАННІМ кроком у `splitDocumentsV3` (після
+`writeProcessedArtifacts`) по кожному готовому `scanned`-документу. `extractV3` більше не
+чистить; inline-дубль `aiCleanText` ліквідовано. Очистка строго ПІСЛЯ нарізки/склейки →
+працює однаково для slice і image_merge, конфлікту меж нема. Drive-шви ядра — у
+`cleanTextDriveAdapter.js` (`buildCleanDocumentDriveDeps`) поверх `ocrService` +
+`executeAction update_document` + `documentsExtended`; **перевикористає 3.2**. C7 один
+шлях: agentType `text_cleaner` (Haiku), `logAiUsage` завжди + `activityTracker` лише при
+`billAsUserAction` (DP — false).
+
+**schemaVersion 10:** `document.textFormat` (`'txt'|'md'`, required default `'txt'`),
+`document.cleanedAt` (ISO|null), `attentionNotes` → extended. `migrateToVersion10`
+(ідемпотентна) + бекап `PreV10` + EFFECT-A крок. Експорти `CURRENT_SCHEMA_VERSION=10`,
+`MIGRATION_VERSION='10.0_text_format'`.
+
+**Viewer:** `ocrService.getCleanOrRawText` (`.md` → `.txt`) + `MarkdownRenderer.jsx`
+(легкий MD→HTML, без npm-залежності).
+
+**Борги розчинено:** #16 (Варіант 1/2/3 clean+slice) і колишній «cleaned-MD не персиститься»
+— розчинені пост-кроком (очистка ПІСЛЯ нарізки). Новий борг #43 — винос геометрії у спільний
+`layoutGeometry`.
+
+**Тести:** 1753 → 1800 (+47). Фази 3.2 (кнопки — тягнуть adapter+ядро) / 3.3 (вибір+видалення)
+— наступні.
 
 ---
 

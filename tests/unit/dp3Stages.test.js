@@ -176,25 +176,20 @@ describe('confirmBoundaries', () => {
 });
 
 describe('extractV3', () => {
-  it('cleanForReading=true + cleaner → md формат, очищений текст', async () => {
-    const cleanText = vi.fn(async (t) => `# ${t.trim()}`);
-    const stage = createExtractV3({ cleanForReading: true, cleanText });
-    const res = await stage(ctxOf([{ extractedText: 'сирий OCR' }]));
-    expect(res.ctx.files[0].processedText).toBe('# сирий OCR');
-    expect(res.ctx.files[0].textFormat).toBe('md');
-  });
-
-  it('без cleaner → txt, текст як є', async () => {
-    const res = await createExtractV3({})(ctxOf([{ extractedText: 'plain' }]));
-    expect(res.ctx.files[0].processedText).toBe('plain');
+  // TASK 3.1: extractV3 БІЛЬШЕ не чистить (очистка — пост-крок у splitDocumentsV3
+  // на готових документах). Лишає сирий OCR-текст, формат завжди 'txt'.
+  it('завжди лишає сирий текст з форматом txt (очистки тут немає)', async () => {
+    const res = await createExtractV3({})(ctxOf([{ extractedText: 'сирий OCR' }]));
+    expect(res.ctx.files[0].processedText).toBe('сирий OCR');
     expect(res.ctx.files[0].textFormat).toBe('txt');
   });
 
-  it('clean кинув — не критично: сирий текст + decision', async () => {
-    const stage = createExtractV3({ cleanForReading: true, cleanText: async () => { throw new Error('haiku 429'); } });
-    const res = await stage(ctxOf([{ extractedText: 'raw', name: 'a' }]));
-    expect(res.ctx.files[0].processedText).toBe('raw');
-    expect(res.decisions[0].type).toBe('text_clean_failed');
+  it('cleanForReading у конфігу ІГНОРУЄТЬСЯ extract-стадією (текст лишається txt)', async () => {
+    const cleanText = vi.fn();
+    const res = await createExtractV3({ cleanForReading: true, cleanText })(ctxOf([{ extractedText: 'plain' }]));
+    expect(res.ctx.files[0].processedText).toBe('plain');
+    expect(res.ctx.files[0].textFormat).toBe('txt');
+    expect(cleanText).not.toHaveBeenCalled();   // очистка більше не тут
   });
 
   it('нема тексту → passthrough (поведінка DP-1)', async () => {

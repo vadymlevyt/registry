@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { FileText, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
-import { getCachedText, localizeOcrError } from '../../services/ocrService.js';
+import { getCleanOrRawText, localizeOcrError } from '../../services/ocrService.js';
 import { PdfRenderer } from './PdfRenderer.jsx';
 import { DocxRenderer } from './DocxRenderer.jsx';
 import { HtmlRenderer } from './HtmlRenderer.jsx';
+import { MarkdownRenderer } from './MarkdownRenderer.jsx';
 
 /**
  * Контентна частина Viewer'а.
@@ -156,6 +157,7 @@ function ScanContent({ document }) {
 
 function TextContent({ document, caseData, onReprocess }) {
   const [text, setText] = useState(null);
+  const [textFormat, setTextFormat] = useState('txt');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -188,10 +190,12 @@ function TextContent({ document, caseData, onReprocess }) {
       subFolders,
     };
 
-    getCachedText(file)
-      .then(content => {
+    // TASK 3.1 — спочатку очищений .md, інакше сирий .txt (getCleanOrRawText).
+    getCleanOrRawText(file)
+      .then(result => {
         if (cancelled) return;
-        setText(content || null);
+        setText(result?.text || null);
+        setTextFormat(result?.format || 'txt');
         setLoading(false);
       })
       .catch(err => {
@@ -204,7 +208,7 @@ function TextContent({ document, caseData, onReprocess }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [document.id, document.driveId, document.lastOcrAt, caseData?.storage?.subFolders]);
+  }, [document.id, document.driveId, document.lastOcrAt, document.cleanedAt, caseData?.storage?.subFolders]);
 
   if (loading) {
     return (
@@ -245,9 +249,12 @@ function TextContent({ document, caseData, onReprocess }) {
     );
   }
 
+  // .md — рендеримо як форматований Markdown (TASK 3.1). .txt — як було (pre).
   return (
     <div className="document-viewer__content document-viewer__content--text">
-      <pre className="document-viewer__text">{text}</pre>
+      {textFormat === 'md'
+        ? <MarkdownRenderer text={text} />
+        : <pre className="document-viewer__text">{text}</pre>}
     </div>
   );
 }

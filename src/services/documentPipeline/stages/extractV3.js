@@ -1,4 +1,4 @@
-// ── DP-3 STAGE · EXTRACT V3 (постобробка тексту: clean + формат) ────────────
+// ── DP-3 STAGE · EXTRACT V3 (постобробка тексту: формат) ────────────────────
 // Підключається через deps.stageOverrides[STAGE.EXTRACT] у streaming-шляху.
 // Диригент НЕ змінюється.
 //
@@ -9,20 +9,17 @@
 // OCR» (він після detect). Тому потоковий chunk-OCR (RAM-bounded) виконує
 // streamingExecutor ДО pipeline і кладе уніфікований текст у
 // files[].extractedText. Стадія `extract` (ця) = СЕМАНТИЧНА ПОСТОБРОБКА
-// тексту що вже є: очистка OCR-сміття (печатки/штампи) через Haiku +
-// вибір формату збереження TXT/MD. Це «sub-стадія існуючого імені» —
-// дозволено §8.
+// тексту що вже є.
 //
-// Один сенс (правило #11):
-//   • options.cleanForReading=true  → текст чиститься через ін'єктований
-//     cleaner (Haiku), формат = 'md'.
-//   • false/немає cleaner           → текст лишається як є, формат = 'txt'.
-// Запис у 02_ОБРОБЛЕНІ робить splitDocumentsV3 (там фінальні документи
-// отримують driveId). Ця стадія лише готує text+format у ctx.
+// TASK 3.1 (нова філософія): очистка тексту для читання — це НЕ крок ДО
+// нарізки. Вона підключена ОСТАННІМ кроком (post-persist) у splitDocumentsV3,
+// на вже роз'єднаних ФІНАЛЬНИХ документах (через cleanTextService.cleanDocument).
+// Тому ця стадія БІЛЬШЕ НЕ чистить текст: лишає сирий OCR-текст з формою
+// 'txt'. Стара in-memory гілка `cleanForReading`+`cleanText` прибрана — вона
+// була мертвою (MD ніколи не персиститься: writeProcessedArtifacts завжди
+// пише format:'txt'; почищений MD відкидався при нарізці).
 //
-// Gated: нема жодного тексту і нема cleaner → passthrough (поведінка DP-1
-// не регресує; single-file AddDocumentModal цю стадію не вмикає взагалі —
-// його post-persist OCR лишається у CaseDossier, рішення DP-1 §4).
+// Gated: нема жодного тексту → passthrough (поведінка DP-1 не регресує).
 
 // Текст файла: потоковий OCR приходить через ін'єктований getStreamedText
 // (makeContext диригента не переносить extractedText у streaming-шляху);
@@ -37,56 +34,32 @@ function hasText(item, getStreamedText) {
 }
 
 // stageDeps:
-//   cleanText(text, {fileName}) → string — ін'єктований Haiku-очисник.
-//   cleanForReading: boolean — перемикач «Очистити для читання» (config).
+//   getStreamedText / getStreamedLayout — потокові аксесори OCR (streaming-шлях).
+// Очистка тексту тут НЕ виконується (див. шапку — пост-крок у splitDocumentsV3).
 export function createExtractV3(stageDeps = {}) {
-  const cleanForReading = stageDeps.cleanForReading === true;
   const getStreamedText = stageDeps.getStreamedText;
 
   return async function extractV3(ctx) {
     const anyText = ctx.files.some((f) => !f.skipped && hasText(f, getStreamedText));
     if (!anyText) return { ok: true };                     // нема на чому — passthrough
 
-    const decisions = [];
     const files = [];
     for (const item of ctx.files) {
       if (item.skipped || !hasText(item, getStreamedText)) { files.push(item); continue; }
 
-      let text = String(rawText(item, getStreamedText));
-      let textFormat = 'txt';
-
-      if (cleanForReading && typeof stageDeps.cleanText === 'function') {
-        try {
-          const cleaned = await stageDeps.cleanText(text, { fileName: item.name });
-          if (cleaned && String(cleaned).trim()) {
-            text = String(cleaned);
-            textFormat = 'md';
-          }
-        } catch (err) {
-          // Очистка не критична — лишаємо сирий OCR-текст, попереджаємо.
-          decisions.push({
-            type: 'text_clean_failed',
-            fileId: item.fileId,
-            fileName: item.name,
-            message: `Очистка тексту "${item.name}" не вдалась — збережено сирий OCR: ${err?.message || err}`,
-          });
-        }
-      }
+      // Сирий OCR-текст, форма завжди 'txt'. Очистка → пост-крок (3.1).
+      const text = String(rawText(item, getStreamedText));
 
       const streamedLayout = typeof stageDeps.getStreamedLayout === 'function'
         ? stageDeps.getStreamedLayout(item.fileId) : null;
       files.push({
         ...item,
         processedText: text,
-        textFormat,
+        textFormat: 'txt',
         layoutJson: streamedLayout || item.layoutJson || item.mergeLayoutJson || null,
       });
     }
 
-    return {
-      ok: true,
-      ctx: { ...ctx, files },
-      ...(decisions.length > 0 ? { decisions } : {}),
-    };
+    return { ok: true, ctx: { ...ctx, files } };
   };
 }

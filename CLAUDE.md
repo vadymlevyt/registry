@@ -1,9 +1,9 @@
 # CLAUDE.md — Legal BMS АБ Левицького
 
-**Версія:** 5.6
-**Останнє оновлення:** 23.05.2026
-**Поточний schemaVersion:** 9
-**Поточний settingsVersion:** "9.0_case_origin"
+**Версія:** 5.7
+**Останнє оновлення:** 01.06.2026
+**Поточний schemaVersion:** 10
+**Поточний settingsVersion:** "10.0_text_format"
 
 ---
 
@@ -155,13 +155,13 @@ Blank page = JS помилка яка не перехоплена.
 Весь україномовний текст — в подвійних лапках або шаблонних рядках.
 
 ### №6 — schemaVersion registry_data.json
-Поточна версія: `schemaVersion: 9`.
+Поточна версія: `schemaVersion: 10`.
 При зміні структури:
 - Інкрементувати schemaVersion
 - Додати міграцію в `migrationService.js` (для базових структур) або окремий файл у `src/services/migrations/` (для специфічної логіки — як `v4ToV5.js`)
 - Міграція має бути **ідемпотентною** (повторні запуски не ламають дані)
 - Перед першою міграцією — обов'язковий бекап `registry_data_backup_pre_<name>_<ts>.json` у `_backups/` поза ротацією
-- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 9` і `MIGRATION_VERSION = '9.0_case_origin'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — `migrateToVersion6`. addedBy cleanup v6.5 — `migrateToVersion6_5`. ECITS canonical v7 — `migrateToVersion7`. time_entry.source→captureMethod v8 — `migrateToVersion8`. case.origin enum v9 (TASK 0.4) — `migrateToVersion9`. Усі сім послідовно викликаються в `App.jsx` EFFECT-A (з власними бекапами і прапорами).
+- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 10` і `MIGRATION_VERSION = '10.0_text_format'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — `migrateToVersion6`. addedBy cleanup v6.5 — `migrateToVersion6_5`. ECITS canonical v7 — `migrateToVersion7`. time_entry.source→captureMethod v8 — `migrateToVersion8`. case.origin enum v9 (TASK 0.4) — `migrateToVersion9`. document.textFormat/cleanedAt v10 (TASK 3.1) — `migrateToVersion10`. Усі вісім послідовно викликаються в `App.jsx` EFFECT-A (з власними бекапами і прапорами).
 
 ### №7 — executeAction async
 `executeAction` — **async функція**. Усі callers що читають `.success`/`.error` — мусять `await`.
@@ -477,19 +477,23 @@ SaaS v2: кожна нота має `tenantId`, `createdBy`.
 
 **Experimental (`// review after 1 month`):** ACTIVITY_CATEGORIES (client_communication 0.5), EVENT_VARIANT_MATRIX (court_fault), стандарти часу, semanticGroup detection, IDLE_TIMEOUT_MIN (5хв), місячна ротація.
 
-### Канонічна схема документа (поточна v7 — 25 легких полів)
+### Канонічна схема документа (поточна v10 — 27 легких полів)
 
 SSOT: `cases[].documents[]` у `registry_data.json` — єдине джерело **легких** метаданих. Важкі поля — у `.metadata/documents_extended.json` (lazy-load). Жодних паралельних `documents_index.json`.
 
-**25 легких полів** = 18 базових v5 (`id, name, originalName, category, author, documentNature, namingStatus, isKey, procId, driveId, driveUrl, folder, pageCount, size, icon, date, addedAt, updatedAt, addedBy, status` — насправді 20 у переліку: ідентифікація/класифікація/зв'язки/Drive/розмір/дати/аудит/стан) + `originalDriveId`, `originalMime` (TASK A) + `sourceConfidence`, `extractedAt`, `ecitsSource`, `movementCard`, `alternativeSources` (v7). Усі нові — nullable default null.
+**27 легких полів** = 18 базових v5 (`id, name, originalName, category, author, documentNature, namingStatus, isKey, procId, driveId, driveUrl, folder, pageCount, size, icon, date, addedAt, updatedAt, addedBy, status` — насправді 20 у переліку: ідентифікація/класифікація/зв'язки/Drive/розмір/дати/аудит/стан) + `originalDriveId`, `originalMime` (TASK A) + `sourceConfidence`, `extractedAt`, `ecitsSource`, `movementCard`, `alternativeSources` (v7) + `textFormat`, `cleanedAt` (v10, TASK 3.1). Нові v7-поля — nullable default null; `textFormat` — required default `'txt'` (НЕ nullable), `cleanedAt` — nullable default null.
 
 **Required+nullable** (присутнє, але null → маркер ⚠ «потребує перегляду»): `category`, `author`, `procId`, `driveId`.
 
-**enum:** `category`: pleading|motion|court_act|evidence|contract|correspondence|identification|other|null. `author`: ours|opponent|court|third_party|null. `documentNature`: searchable|scanned. `namingStatus`: auto|manual|pending. `folder`: 00_INBOX_СПРАВИ|01_ОРИГІНАЛИ|02_ОБРОБЛЕНІ|03_ФРАГМЕНТИ|04_ПОЗИЦІЯ|05_ЗОВНІШНІ. `status`: active|archived.
+**enum:** `category`: pleading|motion|court_act|evidence|contract|correspondence|identification|other|null. `author`: ours|opponent|court|third_party|null. `documentNature`: searchable|scanned. `namingStatus`: auto|manual|pending. `folder`: 00_INBOX_СПРАВИ|01_ОРИГІНАЛИ|02_ОБРОБЛЕНІ|03_ФРАГМЕНТИ|04_ПОЗИЦІЯ|05_ЗОВНІШНІ. `status`: active|archived. `textFormat`: txt|md (формат витягнутого тексту у 02_ОБРОБЛЕНІ; НЕ плутати з `documentNature`/`status` — правило #11).
 
-**Extended (lazy-load `.metadata/documents_extended.json`):** `documentId, tags, notes, annotations, processingHistory, extractedTextSummary, customFields`.
+**Extended (lazy-load `.metadata/documents_extended.json`):** `documentId, tags, notes, annotations, processingHistory, extractedTextSummary, customFields, attentionNotes` (v10 — що AI помітив при очистці тексту, БЕЗ зміни змісту; `[{ page?, note }]`).
 
-**Сервіси:** `src/schemas/documentSchema.js` (`CANONICAL_DOCUMENT_FIELDS`, `EXTENDED_DOCUMENT_FIELDS`, `CRITICAL_FIELDS_FOR_WARNING`); `documentFactory.js` (`createDocument` — єдина точка, ID `doc_${Date.now()}_${rand36}`; `validateDocument`; `needsReview`; `getMissingCriticalFields`; `normalizeAddedBy` safety net); `documentsExtended.js` (`loadExtendedForCase`/`saveExtendedForCase`/`getExtendedForDocument`/`setExtendedForDocument`/`invalidateCache`; латиниця → `q=` безпечне); міграції `migrations/v4ToV5.js` (`migrateRegistryV4toV5`, `splitDocumentV4toV5`) + кроки v6/v6_5/v7 у `migrationService.js`.
+**Сервіси:** `src/schemas/documentSchema.js` (`CANONICAL_DOCUMENT_FIELDS`, `EXTENDED_DOCUMENT_FIELDS`, `CRITICAL_FIELDS_FOR_WARNING`); `documentFactory.js` (`createDocument` — єдина точка, ID `doc_${Date.now()}_${rand36}`; `validateDocument`; `needsReview`; `getMissingCriticalFields`; `normalizeAddedBy` safety net); `documentsExtended.js` (`loadExtendedForCase`/`saveExtendedForCase`/`getExtendedForDocument`/`setExtendedForDocument`/`invalidateCache`; латиниця → `q=` безпечне); міграції `migrations/v4ToV5.js` (`migrateRegistryV4toV5`, `splitDocumentV4toV5`) + кроки v6/v6_5/v7/v8/v9/v10 у `migrationService.js`.
+
+### Очистка тексту → Markdown (cleanTextService, TASK 3.1)
+
+Спільне ядро `src/services/cleanTextService.js` — сирий OCR-текст сканованого документа → гарний читабельний Markdown, НЕ міняючи юридичний зміст. **Скоуп ТІЛЬКИ `documentNature==='scanned'`** (skoup-гард; searchable повністю поза функцією — у нього вже чистий цифровий текст). 3-кроковий гібрид: `layoutToMarkdownDraft` (КРОК 1, детермінований конденсатор, 0 токенів — читає layout ПОСТОРІНКОВО через `page._text`+геометрія boundingPoly, НЕ offset'и в глобальний .txt; дзеркало `pageMarkers.js`) → `polishToMarkdown` (КРОК 2, Haiku, консервативний, JSON depth-counter, повертає `{markdown, attentionNotes}`) → `cleanDocument` (КРОК 3 оркестрація + долі артефактів: `.md` створити, `.txt`→`_raw_txt/`, `.layout.json` видалити, метадані `textFormat:'md'`+`cleanedAt`+`attentionNotes`). C7-логування один шлях: `logAiUsage` (agentType `text_cleaner`) завжди; `activityTracker.report` лише при `billAsUserAction` (default true для кнопок/ACTION; **DP передає false** — автопродовження). agentType `textCleaner` у `SYSTEM_DEFAULTS` → Haiku. **Споживач у 3.1 — Document Processor, очистка як ПОСТ-КРОК** (нова філософія адвоката): тумблер «Очистити для читання» — НЕ очистка до нарізки, а той самий `cleanDocument`, підключений ОСТАННІМ кроком у `splitDocumentsV3` (ПІСЛЯ `writeProcessedArtifacts`, коли `.txt`+`.layout` готові у 02) по кожному готовому `scanned`-документу. Очистка СТРОГО після нарізки/склейки на роз'єднаних документах → дилема «не можу різати MD по сторінках» зникає (працює однаково для slice і image_merge). `extractV3` більше НЕ чистить (лишає сирий `.txt`); inline-дубль `aiCleanText` ліквідовано. Drive-шви ядра (`fetchLayout`/`fetchRawText`/`saveMarkdown`/`moveRawTxtToArchive`/`deleteLayout`/`updateDocumentMeta`) — у `cleanTextDriveAdapter.js` (`buildCleanDocumentDriveDeps`) поверх `ocrService` (`getCachedLayout`/`getCachedText`/`writeMarkdownArtifact`/`archiveRawTxt`/`deleteLayoutArtifact`) + `executeAction update_document` (textFormat/cleanedAt) + `documentsExtended` (attentionNotes); **їх перевикористає 3.2** (кнопки стають тонкими). `update_document` allowlist отримав `textFormat`/`cleanedAt`; `document_processor_agent` — дозвіл `update_document`. Кнопки ретроактивної очистки — 3.2, мультивибір реєстру — 3.3. Viewer читає `.md` через `ocrService.getCleanOrRawText` (спочатку `.md`, інакше `.txt`) + `MarkdownRenderer` (легкий MD→HTML, без npm-залежності).
 
 **Точки створення документа (всі через `createDocument()`), `addedBy`:**
 

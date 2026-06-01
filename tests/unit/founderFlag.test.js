@@ -122,13 +122,13 @@ describe('migrateToVersion6 (v5 → v6 founder flag)', () => {
 
 describe('CURRENT_SCHEMA_VERSION і MIGRATION_VERSION', () => {
   // Найвища досяжна версія після повного ланцюга міграцій
-  // (v1→v4→v5→v6→v6.5→v7→v8→v9). TASK 0.4 підняв таргет до v9
-  // (case.origin enum).
-  it('CURRENT_SCHEMA_VERSION = 9 (повний ланцюг після TASK 0.4)', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(9);
+  // (v1→v4→v5→v6→v6.5→v7→v8→v9→v10). TASK 3.1 підняв таргет до v10
+  // (document.textFormat/cleanedAt).
+  it('CURRENT_SCHEMA_VERSION = 10 (повний ланцюг після TASK 3.1)', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(10);
   });
 
-  it("MIGRATION_VERSION = '9.0_case_origin'", () => {
-    expect(MIGRATION_VERSION).toBe('9.0_case_origin');
+  it("MIGRATION_VERSION = '10.0_text_format'", () => {
+    expect(MIGRATION_VERSION).toBe('10.0_text_format');
   });
 });
