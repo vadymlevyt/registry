@@ -101,6 +101,32 @@ export const CANONICAL_DOCUMENT_FIELDS = {
     default: 'active'
   },
 
+  // ── Формат витягнутого тексту (v10, TASK 3.1 clean_text) ──────────────────
+  // textFormat — у якому форматі лежить витягнутий текст документа у
+  // 02_ОБРОБЛЕНІ: 'txt' = сирий OCR-текст; 'md' = очищений читабельний
+  // Markdown (після cleanTextService). ЄДИНИЙ сенс — формат тексту (правило
+  // #11). НЕ плутати з documentNature (природа файла: searchable/scanned)
+  // і status (lifecycle: active/archived). Default 'txt' — усі існуючі
+  // документи до очистки. Required non-nullable: завжди одне з двох значень.
+  textFormat: {
+    type: 'string',
+    required: true,
+    enum: ['txt', 'md'],
+    default: 'txt',
+    description: "Формат витягнутого тексту у 02_ОБРОБЛЕНІ. txt = сирий OCR, md = очищений Markdown."
+  },
+
+  // cleanedAt — ISO timestamp коли текст почистили у .md (cleanTextService).
+  // null = ще не чищено (textFormat='txt'). Заповнюється разом з textFormat='md'.
+  cleanedAt: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    format: 'datetime',
+    default: null,
+    description: "Коли текст почистили у .md (ISO datetime). null = ще не чищено."
+  },
+
   // ── Джерело надходження ──────────────────────────────────────────────────
   // source — канал ПОХОДЖЕННЯ файлу (TASK 0.3.5 v7 — переіменовано і розширено).
   // НЕ плутати з document.addedBy (actor — хто додав запис, з TASK 0.3.4 v6.5).
@@ -219,6 +245,16 @@ export const EXTENDED_DOCUMENT_FIELDS = {
     type: 'string',
     description: '200-500 символів короткого змісту для tooltip превью',
     default: ''
+  },
+  // attentionNotes (v10, TASK 3.1) — що AI-поліш помітив при очистці тексту
+  // БЕЗ зміни змісту (§6 design: «краще лишити сміття, ніж змінити зміст»).
+  // Важке поле — у documents_extended.json, bump НЕ потребує. Кожен елемент:
+  // { page?, note }. Заповнюється cleanTextService.cleanDocument.
+  attentionNotes: {
+    type: 'array',
+    items: 'object',
+    description: 'Що AI помітив при очистці тексту, не міняючи зміст. [{ page?, note }]',
+    default: []
   },
   customFields: { type: 'object', default: {} }
 };

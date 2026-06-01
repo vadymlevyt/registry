@@ -34,6 +34,13 @@ export const SYSTEM_DEFAULTS = {
   // (cheap-before-expensive: межі документів — pattern matching, не глибокий
   // reasoning).
   imageDocumentGrouper: 'claude-haiku-4-5-20251001',
+
+  // textCleaner — очистка сирого OCR-тексту сканованого документа у читабельний
+  // Markdown (TASK 3.1 cleanTextService, КРОК 2 AI-поліш). Haiku — задача
+  // форматування, не глибокий reasoning; дешева і швидка (cheap-before-expensive).
+  // Консервативний промпт (НЕ міняє юридичний зміст). Готова точка ієрархії
+  // user → tenant → system.
+  textCleaner: 'claude-haiku-4-5-20251001',
 };
 
 const FALLBACK_MODEL = 'claude-sonnet-4-20250514';

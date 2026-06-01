@@ -45,6 +45,7 @@ import * as ocrService from '../services/ocrService.js';
 import { findOrCreateFolder, uploadBytesToDrive } from '../services/driveService.js';
 import { callAPIWithRetry } from '../services/toolUseRunner.js';
 import { resolveModel } from '../services/modelResolver.js';
+import { polishToMarkdown as cleanTextPolishToMarkdown } from '../services/cleanTextService.js';
 import {
   getCurrentUserId, getCurrentTenantId, getEcitsAutoProcess, getSplitterDatasetEnabled,
 } from '../services/tenantService.js';
@@ -102,17 +103,22 @@ async function aiTriage({ artifacts, userHint, caseId }) {
   return analyzeTriageViaToolUse({ artifacts, userHint, caseId, apiKey });
 }
 
+// DP-консолідація (TASK 3.1): inline-дубль очистки прибрано — DP став першим
+// реальним споживачем спільного ядра cleanTextService. Тонка обгортка тримає
+// контракт extractV3 cleanText(text,{fileName}) → string: ядро повертає
+// {markdown, attentionNotes}, беремо markdown. DP — автоматичне продовження
+// обробки, НЕ окрема оплачувана дія адвоката (parent §C7) → billAsUserAction:
+// false (токени в ai_usage[] пишуться завжди; activityTracker як дію — ні).
 async function aiCleanText(text, { fileName } = {}) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('Немає API ключа для очистки');
-  const prompt = `Очисти OCR-текст судового документа "${fileName || ''}" для зручного читання: прибери сміття розпізнавання (печатки, штампи, артефакти сканування, дублі), збережи ВЕСЬ змістовний текст дослівно, структуру абзаців і нумерацію. Поверни ТІЛЬКИ очищений текст без коментарів.\n\n${String(text).slice(0, 60000)}`;
-  const res = await callAPIWithRetry({
-    model: resolveModel('document_parser') || 'claude-haiku-4-5-20251001',
-    max_tokens: 8000,
-    messages: [{ role: 'user', content: prompt }],
-  }, { apiKey });
-  const out = res?.content?.[0]?.text || res?.content || '';
-  return typeof out === 'string' ? out : '';
+  const { markdown } = await cleanTextPolishToMarkdown({
+    draft: text,
+    fileName,
+    apiKey,
+    billAsUserAction: false,
+  });
+  return markdown || '';
 }
 
 // OCR одного chunk: байти приходять з _temp (streamingExecutor читає, потім

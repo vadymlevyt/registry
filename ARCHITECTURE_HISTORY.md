@@ -29,6 +29,39 @@
 | TASK 2 context_generator_unify (винос генерації case_context + робочий DP-тумблер) | без bump | `report_task_context_generator_unify.md` |
 | TASK DP context fixes (джерело=реєстр SSOT, фото-подія, сигнал, дата+час) | без bump | `report_task_dp_context_fixes.md`, `bugs_found_during_dp_testing.md` |
 | TASK DP image parity (#1 дублі+сортування через спільну sortImageDocument, #9 банер обрізки, #4 portal попапа) | без bump | `report_task_dp_image_parity.md`, `bugs_found_during_dp_testing.md` |
+| Court Sync MVP (case.origin) v9 | 8 → 9 | `report_task_0_4_court_sync_mvp.md`, `TASK_0_4_court_sync_mvp.md` |
+| **TASK 3.1 clean_text core (ядро `cleanTextService` + DP-консолідація + viewer `.md`) v10** | **9 → 10** | `report_task3.1_clean_text_core.md`, `TASK_3.1_clean_text_core.md`, `TASK_3_clean_text.md`, `flow_clean_text.md`, `bugs_found_during_clean_text_core.md` |
+
+---
+
+## TASK 3.1 — CLEAN_TEXT CORE (schemaVersion 10, 2026-06-01)
+
+**Суть:** спільне ядро очистки сирого OCR-тексту сканованого документа → читабельний
+Markdown, не міняючи юридичний зміст. `src/services/cleanTextService.js`:
+`layoutToMarkdownDraft` (КРОК 1 детермінований конденсатор — посторінково через
+`page._text` + геометрія `boundingPoly`, дзеркало `pageMarkers.js`; НЕ offset'и в
+глобальний .txt) → `polishToMarkdown` (КРОК 2 Haiku, консервативний, JSON depth-counter,
+`{markdown, attentionNotes}`) → `cleanDocument` (КРОК 3 оркестрація DI + долі артефактів).
+
+**Скоуп:** ТІЛЬКИ `documentNature==='scanned'` (searchable повністю поза функцією).
+
+**DP-консолідація:** inline-дубль `aiCleanText` у `DocumentPipelineContext.jsx` ліквідовано
+— DP став споживачем #1 через ядро (`billAsUserAction:false` — автопродовження). C7 один
+шлях: agentType `text_cleaner` (Haiku), `logAiUsage` завжди + `activityTracker` лише при
+`billAsUserAction`.
+
+**schemaVersion 10:** `document.textFormat` (`'txt'|'md'`, required default `'txt'`),
+`document.cleanedAt` (ISO|null), `attentionNotes` → extended. `migrateToVersion10`
+(ідемпотентна) + бекап `PreV10` + EFFECT-A крок. Експорти `CURRENT_SCHEMA_VERSION=10`,
+`MIGRATION_VERSION='10.0_text_format'`.
+
+**Viewer:** `ocrService.getCleanOrRawText` (`.md` → `.txt`) + `MarkdownRenderer.jsx`
+(легкий MD→HTML, без npm-залежності).
+
+**Знахідка (борг #42):** cleaned-MD не персиститься для slice-документів DP — інтеграція
+clean+нарізка відкладена (рішення Варіант 1/2/3 після підтвердження page-precise slicing).
+
+**Тести:** 1753 → 1799 (+46). Фази 3.2 (кнопки) / 3.3 (вибір+видалення) — наступні.
 
 ---
 

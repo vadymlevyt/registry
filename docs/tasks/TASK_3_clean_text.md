@@ -24,9 +24,17 @@ Markdown** (`.md`) — абзаци, заголовки, жирний шрифт
 
 | Фаза | Файл | Суть | Видимий результат | Деплой |
 |------|------|------|-------------------|--------|
-| **3.1** | `TASK_3.1_clean_text_core.md` | Ядро `cleanTextService` + DP-консолідація + viewer `.md` + schemaVersion 10 | DP-тумблер дає гарний `.md` через спільне ядро; viewer показує | окремий |
+| **3.1 ✅** | `TASK_3.1_clean_text_core.md` | Ядро `cleanTextService` + DP-консолідація + viewer `.md` + schemaVersion 10 | DP-тумблер дає гарний `.md` через спільне ядро; viewer показує | **ЗРОБЛЕНО 2026-06-01** (звіт `docs/reports/report_task3.1_clean_text_core.md`; 1799 тестів зелені) |
 | **3.2** | `TASK_3.2_clean_text_buttons.md` | Кнопки ретроактивної очистки (Огляд N-док., Viewer один) + ACTION агента | очистка наявних справ заднім числом + голосом/агентом | окремий |
 | **3.3** | `TASK_3.3_file_selection_delete.md` | Винос UI-вибору з `ArchiveView` + реєстр-мультивибір + пакетне видалення | пакетні операції в реєстрі; Архів рефакторено непомітно | окремий |
+
+> **3.1 готова (2026-06-01):** ядро `cleanTextService.js` (`layoutToMarkdownDraft` /
+> `polishToMarkdown` / `cleanDocument`); DP-дубль `aiCleanText` ліквідовано (DP — споживач
+> #1 через ядро, `billAsUserAction:false`); schemaVersion 10 (`textFormat`/`cleanedAt` +
+> `migrateToVersion10` + бекап PreV10); viewer `.md` через `ocrService.getCleanOrRawText` +
+> `MarkdownRenderer`. agentType `text_cleaner` (Haiku), C7 один шлях. Знахідка: cleaned-MD
+> не персиститься для slice-документів DP (відкладено, `tracking_debt #42`). 3.2 кнопки
+> тягнуть готове `cleanDocument` (Drive-шви ін'єктує споживач).
 
 **Залежності (однонапрямлені):**
 ```

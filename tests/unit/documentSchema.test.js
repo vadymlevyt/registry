@@ -17,7 +17,16 @@ describe('documentSchema', () => {
       //   addedAt, updatedAt, addedBy, status, source, originalDriveId, originalMime
       // + 5 нових з TASK 0.3.5 v7:
       //   sourceConfidence, extractedAt, ecitsSource, movementCard, alternativeSources
-      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(28);
+      // + 2 нових з TASK 3.1 v10: textFormat, cleanedAt
+      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(30);
+    });
+
+    it("має v10 поля: textFormat (default 'txt'), cleanedAt (nullable)", () => {
+      expect(CANONICAL_DOCUMENT_FIELDS.textFormat).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.textFormat.default).toBe('txt');
+      expect(CANONICAL_DOCUMENT_FIELDS.textFormat.enum).toEqual(['txt', 'md']);
+      expect(CANONICAL_DOCUMENT_FIELDS.cleanedAt).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.cleanedAt.nullable).toBe(true);
     });
 
     it("має v7 поля: sourceConfidence, extractedAt, ecitsSource, movementCard, alternativeSources", () => {
@@ -128,8 +137,13 @@ describe('documentSchema', () => {
   });
 
   describe('EXTENDED_DOCUMENT_FIELDS', () => {
-    it('містить 7 полів (documentId + 6 важких)', () => {
-      expect(Object.keys(EXTENDED_DOCUMENT_FIELDS)).toHaveLength(7);
+    it('містить 8 полів (documentId + 6 важких + attentionNotes v10)', () => {
+      expect(Object.keys(EXTENDED_DOCUMENT_FIELDS)).toHaveLength(8);
+    });
+
+    it('має attentionNotes (v10, важке поле — bump не потребує)', () => {
+      expect(EXTENDED_DOCUMENT_FIELDS.attentionNotes).toBeDefined();
+      expect(EXTENDED_DOCUMENT_FIELDS.attentionNotes.type).toBe('array');
     });
 
     it('має tags, notes, annotations, processingHistory, extractedTextSummary, customFields', () => {

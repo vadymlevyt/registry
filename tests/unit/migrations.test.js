@@ -4,7 +4,7 @@ import {
   migrateRegistryV4toV5,
   splitDocumentV4toV5,
 } from '../../src/services/migrations/v4ToV5.js';
-import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
+import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, migrateToVersion10, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
 import { validateDocument } from '../../src/services/documentFactory.js';
 
 describe('v4ToV5 migration', () => {
@@ -362,9 +362,11 @@ describe('migrateToVersion8 (v7 → v8 time_entry.source → captureMethod)', ()
 });
 
 describe('migrateToVersion9 — case.origin enum (TASK 0.4)', () => {
-  it('CURRENT_SCHEMA_VERSION = 9 і MIGRATION_VERSION="9.0_case_origin"', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(9);
-    expect(MIGRATION_VERSION).toBe('9.0_case_origin');
+  it('таргет повного ланцюга піднято до v10 (TASK 3.1) — v9 проміжний', () => {
+    // Глобальний таргет тепер v10 (textFormat). v9 (case.origin) — проміжний
+    // крок ланцюга; його власні інваріанти перевіряються нижче.
+    expect(CURRENT_SCHEMA_VERSION).toBe(10);
+    expect(MIGRATION_VERSION).toBe('10.0_text_format');
   });
 
   it('існуючі справи (v8) отримують origin: "manual"', () => {
@@ -451,5 +453,65 @@ describe('ensureCaseSaasAndEcitsFields — R1 fix (TASK 0.4)', () => {
     expect(c.ownerId).toBeTruthy();
     expect(Array.isArray(c.team)).toBe(true);
     expect(c.shareType).toBeTruthy();
+  });
+});
+
+describe('migrateToVersion10 — document.textFormat/cleanedAt (TASK 3.1)', () => {
+  it('існуючі документи (v9) отримують textFormat="txt", cleanedAt=null', () => {
+    const reg = {
+      schemaVersion: 9,
+      cases: [
+        { id: 'case_1', documents: [{ id: 'doc_1', name: 'A' }, { id: 'doc_2', name: 'B' }] },
+        { id: 'case_2', documents: [] },
+      ],
+    };
+    const { registry, didMigrate, toVersion } = migrateToVersion10(reg);
+    expect(didMigrate).toBe(true);
+    expect(toVersion).toBe(10);
+    expect(registry.schemaVersion).toBe(10);
+    expect(registry.settingsVersion).toBe('10.0_text_format');
+    for (const d of registry.cases[0].documents) {
+      expect(d.textFormat).toBe('txt');
+      expect(d.cleanedAt).toBeNull();
+    }
+  });
+
+  it('ідемпотентна: повторний запуск з v10 → didMigrate=false, без змін', () => {
+    const reg = {
+      schemaVersion: 10,
+      cases: [{ id: 'c', documents: [{ id: 'd', name: 'X', textFormat: 'md', cleanedAt: '2026-06-01T00:00:00Z' }] }],
+    };
+    const { didMigrate, registry } = migrateToVersion10(reg);
+    expect(didMigrate).toBe(false);
+    expect(registry.cases[0].documents[0].textFormat).toBe('md');
+    expect(registry.cases[0].documents[0].cleanedAt).toBe('2026-06-01T00:00:00Z');
+  });
+
+  it('не затирає вже виставлений textFormat="md" при міграції з v9', () => {
+    const reg = {
+      schemaVersion: 9,
+      cases: [{ id: 'c', documents: [{ id: 'd', name: 'X', textFormat: 'md', cleanedAt: '2026-05-30T10:00:00Z' }] }],
+    };
+    const { registry } = migrateToVersion10(reg);
+    expect(registry.cases[0].documents[0].textFormat).toBe('md');
+    expect(registry.cases[0].documents[0].cleanedAt).toBe('2026-05-30T10:00:00Z');
+  });
+
+  it('lastMigration.to === 10', () => {
+    const { registry } = migrateToVersion10({ schemaVersion: 9, cases: [] });
+    expect(registry.lastMigration.to).toBe(10);
+  });
+
+  it('stats рахує totalDocs / textFormatAdded', () => {
+    const reg = { schemaVersion: 9, cases: [{ id: 'c', documents: [{ id: 'a' }, { id: 'b' }] }] };
+    const { stats } = migrateToVersion10(reg);
+    expect(stats.totalDocs).toBe(2);
+    expect(stats.textFormatAdded).toBe(2);
+  });
+
+  it('справи без documents[] не падають', () => {
+    const { registry, didMigrate } = migrateToVersion10({ schemaVersion: 9, cases: [{ id: 'c', name: 'no docs' }] });
+    expect(didMigrate).toBe(true);
+    expect(registry.cases[0].name).toBe('no docs');
   });
 });

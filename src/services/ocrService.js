@@ -56,6 +56,12 @@ function layoutCacheFileName(file) {
   return `${sanitizeBasename(file.name)}_${file.id}.layout.json`;
 }
 
+// .md — очищений читабельний Markdown (TASK 3.1 cleanTextService). Лежить
+// поряд з .txt у 02_ОБРОБЛЕНІ. Той самий шаблон імені <basename>_<id>.
+function markdownCacheFileName(file) {
+  return `${sanitizeBasename(file.name)}_${file.id}.md`;
+}
+
 // CLAUDE.md правило #8 — кирилиця в q= filter Drive API ненадійна.
 // Запитуємо всі файли папки, фільтруємо по name у JavaScript.
 async function listFolderFilesByName(folderId, name) {
@@ -171,6 +177,30 @@ export async function getCachedText(file) {
   } catch {
     return null;
   }
+}
+
+// getCleanOrRawText — текст документа для viewer/читача: спочатку очищений
+// .md (TASK 3.1), інакше сирий .txt. ОКРЕМЕ ім'я (НЕ розширюємо getCachedText
+// подвійним сенсом — правило #11): getCachedText = «сирий .txt-кеш OCR»;
+// getCleanOrRawText = «найкращий читабельний текст: .md якщо є, інакше .txt».
+//
+// Повертає { text, format:'md'|'txt' } або null якщо нема жодного.
+export async function getCleanOrRawText(file) {
+  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return null;
+  try {
+    const mdName = markdownCacheFileName(file);
+    const mdMatches = await listFolderFilesByName(subFolderId, mdName);
+    if (mdMatches.length > 0) {
+      const text = await readDriveFileText(mdMatches[0].id);
+      if (text != null) return { text, format: 'md' };
+    }
+  } catch { /* падіння .md не критичне — пробуємо .txt */ }
+  try {
+    const txt = await checkCache(file);
+    if (txt != null) return { text: txt, format: 'txt' };
+  } catch { /* нижче null */ }
+  return null;
 }
 
 // writeExtractedTextArtifact — публічний запис .txt у 02_ОБРОБЛЕНІ для caller'а

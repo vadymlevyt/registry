@@ -54,6 +54,16 @@
 //                   НЕ плутати з case.team[].addedBy (хто додав у команду) —
 //                   різний сенс (правило #11).
 //                   Окремий крок — migrateToVersion9 нижче.
+// schemaVersion 10  — document.textFormat / document.cleanedAt (TASK 3.1 clean_text).
+//                   textFormat enum: 'txt' (сирий OCR, default) | 'md' (очищений
+//                   Markdown через cleanTextService). cleanedAt — ISO|null.
+//                   ЄДИНИЙ сенс textFormat: формат витягнутого тексту у
+//                   02_ОБРОБЛЕНІ. НЕ плутати з documentNature (природа файла)
+//                   і status (lifecycle) — правило #11. Усі існуючі документи
+//                   отримують textFormat='txt', cleanedAt=null (до bump'а нічого
+//                   не чистилось). attentionNotes — важке поле у
+//                   documents_extended.json, bump НЕ потребує.
+//                   Окремий крок — migrateToVersion10 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -78,10 +88,11 @@ import { ensureEntitlements } from './entitlementsService.js';
 
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
 // migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5 →
-// migrateToVersion7 → migrateToVersion8). Використовується App.jsx для запису
-// нової версії registry і тестами як "це остаточний таргет системи".
-export const CURRENT_SCHEMA_VERSION = 9;
-export const MIGRATION_VERSION = '9.0_case_origin';
+// migrateToVersion7 → migrateToVersion8 → migrateToVersion9 →
+// migrateToVersion10). Використовується App.jsx для запису нової версії
+// registry і тестами як "це остаточний таргет системи".
+export const CURRENT_SCHEMA_VERSION = 10;
+export const MIGRATION_VERSION = '10.0_text_format';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -245,6 +256,7 @@ function ensureModuleIntegration(existing) {
 // Повертає settingsVersion-label який відповідає переданій version. Для рідкісного
 // випадку коли registry на Drive має schemaVersion але втратив settingsVersion.
 function labelForVersion(version) {
+  if (version >= 10) return '10.0_text_format';
   if (version >= 9) return '9.0_case_origin';
   if (version >= 8) return '8.0_time_entry_capture_method';
   if (version >= 7) return '7.0_ecits_canonical';
@@ -904,6 +916,74 @@ export function migrateToVersion9(registry) {
     didMigrate: true,
     fromVersion,
     toVersion: 9,
+    stats,
+  };
+}
+
+// ── v9 → v10: document.textFormat / cleanedAt (TASK 3.1 clean_text) ─────────
+// Додає кожному документу кожної справи textFormat='txt' і cleanedAt=null
+// якщо їх ще немає (до bump'а нічого не чистилось у .md). attentionNotes —
+// важке поле у documents_extended.json, тут НЕ чіпаємо (bump не потребує).
+//
+// textFormat — ЄДИНИЙ сенс: формат витягнутого тексту у 02_ОБРОБЛЕНІ
+// ('txt'|'md'). НЕ плутати з documentNature/status (правило #11).
+//
+// Ідемпотентна: повторний запуск з v10+ повертає didMigrate=false. Документ
+// що вже має textFormat (з якоїсь причини) лишається як є.
+// Викликається з App.jsx EFFECT-A послідовно після migrateToVersion9.
+export function migrateToVersion10(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 10) {
+    return { registry, didMigrate: false, fromVersion, toVersion: fromVersion, stats: null };
+  }
+
+  const stats = { totalDocs: 0, textFormatAdded: 0, textFormatAlreadySet: 0, cleanedAtAdded: 0 };
+  const cases = Array.isArray(registry?.cases) ? registry.cases : [];
+  const migratedCases = cases.map(c => {
+    if (!c || typeof c !== 'object') return c;
+    if (!Array.isArray(c.documents)) return c;
+    const docs = c.documents.map(doc => {
+      if (!doc || typeof doc !== 'object') return doc;
+      stats.totalDocs++;
+      const hasTextFormat = doc.textFormat === 'txt' || doc.textFormat === 'md';
+      const hasCleanedAt = 'cleanedAt' in doc;
+      if (hasTextFormat && hasCleanedAt) {
+        stats.textFormatAlreadySet++;
+        return doc;
+      }
+      if (!hasTextFormat) stats.textFormatAdded++;
+      if (!hasCleanedAt) stats.cleanedAtAdded++;
+      return {
+        ...doc,
+        textFormat: hasTextFormat ? doc.textFormat : 'txt',
+        cleanedAt: hasCleanedAt ? doc.cleanedAt : null,
+      };
+    });
+    return { ...c, documents: docs };
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK 3.1] Migration v${fromVersion} → v10 (document.textFormat/cleanedAt):\n` +
+    `  total documents: ${stats.totalDocs}\n` +
+    `  textFormat added ('txt'): ${stats.textFormatAdded}\n` +
+    `  cleanedAt added (null): ${stats.cleanedAtAdded}\n` +
+    `  already set (idempotent): ${stats.textFormatAlreadySet}\n` +
+    `[TASK 3.1] Migration v${fromVersion} → v10 done.`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 10,
+      settingsVersion: '10.0_text_format',
+      cases: migratedCases,
+      lastMigration: { from: fromVersion, to: 10, at: new Date().toISOString() },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 10,
     stats,
   };
 }
