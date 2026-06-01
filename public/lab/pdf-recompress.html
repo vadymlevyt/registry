@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Калібрування ре-компресії PDF (#39) — лабораторний стенд</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 16px; background: #f5f6f8; color: #1f2933; line-height: 1.45;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #647084; font-size: 13px; margin: 0 0 16px; }
+  .card { background: #fff; border: 1px solid #e1e5ea; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  label { font-size: 13px; font-weight: 600; display: block; margin-bottom: 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+  .row > div { flex: 1 1 130px; }
+  select, input[type=file] { width: 100%; padding: 9px; border: 1px solid #cbd2da; border-radius: 8px; font-size: 14px; background: #fff; }
+  button {
+    padding: 11px 18px; border: 0; border-radius: 8px; background: #2563eb; color: #fff;
+    font-size: 15px; font-weight: 600; cursor: pointer; width: 100%;
+  }
+  button:disabled { background: #9bb4e8; cursor: default; }
+  .hint { font-size: 12px; color: #647084; margin-top: 8px; }
+  #progress { font-size: 13px; color: #2563eb; min-height: 18px; margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eceff3; white-space: nowrap; }
+  th { color: #647084; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ok { color: #167a3c; font-weight: 600; }
+  .fail { color: #c0392b; font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  a.dl { color: #2563eb; text-decoration: none; }
+  .env { font-size: 12px; color: #647084; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>Калібрування ре-компресії PDF — стенд #39</h1>
+  <p class="sub">Рендер сторінки → downscale → перепакування в новий PDF. Файли нікуди не вантажаться (усе локально в цій вкладці). Стенд одноразовий, застосунку й даних не торкається.</p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>PDF-файли (можна кілька)</label>
+        <input type="file" id="files" accept="application/pdf" multiple />
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <div>
+        <label>DPI рендера</label>
+        <select id="dpi">
+          <option value="100">100 (агресивно)</option>
+          <option value="150" selected>150 (баланс)</option>
+          <option value="200">200 (м'яко)</option>
+        </select>
+      </div>
+      <div>
+        <label>JPEG-якість</label>
+        <select id="quality">
+          <option value="0.6">0.6</option>
+          <option value="0.7" selected>0.7</option>
+          <option value="0.8">0.8</option>
+        </select>
+      </div>
+      <div>
+        <button id="run" disabled>Поміряти</button>
+      </div>
+    </div>
+    <p class="hint">Порада: прожени один і той самий файл на 100/150/200, відкрий результат і подивись, де ще читабельно. Це і буде дефолт для #39.</p>
+    <div class="env" id="env"></div>
+  </div>
+
+  <div id="progress"></div>
+
+  <div class="card scroll" id="resultsCard" style="display:none;">
+    <table id="results">
+      <thead>
+        <tr>
+          <th>Файл</th>
+          <th class="num">Стор.</th>
+          <th class="num">Вхід, МБ</th>
+          <th class="num">Вихід, МБ</th>
+          <th class="num">Стиснення</th>
+          <th class="num">Час, с</th>
+          <th class="num">мс/стор.</th>
+          <th class="num">Пік heap, МБ</th>
+          <th>Статус</th>
+          <th>Результат</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const filesEl = $("files"), runEl = $("run"), dpiEl = $("dpi"), qualityEl = $("quality");
+  const progressEl = $("progress"), resultsCard = $("resultsCard"), tbody = $("results").querySelector("tbody");
+
+  // Бібліотеки
+  let pdfjsLib = window.pdfjsLib;
+  let jsPDFctor = window.jspdf && window.jspdf.jsPDF;
+
+  if (!pdfjsLib || !jsPDFctor) {
+    progressEl.textContent = "Не завантажились бібліотеки (pdf.js / jsPDF). Перевір інтернет і онови сторінку.";
+  } else {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+
+  // Інфо про середовище (важливо для протоколу: на чому міряли)
+  (function showEnv() {
+    const mem = (navigator.deviceMemory ? navigator.deviceMemory + " ГБ RAM" : "RAM невідомо");
+    const heapCap = (performance.memory && performance.memory.jsHeapSizeLimit)
+      ? " · ліміт heap ~" + Math.round(performance.memory.jsHeapSizeLimit / 1048576) + " МБ"
+      : " · heap-метрики недоступні (не Chrome?)";
+    $("env").textContent = "Пристрій: " + mem + heapCap + " · " + navigator.userAgent;
+  })();
+
+  filesEl.addEventListener("change", () => { runEl.disabled = !filesEl.files.length; });
+
+  const yield_ = () => new Promise((r) => setTimeout(r, 0));
+  const mb = (bytes) => (bytes / 1048576);
+  const fmt = (n, d) => Number(n).toFixed(d == null ? 1 : d);
+  const heapNow = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
+
+  async function processFile(file, dpi, quality) {
+    const scale = dpi / 72;
+    const t0 = performance.now();
+    let peakHeap = heapNow();
+    const sampleHeap = () => { const h = heapNow(); if (h > peakHeap) peakHeap = h; };
+
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const pageCount = pdf.numPages;
+
+    let outDoc = null;
+    for (let p = 1; p <= pageCount; p++) {
+      const page = await pdf.getPage(p);
+      const vp1 = page.getViewport({ scale: 1 });        // pt-розмір сторінки (72 dpi)
+      const vp = page.getViewport({ scale });            // bitmap для рендера
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      const ctx = canvas.getContext("2d", { willReadFrequently: false });
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+      const jpeg = canvas.toDataURL("image/jpeg", quality);
+      sampleHeap();
+
+      const orient = vp1.width >= vp1.height ? "landscape" : "portrait";
+      if (!outDoc) {
+        outDoc = new jsPDFctor({ unit: "pt", format: [vp1.width, vp1.height], orientation: orient });
+      } else {
+        outDoc.addPage([vp1.width, vp1.height], orient);
+      }
+      outDoc.addImage(jpeg, "JPEG", 0, 0, vp1.width, vp1.height);
+
+      // прибирання, щоб не накопичувати пам'ять
+      canvas.width = 0; canvas.height = 0;
+      page.cleanup();
+
+      progressEl.textContent = file.name + " — стор. " + p + " / " + pageCount;
+      await yield_();
+      sampleHeap();
+    }
+
+    const outBlob = outDoc.output("blob");
+    const totalMs = performance.now() - t0;
+    pdf.destroy();
+
+    return {
+      pages: pageCount,
+      inBytes: file.size,
+      outBytes: outBlob.size,
+      totalMs,
+      msPerPage: totalMs / pageCount,
+      peakHeap,
+      blob: outBlob,
+    };
+  }
+
+  runEl.addEventListener("click", async () => {
+    if (!pdfjsLib || !jsPDFctor) return;
+    runEl.disabled = true; filesEl.disabled = true;
+    resultsCard.style.display = "block";
+    const dpi = parseInt(dpiEl.value, 10);
+    const quality = parseFloat(qualityEl.value);
+    const list = Array.from(filesEl.files);
+
+    for (const file of list) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + file.name + "</td><td colspan='9'>обробка…</td>";
+      tbody.appendChild(tr);
+      await yield_();
+      try {
+        const r = await processFile(file, dpi, quality);
+        const ratio = r.inBytes / r.outBytes;
+        const url = URL.createObjectURL(r.blob);
+        tr.innerHTML =
+          "<td>" + file.name + "</td>" +
+          "<td class='num'>" + r.pages + "</td>" +
+          "<td class='num'>" + fmt(mb(r.inBytes)) + "</td>" +
+          "<td class='num'>" + fmt(mb(r.outBytes)) + "</td>" +
+          "<td class='num'>" + fmt(ratio, 1) + "×</td>" +
+          "<td class='num'>" + fmt(r.totalMs / 1000, 1) + "</td>" +
+          "<td class='num'>" + fmt(r.msPerPage, 0) + "</td>" +
+          "<td class='num'>" + (r.peakHeap ? fmt(mb(r.peakHeap)) : "n/a") + "</td>" +
+          "<td class='ok'>OK</td>" +
+          "<td><a class='dl' href='" + url + "' download='recompressed_" + file.name + "'>скачати</a></td>";
+      } catch (e) {
+        tr.innerHTML =
+          "<td>" + file.name + "</td>" +
+          "<td class='num'>—</td><td class='num'>" + fmt(mb(file.size)) + "</td>" +
+          "<td class='num'>—</td><td class='num'>—</td><td class='num'>—</td>" +
+          "<td class='num'>—</td><td class='num'>—</td>" +
+          "<td class='fail'>ВПАВ</td>" +
+          "<td>" + (e && e.message ? e.message : String(e)) + "</td>";
+      }
+      await yield_();
+    }
+
+    progressEl.textContent = "Готово. Скрін таблиці — мені.";
+    runEl.disabled = false; filesEl.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>
