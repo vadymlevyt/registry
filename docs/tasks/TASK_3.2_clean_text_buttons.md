@@ -34,6 +34,7 @@
 | Що | Файл:рядок | Стан |
 |----|-----------|------|
 | ядро | `src/services/cleanTextService.js` | готове з 3.1 (`cleanDocument`) |
+| Drive-шви cleanDocument | реалізовані в 3.1-поправці (DP пост-крок) | **перевикористати**, не дублювати |
 | Огляд-кнопка «Створити контекст» | `CaseDossier` Огляд (поряд додати «Очистити тексти») | зразок UX (прогрес/toast) |
 | Viewer панель | `DocumentViewer` header/footer | додати кнопку |
 | ACTIONS реєстр | `src/services/actionsRegistry.js` (`createActions`) | додати `clean_document_text` |
