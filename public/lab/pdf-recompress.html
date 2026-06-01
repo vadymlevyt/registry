@@ -31,6 +31,7 @@
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .ok { color: #167a3c; font-weight: 600; }
   .fail { color: #c0392b; font-weight: 600; }
+  .big { color: #b9770e; font-weight: 600; }
   .scroll { overflow-x: auto; }
   a.dl { color: #2563eb; text-decoration: none; }
   .env { font-size: 12px; color: #647084; margin-top: 4px; }
@@ -38,7 +39,7 @@
 </head>
 <body>
   <h1>Калібрування ре-компресії PDF — стенд #39</h1>
-  <p class="sub">Рендер сторінки → downscale → перепакування в новий PDF. Файли нікуди не вантажаться (усе локально в цій вкладці). Стенд одноразовий, застосунку й даних не торкається.</p>
+  <p class="sub">Кожну сторінку нормалізуємо до заданої стелі пікселів по довгій стороні → JPEG → новий PDF. Файли нікуди не вантажаться (усе локально в цій вкладці). Стенд одноразовий, застосунку й даних не торкається.</p>
 
   <div class="card">
     <div class="row">
@@ -49,11 +50,11 @@
     </div>
     <div class="row" style="margin-top:12px;">
       <div>
-        <label>DPI рендера</label>
-        <select id="dpi">
-          <option value="100">100 (агресивно)</option>
-          <option value="150" selected>150 (баланс)</option>
-          <option value="200">200 (м'яко)</option>
+        <label>Макс. px по довгій стороні</label>
+        <select id="longedge">
+          <option value="1400">1400 (агресивно)</option>
+          <option value="1800" selected>1800 (баланс)</option>
+          <option value="2200">2200 (м'яко)</option>
         </select>
       </div>
       <div>
@@ -68,7 +69,7 @@
         <button id="run" disabled>Поміряти</button>
       </div>
     </div>
-    <p class="hint">Порада: прожени один і той самий файл на 100/150/200, відкрий результат і подивись, де ще читабельно. Це і буде дефолт для #39.</p>
+    <p class="hint">Тепер стиснення не залежить від того, як PDF декларує розмір сторінки: і айфонівські фото, і звичайні скани зводяться до однакової стелі пікселів. Колонки «Сторінка pt» і «МП/стор» показують, які файли мали роздуту сторінку (айфонівські — велика pt).</p>
     <div class="env" id="env"></div>
   </div>
 
@@ -80,6 +81,8 @@
         <tr>
           <th>Файл</th>
           <th class="num">Стор.</th>
+          <th class="num">Сторінка, pt</th>
+          <th class="num">МП/стор</th>
           <th class="num">Вхід, МБ</th>
           <th class="num">Вихід, МБ</th>
           <th class="num">Стиснення</th>
@@ -101,7 +104,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const filesEl = $("files"), runEl = $("run"), dpiEl = $("dpi"), qualityEl = $("quality");
+  const filesEl = $("files"), runEl = $("run"), longEl = $("longedge"), qualityEl = $("quality");
   const progressEl = $("progress"), resultsCard = $("resultsCard"), tbody = $("results").querySelector("tbody");
 
   // Бібліотеки
@@ -130,9 +133,9 @@
   const mb = (bytes) => (bytes / 1048576);
   const fmt = (n, d) => Number(n).toFixed(d == null ? 1 : d);
   const heapNow = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
+  const MAX_SCALE = 6; // запобіжник проти екстремального апскейлу дрібних сторінок
 
-  async function processFile(file, dpi, quality) {
-    const scale = dpi / 72;
+  async function processFile(file, longEdge, quality) {
     const t0 = performance.now();
     let peakHeap = heapNow();
     const sampleHeap = () => { const h = heapNow(); if (h > peakHeap) peakHeap = h; };
@@ -141,15 +144,22 @@
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     const pageCount = pdf.numPages;
 
-    let outDoc = null;
+    let outDoc = null, firstPt = "", maxMP = 0;
     for (let p = 1; p <= pageCount; p++) {
       const page = await pdf.getPage(p);
-      const vp1 = page.getViewport({ scale: 1 });        // pt-розмір сторінки (72 dpi)
-      const vp = page.getViewport({ scale });            // bitmap для рендера
+      const vp1 = page.getViewport({ scale: 1 });        // pt-розмір сторінки (як декларує PDF)
+      const longPt = Math.max(vp1.width, vp1.height);
+      // нормалізація до стелі пікселів по довгій стороні (а НЕ фіксований DPI)
+      const scale = Math.min(longEdge / longPt, MAX_SCALE);
+      const vp = page.getViewport({ scale });
+
+      if (p === 1) firstPt = Math.round(vp1.width) + "×" + Math.round(vp1.height);
 
       const canvas = document.createElement("canvas");
       canvas.width = Math.floor(vp.width);
       canvas.height = Math.floor(vp.height);
+      const mp = (canvas.width * canvas.height) / 1e6;
+      if (mp > maxMP) maxMP = mp;
       const ctx = canvas.getContext("2d", { willReadFrequently: false });
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
 
@@ -179,6 +189,8 @@
 
     return {
       pages: pageCount,
+      firstPt,
+      maxMP,
       inBytes: file.size,
       outBytes: outBlob.size,
       totalMs,
@@ -192,22 +204,25 @@
     if (!pdfjsLib || !jsPDFctor) return;
     runEl.disabled = true; filesEl.disabled = true;
     resultsCard.style.display = "block";
-    const dpi = parseInt(dpiEl.value, 10);
+    const longEdge = parseInt(longEl.value, 10);
     const quality = parseFloat(qualityEl.value);
     const list = Array.from(filesEl.files);
 
     for (const file of list) {
       const tr = document.createElement("tr");
-      tr.innerHTML = "<td>" + file.name + "</td><td colspan='9'>обробка…</td>";
+      tr.innerHTML = "<td>" + file.name + "</td><td colspan='11'>обробка…</td>";
       tbody.appendChild(tr);
       await yield_();
       try {
-        const r = await processFile(file, dpi, quality);
+        const r = await processFile(file, longEdge, quality);
         const ratio = r.inBytes / r.outBytes;
         const url = URL.createObjectURL(r.blob);
+        const mpCls = r.maxMP >= 12 ? " class='big'" : " class='num'"; // підсвітити роздуті сторінки
         tr.innerHTML =
           "<td>" + file.name + "</td>" +
           "<td class='num'>" + r.pages + "</td>" +
+          "<td class='num'>" + r.firstPt + "</td>" +
+          "<td" + mpCls + ">" + fmt(r.maxMP, 1) + "</td>" +
           "<td class='num'>" + fmt(mb(r.inBytes)) + "</td>" +
           "<td class='num'>" + fmt(mb(r.outBytes)) + "</td>" +
           "<td class='num'>" + fmt(ratio, 1) + "×</td>" +
@@ -219,11 +234,8 @@
       } catch (e) {
         tr.innerHTML =
           "<td>" + file.name + "</td>" +
-          "<td class='num'>—</td><td class='num'>" + fmt(mb(file.size)) + "</td>" +
-          "<td class='num'>—</td><td class='num'>—</td><td class='num'>—</td>" +
-          "<td class='num'>—</td><td class='num'>—</td>" +
-          "<td class='fail'>ВПАВ</td>" +
-          "<td>" + (e && e.message ? e.message : String(e)) + "</td>";
+          "<td colspan='10' class='fail'>ВПАВ: " + (e && e.message ? e.message : String(e)) + "</td>" +
+          "<td>—</td>";
       }
       await yield_();
     }
