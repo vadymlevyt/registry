@@ -1,4 +1,5 @@
-import { ExternalLink, Download, Copy, Share2, Bot, RefreshCw } from 'lucide-react';
+import { useState } from 'react';
+import { ExternalLink, Download, Copy, Share2, Bot, RefreshCw, Sparkles } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { toast } from '../../services/toast.js';
@@ -18,9 +19,24 @@ export function DocumentViewerFooter({
   mode,
   onDiscussWithAgent,
   onReprocess,
+  onCleanText,
 }) {
   const isScanned = document.documentNature === 'scanned';
   const hasDrive = !!document.driveId;
+  // TASK 3.2 — «Очистити документ»: лише scanned + сирий (textFormat!=='md').
+  // searchable / вже очищені (.md) — поза скоупом, кнопки немає.
+  const canClean = isScanned && document.textFormat !== 'md' && hasDrive && typeof onCleanText === 'function';
+  const [cleaning, setCleaning] = useState(false);
+
+  const handleClean = async () => {
+    if (cleaning) return;
+    setCleaning(true);
+    try {
+      await onCleanText(document);
+    } finally {
+      setCleaning(false);
+    }
+  };
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   const handleOpenInDrive = () => {
@@ -177,6 +193,18 @@ export function DocumentViewerFooter({
           disabled={!hasDrive}
         >
           Перерозпізнати
+        </Button>
+      )}
+
+      {canClean && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Sparkles size={ICON_SIZE.sm} />}
+          onClick={handleClean}
+          disabled={cleaning}
+        >
+          {cleaning ? 'Очищаю…' : 'Очистити документ'}
         </Button>
       )}
     </footer>

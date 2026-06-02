@@ -4874,6 +4874,9 @@ function App() {
     deleteDriveFile,
     deleteOcrCacheForDocument,
     deleteExtendedForDocument,
+    // TASK 3.2 — clean_document_text читає API-ключ свіжо з localStorage (не
+    // замикає stale-снапшот). cleanDocument/build-deps — дефолти ядра 3.1.
+    getApiKey: () => localStorage.getItem('claude_api_key') || '',
   });
 
   // TASK 0.4 — конфігуруємо extensionBridge кожен render свіжими deps.

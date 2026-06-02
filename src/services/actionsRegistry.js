@@ -28,6 +28,11 @@ import { canOverwrite, buildAlternativeSourceRecord } from './sourcePolicy';
 import { validateDocument } from './documentFactory';
 import { getTimeStandard, getCategoryDefaults, getVariantDefault } from './timeStandards';
 import { MODULES, categoryForCase } from './moduleNames';
+// TASK 3.2 — ACTION clean_document_text тягне готове ядро очистки (3.1).
+// Імпорт ядра/адаптера ЛІНИВИЙ (dynamic import у handler'і): cleanTextDriveAdapter
+// тягне ocrService → pdfjs-dist (DOMMatrix недоступний у Node-тест-середовищі);
+// top-level import зламав би всі тести що вантажать actionsRegistry. Тести
+// ін'єктують стаби через deps; прод вантажить ліниво на першу очистку.
 
 // UI-only ACTIONS — не доступні агентам через ACTION_JSON, лише через executeAction
 // з прапором _fromUI у params (виставляє UI-обробник). destroy_case реалізовано
@@ -45,6 +50,17 @@ export const SYSTEM_ACTIONS_NO_BILLING = new Set([
   'track_session_start', 'track_session_end', 'batch_update',
   // Sync ACTIONS (TASK 0.3.5)
   'mark_synced_from_ecits', 'update_case_ecits_state',
+]);
+
+// TASK 3.2 — ACTIONS які САМІ звітують у activityTracker (всередині свого
+// handler'а), тому executeAction-hook НЕ має дублювати generic-звіт.
+// Єдиний сенс (#11): «дія нараховує свій білінг сама — не нараховуй її вдруге».
+// clean_document_text: ядро cleanTextService звітує 'agent_call' (agentType
+// text_cleaner) при billAsUserAction:true — той самий сигнал, що й кнопки UI,
+// які кличуть ту саму ACTION. Без цього виходило б два time_entries на одну
+// очистку (agent_call + generic clean_document_text).
+export const SELF_BILLING_ACTIONS = new Set([
+  'clean_document_text',
 ]);
 
 // TASK 0.3.5 v7 — edit-ACTIONS канонічної схеми (R1 AI-first дзеркало).
@@ -104,6 +120,13 @@ export function createActions(deps) {
     deleteDriveFile,
     deleteOcrCacheForDocument,
     deleteExtendedForDocument,
+    // TASK 3.2 — clean_document_text. getApiKey: () => claude_api_key (App.jsx
+    // читає localStorage; null у тестах без AI). cleanDocument / build-deps —
+    // DI-шви (тести стабують, бо торкаються Drive+AI); якщо не передані —
+    // handler вантажить реальне ядро ліниво через dynamic import.
+    getApiKey,
+    cleanDocument: injectedCleanDocument,
+    buildCleanDocumentDriveDeps: injectedBuildCleanDriveDeps,
   } = deps;
 
   // ── ACTIONS — єдиний реєстр дій системи ──────────────────────────────────
@@ -1542,6 +1565,65 @@ export function createActions(deps) {
       return { success: true, overwriteSkipped };
     },
 
+    // TASK 3.2 — clean_document_text: очистити сирий OCR-текст СКАНОВАНОГО
+    // документа у гарний Markdown. Тонка точка виклику ядра 3.1
+    // (cleanTextService.cleanDocument) через Drive-шви адаптера — НУЛЬ
+    // дублювання логіки. Споживачі: агент досьє (голос/чат) і кнопки UI
+    // (Огляд/Viewer) — усі через цю ОДНУ дію (Rule of Three / AI-first).
+    //
+    // module=case_dossier, billAsUserAction:true — оплачувана дія адвоката
+    // (ядро звітує 'agent_call'; executeAction-hook не дублює — SELF_BILLING_ACTIONS).
+    // Скоуп-гард (тільки scanned) перевіряється ТУТ (явний skipped-результат для
+    // UI/агента) і ще раз у ядрі (захист на рівні ядра).
+    clean_document_text: async ({ caseId, documentId }) => {
+      if (!caseId || !documentId) {
+        return { success: false, error: "caseId, documentId обов'язкові" };
+      }
+      const targetCase = getCases().find(c => c.id === caseId);
+      if (!targetCase) return { success: false, error: `Справу ${caseId} не знайдено` };
+      const doc = (targetCase.documents || []).find(d => d.id === documentId);
+      if (!doc) return { success: false, error: `Документ ${documentId} не знайдено у справі` };
+
+      // Скоуп-гард: очистка ВИКЛЮЧНО для scanned (parent §СКОУП). searchable
+      // (DOCX/HTML/текстовий PDF) — поза функцією (уже чистий цифровий текст).
+      if (doc.documentNature !== 'scanned') {
+        return { success: false, skipped: true, reason: 'not_scanned', error: 'Очистка доступна лише для сканованих документів' };
+      }
+
+      const apiKey = typeof getApiKey === 'function' ? getApiKey() : null;
+      // Ліниве завантаження ядра/адаптера (уникаємо pdfjs у тест-середовищі);
+      // тести передають стаби через deps.
+      const cleanDocumentCore = injectedCleanDocument
+        || (await import('./cleanTextService')).cleanDocument;
+      const buildCleanDriveDeps = injectedBuildCleanDriveDeps
+        || (await import('./cleanTextDriveAdapter')).buildCleanDocumentDriveDeps;
+      // Drive-шви ядра: update_document (textFormat/cleanedAt) через executeAction
+      // від імені dossier_agent (має дозвіл update_document); attentionNotes у extended.
+      const driveDeps = buildCleanDriveDeps({ executeAction, agentId: 'dossier_agent' });
+
+      const r = await cleanDocumentCore({
+        document: doc,
+        caseData: targetCase,
+        apiKey,
+        module: MODULES.CASE_DOSSIER,
+        billAsUserAction: true,
+        ...driveDeps,
+      });
+
+      // Мапінг результату ядра у контракт ACTION (success-орієнтований).
+      if (r?.ok) {
+        return { success: true, documentId, attentionNotes: r.attentionNotes || [], warning: r.warning || null };
+      }
+      if (r?.skipped) {
+        return { success: false, skipped: true, reason: r.reason || 'skipped' };
+      }
+      if (r?.degraded) {
+        // Деградація (обрізало/AI недоступний): джерела збережено, .md не змінено.
+        return { success: false, degraded: true, needsRecleaning: true, warning: r.warning || 'Очистка не завершена — джерела збережено для повтору' };
+      }
+      return { success: false, error: r?.error || 'Очистка не вдалась' };
+    },
+
     // ГРУПА 6 — Композитна дія
     batch_update: async ({ operations, agentId }) => {
       const results = [];
@@ -1621,6 +1703,8 @@ export function createActions(deps) {
       'add_document', 'update_document',
       'add_proceeding', 'update_proceeding',
       'update_processing_context',
+      // TASK 3.2 — ретроактивна очистка тексту скан-документа (голос/чат + кнопки UI).
+      'clean_document_text',
       // delete_document, delete_proceeding — НЕ дозволено, лише UI (UI_ONLY_ACTIONS).
     ],
 
@@ -1750,8 +1834,11 @@ export function createActions(deps) {
       // нараховуються (це автосинхронізація, не робота адвоката).
       // TASK 0.4: create_case з origin='ecits_import' (Court Sync імпорт)
       // теж не нараховується — справа з'явилась автоматично, не як робота.
+      // TASK 3.2: SELF_BILLING_ACTIONS (clean_document_text) звітують власний
+      // 'agent_call' усередині handler'а — generic-hook не дублює.
       let shouldReport = result && (result.success || result.successCount) &&
-                         !SYSTEM_ACTIONS_NO_BILLING.has(action);
+                         !SYSTEM_ACTIONS_NO_BILLING.has(action) &&
+                         !SELF_BILLING_ACTIONS.has(action);
       if (shouldReport && EDIT_ACTIONS_SOURCE_AWARE.has(action)) {
         const sourceParam = params?.source;
         if (sourceParam && sourceParam !== 'manual') {
