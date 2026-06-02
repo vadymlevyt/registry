@@ -1,7 +1,7 @@
 // Юніт-тести фасаду ocrService — фокус на парі .txt / .layout.json у 02_ОБРОБЛЕНІ.
-// Принцип: .txt пишеться завжди коли є непорожній текст. .layout.json пишеться
-// ТІЛЬКИ коли провайдер фактично повернув непорожній масив pageStructure
-// (факт у відповіді, не декларація на провайдері).
+// Принцип (V2-A2): .txt пишемо ⇔ layout ВІДСУТНІЙ (текст без pageStructure).
+// Коли провайдер повернув pageStructure — пишемо .layout.json і НЕ пишемо .txt
+// (вірний текст читається з layout). .layout.json — тільки коли масив непорожній.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // ── Мок-стан Drive ──────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(names).not.toContain('scan_drive_file_1.layout.json');
   });
 
-  it('scanned PDF: documentAi повертає pageStructure → пишемо .txt і .layout.json', async () => {
+  it('scanned PDF: documentAi повертає pageStructure → пишемо ТІЛЬКИ .layout.json, БЕЗ .txt (V2-A2)', async () => {
     mockProviderState.pdfjsLocal.error = Object.assign(new Error('no text layer'), { code: 'UNSUPPORTED' });
     mockProviderState.documentAi.result = {
       text: 'Текст зі сканованого PDF',
@@ -133,7 +133,8 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
 
     expect(result.provider).toBe('documentAi');
     expect(result.hasLayout).toBe(true);
-    expect(result.cacheWritten).toBe(true);
+    // V2-A2: layout є → .txt НЕ пишемо (вірний текст читається з layout).
+    expect(result.cacheWritten).toBe(false);
     expect(result.layoutWritten).toBe(true);
     // TASK B fix round 2: extractText тепер повертає pageStructure щоб
     // multiImageToPdf міг побудувати об'єднаний layout.json для merge сценарію.
@@ -142,7 +143,7 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(result.pageStructure[0]._text).toBe('Сторінка 1');
 
     const names = driveState.uploads.map((u) => u.name);
-    expect(names).toContain('scan_drive_file_1.txt');
+    expect(names).not.toContain('scan_drive_file_1.txt');
     expect(names).toContain('scan_drive_file_1.layout.json');
 
     const layoutUpload = driveState.uploads.find((u) => u.name === 'scan_drive_file_1.layout.json');
@@ -163,7 +164,7 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(result.pageStructure).toBe(null);
   });
 
-  it('зображення: documentAi напряму (pdfjsLocal не в ланцюжку) → .txt + .layout.json', async () => {
+  it('зображення: documentAi напряму (pdfjsLocal не в ланцюжку) → ТІЛЬКИ .layout.json, БЕЗ .txt (V2-A2)', async () => {
     mockProviderState.documentAi.result = {
       text: 'Текст з картинки',
       pageCount: 1,
@@ -179,7 +180,8 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(result.hasLayout).toBe(true);
 
     const names = driveState.uploads.map((u) => u.name);
-    expect(names).toContain('photo_drive_file_1.txt');
+    // V2-A2: layout є → .txt НЕ пишемо.
+    expect(names).not.toContain('photo_drive_file_1.txt');
     expect(names).toContain('photo_drive_file_1.layout.json');
   });
 

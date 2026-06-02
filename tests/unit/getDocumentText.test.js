@@ -1,0 +1,136 @@
+// TASK V2-A2 — getDocumentText (єдина точка ВІРНОГО тексту) + getCleanOrRawText
+// (Текст-таб) + suffix-storage writeMarkdownArtifact (.clean.md / .digest.md).
+// In-memory Drive-мок (list повертає всі файли папки — ocrService фільтрує по
+// name; read віддає вміст; upload додає файл).
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const store = { files: [], nextId: 1 };   // { id, name, content }
+
+vi.mock('../../src/services/driveAuth.js', () => ({
+  driveRequest: vi.fn(async (url, opts = {}) => {
+    // list folder files
+    if (url.startsWith('https://www.googleapis.com/drive/v3/files?q=')) {
+      return new Response(JSON.stringify({ files: store.files.map((f) => ({ id: f.id, name: f.name })) }), { status: 200 });
+    }
+    // multipart upload
+    if (url.startsWith('https://www.googleapis.com/upload/drive/v3/files')) {
+      const form = opts.body;
+      const meta = JSON.parse(await form.get('metadata').text());
+      const content = await form.get('file').text();
+      const id = `drv_${store.nextId++}`;
+      // upsert by name (writeArtifact видаляє існуючий перед записом, але мок
+      // delete не чистить — тому просто перезаписуємо по імені для read-back).
+      store.files = store.files.filter((f) => f.name !== meta.name);
+      store.files.push({ id, name: meta.name, content });
+      return new Response(JSON.stringify({ id, name: meta.name }), { status: 200 });
+    }
+    // read media
+    const readMatch = url.match(/\/files\/([^?]+)\?alt=media/);
+    if (readMatch) {
+      const f = store.files.find((x) => x.id === readMatch[1]);
+      return f ? new Response(f.content, { status: 200 }) : new Response('', { status: 404 });
+    }
+    // delete (no-op for store)
+    return new Response('', { status: 204 });
+  }),
+}));
+
+vi.mock('../../src/services/ocr/documentAi.js', () => ({ default: { name: 'documentAi', canHandle: () => false, extract: vi.fn() } }));
+vi.mock('../../src/services/ocr/claudeVision.js', () => ({ default: { name: 'claudeVision', canHandle: () => false, extract: vi.fn() } }));
+vi.mock('../../src/services/ocr/pdfjsLocal.js', () => ({ default: { name: 'pdfjsLocal', canHandle: () => false, extract: vi.fn() } }));
+
+const {
+  getDocumentText, getCleanOrRawText, writeMarkdownArtifact,
+} = await import('../../src/services/ocrService.js');
+
+const SUB = { '02_ОБРОБЛЕНІ': 'folder02' };
+const caseData = { storage: { subFolders: SUB } };
+// basename для doc.name='Скан.pdf', driveId='drv_1' → 'Скан_drv_1'
+const scannedDoc = { id: 'doc_1', name: 'Скан.pdf', driveId: 'drv_1', documentNature: 'scanned' };
+
+function seedLayout(text) {
+  store.files.push({ id: `L${store.nextId++}`, name: 'Скан_drv_1.layout.json', content: JSON.stringify({ schemaVersion: 1, pages: text.map((t) => ({ _text: t })) }) });
+}
+function seedTxt(content) {
+  store.files.push({ id: `T${store.nextId++}`, name: 'Скан_drv_1.txt', content });
+}
+function seedMd(suffix, content) {
+  store.files.push({ id: `M${store.nextId++}`, name: `Скан_drv_1.${suffix}`, content });
+}
+
+beforeEach(() => { store.files = []; store.nextId = 1; });
+
+describe('getDocumentText — ВІРНИЙ текст (layout → .txt), НІКОЛИ не дайджест', () => {
+  it('scanned з layout → з\'єднаний page._text (вірний шар)', async () => {
+    seedLayout(['Сторінка перша.', 'Сторінка друга.']);
+    seedMd('digest.md', '# Конспект (переказ)');   // дайджест ПРИСУТНІЙ — але НЕ повертаємо
+    const t = await getDocumentText(scannedDoc, caseData);
+    expect(t).toContain('Сторінка перша.');
+    expect(t).toContain('Сторінка друга.');
+    expect(t).not.toContain('Конспект');           // вірне джерело, не переказ
+  });
+
+  it('no-layout → .txt', async () => {
+    seedTxt('сирий OCR текст');
+    const t = await getDocumentText(scannedDoc, caseData);
+    expect(t).toBe('сирий OCR текст');
+  });
+
+  it('ні layout, ні .txt → ""', async () => {
+    const t = await getDocumentText(scannedDoc, caseData);
+    expect(t).toBe('');
+  });
+
+  it('нема subFolders → "" (без Drive-викликів)', async () => {
+    const t = await getDocumentText(scannedDoc, { storage: {} });
+    expect(t).toBe('');
+  });
+});
+
+describe('getCleanOrRawText — Текст-таб (digest .md → вірний текст)', () => {
+  it('є .digest.md → format md (Конспект)', async () => {
+    seedLayout(['вірний шар']);
+    seedMd('digest.md', '# Конспект');
+    const r = await getCleanOrRawText({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB });
+    expect(r).toEqual({ text: '# Конспект', format: 'md' });
+  });
+
+  it('legacy .md (без суфікса) читається як digest', async () => {
+    seedMd('md', '# Legacy дайджест');
+    const r = await getCleanOrRawText({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB });
+    expect(r).toEqual({ text: '# Legacy дайджест', format: 'md' });
+  });
+
+  it('нема .md, але є layout → вірний текст (format txt) — новий скан без .txt', async () => {
+    seedLayout(['layout текст без txt']);
+    const r = await getCleanOrRawText({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB });
+    expect(r.format).toBe('txt');
+    expect(r.text).toContain('layout текст без txt');
+  });
+
+  it('нема .md/.layout, є .txt → format txt', async () => {
+    seedTxt('сирий txt');
+    const r = await getCleanOrRawText({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB });
+    expect(r).toEqual({ text: 'сирий txt', format: 'txt' });
+  });
+});
+
+describe('writeMarkdownArtifact — suffix-storage за mode', () => {
+  it("mode 'digest' (default) → <base>_<id>.digest.md", async () => {
+    await writeMarkdownArtifact({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB }, '# d');
+    expect(store.files.some((f) => f.name === 'Скан_drv_1.digest.md')).toBe(true);
+  });
+
+  it("mode 'clean' → <base>_<id>.clean.md", async () => {
+    await writeMarkdownArtifact({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB }, '# c', 'clean');
+    expect(store.files.some((f) => f.name === 'Скан_drv_1.clean.md')).toBe(true);
+  });
+
+  it('обидва варіанти співіснують (не затирають один одного)', async () => {
+    await writeMarkdownArtifact({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB }, '# d', 'digest');
+    await writeMarkdownArtifact({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB }, '# c', 'clean');
+    expect(store.files.some((f) => f.name === 'Скан_drv_1.digest.md')).toBe(true);
+    expect(store.files.some((f) => f.name === 'Скан_drv_1.clean.md')).toBe(true);
+  });
+});

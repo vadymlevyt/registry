@@ -118,6 +118,8 @@ export const CANONICAL_DOCUMENT_FIELDS = {
 
   // cleanedAt — ISO timestamp коли текст почистили у .md (cleanTextService).
   // null = ще не чищено (textFormat='txt'). Заповнюється разом з textFormat='md'.
+  // V2-A2: тримає час ОСТАННЬОЇ очистки (будь-якого режиму); подетальний стан
+  // обох режимів — у variants (нижче).
   cleanedAt: {
     type: 'string',
     required: false,
@@ -125,6 +127,20 @@ export const CANONICAL_DOCUMENT_FIELDS = {
     format: 'datetime',
     default: null,
     description: "Коли текст почистили у .md (ISO datetime). null = ще не чищено."
+  },
+
+  // ── Варіанти очистки (v11, TASK V2-A2 clean_text v2) ──────────────────────
+  // variants — які AI-варіанти очистки згенеровано для документа і коли.
+  // ЄДИНИЙ сенс (#11): «час генерації кожного режиму .md, або null якщо ще не
+  // генерувався». clean = Чистий (строгий дослівний, <base>_<id>.clean.md);
+  // digest = Конспект (структурує/переказує, <base>_<id>.digest.md). НЕ плутати
+  // з textFormat (формат «Текст»-таба) і cleanedAt (час останньої очистки).
+  // Required non-nullable об'єкт з двома ISO|null полями.
+  variants: {
+    type: 'object',
+    required: true,
+    default: { clean: null, digest: null },
+    description: "Час генерації кожного AI-варіанту очистки: { clean: <cleanedAt>|null, digest: <cleanedAt>|null }. null = режим ще не генерувався."
   },
 
   // ── Джерело надходження ──────────────────────────────────────────────────

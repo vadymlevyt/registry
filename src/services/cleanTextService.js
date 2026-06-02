@@ -282,12 +282,18 @@ function extractJsonObject(text) {
   return null;
 }
 
-// Консервативний промпт (перенесено + посилено з inline aiCleanText DP).
-// §6 design: AI чистить ФОРМАТУВАННЯ, НЕ зміст. Повертає JSON {markdown,
-// attentionNotes}. attentionNotes — що привернуло увагу БЕЗ зміни документа.
-// Вхід обмежений INPUT_CHAR_CAP (безпека під вікно 200K; пачкування тримає
-// реальні чернетки малими — cap спрацьовує лише на патологічно великий flat-txt).
-function buildCleanPrompt(draft, fileName) {
+// ── Два режими промту (V2-A2, parent §ТРИ РЕЖИМИ) ───────────────────────────
+// РЕЖИМ 'digest' (Конспект) — поточний 3.1-промт: структурує/переказує для
+//   ШВИДКОГО людського читання. НЕ дослівний (Haiku дрейфує — урок Брановського).
+//   НІКОЛИ не джерело для агента/цитат.
+// РЕЖИМ 'clean' (Чистий) — НОВИЙ строгий промт: прибрати ТІЛЬКИ OCR-сміття,
+//   зберегти текст дослівно (жодного слова/цифри/дати/особи/роду).
+// Обидва повертають той самий JSON {markdown, attentionNotes} (depth-counter
+// парсинг спільний). Вхід обмежений INPUT_CHAR_CAP (безпека під вікно 200K;
+// пачкування тримає реальні чернетки малими — cap лише на патологічно великий flat-txt).
+
+// digest = Конспект (структурує/переказує). Поточний 3.1-промт, лишається як є.
+function buildDigestPrompt(draft, fileName) {
   return `Ти форматуєш сирий OCR-текст судового документа${fileName ? ` "${fileName}"` : ''} у гарний читабельний Markdown.
 
 ЖОРСТКІ ПРАВИЛА (НЕПОРУШНІ):
@@ -306,6 +312,43 @@ function buildCleanPrompt(draft, fileName) {
 
 Сира чернетка тексту:
 ${String(draft).slice(0, INPUT_CHAR_CAP)}`;
+}
+
+// clean = Чистий (строгий, V2-A2). Залізні заборони — урок Брановського:
+// однорежимна очистка міняла особу/рід («Я не користувалась» → «Позивач не
+// користувався»), переструктуровувала і скорочувала цитати. Тут навпаки:
+// прибрати ЛИШЕ сміття, повернути ТОЙ САМИЙ текст дослівно.
+function buildVerbatimPrompt(draft, fileName) {
+  return `Ти прибираєш сміття розпізнавання (OCR) із сканованого судового документа${fileName ? ` "${fileName}"` : ''} і повертаєш ТОЙ САМИЙ текст у читабельному Markdown.
+
+ЗАЛІЗНІ ПРАВИЛА (НЕПОРУШНІ — порушення = зіпсований доказ):
+1. Прибери ТІЛЬКИ сміття OCR: артефакти сканування, випадкові символи, дублі рядків, розірвані переноси (сло-\\nво → слово).
+2. Віднови абзаци, заголовки, списки і таблиці (GFM) — але ЛИШЕ структуру, не зміст.
+3. НЕ переставляй речення/абзаци. НЕ групуй. НЕ скорочуй. НЕ переказуй. НЕ узагальнюй.
+4. НЕ міняй ЖОДНОГО слова, цифри, дати, суми, імені, номера, формулювання.
+5. НЕ міняй особу, рід чи відмінок: «я» лишається «я», «не користувалась» лишається «не користувалась» (НЕ «позивач не користувався»).
+6. Якщо щось привернуло увагу (дивне формулювання, ймовірна OCR-помилка) — НЕ виправляй, а відміть у attentionNotes. Документ лишається дослівно як є.
+7. Поверни ВЕСЬ текст. Краще лишити сумнівний фрагмент як є, ніж «покращити» його.
+
+Мета: той самий документ, лише без сміття розпізнавання. Якщо вагаєшся — лишай як в оригіналі.
+
+Поверни ВИКЛЮЧНО JSON такої форми (без коментарів до/після):
+{
+  "markdown": "<той самий текст, очищений від OCR-сміття, у Markdown>",
+  "attentionNotes": [ { "page": <номер сторінки або null>, "note": "<що привернуло увагу>" } ]
+}
+Якщо нічого не привернуло увагу — "attentionNotes": [].
+
+Сирий текст:
+${String(draft).slice(0, INPUT_CHAR_CAP)}`;
+}
+
+// Вибір промту за режимом. Дефолт 'digest' — щоб наявні виклики (кнопки 3.2,
+// legacy) не зламались (parent §A2.7).
+function buildPromptForMode(draft, fileName, mode) {
+  return mode === 'clean'
+    ? buildVerbatimPrompt(draft, fileName)
+    : buildDigestPrompt(draft, fileName);
 }
 
 /**
@@ -327,6 +370,7 @@ export async function polishToMarkdown({
   caseId = null,
   documentId = null,
   module = MODULES.DOCUMENT_PROCESSOR,
+  mode = 'digest',
   maxTokens = null,
   aiUsageSink = null,
   // DI-шви (дефолти — реальні; тести стабують):
@@ -354,7 +398,7 @@ export async function polishToMarkdown({
     res = await callAI({
       model,
       max_tokens,
-      messages: [{ role: 'user', content: buildCleanPrompt(draftStr, fileName) }],
+      messages: [{ role: 'user', content: buildPromptForMode(draftStr, fileName, mode) }],
     }, { apiKey });
   } catch (err) {
     return {
@@ -418,18 +462,25 @@ const PAGE_SEP = '\n\n---\n\n';
  * cleanDocument — оркестрація очистки ОДНОГО документа (DI, без React-стану).
  * Скоуп-гард scanned → fetch layout/txt → ПАЧКОВЕ очищення (КРОК1 конденсатор
  * + КРОК2 поліш на КОЖНУ пачку сторінок під вихідну стелю Haiku, з halving-retry
- * при обрізанні) → склейка через роздільник → долі артефактів (CRASH-SAFE,
- * тільки при ПОВНОМУ успіху).
+ * при обрізанні) → склейка через роздільник → долі артефактів (тільки при
+ * ПОВНОМУ успіху).
  *
- * Долі артефактів виконуються ТІЛЬКИ при повному успіху (AI відпрацював, не
- * обрізало, не fallback на чернетку). Порядок crash-safe (метадані ДО руйнівних
- * кроків; .layout видаляється ОСТАННІМ — він надмножина .txt і паливо повторної
- * очистки): 1) saveMarkdown → 2) updateDocumentMeta → 3) moveRawTxtToArchive →
- * 4) deleteLayout. При будь-якій проблемі джерела (.txt/.layout) НЕДОТОРКАНІ.
+ * @param {object} opts
+ *   opts.mode ('digest'|'clean', default 'digest') — режим очистки:
+ *     'digest' = Конспект (структурує/переказує, поточний промт);
+ *     'clean'  = Чистий (строгий, дослівний). Один сенс (#11): який AI-промт
+ *     і у який .md-суфікс (<base>_<id>.<mode>.md) зберегти.
  *
- * DI-шви Drive (fetchLayout/fetchRawText/saveMarkdown/moveRawTxtToArchive/
- * deleteLayout/updateDocumentMeta) — ін'єктує споживач (DP пост-крок / кнопки 3.2
- * через cleanTextDriveAdapter). AI/телеметрія-шви мають реальні дефолти.
+ * Долі артефактів (V2-A2 — спрощено, parent §A2.2): ТІЛЬКИ при повному успіху,
+ * НЕ руйнівні — `.layout` і `.txt` ЗБЕРІГАЮТЬСЯ (layout = джерело Точного й
+ * повторної генерації; .txt = вірний текст для no-layout). 1) saveMarkdown
+ * (за суфіксом mode) → 2) updateDocumentMeta (variants[mode]=cleanedAt). Жодного
+ * deleteLayout/moveRawTxtToArchive (скасовано — раніше видаляли layout/архівували
+ * txt; тепер обидва паливо для в'ювера й хелпера). При проблемі джерела — недоторкані.
+ *
+ * DI-шви Drive (fetchLayout/fetchRawText/saveMarkdown/updateDocumentMeta) —
+ * ін'єктує споживач (кнопки 3.2 / в'ювер через cleanTextDriveAdapter).
+ * AI/телеметрія-шви мають реальні дефолти.
  *
  * @returns {Promise<object>}
  *   {ok:true, markdown, attentionNotes, warning, stats}
@@ -442,6 +493,7 @@ export async function cleanDocument({
   caseData = null,
   apiKey,
   module = MODULES.DOCUMENT_PROCESSOR,
+  mode = 'digest',
   onProgress = noop,
   aiUsageSink = null,
   billAsUserAction = true,
@@ -449,8 +501,6 @@ export async function cleanDocument({
   fetchLayout,
   fetchRawText,
   saveMarkdown,
-  moveRawTxtToArchive,
-  deleteLayout,
   updateDocumentMeta,
   // AI / телеметрія DI-шви (дефолти реальні):
   callAI = defaultCallAPIWithRetry,
@@ -497,6 +547,7 @@ export async function cleanDocument({
     caseId,
     documentId,
     module,
+    mode,
     maxTokens: maxTokensForEstimate(estTok),
     aiUsageSink,
     callAI,
@@ -590,21 +641,16 @@ export async function cleanDocument({
     };
   }
 
-  // 3b. ПОВНИЙ УСПІХ — долі артефактів у crash-safe порядку.
-  //   1) .md → 2) метадані (факт успіху) → 3) .txt у архів → 4) .layout видалити.
+  // 3b. ПОВНИЙ УСПІХ — НЕ руйнівні долі артефактів (V2-A2): лише записати .md
+  //   за суфіксом режиму і оновити метадані. `.layout` і `.txt` ЗБЕРІГАЮТЬСЯ.
+  //   1) .md (<base>_<id>.<mode>.md) → 2) метадані (variants[mode]=cleanedAt).
   onProgress('Зберігаю...');
   const cleanedAt = new Date().toISOString();
   if (typeof saveMarkdown === 'function') {
-    await saveMarkdown(document, caseData, markdown);
+    await saveMarkdown(document, caseData, markdown, mode);
   }
   if (typeof updateDocumentMeta === 'function') {
-    await updateDocumentMeta(document, caseData, { textFormat: 'md', cleanedAt, attentionNotes: allNotes });
-  }
-  if (typeof moveRawTxtToArchive === 'function') {
-    try { await moveRawTxtToArchive(document, caseData); } catch { /* страховка не критична */ }
-  }
-  if (usedLayout && typeof deleteLayout === 'function') {
-    try { await deleteLayout(document, caseData); } catch { /* паливо відпрацювало */ }
+    await updateDocumentMeta(document, caseData, { textFormat: 'md', cleanedAt, attentionNotes: allNotes, mode });
   }
 
   // C7 — оплачувана ДІЯ адвоката РАЗ на документ (не на пачку), лише при

@@ -21,10 +21,14 @@ function fileFor(document, caseData) {
 /**
  * buildCleanDocumentDriveDeps — зібрати Drive-шви для `cleanDocument`.
  * @param {object} opts
- *   executeAction — архіваріус (для update_document; registry textFormat/cleanedAt)
- *   agentId       — agentId для executeAction (DP: 'document_processor_agent')
+ *   executeAction — архіваріус (для update_document; registry textFormat/cleanedAt/variants)
+ *   agentId       — agentId для executeAction (в'ювер/3.2: 'dossier_agent')
  *   ocrService / documentsExtended — DI (дефолти реальні; тести стабують)
- * @returns {{ fetchLayout, fetchRawText, saveMarkdown, moveRawTxtToArchive, deleteLayout, updateDocumentMeta }}
+ * @returns {{ fetchLayout, fetchRawText, saveMarkdown, updateDocumentMeta }}
+ *
+ * V2-A2: `.layout`/`.txt` ЗБЕРІГАЮТЬСЯ (layout = джерело Точного/повтору; .txt =
+ * вірний текст для no-layout) → шви moveRawTxtToArchive/deleteLayout прибрано.
+ * `saveMarkdown` пише за суфіксом режиму (<base>_<id>.<mode>.md).
  */
 export function buildCleanDocumentDriveDeps({
   executeAction,
@@ -35,19 +39,24 @@ export function buildCleanDocumentDriveDeps({
   return {
     fetchLayout: (document, caseData) => ocrService.getCachedLayout(fileFor(document, caseData)),
     fetchRawText: (document, caseData) => ocrService.getCachedText(fileFor(document, caseData)),
-    saveMarkdown: (document, caseData, markdown) => ocrService.writeMarkdownArtifact(fileFor(document, caseData), markdown),
-    moveRawTxtToArchive: (document, caseData) => ocrService.archiveRawTxt(fileFor(document, caseData)),
-    deleteLayout: (document, caseData) => ocrService.deleteLayoutArtifact(fileFor(document, caseData)),
+    saveMarkdown: (document, caseData, markdown, mode) => ocrService.writeMarkdownArtifact(fileFor(document, caseData), markdown, mode),
     updateDocumentMeta: async (document, caseData, meta) => {
       const caseId = caseData?.id || null;
       const documentId = document?.id || null;
-      // registry: textFormat + cleanedAt через архіваріус (allowlist update_document).
+      // registry: textFormat + cleanedAt + variants через архіваріус (allowlist
+      // update_document). variants трекає який AI-варіант згенеровано:
+      // зливаємо наявні з {[mode]: cleanedAt} (інший режим лишається як був).
       if (typeof executeAction === 'function' && caseId && documentId) {
+        const mode = meta?.mode === 'clean' ? 'clean' : 'digest';
+        const cleanedAt = meta?.cleanedAt ?? null;
+        const prevVariants = (document && typeof document.variants === 'object' && document.variants)
+          ? document.variants : { clean: null, digest: null };
+        const variants = { clean: prevVariants.clean ?? null, digest: prevVariants.digest ?? null, [mode]: cleanedAt };
         try {
           await executeAction(agentId, 'update_document', {
             caseId,
             documentId,
-            fields: { textFormat: meta?.textFormat || 'md', cleanedAt: meta?.cleanedAt ?? null },
+            fields: { textFormat: meta?.textFormat || 'md', cleanedAt, variants },
           });
         } catch { /* мета-апдейт не валить очистку (артефакти вже на Drive) */ }
       }

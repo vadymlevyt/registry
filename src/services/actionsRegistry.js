@@ -880,7 +880,9 @@ export function createActions(deps) {
         'isKey', 'procId', 'driveUrl', 'folder', 'pageCount', 'date',
         'icon', 'status', 'lastOcrAt',
         // TASK 3.1 — формат витягнутого тексту після очистки (cleanTextService).
-        'textFormat', 'cleanedAt'
+        'textFormat', 'cleanedAt',
+        // TASK V2-A2 — які AI-варіанти очистки згенеровано ({clean,digest}).
+        'variants'
       ];
       const invalidFields = Object.keys(fields).filter(f => !ALLOWED_UPDATE_FIELDS.includes(f));
       if (invalidFields.length > 0) {
@@ -1575,7 +1577,10 @@ export function createActions(deps) {
     // (ядро звітує 'agent_call'; executeAction-hook не дублює — SELF_BILLING_ACTIONS).
     // Скоуп-гард (тільки scanned) перевіряється ТУТ (явний skipped-результат для
     // UI/агента) і ще раз у ядрі (захист на рівні ядра).
-    clean_document_text: async ({ caseId, documentId }) => {
+    // mode ('digest'|'clean', DEFAULT 'digest', parent §A2.7) — який режим
+    // очистки запустити. Default digest зберігає поточну поведінку наявних
+    // викликів/кнопок (перемикач режимів додасть V2-B).
+    clean_document_text: async ({ caseId, documentId, mode = 'digest' }) => {
       if (!caseId || !documentId) {
         return { success: false, error: "caseId, documentId обов'язкові" };
       }
@@ -1606,6 +1611,7 @@ export function createActions(deps) {
         caseData: targetCase,
         apiKey,
         module: MODULES.CASE_DOSSIER,
+        mode: mode === 'clean' ? 'clean' : 'digest',
         billAsUserAction: true,
         ...driveDeps,
       });

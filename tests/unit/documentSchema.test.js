@@ -10,15 +10,10 @@ import {
 
 describe('documentSchema', () => {
   describe('CANONICAL_DOCUMENT_FIELDS', () => {
-    it('містить 28 полів (TASK 0.3.5 v7 додав 5 полів для ECITS)', () => {
-      // 28 = 23 існуючих (canonical document v6.5):
-      //   id, name, originalName, category, author, documentNature, namingStatus, isKey,
-      //   procId, driveId, driveUrl, folder, pageCount, size, icon, date,
-      //   addedAt, updatedAt, addedBy, status, source, originalDriveId, originalMime
-      // + 5 нових з TASK 0.3.5 v7:
-      //   sourceConfidence, extractedAt, ecitsSource, movementCard, alternativeSources
-      // + 2 нових з TASK 3.1 v10: textFormat, cleanedAt
-      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(30);
+    it('містить 31 поле (V2-A2 додав variants до 30)', () => {
+      // 30 існуючих (v7 + TASK A + v10 textFormat/cleanedAt)
+      // + 1 нове з TASK V2-A2 v11: variants ({clean,digest}).
+      expect(Object.keys(CANONICAL_DOCUMENT_FIELDS)).toHaveLength(31);
     });
 
     it("має v10 поля: textFormat (default 'txt'), cleanedAt (nullable)", () => {
@@ -27,6 +22,12 @@ describe('documentSchema', () => {
       expect(CANONICAL_DOCUMENT_FIELDS.textFormat.enum).toEqual(['txt', 'md']);
       expect(CANONICAL_DOCUMENT_FIELDS.cleanedAt).toBeDefined();
       expect(CANONICAL_DOCUMENT_FIELDS.cleanedAt.nullable).toBe(true);
+    });
+
+    it('має v11 поле: variants ({ clean, digest }, default обидва null)', () => {
+      expect(CANONICAL_DOCUMENT_FIELDS.variants).toBeDefined();
+      expect(CANONICAL_DOCUMENT_FIELDS.variants.type).toBe('object');
+      expect(CANONICAL_DOCUMENT_FIELDS.variants.default).toEqual({ clean: null, digest: null });
     });
 
     it("має v7 поля: sourceConfidence, extractedAt, ecitsSource, movementCard, alternativeSources", () => {

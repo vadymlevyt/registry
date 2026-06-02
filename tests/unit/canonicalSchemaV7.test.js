@@ -59,18 +59,18 @@ import { DEFAULT_USER } from '../../src/services/tenantService.js';
 // Найвища досяжна версія після повного ланцюга. TASK 0.4 підняв таргет 8 → 9
 // (case.origin enum). v7-крок далі тестується нижче окремо.
 describe('Schema version і label (повний ланцюг, таргет після TASK 0.4)', () => {
-  it('CURRENT_SCHEMA_VERSION === 10', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(10);
+  it('CURRENT_SCHEMA_VERSION === 11', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(11);
   });
 
-  it("MIGRATION_VERSION === '10.0_text_format'", () => {
-    expect(MIGRATION_VERSION).toBe('10.0_text_format');
+  it("MIGRATION_VERSION === '11.0_text_variants'", () => {
+    expect(MIGRATION_VERSION).toBe('11.0_text_variants');
   });
 
-  it('buildEmptyRegistry створює одразу v10', () => {
+  it('buildEmptyRegistry створює одразу v11', () => {
     const reg = buildEmptyRegistry();
-    expect(reg.schemaVersion).toBe(10);
-    expect(reg.settingsVersion).toBe('10.0_text_format');
+    expect(reg.schemaVersion).toBe(11);
+    expect(reg.settingsVersion).toBe('11.0_text_variants');
   });
 });
 

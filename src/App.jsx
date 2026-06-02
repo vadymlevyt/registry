@@ -8,11 +8,11 @@ import JobProgressTopbar from './components/JobProgressTopbar';
 import GlobalProgressScreen from './components/DocumentProcessorV2/GlobalProgressScreen.jsx';
 import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx';
 import { ECITSRegistryBadge } from './components/ECITSBanner/RegistryBadge.jsx';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, backupRegistryDataPreV9, backupRegistryDataPreV10, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, backupRegistryDataPreV9, backupRegistryDataPreV10, backupRegistryDataPreV11, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
-import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, migrateToVersion8, migrateToVersion9, migrateToVersion10, ensureCaseSaasFields, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
+import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, migrateToVersion8, migrateToVersion9, migrateToVersion10, migrateToVersion11, ensureCaseSaasFields, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
 import * as eventBus from './services/eventBus';
 import {
   ECITS_SYNC_COMPLETED, ECITS_CASE_STATE_UPDATED,
@@ -4254,6 +4254,32 @@ function App() {
           }
         }
 
+        // TASK V2-A2 — pre-v11 бекап перед document.variants bump, поза ротацією.
+        if (raw != null && (registry.schemaVersion || 10) < 11) {
+          const flagV11 = localStorage.getItem('levytskyi_pre_v11_backup_done');
+          if (!flagV11) {
+            const res = await backupRegistryDataPreV11(token, raw);
+            if (res.success) {
+              localStorage.setItem('levytskyi_pre_v11_backup_done', '1');
+              console.log(`[TASK V2-A2] Pre-v11 backup: ${res.fileName}`);
+            } else {
+              console.warn('[TASK V2-A2] Pre-v11 backup failed, продовжую без нього:', res.error);
+            }
+          }
+        }
+
+        // TASK V2-A2 — document.variants (v10 → v11). Backward-compat:
+        // наявний textFormat==='md' → variants.digest=cleanedAt; інакше null.
+        if ((registry.schemaVersion || 1) < 11) {
+          const v11 = migrateToVersion11(registry);
+          if (v11.didMigrate) {
+            registry = v11.registry;
+            didMigrate = true;
+            toVersion = v11.toVersion;
+            // Console.log усередині migrateToVersion11 — детальний breakdown.
+          }
+        }
+
         // SaaS Foundation v1.1 — одноразовий бекап і чистка levytskyi_action_log.
         if (!localStorage.getItem('levytskyi_action_log_cleaned_v1_1')) {
           try {
@@ -4985,6 +5011,11 @@ function App() {
       if ((registry.schemaVersion || 1) < 10) {
         const v10 = migrateToVersion10(registry);
         if (v10.didMigrate) registry = v10.registry;
+      }
+      // TASK V2-A2 — document.variants при відновленні (legacy < v11).
+      if ((registry.schemaVersion || 1) < 11) {
+        const v11 = migrateToVersion11(registry);
+        if (v11.didMigrate) registry = v11.registry;
       }
       // Розпаковуємо стейт з бекапу.
       if (Array.isArray(registry.cases)) setCases(normalizeCases(registry.cases));

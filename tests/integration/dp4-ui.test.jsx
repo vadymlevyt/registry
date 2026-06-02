@@ -58,11 +58,10 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
     expect(input.caseId).toBe('case_dp4');
     expect(input.files).toHaveLength(1);
     expect(input.files[0].name).toBe('позов.pdf');
-    // 8 перемикачів + системні опції прокинуті у run
+    // 7 перемикачів + системні опції прокинуті у run (V2-A2 прибрав cleanForReading)
     expect(options).toMatchObject({
       organizeByProceedings: true,
       integrityCheck: true,
-      cleanForReading: true,
       generateSummary: true,
       compressAll: false,
       suggestDeadlines: false,
@@ -70,6 +69,7 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
       fillCaseCard: false,
       autoConfirm: true,
     });
+    expect(options).not.toHaveProperty('cleanForReading');
     expect(options).toHaveProperty('collectDataset');
 
     // Зона 3 (вкладка Дерево) показує створений документ

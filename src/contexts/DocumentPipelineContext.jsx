@@ -46,8 +46,6 @@ import * as ocrService from '../services/ocrService.js';
 import { findOrCreateFolder, uploadBytesToDrive } from '../services/driveService.js';
 import { callAPIWithRetry } from '../services/toolUseRunner.js';
 import { resolveModel } from '../services/modelResolver.js';
-import { cleanDocument as cleanTextCleanDocument } from '../services/cleanTextService.js';
-import { buildCleanDocumentDriveDeps } from '../services/cleanTextDriveAdapter.js';
 import {
   getCurrentUserId, getCurrentTenantId, getEcitsAutoProcess, getSplitterDatasetEnabled,
 } from '../services/tenantService.js';
@@ -165,24 +163,10 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       getEnabled: () => getSplitterDatasetEnabled(),
     });
 
-    // TASK 3.1 — очистка тексту для читання як ПОСТ-КРОК на готових документах.
-    // Drive-шви ядра cleanDocument будуються ОДИН раз (executeAction стабільний);
-    // splitDocumentsV3 кличе cleanFinalizedDocument по кожному scanned-документу
-    // ПІСЛЯ фіналізації. billAsUserAction:false — автопродовження обробки, не
-    // окрема оплачувана дія адвоката (parent §C7): токени завжди, activityTracker
-    // як дію — ні. Ті ж Drive-шви перевикористає 3.2 (кнопки).
-    const cleanDriveDeps = buildCleanDocumentDriveDeps({
-      executeAction,
-      agentId: 'document_processor_agent',
-    });
-    const cleanFinalizedDocument = ({ document, caseData }) => cleanTextCleanDocument({
-      document,
-      caseData,
-      apiKey: getApiKey(),
-      billAsUserAction: false,
-      aiUsageSink: null,
-      ...cleanDriveDeps,
-    });
+    // V2-A2: DP більше НЕ чистить текст (пост-крок прибрано — parent §DP БІЛЬШЕ
+    // НЕ ЧИСТИТЬ). Очистка стала справою в'ювера/ACTION clean_document_text по
+    // одному документу на вимогу. Ядро cleanTextService.cleanDocument лишається,
+    // але DP його НЕ кличе.
 
     const buildPipelineDeps = ({ getStreamedText, getStreamedLayout }) => {
       const opt = runOptionsRef.current || {};
@@ -248,10 +232,6 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             topics: { DOCUMENT_FRAGMENT_SAVED },
             datasetCollector: opt.collectDataset ? datasetCollector : null,
             fragmentsMode: opt.fragmentsCombined ? 'combined' : 'separate',
-            // TASK 3.1 — тумблер «Очистити для читання»: ПОСТ-КРОК очистки на
-            // готових scanned-документах (.txt→.md через ядро cleanDocument).
-            cleanForReading: opt.cleanForReading === true,
-            cleanFinalizedDocument,
           }),
         },
         convertToPdf,

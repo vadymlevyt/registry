@@ -2839,15 +2839,20 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // напряму (та сама назва — getCachedText знайде при відкритті).
           if (extractedText) {
             toast.success('Документ додано');
-            try {
-              const written = await ocrService.writeExtractedTextArtifact(ocrFile, extractedText);
-              if (!written) {
-                toast.warning('Текст витягнуто, але не вдалось зберегти кеш на Drive', {
-                  description: 'При відкритті документа текст можна витягти повторно',
-                });
+            // V2-A2 (parent §ДОЛЯ .txt): `.txt` пишемо ⇔ layout ВІДСУТНІЙ.
+            // Фото-склейка (mergeLayoutJson є) → layout містить page._text,
+            // `.txt` зайвий. DOCX/HTML (без layout) → `.txt` лишається (searchable).
+            if (!mergeLayoutJson) {
+              try {
+                const written = await ocrService.writeExtractedTextArtifact(ocrFile, extractedText);
+                if (!written) {
+                  toast.warning('Текст витягнуто, але не вдалось зберегти кеш на Drive', {
+                    description: 'При відкритті документа текст можна витягти повторно',
+                  });
+                }
+              } catch (e) {
+                console.warn('[writeExtractedTextArtifact] failed:', e?.message || e);
               }
-            } catch (e) {
-              console.warn('[writeExtractedTextArtifact] failed:', e?.message || e);
             }
             if (mergeLayoutJson) {
               try {

@@ -157,6 +157,39 @@ describe('contextGenerator — #7 джерело = реєстр cases[].document
     expect(res).toEqual({ saved: false, error: { code: 'NO_FILES' } });
     expect(deps.fetchImpl).not.toHaveBeenCalled();
   });
+
+  // V2-A2 — хелпер getDocumentText дає ВІРНИЙ текст без повторного OCR.
+  it('getDocumentText (коли є) бере вірний текст; лише нерозв\'язані йдуть у extractTextBatch', async () => {
+    const extractTextBatch = vi.fn(async (files) => files.map(f => ({
+      file: f, result: { text: `OCR ${f.name}`, provider: 'documentAi', fromCache: false },
+    })));
+    // Хелпер розв'язує doc_2 (scanned з layout), решта → OCR.
+    const getDocumentText = vi.fn(async (d) => d.id === 'doc_2' ? 'ВІРНИЙ текст ухвали з layout' : '');
+    const ocrService = { extractTextBatch, getDocumentText, localizeOcrError: (c) => `err:${c}` };
+    const deps = makeDeps({ ocrService });
+    const res = await generateCaseContext(deps);
+
+    expect(res.saved).toBe(true);
+    expect(res.stats.count).toBe(3);
+    expect(getDocumentText).toHaveBeenCalledTimes(3);
+    // extractTextBatch отримав ЛИШЕ doc_1 і doc_3 (doc_2 розв'язав хелпер).
+    const passed = extractTextBatch.mock.calls[0][0];
+    expect(passed.map(f => f.id).sort()).toEqual(['drive_1', 'drive_3']);
+    // Вірний текст ухвали потрапив у тіло AI (не переказ).
+    const userText = JSON.stringify(deps._fetchCalls[0].body.messages[0].content);
+    expect(userText).toContain('ВІРНИЙ текст ухвали з layout');
+  });
+
+  it('хелпер розв\'язав ВСІ → extractTextBatch не кличеться, не NO_FILES', async () => {
+    const extractTextBatch = vi.fn();
+    const getDocumentText = vi.fn(async () => 'вірний текст документа');
+    const ocrService = { extractTextBatch, getDocumentText, localizeOcrError: (c) => `err:${c}` };
+    const deps = makeDeps({ ocrService });
+    const res = await generateCaseContext(deps);
+    expect(res.saved).toBe(true);
+    expect(res.stats.count).toBe(3);
+    expect(extractTextBatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('contextGenerator — #6 дата+час у нарисі', () => {

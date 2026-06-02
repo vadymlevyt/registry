@@ -64,6 +64,13 @@
 //                   не чистилось). attentionNotes — важке поле у
 //                   documents_extended.json, bump НЕ потребує.
 //                   Окремий крок — migrateToVersion10 нижче.
+// schemaVersion 11  — document.variants (TASK V2-A2 clean_text v2).
+//                   variants: { clean: <cleanedAt>|null, digest: <cleanedAt>|null }
+//                   — час генерації кожного AI-варіанту очистки (Чистий/Конспект).
+//                   ЄДИНИЙ сенс: який режим .md згенеровано і коли. Backward-compat:
+//                   наявний textFormat==='md' (3.1-дайджест) → variants.digest =
+//                   cleanedAt; інакше обидва null. НЕ плутати з textFormat/cleanedAt.
+//                   Окремий крок — migrateToVersion11 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -89,10 +96,10 @@ import { ensureEntitlements } from './entitlementsService.js';
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
 // migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5 →
 // migrateToVersion7 → migrateToVersion8 → migrateToVersion9 →
-// migrateToVersion10). Використовується App.jsx для запису нової версії
-// registry і тестами як "це остаточний таргет системи".
-export const CURRENT_SCHEMA_VERSION = 10;
-export const MIGRATION_VERSION = '10.0_text_format';
+// migrateToVersion10 → migrateToVersion11). Використовується App.jsx для запису
+// нової версії registry і тестами як "це остаточний таргет системи".
+export const CURRENT_SCHEMA_VERSION = 11;
+export const MIGRATION_VERSION = '11.0_text_variants';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -984,6 +991,71 @@ export function migrateToVersion10(registry) {
     didMigrate: true,
     fromVersion,
     toVersion: 10,
+    stats,
+  };
+}
+
+// ── v10 → v11: document.variants (TASK V2-A2 clean_text v2) ─────────────────
+// Додає кожному документу variants={clean,digest} (час генерації AI-варіантів).
+// Backward-compat: наявний textFormat==='md' (3.1-дайджест уже згенеровано) →
+// variants.digest = cleanedAt (зберігаємо знання про існуючий .md); інакше
+// обидва null. Документ, що вже має валідний variants — лишається як є.
+//
+// variants — ЄДИНИЙ сенс: який режим .md згенеровано і коли (правило #11).
+// НЕ плутає з textFormat (формат «Текст»-таба) / cleanedAt (час останньої очистки).
+//
+// Ідемпотентна: повторний запуск з v11+ повертає didMigrate=false.
+// Викликається з App.jsx EFFECT-A послідовно після migrateToVersion10.
+export function migrateToVersion11(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 11) {
+    return { registry, didMigrate: false, fromVersion, toVersion: fromVersion, stats: null };
+  }
+
+  const stats = { totalDocs: 0, variantsAdded: 0, variantsAlreadySet: 0, digestBackfilled: 0 };
+  const cases = Array.isArray(registry?.cases) ? registry.cases : [];
+  const hasVariants = (v) => v && typeof v === 'object' && 'clean' in v && 'digest' in v;
+  const migratedCases = cases.map(c => {
+    if (!c || typeof c !== 'object') return c;
+    if (!Array.isArray(c.documents)) return c;
+    const docs = c.documents.map(doc => {
+      if (!doc || typeof doc !== 'object') return doc;
+      stats.totalDocs++;
+      if (hasVariants(doc.variants)) {
+        stats.variantsAlreadySet++;
+        return doc;
+      }
+      // Backward-compat: 3.1-дайджест (textFormat==='md') → variants.digest=cleanedAt.
+      const digest = doc.textFormat === 'md' ? (doc.cleanedAt ?? null) : null;
+      if (digest !== null) stats.digestBackfilled++;
+      stats.variantsAdded++;
+      return { ...doc, variants: { clean: null, digest } };
+    });
+    return { ...c, documents: docs };
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK V2-A2] Migration v${fromVersion} → v11 (document.variants):\n` +
+    `  total documents: ${stats.totalDocs}\n` +
+    `  variants added: ${stats.variantsAdded}\n` +
+    `  digest backfilled (textFormat==='md'): ${stats.digestBackfilled}\n` +
+    `  already set (idempotent): ${stats.variantsAlreadySet}\n` +
+    `[TASK V2-A2] Migration v${fromVersion} → v11 done.`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 11,
+      settingsVersion: '11.0_text_variants',
+      cases: migratedCases,
+      lastMigration: { from: fromVersion, to: 11, at: new Date().toISOString() },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 11,
     stats,
   };
 }

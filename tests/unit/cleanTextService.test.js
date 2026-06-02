@@ -207,6 +207,32 @@ describe('КРОК 2 — polishToMarkdown (AI-поліш + C7)', () => {
     expect(r.markdown).toBe('просто текст без json');
     expect(r.warning).toMatch(/не-JSON/);
   });
+
+  // ── РЕЖИМИ ПРОМТУ (V2-A2) ─────────────────────────────────────────────────
+  function promptOf(callAI) {
+    return callAI.mock.calls[0][0].messages[0].content;
+  }
+
+  it("mode 'clean' (default через відсутність) → строгий промт із заборонами (особа/рід/слово)", async () => {
+    const d = deps();
+    await polishToMarkdown({ draft: 'сирий', apiKey: 'k', mode: 'clean', ...d });
+    const p = promptOf(d.callAI);
+    // Залізні заборони Чистого — урок Брановського.
+    expect(p).toMatch(/НЕ переставляй/i);
+    expect(p).toMatch(/НЕ скороч/i);
+    expect(p).toMatch(/НЕ переказуй/i);
+    expect(p).toMatch(/особу|рід/i);
+    expect(p).toMatch(/НЕ міняй ЖОДНОГО слова/i);
+  });
+
+  it("mode 'digest' (default) → промт Конспекту (структурує/переказує, без заборони особи/роду)", async () => {
+    const d = deps();
+    await polishToMarkdown({ draft: 'сирий', apiKey: 'k', ...d });   // default digest
+    const p = promptOf(d.callAI);
+    expect(p).toMatch(/читабельн/i);
+    // Конспект НЕ має жорсткої заборони зміни особи/роду (це Чистий).
+    expect(p).not.toMatch(/НЕ міняй особу/i);
+  });
 });
 
 // ── КРОК 3 — cleanDocument (оркестрація) ────────────────────────────────────
@@ -236,22 +262,32 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
     expect(d.fetchLayout).not.toHaveBeenCalled();
   });
 
-  it('повний успіх: долі артефактів у CRASH-SAFE порядку (md→meta→txt→layout)', async () => {
+  it('повний успіх (V2-A2): .md за суфіксом + метадані; .layout/.txt НЕ чіпаємо', async () => {
     const d = orchDeps();
     const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'case_1' }, apiKey: 'k', ...d });
     expect(r.ok).toBe(true);
     expect(r.markdown).toBe('# Очищено\n\nфінал');
     expect(r.attentionNotes).toEqual([{ page: null, note: 'увага' }]);
-    expect(d.saveMarkdown).toHaveBeenCalledWith(scannedDoc, { id: 'case_1' }, '# Очищено\n\nфінал');
+    // saveMarkdown отримує 4-й арг mode (default 'digest').
+    expect(d.saveMarkdown).toHaveBeenCalledWith(scannedDoc, { id: 'case_1' }, '# Очищено\n\nфінал', 'digest');
     const [, , meta] = d.updateDocumentMeta.mock.calls[0];   // (document, caseData, meta)
     expect(meta.textFormat).toBe('md');
     expect(typeof meta.cleanedAt).toBe('string');
+    expect(meta.mode).toBe('digest');
     expect(meta.attentionNotes).toEqual([{ page: null, note: 'увага' }]);
-    // CRASH-SAFE порядок: .md → метадані → .txt у архів → .layout видалити.
+    // V2-A2: .layout/.txt ЗБЕРІГАЮТЬСЯ — жодного moveRawTxtToArchive/deleteLayout.
+    expect(d.moveRawTxtToArchive).not.toHaveBeenCalled();
+    expect(d.deleteLayout).not.toHaveBeenCalled();
+    // Порядок: .md → метадані.
     const order = (fn) => fn.mock.invocationCallOrder[0];
     expect(order(d.saveMarkdown)).toBeLessThan(order(d.updateDocumentMeta));
-    expect(order(d.updateDocumentMeta)).toBeLessThan(order(d.moveRawTxtToArchive));
-    expect(order(d.moveRawTxtToArchive)).toBeLessThan(order(d.deleteLayout));
+  });
+
+  it("mode 'clean' пробрасується у saveMarkdown суфікс і meta.mode", async () => {
+    const d = orchDeps();
+    await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', mode: 'clean', ...d });
+    expect(d.saveMarkdown).toHaveBeenCalledWith(scannedDoc, { id: 'c' }, '# Очищено\n\nфінал', 'clean');
+    expect(d.updateDocumentMeta.mock.calls[0][2].mode).toBe('clean');
   });
 
   it('великий документ → ПАЧКУВАННЯ: кілька викликів AI, склейка через роздільник', async () => {

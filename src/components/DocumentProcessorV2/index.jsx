@@ -47,12 +47,13 @@ const INBOX_FOLDER = '00_INBOX_СПРАВИ';
 const DEFAULT_SETTINGS = {
   organizeByProceedings: true,   // 1
   integrityCheck: true,          // 2
-  cleanForReading: true,         // 3 → extractV3
-  generateSummary: true,         // 4
-  compressAll: false,            // 5
-  suggestDeadlines: false,       // 6
-  updateCaseContext: true,       // 7
-  fillCaseCard: false,           // 8
+  // V2-A2: «Очистити для читання» прибрано — DP більше не чистить текст
+  // (очистка стала справою в'ювера/ACTION на вимогу, parent §DP БІЛЬШЕ НЕ ЧИСТИТЬ).
+  generateSummary: true,         // 3
+  compressAll: false,            // 4
+  suggestDeadlines: false,       // 5
+  updateCaseContext: true,       // 6
+  fillCaseCard: false,           // 7
   // 1C.2 — skipPdfSlicing: пропустити AI-нарізку (Triage) і per-file
   // маршрутизувати кожен живий файл: фото → image_merge solo, інше →
   // add_as_is solo. Працює і у міксі PDF+фото (інакше AI Triage поріже
@@ -451,9 +452,11 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       const up = await uploadBytesToDrive(originalsFolderId, pdfName, bytes, 'application/pdf');
       const driveId = up.id;
 
-      // 02_ОБРОБЛЕНІ best-effort (text + layout)
+      // 02_ОБРОБЛЕНІ best-effort (text + layout). V2-A2 (parent §ДОЛЯ .txt):
+      // `.txt` пишемо ⇔ layout ВІДСУТНІЙ. Фото-склейка має layoutJson (page._text)
+      // → `.txt` зайвий (getDocumentText/getCleanOrRawText читають із layout).
       try {
-        if (rebuilt.extractedText && rebuilt.extractedText.trim()) {
+        if (rebuilt.extractedText && rebuilt.extractedText.trim() && !rebuilt.layoutJson) {
           await ocrService.writeExtractedTextArtifact(
             { id: driveId, name: pdfName, subFolders: caseData?.storage?.subFolders },
             rebuilt.extractedText,
@@ -787,7 +790,6 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           </div>
           <div className="dpv2-settings-group">
             <div className="dpv2-section-label">ЯКІСТЬ ТЕКСТУ</div>
-            <Toggle label="Очистити для читання" description="через Haiku" checked={settings.cleanForReading} onChange={setToggle('cleanForReading')} />
             <Toggle label="Згенерувати короткий зміст" checked={settings.generateSummary} onChange={setToggle('generateSummary')} />
           </div>
           <div className="dpv2-settings-group">

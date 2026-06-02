@@ -57,8 +57,17 @@ function layoutCacheFileName(file) {
 }
 
 // .md — очищений читабельний Markdown (TASK 3.1 cleanTextService). Лежить
-// поряд з .txt у 02_ОБРОБЛЕНІ. Той самий шаблон імені <basename>_<id>.
-function markdownCacheFileName(file) {
+// поряд з .txt у 02_ОБРОБЛЕНІ. V2-A2: ім'я за суфіксом РЕЖИМУ —
+// <base>_<id>.clean.md (Чистий) або <base>_<id>.digest.md (Конспект). Так у
+// одному документі співіснують обидва варіанти, не затираючи один одного.
+function markdownCacheFileName(file, mode = 'digest') {
+  const m = mode === 'clean' ? 'clean' : 'digest';
+  return `${sanitizeBasename(file.name)}_${file.id}.${m}.md`;
+}
+
+// Legacy-ім'я .md з 3.1 (<base>_<id>.md, без суфікса) — наявні дайджести до
+// V2-A2. Читається як digest (parent §A2.6 backward-compat).
+function legacyMarkdownCacheFileName(file) {
   return `${sanitizeBasename(file.name)}_${file.id}.md`;
 }
 
@@ -179,28 +188,94 @@ export async function getCachedText(file) {
   }
 }
 
-// getCleanOrRawText — текст документа для viewer/читача: спочатку очищений
-// .md (TASK 3.1), інакше сирий .txt. ОКРЕМЕ ім'я (НЕ розширюємо getCachedText
-// подвійним сенсом — правило #11): getCachedText = «сирий .txt-кеш OCR»;
-// getCleanOrRawText = «найкращий читабельний текст: .md якщо є, інакше .txt».
+// joinLayoutText — ВІРНИЙ текст з layout: з'єднати page._text усіх сторінок
+// через подвійний перенос (≈ старий .txt). НЕ Markdown-чернетка
+// (layoutToMarkdownDraft) — тут сирий вірний шар для агента/контексту/«Текст».
+function joinLayoutText(layout) {
+  const pages = Array.isArray(layout) ? layout : (Array.isArray(layout?.pages) ? layout.pages : []);
+  const parts = pages
+    .map((p) => (p && typeof p._text === 'string') ? p._text : '')
+    .filter((t) => t && t.trim());
+  return parts.join('\n\n');
+}
+
+// readDigestMarkdown — прочитати дайджест-варіант (.digest.md, інакше legacy
+// .md з 3.1). Повертає string або null. Чистий (.clean.md) тут НЕ читаємо —
+// «Текст»-таб показує Конспект; перемикач режимів — V2-B.
+async function readDigestMarkdown(file) {
+  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return null;
+  for (const name of [markdownCacheFileName(file, 'digest'), legacyMarkdownCacheFileName(file)]) {
+    try {
+      const matches = await listFolderFilesByName(subFolderId, name);
+      if (matches.length > 0) {
+        const text = await readDriveFileText(matches[0].id);
+        if (text != null) return text;
+      }
+    } catch { /* пробуємо наступне ім'я / нижче null */ }
+  }
+  return null;
+}
+
+// getCleanOrRawText — текст документа для viewer/читача (V2-A2). Порядок:
+// (1) Конспект (.digest.md / legacy .md) → format 'md'; (2) ВІРНИЙ текст —
+// layout (page._text) → .txt → format 'txt'. ОКРЕМЕ ім'я (НЕ розширюємо
+// getCachedText подвійним сенсом — правило #11): getCachedText = «сирий
+// .txt-кеш OCR»; getCleanOrRawText = «найкращий читабельний текст».
+//
+// Layout-fallback (V2-A2): нові скани більше не мають .txt (лише .layout) —
+// без цього кроку «Текст» був би порожній. НІКОЛИ не повертає Чистий/.clean.md.
 //
 // Повертає { text, format:'md'|'txt' } або null якщо нема жодного.
 export async function getCleanOrRawText(file) {
   const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return null;
+  const md = await readDigestMarkdown(file);
+  if (md != null) return { text: md, format: 'md' };
   try {
-    const mdName = markdownCacheFileName(file);
-    const mdMatches = await listFolderFilesByName(subFolderId, mdName);
-    if (mdMatches.length > 0) {
-      const text = await readDriveFileText(mdMatches[0].id);
-      if (text != null) return { text, format: 'md' };
+    const layout = await getCachedLayout(file);
+    if (layout) {
+      const t = joinLayoutText(layout);
+      if (t && t.trim()) return { text: t, format: 'txt' };
     }
-  } catch { /* падіння .md не критичне — пробуємо .txt */ }
+  } catch { /* layout збій → пробуємо .txt */ }
   try {
     const txt = await checkCache(file);
     if (txt != null) return { text: txt, format: 'txt' };
   } catch { /* нижче null */ }
   return null;
+}
+
+// fileRefForDocument — file-контракт {id,name,subFolders} з документа + caseData.
+// NFC-нормалізація імені (як TextContent/useExactLayout/adapter — щоб
+// getCachedLayout/getCachedText знайшли <base>_<id> за тим самим basename).
+function fileRefForDocument(documentObj, caseData) {
+  const rawName = documentObj?.originalName || documentObj?.name || '';
+  const name = typeof rawName.normalize === 'function' ? rawName.normalize('NFC') : rawName;
+  return { id: documentObj?.driveId, name, subFolders: caseData?.storage?.subFolders };
+}
+
+// getDocumentText — ЄДИНА точка «дай ВІРНИЙ текст документа» (#11, V2-A2).
+// scanned з layout → з'єднаний page._text (вірний шар, ≈ старий .txt);
+// no-layout/searchable/legacy → .txt-кеш. НІКОЛИ не Конспект/.md (це переказ —
+// агент/contextGenerator цитувати з нього не можуть). Споживачі (агент досьє,
+// contextGenerator) ходять сюди → коли пізніше приберемо .txt, міняється лише
+// ця функція. Повертає string ('' якщо джерела нема — caller вирішує що далі).
+export async function getDocumentText(documentObj, caseData) {
+  const file = fileRefForDocument(documentObj, caseData);
+  if (!file.id || !file.subFolders?.['02_ОБРОБЛЕНІ']) return '';
+  try {
+    const layout = await getCachedLayout(file);
+    if (layout) {
+      const t = joinLayoutText(layout);
+      if (t && t.trim()) return t;
+    }
+  } catch { /* layout збій → пробуємо .txt */ }
+  try {
+    const txt = await checkCache(file);
+    if (txt != null && String(txt).trim()) return String(txt);
+  } catch { /* нижче '' */ }
+  return '';
 }
 
 // writeExtractedTextArtifact — публічний запис .txt у 02_ОБРОБЛЕНІ для caller'а
@@ -278,10 +353,12 @@ export async function getCachedLayout(file) {
   }
 }
 
-// writeMarkdownArtifact — записати <basename>_<id>.md у 02_ОБРОБЛЕНІ (saveMarkdown-шов).
-export async function writeMarkdownArtifact(file, markdown) {
+// writeMarkdownArtifact — записати <basename>_<id>.<mode>.md у 02_ОБРОБЛЕНІ
+// (saveMarkdown-шов). mode ∈ {'digest','clean'} (default 'digest', V2-A2):
+// співіснують обидва варіанти без затирання.
+export async function writeMarkdownArtifact(file, markdown, mode = 'digest') {
   if (!markdown || !String(markdown).trim()) return false;
-  return await writeArtifact(file, markdownCacheFileName(file), String(markdown), 'text/markdown');
+  return await writeArtifact(file, markdownCacheFileName(file, mode), String(markdown), 'text/markdown');
 }
 
 // findOrCreateSubfolder — знайти/створити підпапку name під parentId. name —
@@ -327,8 +404,10 @@ export async function archiveRawTxt(file) {
   }
 }
 
-// deleteLayoutArtifact — видалити <basename>_<id>.layout.json з 02_ОБРОБЛЕНІ
-// (deleteLayout-шов). Паливо конденсатора відпрацювало.
+// deleteLayoutArtifact — видалити <basename>_<id>.layout.json з 02_ОБРОБЛЕНІ.
+// V2-A2: БІЛЬШЕ НЕ ВИКЛИКАЄТЬСЯ під час очистки — layout зберігається як
+// джерело режиму «Точний» і повторної генерації (parent §A2.2). Функцію
+// лишено як примітив Drive для майбутніх потреб (не видаляємо існуючий код).
 export async function deleteLayoutArtifact(file) {
   const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return false;
@@ -453,7 +532,12 @@ export async function extractText(file, options = {}) {
       let layoutWritten = false;
       const hasPageStructure = Array.isArray(finalPageStructure) && finalPageStructure.length > 0;
 
-      if (finalText && finalText.trim().length > 0) {
+      // V2-A2 (parent §ДОЛЯ .txt): `.txt` пишемо ⇔ layout ВІДСУТНІЙ. Коли провайдер
+      // повернув pageStructure (Document AI / фото-склейка) — layout містить
+      // page._text, тож `.txt` зайвий (getDocumentText/getCleanOrRawText читають
+      // вірний текст із layout). Лишаємо `.txt` лише без layout (pdfjsLocal без
+      // pageStructure / провайдери що дають тільки текст).
+      if (finalText && finalText.trim().length > 0 && !hasPageStructure) {
         cacheWritten = await writeArtifact(
           file,
           textCacheFileName(file),

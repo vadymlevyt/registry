@@ -463,19 +463,35 @@ export async function generateCaseContext(params) {
   //    chunks, копії, дублі 01/02 → завищений лік (89/91 замість 43) і ~45
   //    layout-помилок (.layout.json — JSON, валив OCR). Реєстр = рівно реальні
   //    документи справи (#7).
-  //    Текст і далі береться через ocrService.extractTextBatch (кеш .txt за
-  //    driveId; fallback OCR; pdfjsLocal витягує text-layer searchable-PDF) —
-  //    властивість «джерело = документи, не лише .txt» збережена, text-layer
-  //    PDF не губиться.
+  //    V2-A2: ВІРНИЙ текст спершу через ocrService.getDocumentText (хелпер #11:
+  //    scanned→layout page._text, no-layout/searchable→.txt — БЕЗ повторного
+  //    OCR і НІКОЛИ не Конспект). Документи, які хелпер не розв'язав (ще не
+  //    оброблені / text-layer без кешу), ідуть у extractTextBatch (OCR/pdfjsLocal
+  //    fallback). Так агент/контекст беруть ВІРНЕ джерело, а нові скани (без .txt,
+  //    лише layout) не перезапускають Document AI. Хелпер інжектується через
+  //    ocrService — тести без нього падають на extractTextBatch (поведінка як була).
   onProgress("Збираю документи...");
   const registryDocs = Array.isArray(caseData?.documents) ? caseData.documents : [];
   const skipped = [];   // документи без driveId — нічого читати, пропускаємо з warning
   const filesForOcr = [];
+  const helperDocs = [];   // { name, text } — вірний текст з хелпера (layout/.txt)
+  let helperCacheHits = 0;
+  const useHelper = typeof ocrService.getDocumentText === 'function';
   for (const d of registryDocs) {
     if (!d?.driveId) { skipped.push(d?.name || d?.id || 'unknown'); continue; }
+    const docName = d.name || d.originalName || d.driveId;
+    if (useHelper) {
+      let verbatim = '';
+      try { verbatim = await ocrService.getDocumentText(d, caseData); } catch { verbatim = ''; }
+      if (verbatim && String(verbatim).trim()) {
+        helperDocs.push({ name: docName, text: String(verbatim) });
+        helperCacheHits++;
+        continue;
+      }
+    }
     filesForOcr.push({
       id: d.driveId,                                  // кеш .txt за driveId + download провайдером
-      name: d.name || d.originalName || d.driveId,
+      name: docName,
       mimeType: 'application/pdf',                     // канонічний формат зберігання (TASK A)
       driveFolderId: folderId,
       subFolders,
@@ -486,15 +502,17 @@ export async function generateCaseContext(params) {
     console.warn(`[contextGenerator] ${skipped.length} документів без driveId — пропущено:`, skipped);
   }
 
-  if (filesForOcr.length === 0) {
+  // NO_FILES лише коли жодного документа з driveId (ні хелпер, ні OCR).
+  if (filesForOcr.length === 0 && helperDocs.length === 0) {
     return { saved: false, error: { code: 'NO_FILES' } };
   }
 
-  console.log(`[contextGenerator] джерело (реєстр SSOT): ${filesForOcr.length} документів${skipped.length ? `, ${skipped.length} без driveId пропущено` : ''}`);
-  onProgress(`Знайдено ${filesForOcr.length} документів. Запускаю обробку...`);
+  console.log(`[contextGenerator] джерело (реєстр SSOT): ${filesForOcr.length + helperDocs.length} документів (${helperDocs.length} з хелпера, ${filesForOcr.length} через OCR)${skipped.length ? `, ${skipped.length} без driveId пропущено` : ''}`);
+  onProgress(`Знайдено ${filesForOcr.length + helperDocs.length} документів. Запускаю обробку...`);
 
-  // 4. OCR через сервіс — паралельно через Document AI з кешем
-  const results = await ocrService.extractTextBatch(filesForOcr, {
+  // 4. OCR через сервіс — паралельно через Document AI з кешем (лише для
+  //    документів, які хелпер не розв'язав).
+  const results = filesForOcr.length > 0 ? await ocrService.extractTextBatch(filesForOcr, {
     concurrency: 3,
     onProgress: (done, total, current) => {
       onProgress(`Обробка ${done}/${total}: ${current?.name || '...'}`);
@@ -504,18 +522,19 @@ export async function generateCaseContext(params) {
       const next = Array.isArray(prev) ? [...prev, entry] : [entry];
       return next.length > 50000 ? next.slice(next.length - 50000) : next;
     }) : null,
-  });
+  }) : [];
 
-  // 5. Якщо ВСІ помилки AUTH — компонент пропонує forceConsentRefresh.
-  const allAuth = results.length > 0 && results.every(r => r.error?.code === 'AUTH');
+  // 5. Якщо ВСІ помилки AUTH (і хелпер нічого не дав) — компонент пропонує
+  //    forceConsentRefresh. Коли хелпер уже розв'язав частину — не блокуємо.
+  const allAuth = results.length > 0 && results.every(r => r.error?.code === 'AUTH') && helperDocs.length === 0;
   if (allAuth) {
     return { saved: false, error: { code: 'AUTH' } };
   }
 
-  // 6. Зібрати тексти і помилки
-  const textDocs = [];
+  // 6. Зібрати тексти і помилки (вірний текст з хелпера + результати OCR).
+  const textDocs = [...helperDocs];
   const failed = [];
-  let cacheHits = 0;
+  let cacheHits = helperCacheHits;
   for (const r of results) {
     if (r.result?.text) {
       textDocs.push({ name: r.file.name, text: r.result.text });

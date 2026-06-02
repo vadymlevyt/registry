@@ -220,7 +220,14 @@ describe('splitDocumentsV3 G1 — page-precise текст/layout 02_ОБРОБЛ
     return { schemaVersion: 1, pages: Array.from({ length: 6 }, (_, i) => ({ _text: `ТЕКСТ-СТОРІНКИ-${i + 1}` })) };
   }
 
-  it('slice 1 файл → 2 документи: кожен TXT лише свій діапазон сторінок', async () => {
+  // V2-A2: коли layout повний — .txt НЕ пишемо (writeText02 не викликається);
+  // зрізаний per-document текст тепер у per-document .layout.json (page._text).
+  // Перевіряємо зріз через writeLayout02 (вірне джерело для getDocumentText).
+  function joinLayoutText(layoutJson) {
+    return (layoutJson?.pages || []).map((p) => p._text || '').join('\n');
+  }
+
+  it('slice 1 файл → 2 документи: кожен .layout лише свій діапазон сторінок (БЕЗ .txt, V2-A2)', async () => {
     const port = createMemDrivePort();
     const d = await seedSource(port, 'big', 6);
     const persistDocument = vi.fn(async () => ({ success: true }));
@@ -239,31 +246,35 @@ describe('splitDocumentsV3 G1 — page-precise текст/layout 02_ОБРОБЛ
     }, [{ fileId: 'big', driveId: d, skipped: false, layoutJson: layout6(), pageCount: 6, processedText: 'ВЕСЬ-ФАЙЛ-65-СТОРІНОК' }]));
 
     expect(res.ok).toBe(true);
-    expect(writeText02).toHaveBeenCalledTimes(2);
-    const [c1, c2] = writeText02.mock.calls.map((c) => c[0]);
-    // d1 = стор 1-3, БЕЗ тексту стор 4-6 і БЕЗ whole-file.
-    expect(c1.text).toContain('ТЕКСТ-СТОРІНКИ-1');
-    expect(c1.text).toContain('ТЕКСТ-СТОРІНКИ-3');
-    expect(c1.text).not.toContain('ТЕКСТ-СТОРІНКИ-4');
-    expect(c1.text).not.toContain('ВЕСЬ-ФАЙЛ-65');
+    // layout повний → .txt НЕ пишемо; зріз — у per-document .layout.json.
+    expect(writeText02).not.toHaveBeenCalled();
+    expect(writeLayout02).toHaveBeenCalledTimes(2);
+    const [l1, l2] = writeLayout02.mock.calls.map((c) => c[0].layoutJson);
+    expect(l1.pages).toHaveLength(3);
+    expect(l2.pages).toHaveLength(3);
+    const t1 = joinLayoutText(l1);
+    const t2 = joinLayoutText(l2);
+    // d1 = стор 1-3, БЕЗ тексту стор 4-6.
+    expect(t1).toContain('ТЕКСТ-СТОРІНКИ-1');
+    expect(t1).toContain('ТЕКСТ-СТОРІНКИ-3');
+    expect(t1).not.toContain('ТЕКСТ-СТОРІНКИ-4');
     // d2 = стор 4-6, БЕЗ стор 1-3.
-    expect(c2.text).toContain('ТЕКСТ-СТОРІНКИ-4');
-    expect(c2.text).toContain('ТЕКСТ-СТОРІНКИ-6');
-    expect(c2.text).not.toContain('ТЕКСТ-СТОРІНКИ-3');
-    // layout зрізаний паралельно (3 сторінки на документ).
-    expect(writeLayout02.mock.calls[0][0].layoutJson.pages).toHaveLength(3);
+    expect(t2).toContain('ТЕКСТ-СТОРІНКИ-4');
+    expect(t2).toContain('ТЕКСТ-СТОРІНКИ-6');
+    expect(t2).not.toContain('ТЕКСТ-СТОРІНКИ-3');
     expect((res.decisions || []).some((x) => x.type === 'text_slice_fallback')).toBe(false);
   });
 
-  it('multi-fragment (fragment_reconstruct по 2 файлах) → текст конкатиться у порядку фрагментів', async () => {
+  it('multi-fragment (fragment_reconstruct по 2 файлах) → .layout конкатиться у порядку фрагментів (БЕЗ .txt)', async () => {
     const port = createMemDrivePort();
     const a = await seedSource(port, 'f0', 3);
     const b = await seedSource(port, 'f1', 2);
     const writeText02 = vi.fn(async () => {});
+    const writeLayout02 = vi.fn(async () => {});
     const stage = mkStage(port, {
       persistDocument: vi.fn(async () => ({ success: true })),
       uploadFile: vi.fn(async () => 'drv'),
-      deps: { writeText02 },
+      deps: { writeText02, writeLayout02 },
     });
     const res = await stage(ctxOf(port, {
       documents: [{ documentId: 'd1', name: 'Експертиза', route: 'fragment_reconstruct', fragments: [
@@ -274,7 +285,8 @@ describe('splitDocumentsV3 G1 — page-precise текст/layout 02_ОБРОБЛ
       { fileId: 'f1', driveId: b, skipped: false, pageCount: 2, layoutJson: { schemaVersion: 1, pages: [{ _text: 'B1' }, { _text: 'B2' }] } },
     ]));
     expect(res.ok).toBe(true);
-    const t = writeText02.mock.calls[0][0].text;
+    expect(writeText02).not.toHaveBeenCalled();   // layout повний → без .txt
+    const t = joinLayoutText(writeLayout02.mock.calls[0][0].layoutJson);
     expect(t).toContain('A2'); expect(t).toContain('A3'); expect(t).toContain('B1');
     expect(t).not.toContain('A1'); expect(t).not.toContain('B2');
     expect(t.indexOf('A2')).toBeLessThan(t.indexOf('B1'));   // порядок фрагментів

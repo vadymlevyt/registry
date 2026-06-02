@@ -31,7 +31,7 @@ const CASE = {
 const realTriage = ({ artifacts, userHint, caseId }) =>
   analyzeTriageViaToolUse({ artifacts, userHint, caseId, apiKey: 'test-key' });
 
-function buildExecutor(port, h, textSpy) {
+function buildExecutor(port, h, textSpy, layoutSpy) {
   return createStreamingExecutor({
     drivePort: port, workerClient: wc, createPipeline: createDocumentPipeline,
     // processChunk дзеркалить documentAi: текст + per-page layout з _text.
@@ -64,8 +64,9 @@ function buildExecutor(port, h, textSpy) {
           persistDocument: ({ caseId, document }) =>
             h.executeAction('document_processor_agent', 'add_documents', { caseId, documents: [document] }),
           // Захоплюємо ровно те, що пішло б у 02_ОБРОБЛЕНІ (ocrService seam).
+          // V2-A2: при наявному layout .txt НЕ пишеться — вірний зріз у .layout.
           writeText02: async (a) => { textSpy.push({ name: a.name, text: a.text }); },
-          writeLayout02: async () => {},
+          writeLayout02: async (a) => { if (layoutSpy) layoutSpy.push({ name: a.name, layoutJson: a.layoutJson }); },
           eventBus: { publish: () => {} },
           topics: { DOCUMENT_FRAGMENT_SAVED },
         }),
@@ -89,37 +90,42 @@ const file = async (id, pages) =>
   ({ fileId: id, name: `${id}.pdf`, arrayBuffer: toArrayBuffer(await makePdfBytes(pages)), size: pages * 1500, originalMime: 'application/pdf' });
 
 describe('G1 Provider-integration — TXT 02_ОБРОБЛЕНІ зрізаний за документом', () => {
-  let h, port, textSpy;
+  let h, port, textSpy, layoutSpy;
   beforeEach(() => {
     progressStore._resetForTests();
     h = createHarness({ initialCases: [structuredClone(CASE)] });
     port = createMemDrivePort();
     textSpy = [];
+    layoutSpy = [];
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   async function run(files) {
-    const exec = buildExecutor(port, h, textSpy);
+    const exec = buildExecutor(port, h, textSpy, layoutSpy);
     return exec.run({ caseId: 'case_ts', caseData: structuredClone(CASE), agentId: 'document_processor_agent', source: 'manual', addedBy: 'user', files });
   }
 
-  it('slice 6-стор. PDF → 2 документи, кожен TXT лише свій діапазон (НЕ весь файл)', async () => {
+  const joinLayoutText = (layoutJson) => (layoutJson?.pages || []).map((p) => p._text || '').join('\n');
+
+  it('slice 6-стор. PDF → 2 документи, кожен .layout лише свій діапазон (БЕЗ .txt, V2-A2)', async () => {
     stubTriageFetch({ documents: [
       { documentId: 'd1', name: 'Позов', type: 'pleading', route: 'slice', fragments: [{ fileId: 'big', startPage: 1, endPage: 3 }] },
       { documentId: 'd2', name: 'Ухвала', type: 'court_act', route: 'slice', fragments: [{ fileId: 'big', startPage: 4, endPage: 6 }] },
     ], unusedPages: [] });
     const res = await run([await file('big', 6)]);
     expect(res.ok).toBe(true);
-    expect(textSpy).toHaveLength(2);
+    // layout повний → .txt НЕ пишемо; зріз — у per-document .layout.json.
+    expect(textSpy).toHaveLength(0);
+    expect(layoutSpy).toHaveLength(2);
 
-    const pozov = textSpy.find((x) => x.name === 'Позов.pdf');
-    const uhvala = textSpy.find((x) => x.name === 'Ухвала.pdf');
-    expect(pozov.text).toContain('ТЕКСТ-СТОРІНКИ-1');
-    expect(pozov.text).toContain('ТЕКСТ-СТОРІНКИ-3');
-    expect(pozov.text).not.toContain('ТЕКСТ-СТОРІНКИ-4');   // не текст іншого документа
-    expect(uhvala.text).toContain('ТЕКСТ-СТОРІНКИ-4');
-    expect(uhvala.text).toContain('ТЕКСТ-СТОРІНКИ-6');
-    expect(uhvala.text).not.toContain('ТЕКСТ-СТОРІНКИ-1');   // не змішаний (корінь bug 2)
+    const pozov = joinLayoutText(layoutSpy.find((x) => x.name === 'Позов.pdf')?.layoutJson);
+    const uhvala = joinLayoutText(layoutSpy.find((x) => x.name === 'Ухвала.pdf')?.layoutJson);
+    expect(pozov).toContain('ТЕКСТ-СТОРІНКИ-1');
+    expect(pozov).toContain('ТЕКСТ-СТОРІНКИ-3');
+    expect(pozov).not.toContain('ТЕКСТ-СТОРІНКИ-4');   // не текст іншого документа
+    expect(uhvala).toContain('ТЕКСТ-СТОРІНКИ-4');
+    expect(uhvala).toContain('ТЕКСТ-СТОРІНКИ-6');
+    expect(uhvala).not.toContain('ТЕКСТ-СТОРІНКИ-1');   // не змішаний (корінь bug 2)
   });
 
   it('G2 (bug 6): PERSIST штовхає під-прогрес «Документ i з N» наскрізь', async () => {

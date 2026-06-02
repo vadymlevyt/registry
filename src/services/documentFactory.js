@@ -79,6 +79,12 @@ export function createDocument(metadata = {}) {
     textFormat: metadata.textFormat === 'md' ? 'md' : 'txt',
     cleanedAt: metadata.cleanedAt ?? null,
 
+    // variants — час генерації AI-варіантів очистки (v11, TASK V2-A2).
+    // Default { clean:null, digest:null } — ще нічого не чищено.
+    variants: (metadata.variants && typeof metadata.variants === 'object')
+      ? { clean: metadata.variants.clean ?? null, digest: metadata.variants.digest ?? null }
+      : { clean: null, digest: null },
+
     // source — канал ПОХОДЖЕННЯ файлу (TASK 0.3.5 v7).
     // Default 'manual' для нових документів. Legacy значення міграція переоновлює.
     source: normalizeSource(metadata.source),

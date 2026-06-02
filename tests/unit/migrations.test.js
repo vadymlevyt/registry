@@ -4,7 +4,7 @@ import {
   migrateRegistryV4toV5,
   splitDocumentV4toV5,
 } from '../../src/services/migrations/v4ToV5.js';
-import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, migrateToVersion10, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
+import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, migrateToVersion10, migrateToVersion11, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
 import { validateDocument } from '../../src/services/documentFactory.js';
 
 describe('v4ToV5 migration', () => {
@@ -362,11 +362,11 @@ describe('migrateToVersion8 (v7 → v8 time_entry.source → captureMethod)', ()
 });
 
 describe('migrateToVersion9 — case.origin enum (TASK 0.4)', () => {
-  it('таргет повного ланцюга піднято до v10 (TASK 3.1) — v9 проміжний', () => {
-    // Глобальний таргет тепер v10 (textFormat). v9 (case.origin) — проміжний
+  it('таргет повного ланцюга піднято до v11 (TASK V2-A2) — v9 проміжний', () => {
+    // Глобальний таргет тепер v11 (variants). v9 (case.origin) — проміжний
     // крок ланцюга; його власні інваріанти перевіряються нижче.
-    expect(CURRENT_SCHEMA_VERSION).toBe(10);
-    expect(MIGRATION_VERSION).toBe('10.0_text_format');
+    expect(CURRENT_SCHEMA_VERSION).toBe(11);
+    expect(MIGRATION_VERSION).toBe('11.0_text_variants');
   });
 
   it('існуючі справи (v8) отримують origin: "manual"', () => {
@@ -511,6 +511,69 @@ describe('migrateToVersion10 — document.textFormat/cleanedAt (TASK 3.1)', () =
 
   it('справи без documents[] не падають', () => {
     const { registry, didMigrate } = migrateToVersion10({ schemaVersion: 9, cases: [{ id: 'c', name: 'no docs' }] });
+    expect(didMigrate).toBe(true);
+    expect(registry.cases[0].name).toBe('no docs');
+  });
+});
+
+describe('migrateToVersion11 — document.variants (TASK V2-A2)', () => {
+  it('існуючі документи (v10) отримують variants={clean:null,digest:null}', () => {
+    const reg = {
+      schemaVersion: 10,
+      cases: [
+        { id: 'c1', documents: [{ id: 'd1', name: 'A', textFormat: 'txt', cleanedAt: null }] },
+        { id: 'c2', documents: [] },
+      ],
+    };
+    const { registry, didMigrate, toVersion } = migrateToVersion11(reg);
+    expect(didMigrate).toBe(true);
+    expect(toVersion).toBe(11);
+    expect(registry.schemaVersion).toBe(11);
+    expect(registry.settingsVersion).toBe('11.0_text_variants');
+    expect(registry.cases[0].documents[0].variants).toEqual({ clean: null, digest: null });
+  });
+
+  it('backward-compat: textFormat==="md" → variants.digest = cleanedAt', () => {
+    const reg = {
+      schemaVersion: 10,
+      cases: [{ id: 'c', documents: [{ id: 'd', name: 'X', textFormat: 'md', cleanedAt: '2026-06-01T00:00:00Z' }] }],
+    };
+    const { registry, stats } = migrateToVersion11(reg);
+    expect(registry.cases[0].documents[0].variants).toEqual({ clean: null, digest: '2026-06-01T00:00:00Z' });
+    expect(stats.digestBackfilled).toBe(1);
+  });
+
+  it('textFormat==="md" без cleanedAt → variants.digest=null (не undefined)', () => {
+    const reg = { schemaVersion: 10, cases: [{ id: 'c', documents: [{ id: 'd', name: 'X', textFormat: 'md' }] }] };
+    const { registry } = migrateToVersion11(reg);
+    expect(registry.cases[0].documents[0].variants).toEqual({ clean: null, digest: null });
+  });
+
+  it('ідемпотентна: повторний запуск з v11 → didMigrate=false, без змін', () => {
+    const reg = {
+      schemaVersion: 11,
+      cases: [{ id: 'c', documents: [{ id: 'd', name: 'X', variants: { clean: null, digest: '2026-06-01T00:00:00Z' } }] }],
+    };
+    const { didMigrate, registry } = migrateToVersion11(reg);
+    expect(didMigrate).toBe(false);
+    expect(registry).toBe(reg);
+  });
+
+  it('не затирає вже виставлений variants при міграції з v10', () => {
+    const existing = { clean: '2026-05-30T10:00:00Z', digest: null };
+    const reg = { schemaVersion: 10, cases: [{ id: 'c', documents: [{ id: 'd', name: 'X', variants: existing }] }] };
+    const { registry, stats } = migrateToVersion11(reg);
+    expect(registry.cases[0].documents[0].variants).toBe(existing);
+    expect(stats.variantsAlreadySet).toBe(1);
+  });
+
+  it('lastMigration.to === 11', () => {
+    const { registry } = migrateToVersion11({ schemaVersion: 10, cases: [] });
+    expect(registry.lastMigration.to).toBe(11);
+  });
+
+  it('справи без documents[] не падають', () => {
+    const { registry, didMigrate } = migrateToVersion11({ schemaVersion: 10, cases: [{ id: 'c', name: 'no docs' }] });
     expect(didMigrate).toBe(true);
     expect(registry.cases[0].name).toBe('no docs');
   });

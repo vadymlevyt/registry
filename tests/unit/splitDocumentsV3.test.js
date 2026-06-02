@@ -144,7 +144,7 @@ describe('splitDocumentsV3 — 1C.3 warning text_slice_fallback логіка (wh
     expect(fallbackDecision).toBeUndefined();                 // ключова перевірка 1C.3
   });
 
-  it('OCR (layoutJson.pages непорожній) → пишеться і .txt, і .layout.json', async () => {
+  it('OCR (layoutJson.pages непорожній) → пишеться ТІЛЬКИ .layout.json, БЕЗ .txt (V2-A2)', async () => {
     const port = createMemDrivePort();
     const d1 = await seedSource(port, 'f1', 2);
     const writeText02 = vi.fn(async () => {});
@@ -171,7 +171,8 @@ describe('splitDocumentsV3 — 1C.3 warning text_slice_fallback логіка (wh
       }],
     }));
     expect(res.ok).toBe(true);
-    expect(writeText02).toHaveBeenCalledTimes(1);
+    // V2-A2: layout є → .txt НЕ пишемо (вірний текст із layout); лише .layout.json.
+    expect(writeText02).not.toHaveBeenCalled();
     expect(writeLayout02).toHaveBeenCalledTimes(1);
     const fallbackDecision = (res.decisions || []).find((x) => x.type === 'text_slice_fallback');
     expect(fallbackDecision).toBeUndefined();

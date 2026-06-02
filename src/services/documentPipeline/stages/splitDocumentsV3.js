@@ -449,37 +449,12 @@ export function createSplitDocumentsV3(stageDeps = {}) {
       }
     }
 
-    // ── Очистка тексту для читання (TASK 3.1, ПОСТ-КРОК) ─────────────────────
-    // Філософія адвоката: тумблер «Очистити для читання» — це НЕ очистка до
-    // нарізки, а той самий cleanDocument, підключений ОСТАННІМ кроком — коли
-    // нарізка/склейка вже розклала ФІНАЛЬНІ документи і їхні .txt+.layout у 02.
-    // Тоді по кожному готовому scanned-документу запускаємо cleanFinalizedDocument
-    // (= ядро cleanTextService.cleanDocument через Drive-шви, billAsUserAction:false).
-    // Працює однаково для slice і image_merge. Скоуп — лише scanned (гард у ядрі
-    // дублюється тут дешевою перевіркою). НЕ міняємо запис сирого .txt/.layout
-    // вище — пост-крок іде ПІСЛЯ і перетворює .txt→.md, не замість.
-    if (stageDeps.cleanForReading === true && typeof stageDeps.cleanFinalizedDocument === 'function') {
-      for (const document of newDocuments) {
-        if (!document || document.documentNature !== 'scanned') continue;
-        try {
-          const r = await stageDeps.cleanFinalizedDocument({ document, caseData: ctx.job.caseData });
-          if (r && r.ok === false && !r.skipped && r.error) {
-            decisions.push({
-              type: 'text_clean_failed',
-              documentName: document.name,
-              message: `Очистка тексту "${document.name}" не виконалась (${r.error}) — лишився сирий .txt.`,
-            });
-          }
-        } catch (err) {
-          // Очистка не критична — документ уже збережений з сирим .txt.
-          decisions.push({
-            type: 'text_clean_failed',
-            documentName: document.name,
-            message: `Очистка тексту "${document.name}" не вдалась — збережено сирий OCR: ${err?.message || err}`,
-          });
-        }
-      }
-    }
+    // ── DP більше НЕ чистить текст (V2-A2, parent §DP БІЛЬШЕ НЕ ЧИСТИТЬ) ──────
+    // Пост-крок очистки (3.1 cleanFinalizedDocument) ПРИБРАНО повністю: Точний
+    // рахується на льоту з layout (V2-A1), Чистий/Конспект на весь том = години
+    // (недоречно як авто-крок), масовий AI — гейт на сервер. Очистка стала
+    // справою в'ювера/ACTION clean_document_text (по одному документу, на вимогу).
+    // DP лишає сирий .txt (де нема layout) і .layout — джерела для очистки потім.
 
     // ── saveFragments (sub-стадія): невикористані сторінки → 03_ФРАГМЕНТИ ──
     // route to_fragments додає свої сторінки до unusedPages плану (один потік
@@ -690,7 +665,12 @@ function isWholeFileAddAsIs(planDoc, live) {
 
 async function writeProcessedArtifacts(stageDeps, ctx, document, planDoc, live, decisions) {
   const { text, layoutJson, usedFallback } = sliceProcessedArtifacts(planDoc, live);
-  if (text && typeof stageDeps.writeText02 === 'function') {
+  // V2-A2 (parent §ДОЛЯ .txt): `.txt` пишемо ⇔ layout ВІДСУТНІЙ. Коли layout є
+  // (Document AI / фото-склейка), він містить page._text — `.txt` зайвий
+  // (getDocumentText/getCleanOrRawText читають вірний текст із layout). Лишаємо
+  // `.txt` лише там де layout нема (pdfjsLocal малі скани / fallback цілим файлом).
+  const hasLayout = !!(layoutJson && Array.isArray(layoutJson.pages) && layoutJson.pages.length > 0);
+  if (text && !hasLayout && typeof stageDeps.writeText02 === 'function') {
     try {
       await stageDeps.writeText02({
         caseData: ctx.job.caseData, driveId: document.driveId,
