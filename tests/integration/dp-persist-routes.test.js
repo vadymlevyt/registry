@@ -184,6 +184,28 @@ describe('Ф3 Provider-integration — PERSIST виконує кожен route',
     expect(inner._allNames().some((n) => /^fragment_001\.pdf$/.test(n))).toBe(true);
   });
 
+  it('F2: великий to_fragments-блок → окремий документ + service_block_kept; дрібний лишається фрагментом', async () => {
+    const fragFolder = await port.getOrCreateFolder('03_ФРАГМЕНТИ', null);
+    const caseData = structuredClone(CASE);
+    caseData.storage.subFolders['03_ФРАГМЕНТИ'] = fragFolder.id;
+    stubTriageFetch({ documents: [
+      { documentId: 'd1', name: 'Протокол обшуку', type: 'court_act', route: 'add_as_is', fragments: [{ fileId: 'v', startPage: 1, endPage: 4 }] },
+      // 6-сторінковий блок додатків, який різник помилково кинув у to_fragments:
+      { documentId: 'd2', name: 'Додатки до протоколу', type: 'evidence', route: 'to_fragments', fragments: [{ fileId: 'v', startPage: 5, endPage: 10 }] },
+      // дрібна обкладинка (1 стор.) — має лишитись фрагментом:
+      { documentId: 'd3', name: 'Обкладинка', route: 'to_fragments', fragments: [{ fileId: 'v', startPage: 11, endPage: 11 }] },
+    ], unusedPages: [] });
+    const res = await run([await file('v', 11)], caseData);
+    expect(res.ok).toBe(true);
+    // Протокол + врятований блок додатків = 2 документи.
+    expect(docs()).toHaveLength(2);
+    expect(docs().some((d) => /Додатки до протоколу/.test(d.name))).toBe(true);
+    // Картка уваги для врятованого блоку.
+    expect((res.decisions || []).some((d) => d.type === 'service_block_kept')).toBe(true);
+    // Дрібна обкладинка (≤3 стор.) лишилась фрагментом.
+    expect(port._allNames().some((n) => /^fragment_001\.pdf$/.test(n))).toBe(true);
+  });
+
   it('discard → нічого у справі і на Drive', async () => {
     stubTriageFetch({ documents: [
       { documentId: 'd1', name: 'Документ', route: 'add_as_is', fragments: [{ fileId: 'x', startPage: 1, endPage: 2 }] },

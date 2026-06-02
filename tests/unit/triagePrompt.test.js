@@ -56,4 +56,16 @@ describe('buildTriagePrompt', () => {
     const p = buildTriagePrompt({ artifacts });
     expect(p).not.toMatch(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
   });
+
+  // F2: звужений to_fragments + явний список «НІКОЛИ» + консервативний дефолт,
+  // щоб додатки/нерозпізнані сторінки/завірчі написи не йшли у фрагменти.
+  it('F2: інструктує НЕ кидати у to_fragments додатки / нерозпізнаний текст / завірчі написи + дефолт при сумніві', () => {
+    const p = buildTriagePrompt({ artifacts });
+    expect(p).toMatch(/НІКОЛИ не to_fragments/);
+    expect(p).toMatch(/Додатки \/ приложення/);
+    expect(p).toMatch(/Нерозпізнаний \/ обрізаний текст/);
+    expect(p).toMatch(/Завірчий \/ посвідчувальний напис/);
+    expect(p).toMatch(/ДЕФОЛТ ПРИ СУМНІВІ/);
+    expect(p).toMatch(/гірше, ніж\s+зберегти зайву/);
+  });
 });

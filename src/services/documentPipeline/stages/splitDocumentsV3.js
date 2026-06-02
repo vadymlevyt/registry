@@ -28,6 +28,23 @@ const BUILD_PDF_ROUTES_SKIP = new Set([
   'discard', 'signature_sidecar', 'to_fragments', 'image_merge',
 ]);
 
+// F2 — запобіжник проти агресивності різника. Великий суцільний блок, який AI
+// позначив to_fragments, майже завжди реальний контент (додатки/приложення до
+// акта чи протоколу, нерозпізнані сторінки), а не службовий аркуш. Поріг: блок
+// з ≤ TO_FRAGMENTS_MAX_PAGES сторінок лишається фрагментом (обкладинка/порожня/
+// роздільник); більший — зберігаємо окремим документом із позначкою уваги
+// (рішення адвоката: краще зайвий документ, ніж втрачена юридично значуща
+// сторінка). Один сенс (правило #11): «максимум сторінок, що ще може бути
+// справді службовим аркушем».
+const TO_FRAGMENTS_MAX_PAGES = 3;
+
+function sumFragmentPages(doc) {
+  return (doc?.fragments || []).reduce(
+    (s, fr) => s + (fr.endPage != null && fr.startPage != null ? (fr.endPage - fr.startPage + 1) : 0),
+    0,
+  );
+}
+
 // Категорія документа з плану реконструкції. План несе `type` (груба рубрика
 // нарізки від AI); `category` лишається null доки немає окремої класифікації.
 // Раніше splitDocumentsV3 читав ЛИШЕ doc.category → усі нарізані документи
@@ -228,6 +245,19 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         const b = await sourceBytes(f);
         if (b) sourceByFile.set(f.fileId, b instanceof Uint8Array ? (b.buffer || b) : b);
       }
+      // F2 guard: великі to_fragments-блоки переводимо в документи ДО нарізки
+      // (інакше precutSources їх пропустить через BUILD_PDF_ROUTES_SKIP і
+      // буде нічого різати). Дрібні службові (≤ порога) лишаються фрагментами.
+      for (const doc of plan.documents) {
+        if ((doc.route || 'add_as_is') !== 'to_fragments') continue;
+        const pages = sumFragmentPages(doc);
+        if (pages > TO_FRAGMENTS_MAX_PAGES) {
+          doc._serviceBlockKept = pages;          // позначка для decision у циклі
+          doc.route = 'add_as_is';                // далі будується як звичайний документ
+          doc.type = doc.type || 'other';
+          if (!doc.name || !String(doc.name).trim()) doc.name = `Службовий блок ${pages} стор. (перевірте)`;
+        }
+      }
       // G4: нарізати кожне джерело ОДИН раз (усі діапазони всіх документів),
       // замість повного re-parse 21МБ на кожен документ (корінь 46 хв).
       const cutByKey = await precutSources(plan.documents, sourceByFile);
@@ -238,6 +268,17 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         // ── Ф3 диспетч за .route (один сенс на маршрут, правило #11) ───────
         const route = doc.route || 'add_as_is';
         const label = doc.name || doc.documentId;
+
+        // F2: великий блок, який різник позначив службовим, врятовано у документ
+        // (див. pre-pass вище) — додаємо картку «перевірте» у «Потребує уваги».
+        if (doc._serviceBlockKept) {
+          decisions.push({
+            type: 'service_block_kept',
+            documentName: doc.name,
+            pages: doc._serviceBlockKept,
+            message: `"${label}" — різник позначив службовим (${doc._serviceBlockKept} стор.), але блок завеликий для фрагмента: збережено окремим документом, перевірте вміст.`,
+          });
+        }
 
         if (route === 'discard') {
           decisions.push({ type: 'document_discarded', documentId: doc.documentId, documentName: label, message: `"${label}" відкинуто за маршрутом Triage (discard) — на Drive нічого.` });
