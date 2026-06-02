@@ -29,6 +29,7 @@ export { DocumentPipelineContext, useDocumentPipeline };
 
 import { createStreamingExecutor } from '../services/documentPipeline/streamingExecutor.js';
 import { createDefaultDrivePort } from '../services/documentPipeline/drivePort.js';
+import { createDiagLogger } from '../services/documentPipeline/diagLogger.js';
 import { createWorkerClient } from '../services/documentPipeline/workerClient.js';
 import { createDocumentPipeline } from '../services/documentPipeline.js';
 import { createTriageStage } from '../services/documentPipeline/stages/triageStage.js';
@@ -273,6 +274,10 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       processChunk: ocrChunkBytes,
       buildPipelineDeps,
       getActor,
+      // Діагностичний логер (Drive `_diagnostics/`, console-free): свіжий на
+      // кожен run(). Пише числа/мітки/коди помилок (НЕ текст документів) —
+      // щоб діагностувати збій нарізки/OCR без devtools на планшеті.
+      makeDiag: () => createDiagLogger({ drivePort }),
       isCancelled: () => cancelledRef.current === true,
       deleteDocument: async ({ caseId, documentId }) => {
         try { await executeAction('dossier_agent', 'delete_document', { caseId, documentId }); }

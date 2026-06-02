@@ -32,6 +32,11 @@ import {
 } from './jobState.js';
 import * as progressStore from './jobProgressStore.js';
 import { stageLabel } from './stageLabels.js';
+import { NOOP_DIAG } from './diagLogger.js';
+
+function mb(bytes) {
+  return Number((Number(bytes || 0) / 1024 / 1024).toFixed(2));
+}
 
 const ONE_GB = 1024 * 1024 * 1024;
 
@@ -73,6 +78,9 @@ export function createStreamingExecutor(deps = {}) {
     perf: deps.perf,
   });
   const isCancelled = typeof deps.isCancelled === 'function' ? deps.isCancelled : () => false;
+  // Діагностичний логер (Drive-based, console-free). Свіжий на кожен run().
+  // Дефолт — NOOP (тести/без drivePort-логера). Реальний інʼєктує Provider.
+  const makeDiag = typeof deps.makeDiag === 'function' ? deps.makeDiag : () => NOOP_DIAG;
 
   function reportProgress(jobId, state) {
     const { done, total } = jobProgress(state);
@@ -92,14 +100,29 @@ export function createStreamingExecutor(deps = {}) {
 
   // Потоково OCR-ити один файл по chunk'ах. Повертає {text, layoutJson,
   // pageCount}. RAM: байти одного chunk, занулюються одразу.
-  async function streamFile(state, fileEntry, sourceAb) {
-    const { pageCount, chunks } = await chunkMgr.planChunks({
+  async function streamFile(state, fileEntry, sourceAb, diag = NOOP_DIAG) {
+    const plan = await chunkMgr.planChunks({
       buffer: sourceAb,
       fileSizeBytes: fileEntry.sizeBytes || 0,
       forceChunkPages: fileEntry.forceChunkPages || null,
     });
+    const { pageCount, chunks } = plan;
     fileEntry.totalPages = pageCount;
     fileEntry.totalChunks = chunks.length;
+
+    // ДІАГ: план нарізки. Тут видно «14 блоків» і ЧОМУ: pageCount + chunkPages.
+    // bytesPerPageKB показує рівномірність; chunkRanges — діапазони сторінок.
+    const fileSizeBytes = fileEntry.sizeBytes || 0;
+    diag.log('plan_chunks', {
+      fileId: fileEntry.fileId,
+      fileSizeMB: mb(fileSizeBytes),
+      pageCount,
+      chunkPages: plan.chunkPages,
+      totalChunks: chunks.length,
+      bytesPerPageKB: pageCount > 0 ? Number((fileSizeBytes / pageCount / 1024).toFixed(1)) : 0,
+      forceChunkPages: fileEntry.forceChunkPages || null,
+      chunkRanges: chunks.map((c) => [c.startPage, c.endPage]),
+    });
 
     // Зареєструвати chunks у jobState (resume бачить що лишилось).
     for (const c of chunks) {
@@ -121,13 +144,47 @@ export function createStreamingExecutor(deps = {}) {
       const t0 = Date.now();
       // materialize chunk → _temp (RAM: тільки цей chunk)
       const mat = await chunkMgr.materializeChunk({ caseId: state.caseId, jobId: state.jobId, fileId: fileEntry.fileId, buffer: sourceAb, chunk: c });
+      // ДІАГ: РЕАЛЬНА вага вирізаного блоку (pdf-lib copyPages+save). ОСЬ
+      // вирішальне число: якщо блок 25 сторінок легкого файла важить >40 МБ —
+      // нарізка роздуває (тягне спільний обʼєкт). Логуємо ДО OCR, тому навіть
+      // падіння «>40 МБ» у processChunk лишить це в лозі.
+      diag.log('chunk_materialized', {
+        fileId: fileEntry.fileId,
+        index: c.index,
+        startPage: c.startPage,
+        endPage: c.endPage,
+        pages: c.endPage - c.startPage + 1,
+        sizeMB: mb(mat.sizeBytes),
+        sizeBytes: mat.sizeBytes,
+      });
       let chunkBytes = await chunkMgr.readChunkBytes(mat.driveId);
       let res;
       try {
         res = await deps.processChunk({ bytes: chunkBytes, startPage: c.startPage, endPage: c.endPage, fileId: fileEntry.fileId });
+      } catch (err) {
+        // ДІАГ: падіння OCR блоку (тут летить «Файл більший за 40 МБ» з
+        // documentAi). Прикріплюємо вагу блоку — звʼязок збою з роздувом.
+        diag.log('chunk_ocr_error', {
+          fileId: fileEntry.fileId,
+          index: c.index,
+          startPage: c.startPage,
+          endPage: c.endPage,
+          sizeMB: mb(mat.sizeBytes),
+          code: err?.code || null,
+          message: err?.message || String(err),
+        });
+        throw err;
       } finally {
         chunkBytes = null;                            // GC-дисципліна: занулення
       }
+      // ДІАГ: успіх блоку — довжина тексту (НЕ текст), к-сть сторінок layout, ms.
+      diag.log('chunk_ocr_done', {
+        fileId: fileEntry.fileId,
+        index: c.index,
+        ms: Date.now() - t0,
+        textLength: (res?.text || '').length,
+        layoutPages: Array.isArray(res?.layout) ? res.layout.length : 0,
+      });
       if (slot) {
         slot.driveId = mat.driveId;
         slot.status = 'done';
@@ -142,6 +199,15 @@ export function createStreamingExecutor(deps = {}) {
 
     const { text } = await workerClient.runInWorker('mergeText', { chunks: merged });
     merged = null;                                    // звільнити проміжне
+    // ДІАГ: підсумок файла — скільки тексту зібрано і скільки layout-сторінок.
+    // textLength=0 при pageCount>0 — сигнал «OCR нічого не дав» (порожній том).
+    diag.log('file_streamed', {
+      fileId: fileEntry.fileId,
+      pageCount,
+      totalChunks: chunks.length,
+      textLength: (text || '').length,
+      layoutPages: layout.length,
+    });
     return { text, layoutJson: layout.length ? { schemaVersion: 1, pages: layout } : null, pageCount };
   }
 
@@ -154,6 +220,26 @@ export function createStreamingExecutor(deps = {}) {
     const caseId = input.caseId;
     const title = input.files?.length > 1 ? `Пакет: ${input.files.length} файлів` : (input.files?.[0]?.name || 'Обробка документа');
 
+    // ДІАГ: свіжий логер на цей прогін. flush() у finally нижче — пише файл на
+    // Drive незалежно від того, яким return вийшов run() (успіх/стоп/throw).
+    const diag = makeDiag();
+    diag.log('run_start', {
+      jobId, caseId,
+      resumed: !!resumeState,
+      source: input.source || 'manual',
+      addedBy: input.addedBy || 'user',
+      fileCount: (input.files || []).length,
+      files: (input.files || []).map((f) => ({
+        fileId: f.fileId, name: f.name, sizeMB: mb(f.size || f.raw?.size || 0),
+      })),
+    });
+    return runGuarded(input, { resumeState, jobId, caseId, title, diag });
+  }
+
+  // runGuarded — тіло run() з гарантованим diag.flush() у finally на всіх
+  // шляхах виходу (винесено, щоб не дублювати flush перед кожним return).
+  async function runGuarded(input, { resumeState, jobId, caseId, title, diag }) {
+    try {
     progressStore.startJob({ jobId, caseId, title, total: 0 });
     progressStore.reconcilePolling();
 
@@ -199,7 +285,7 @@ export function createStreamingExecutor(deps = {}) {
         await jobStore.saveState(state);
 
         // 2-4. потокова OCR по chunk'ах.
-        const streamed = await streamFile(state, fe, ab);
+        const streamed = await streamFile(state, fe, ab, diag);
         ab = null;                                    // GC: оригінал з RAM геть
         if (streamed?.cancelled) return finishCancelled(state, pipelineFiles);
         fe.status = 'done';
@@ -255,6 +341,7 @@ export function createStreamingExecutor(deps = {}) {
               console.info(`[DP timing] ${name}: ${Math.round(Number(ms) || 0)}ms`);
             }
           } catch { /* лог ізольований */ }
+          diag.log('stage_end', { name, ms: Math.round(Number(ms) || 0) });
           try { progressStore.updateJob(jobId, { timings: { ...stageTimings } }); }
           catch { /* progress ізольований */ }
         },
@@ -283,6 +370,22 @@ export function createStreamingExecutor(deps = {}) {
         addedBy: input.addedBy || 'user',
         conversionContext: input.conversionContext || null,
         files: pipelineFiles,
+      });
+
+      // ДІАГ: підсумок диригента — скільки документів вийшло, які маршрути
+      // (route), де зупинився. ОСЬ де видно «1 документ / порожня 02»: route
+      // add_as_is×1, stoppedAt='triage_whole_volume', чи documentsCount=0.
+      diag.log('pipeline_result', {
+        ok: !!result.ok,
+        stoppedAt: result.stoppedAt || null,
+        documentsCount: Array.isArray(result.documents) ? result.documents.length : 0,
+        decisionsCount: Array.isArray(result.decisions) ? result.decisions.length : 0,
+        routes: Array.isArray(result.decisions)
+          ? result.decisions.map((d) => d?.route || d?.type || null)
+          : null,
+        errorsCount: Array.isArray(result.errors) ? result.errors.length : 0,
+        firstError: result.errors?.[0]?.message || result.errors?.[0]?.code || null,
+        timings: stageTimings,
       });
 
       if (result.ok && !result.stoppedAt) {
@@ -314,10 +417,20 @@ export function createStreamingExecutor(deps = {}) {
       state.status = JOB_STATUS.STOPPED;
       state.stoppedAt = state.stoppedAt || 'exception';
       state.error = { code: 'EXECUTOR_THREW', message: err?.message || String(err), stage: state.stoppedAt };
+      // ДІАГ: фатальний throw (включно з «Файл більший за 40 МБ» що долетів
+      // сюди з processChunk). chunk_ocr_error вище вже зафіксував номер+вагу
+      // блоку — тут лишається загальний підсумок прогону.
+      diag.log('run_error', { code: state.error.code, message: state.error.message, stage: state.stoppedAt });
       try { await jobStore.saveState(state); } catch { /* стан міг не зберегтись */ }
       progressStore.finishJob(jobId, { status: 'stopped' });
       progressStore.reconcilePolling();
       return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: [state.error], decisions: [] };
+    }
+    } finally {
+      // ДІАГ: ЗАВЖДИ викидаємо лог на Drive — на будь-якому шляху виходу
+      // (успіх / стоп / throw / blocked / cancelled). Best-effort: помилка
+      // запису логу не впливає на результат run().
+      try { await diag.flush({ jobId, caseId }); } catch { /* лог best-effort */ }
     }
   }
 
