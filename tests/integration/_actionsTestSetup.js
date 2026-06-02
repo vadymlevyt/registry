@@ -15,11 +15,14 @@
 // no-op/recorder стаби (старий harness теж не реплікував eventBus/billing).
 import { createActions } from '../../src/services/actionsRegistry.js';
 
-export function createHarness({ initialCases = [] } = {}) {
+export function createHarness({ initialCases = [], cleanDeps = {} } = {}) {
   let cases = JSON.parse(JSON.stringify(initialCases));
   let notes = { cases: [], general: [], content: [], system: [], records: [] };
   let timeEntries = [];
   const auditLog = [];
+  // TASK 3.2 — записувач activityTracker.report (для перевірки білінгу:
+  // напр. що clean_document_text не дублює generic-звіт через executeAction-hook).
+  const trackerCalls = [];
   // Старий harness реєстрував видалені driveId (delete_document mode='full'
   // каскадно видаляє driveId + originalDriveId). Реальний delete_document
   // викликає deleteDriveFile(id) послідовно — recorder пушить кожен непорожній
@@ -31,7 +34,7 @@ export function createHarness({ initialCases = [] } = {}) {
   const setTimeEntries = (u) => { timeEntries = typeof u === 'function' ? u(timeEntries) : u; };
 
   const noopTracker = {
-    report() {},
+    report(action, payload) { trackerCalls.push({ action, payload }); },
     startSession() { return null; },
     endSession() { return null; },
     startSubtimer() { return null; },
@@ -55,6 +58,11 @@ export function createHarness({ initialCases = [] } = {}) {
     deleteDriveFile: async (id) => { if (id) deletedDriveIds.push(id); },
     deleteOcrCacheForDocument: async () => {},
     deleteExtendedForDocument: async () => {},
+    // TASK 3.2 — clean_document_text DI-шви (стаби; за замовчуванням не вантажимо
+    // реальне ядро → ніякого pdfjs у тест-середовищі).
+    getApiKey: cleanDeps.getApiKey || (() => 'test-key'),
+    cleanDocument: cleanDeps.cleanDocument,
+    buildCleanDocumentDriveDeps: cleanDeps.buildCleanDocumentDriveDeps || (() => ({})),
   });
 
   return {
@@ -64,5 +72,6 @@ export function createHarness({ initialCases = [] } = {}) {
     getTimeEntries: () => timeEntries,
     getAuditLog: () => auditLog,
     getDeletedDriveIds: () => [...deletedDriveIds],
+    getTrackerCalls: () => [...trackerCalls],
   };
 }

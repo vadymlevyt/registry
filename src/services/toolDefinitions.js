@@ -130,6 +130,27 @@ export const UPDATE_DOCUMENT_TOOL = {
   }
 };
 
+// TASK 3.2 — очистка сирого OCR-тексту скан-документа у гарний Markdown.
+export const CLEAN_DOCUMENT_TEXT_TOOL = {
+  name: 'clean_document_text',
+  description:
+    'Очистити сирий OCR-текст СКАНОВАНОГО документа у гарний читабельний ' +
+    'Markdown (абзаци, заголовки, таблиці) — НЕ змінюючи юридичний зміст. ' +
+    'Використовуй коли адвокат каже «очисти цей документ», «зроби текст ' +
+    'читабельним», «почисти всі тексти справи» (тоді виклич по кожному ' +
+    'сканованому документу окремо). Працює ТІЛЬКИ для documentNature=scanned ' +
+    '(скани/фото); для цифрових документів (DOCX/HTML/текстовий PDF) — повертає ' +
+    'skipped. Уже очищені (.md) повторно не чіпай.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      caseId: { type: 'string' },
+      documentId: { type: 'string' }
+    },
+    required: ['caseId', 'documentId']
+  }
+};
+
 // ── Провадження ──────────────────────────────────────────────────────────────
 
 export const ADD_PROCEEDING_TOOL = {
@@ -509,6 +530,7 @@ export const DOSSIER_AGENT_TOOLS = [
   // Документи
   ADD_DOCUMENT_TOOL,
   UPDATE_DOCUMENT_TOOL,
+  CLEAN_DOCUMENT_TEXT_TOOL,
   // Провадження
   ADD_PROCEEDING_TOOL,
   UPDATE_PROCEEDING_TOOL,

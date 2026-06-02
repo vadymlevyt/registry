@@ -37,6 +37,7 @@ export function DocumentViewer({
   onOpenDetails,
   onDiscussWithAgent,
   onReprocess,
+  onCleanText,
   onDelete,
 }) {
   const [mode, setMode] = useState(() => loadModePreference(document?.id));
@@ -137,6 +138,7 @@ export function DocumentViewer({
         mode={effectiveMode}
         onDiscussWithAgent={onDiscussWithAgent}
         onReprocess={onReprocess}
+        onCleanText={onCleanText}
       />
     </div>
   );
