@@ -20,6 +20,7 @@ export function DocumentViewerHeader({
   document,
   caseData,
   showModeToggle,
+  showExact = false,
   mode,
   onModeChange,
   onToggleKey,
@@ -32,7 +33,9 @@ export function DocumentViewerHeader({
   return (
     <header className="document-viewer__header">
       <div className="document-viewer__header-row">
-        {showModeToggle && <ScanTextToggle mode={mode} onChange={onModeChange} />}
+        {showModeToggle && (
+          <ScanTextToggle mode={mode} onChange={onModeChange} showExact={showExact} />
+        )}
 
         <h2 className="document-viewer__title" title={document.name}>
           {document.name}

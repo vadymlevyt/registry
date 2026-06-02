@@ -6,6 +6,7 @@ import { DocumentViewer } from '../../src/components/DocumentViewer/index.jsx';
 vi.mock('../../src/services/ocrService.js', () => ({
   getCachedText: vi.fn().mockResolvedValue(null),
   getCleanOrRawText: vi.fn().mockResolvedValue(null),
+  getCachedLayout: vi.fn().mockResolvedValue(null),
   localizeOcrError: vi.fn(code => code),
 }));
 vi.mock('../../src/services/driveAuth.js', () => ({

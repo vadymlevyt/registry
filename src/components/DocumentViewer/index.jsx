@@ -3,6 +3,7 @@ import { FileText } from 'lucide-react';
 import { DocumentViewerHeader } from './DocumentViewerHeader.jsx';
 import { DocumentViewerContent } from './DocumentViewerContent.jsx';
 import { DocumentViewerFooter } from './DocumentViewerFooter.jsx';
+import { useExactLayout } from './useExactLayout.js';
 import { defaultNatureForUI, inferNatureFromFile } from '../../services/detectDocumentNature.js';
 import { isInlineRenderable } from '../../utils/documentTypes.js';
 import './DocumentViewer.css';
@@ -64,11 +65,22 @@ export function DocumentViewer({
   // там адвокат свідомо переключається між оригіналом-зображенням і
   // OCR-текстовою копією.
   const showModeToggle = !inlineRenderable && isScanned;
+
+  // V2-A1 — режим «Точний»: живий показ тексту скана з layout (КРОК 1
+  // cleanTextService, 0 токенів). Пробуємо layout ТІЛЬКИ коли перемикач
+  // показано (scanned, не inline). Опція «Точний» з'являється лише коли
+  // layout зібрався у непорожній Markdown (exact.status==='ready').
+  const exact = useExactLayout({ document, caseData, enabled: showModeToggle });
+  const exactReady = exact.status === 'ready';
+
   // Inline-renderable → завжди scan (iframe Drive). Scanned → за вибором адвоката.
   // Інше (рідкісний випадок searchable не-inline) → text плашка як було.
-  const effectiveMode = inlineRenderable
+  // mode==='exact' доступний лише коли layout готовий — інакше відкочуємось на
+  // 'scan' (напр. збережена з минулого преференція exact, а layout зник).
+  let effectiveMode = inlineRenderable
     ? 'scan'
     : (isScanned ? mode : 'text');
+  if (effectiveMode === 'exact' && !exactReady) effectiveMode = 'scan';
 
   useEffect(() => {
     if (!document?.id) return;
@@ -119,6 +131,7 @@ export function DocumentViewer({
         document={document}
         caseData={caseData}
         showModeToggle={showModeToggle}
+        showExact={exactReady}
         mode={effectiveMode}
         onModeChange={setMode}
         onToggleKey={handleToggleKey}
@@ -131,6 +144,8 @@ export function DocumentViewer({
         mode={effectiveMode}
         caseData={caseData}
         onReprocess={onReprocess}
+        exactMarkdown={exact.markdown}
+        exactStatus={exact.status}
       />
       <DocumentViewerFooter
         document={effectiveDoc}

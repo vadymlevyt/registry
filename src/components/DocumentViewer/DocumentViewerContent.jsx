@@ -29,9 +29,19 @@ import { MarkdownRenderer } from './MarkdownRenderer.jsx';
  * перерозпізнавання CaseDossier викликає update_document({ lastOcrAt: now }),
  * що ре-фетчить текст.
  */
-export function DocumentViewerContent({ document, mode, caseData, onReprocess }) {
+export function DocumentViewerContent({
+  document,
+  mode,
+  caseData,
+  onReprocess,
+  exactMarkdown,
+  exactStatus,
+}) {
   if (mode === 'scan') {
     return <ScanContent document={document} />;
+  }
+  if (mode === 'exact') {
+    return <ExactContent markdown={exactMarkdown} status={exactStatus} />;
   }
   return (
     <TextContent
@@ -39,6 +49,40 @@ export function DocumentViewerContent({ document, mode, caseData, onReprocess })
       caseData={caseData}
       onReprocess={onReprocess}
     />
+  );
+}
+
+/**
+ * Режим «Точний» (V2-A1) — дослівний показ тексту скана з layout, зібраний
+ * на льоту детермінованим конденсатором (markdown приходить готовим з
+ * useExactLayout). БЕЗ AI, БЕЗ зберігання. Опція показується лише коли
+ * status==='ready', тож loading/unavailable — захисні фолбеки (зміна
+ * документа під час вибраного режиму, тощо), не валять в'ювер.
+ */
+function ExactContent({ markdown, status }) {
+  if (status === 'loading') {
+    return (
+      <div className="document-viewer__loading">
+        <RefreshCw size={ICON_SIZE.md} />
+        <span>Збираємо точний текст...</span>
+      </div>
+    );
+  }
+  if (status !== 'ready' || !markdown) {
+    return (
+      <div className="document-viewer__empty-state">
+        <AlertTriangle size={48} />
+        <p>Точний текст недоступний</p>
+        <p className="document-viewer__empty-state-detail">
+          Для цього документа немає збереженого layout.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="document-viewer__content document-viewer__content--text">
+      <MarkdownRenderer text={markdown} />
+    </div>
   );
 }
 
