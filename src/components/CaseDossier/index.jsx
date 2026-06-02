@@ -583,9 +583,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
       return;
     }
 
-    // Успіх — повідомляємо і оновлюємо документ
+    // Успіх — повідомляємо і оновлюємо документ.
+    // V2-A2: кеш збережено якщо записано .txt АБО layout. Скани з layout
+    // більше НЕ пишуть .txt (cacheWritten=false), але layoutWritten=true —
+    // це повноцінний кеш («Точний»/getCachedText читають layout). Без цього
+    // умова давала хибний warning «не вдалось зберегти кеш» на кожному ре-OCR.
     if (!silentSuccess) {
-      if (ocrResult?.cacheWritten) {
+      if (ocrResult?.cacheWritten || ocrResult?.layoutWritten) {
         toast.success('Текст розпізнано і збережено');
       } else {
         toast.warning('Текст розпізнано, але не вдалось зберегти кеш на Drive', {
