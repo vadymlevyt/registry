@@ -70,6 +70,7 @@
       </div>
     </div>
     <p class="hint">Тепер стиснення не залежить від того, як PDF декларує розмір сторінки: і айфонівські фото, і звичайні скани зводяться до однакової стелі пікселів. Колонки «Сторінка pt» і «МП/стор» показують, які файли мали роздуту сторінку (айфонівські — велика pt).</p>
+    <p class="hint"><b>Складання — pdf-lib (НЕ jsPDF).</b> Кожна сторінка отримує ВЛАСНИЙ словник ресурсів зі своїм зображенням. Це критично: jsPDF клав усі зображення в ОДИН спільний <code>/Resources</code> на всі сторінки, через що конвеєрна нарізка (pdf-lib <code>copyPages</code>) тягнула ВСІ зображення в кожен чанк → чанк ≈ весь файл → «Файл більший за 40 МБ». pdf-lib-складання ріжеться чисто. Стиснення при цьому ідентичне (вага — у самих JPEG, структура додає ~частки відсотка).</p>
     <div class="env" id="env"></div>
   </div>
 
@@ -98,7 +99,7 @@
   </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <script>
 (function () {
   "use strict";
@@ -107,12 +108,13 @@
   const filesEl = $("files"), runEl = $("run"), longEl = $("longedge"), qualityEl = $("quality");
   const progressEl = $("progress"), resultsCard = $("resultsCard"), tbody = $("results").querySelector("tbody");
 
-  // Бібліотеки
+  // Бібліотеки: pdf.js — рендер сторінок у canvas; pdf-lib — складання
+  // вихідного PDF (свідомо НЕ jsPDF — див. .hint про спільний /Resources і нарізку).
   let pdfjsLib = window.pdfjsLib;
-  let jsPDFctor = window.jspdf && window.jspdf.jsPDF;
+  let PDFLib = window.PDFLib;
 
-  if (!pdfjsLib || !jsPDFctor) {
-    progressEl.textContent = "Не завантажились бібліотеки (pdf.js / jsPDF). Перевір інтернет і онови сторінку.";
+  if (!pdfjsLib || !PDFLib) {
+    progressEl.textContent = "Не завантажились бібліотеки (pdf.js / pdf-lib). Перевір інтернет і онови сторінку.";
   } else {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -135,6 +137,17 @@
   const heapNow = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
   const MAX_SCALE = 6; // запобіжник проти екстремального апскейлу дрібних сторінок
 
+  // canvas → JPEG-байти (Uint8Array) для pdf-lib.embedJpg. Через toBlob (а не
+  // toDataURL): без base64-роздування проміжного рядка → менший memory peak.
+  function canvasToJpegBytes(canvas, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) { reject(new Error("canvas.toBlob повернув null")); return; }
+        blob.arrayBuffer().then((ab) => resolve(new Uint8Array(ab))).catch(reject);
+      }, "image/jpeg", quality);
+    });
+  }
+
   async function processFile(file, longEdge, quality) {
     const t0 = performance.now();
     let peakHeap = heapNow();
@@ -144,7 +157,11 @@
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     const pageCount = pdf.numPages;
 
-    let outDoc = null, firstPt = "", maxMP = 0;
+    // pdf-lib: кожна addPage + drawImage дає сторінці ВЛАСНІ ресурси →
+    // copyPages у конвеєрі ріже пропорційно (на відміну від jsPDF).
+    const outDoc = await PDFLib.PDFDocument.create();
+    let firstPt = "", maxMP = 0;
+
     for (let p = 1; p <= pageCount; p++) {
       const page = await pdf.getPage(p);
       const vp1 = page.getViewport({ scale: 1 });        // pt-розмір сторінки (як декларує PDF)
@@ -163,16 +180,14 @@
       const ctx = canvas.getContext("2d", { willReadFrequently: false });
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
 
-      const jpeg = canvas.toDataURL("image/jpeg", quality);
+      const jpegBytes = await canvasToJpegBytes(canvas, quality);
       sampleHeap();
 
-      const orient = vp1.width >= vp1.height ? "landscape" : "portrait";
-      if (!outDoc) {
-        outDoc = new jsPDFctor({ unit: "pt", format: [vp1.width, vp1.height], orientation: orient });
-      } else {
-        outDoc.addPage([vp1.width, vp1.height], orient);
-      }
-      outDoc.addImage(jpeg, "JPEG", 0, 0, vp1.width, vp1.height);
+      // Розмір сторінки — у pt (як декларує оригінал). vp1.width/height від
+      // pdf.js при scale:1 = пункти PDF. Зображення накриває всю сторінку.
+      const img = await outDoc.embedJpg(jpegBytes);
+      const outPage = outDoc.addPage([vp1.width, vp1.height]);
+      outPage.drawImage(img, { x: 0, y: 0, width: vp1.width, height: vp1.height });
 
       // прибирання, щоб не накопичувати пам'ять
       canvas.width = 0; canvas.height = 0;
@@ -183,7 +198,8 @@
       sampleHeap();
     }
 
-    const outBlob = outDoc.output("blob");
+    const outU8 = await outDoc.save({ useObjectStreams: true });
+    const outBlob = new Blob([outU8], { type: "application/pdf" });
     const totalMs = performance.now() - t0;
     pdf.destroy();
 
@@ -201,7 +217,7 @@
   }
 
   runEl.addEventListener("click", async () => {
-    if (!pdfjsLib || !jsPDFctor) return;
+    if (!pdfjsLib || !PDFLib) return;
     runEl.disabled = true; filesEl.disabled = true;
     resultsCard.style.display = "block";
     const longEdge = parseInt(longEl.value, 10);
