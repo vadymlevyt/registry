@@ -150,6 +150,40 @@ describe('Ф3 Provider-integration — PERSIST виконує кожен route',
     expect(port._allNames().some((n) => /^fragment_001\.pdf$/.test(n))).toBe(true);
   });
 
+  it('F1 регресія: фрагмент зберігається навіть коли ПОВТОРНИЙ read джерела падає (reuse байтів persist)', async () => {
+    // Відтворює корінь бага: у потоковому шляху saveFragments перечитував
+    // джерело з _temp удруге, і той read падав (404) → "джерело недоступне" →
+    // PDF-фрагмент не зберігався (лише json). Симулюємо: 2-й read будь-якого
+    // id кидає. Фікс reuse-байтів означає, що saveFragments НЕ читає вдруге.
+    const inner = createMemDrivePort();
+    const reads = new Map();
+    const port2 = new Proxy(inner, {
+      get(t, p) {
+        if (p === 'readBytes') {
+          return async (id) => {
+            const n = (reads.get(id) || 0) + 1; reads.set(id, n);
+            if (n >= 2) throw new Error('temp gone (404)');          // повторний read джерела падає
+            return t.readBytes(id);
+          };
+        }
+        return t[p];
+      },
+    });
+    const fragFolder = await port2.getOrCreateFolder('03_ФРАГМЕНТИ', null);
+    const caseData = structuredClone(CASE);
+    caseData.storage.subFolders['03_ФРАГМЕНТИ'] = fragFolder.id;
+    stubTriageFetch({ documents: [
+      { documentId: 'd1', name: 'Рішення', type: 'court_act', route: 'add_as_is', fragments: [{ fileId: 'm', startPage: 1, endPage: 2 }] },
+      { documentId: 'd2', name: 'Обкладинка', route: 'to_fragments', fragments: [{ fileId: 'm', startPage: 3, endPage: 3 }] },
+    ], unusedPages: [] });
+    const exec = buildExecutor(port2, h, mergeSpy);
+    const res = await exec.run({ caseId: 'case_pr', caseData, agentId: 'document_processor_agent', source: 'manual', addedBy: 'user', files: [await file('m', 3)] });
+    expect(res.ok).toBe(true);
+    expect(docs()).toHaveLength(1);                                   // add_as_is нарізався (reuse)
+    // Головне: фрагмент реально збережено попри падіння повторного read.
+    expect(inner._allNames().some((n) => /^fragment_001\.pdf$/.test(n))).toBe(true);
+  });
+
   it('discard → нічого у справі і на Drive', async () => {
     stubTriageFetch({ documents: [
       { documentId: 'd1', name: 'Документ', route: 'add_as_is', fragments: [{ fileId: 'x', startPage: 1, endPage: 2 }] },

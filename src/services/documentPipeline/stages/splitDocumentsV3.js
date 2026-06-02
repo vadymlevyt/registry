@@ -214,18 +214,23 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     // route to_fragments → ці сторінки йдуть у 03_ФРАГМЕНТИ (saveFragments),
     // НЕ канонічні документи (об'єднуються з ctx.unusedPages нижче).
     const routedToFragments = [];
+    // F1: байти джерел, прочитані гілкою A (із них різались документи), стають
+    // доступні saveFragments — щоб той НЕ перечитував джерело з _temp удруге.
+    // Корінь бага: повторний read у saveFragments падав (404 → catch →
+    // "джерело недоступне") → фрагменти логувались, але PDF не зберігались.
+    // Один read, два споживачі (нарізка документів + збереження фрагментів).
+    const sourceByFile = new Map();
 
     // ── A. Plan-based split ───────────────────────────────────────────────
     if (plan && plan.confirmed && Array.isArray(plan.documents) && plan.documents.length > 0) {
       // Байти кожного джерела один раз (RAM: по одному, звільняємо після).
-      const byFile = new Map();
       for (const f of live) {
         const b = await sourceBytes(f);
-        if (b) byFile.set(f.fileId, b instanceof Uint8Array ? (b.buffer || b) : b);
+        if (b) sourceByFile.set(f.fileId, b instanceof Uint8Array ? (b.buffer || b) : b);
       }
       // G4: нарізати кожне джерело ОДИН раз (усі діапазони всіх документів),
       // замість повного re-parse 21МБ на кожен документ (корінь 46 хв).
-      const cutByKey = await precutSources(plan.documents, byFile);
+      const cutByKey = await precutSources(plan.documents, sourceByFile);
       const planTotal = plan.documents.length;
       let planIdx = 0;
       for (const doc of plan.documents) {
@@ -259,7 +264,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
           const images = [];
           for (const fr of doc.fragments || []) {
             const src = live.find((f) => f.fileId === fr.fileId);
-            const raw = byFile.get(fr.fileId);
+            const raw = sourceByFile.get(fr.fileId);
             if (!src || !raw) continue;
             images.push({ bytes: raw, mime: src.originalMime || 'image/jpeg', name: src.name || fr.fileId });
           }
@@ -441,7 +446,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
     const ctxFrag = routedToFragments.length > 0
       ? { ...ctx, unusedPages: [...(Array.isArray(ctx.unusedPages) ? ctx.unusedPages : []), ...routedToFragments] }
       : ctx;
-    const fragDecisions = await saveFragments(stageDeps, ctxFrag, fragmentsMode);
+    const fragDecisions = await saveFragments(stageDeps, ctxFrag, fragmentsMode, sourceByFile);
     decisions.push(...fragDecisions);
 
     // ── datasetCollector (sub-стадія, gated toggle) ──────────────────────
@@ -469,7 +474,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
 // fragments_log.json + зведений лог + подія DOCUMENT_FRAGMENT_SAVED.
 // Дефолт DP-3: зберігати ВСЕ автоматично (втратити юридично значущу
 // сторінку гірше ніж зберегти зайве). UI вибору — DP-4.
-async function saveFragments(stageDeps, ctx, fragmentsMode) {
+async function saveFragments(stageDeps, ctx, fragmentsMode, providedBytes = null) {
   const unused = Array.isArray(ctx.unusedPages) ? ctx.unusedPages : [];
   if (unused.length === 0) return [];
   const drivePort = stageDeps.drivePort;
@@ -480,6 +485,12 @@ async function saveFragments(stageDeps, ctx, fragmentsMode) {
   const live = ctx.files.filter((f) => !f.skipped);
   const byFile = new Map();
   for (const f of live) {
+    // F1: спершу беремо байти, вже прочитані гілкою A persist (із них різались
+    // документи) — це усуває повторний read з _temp, який падав 404 →
+    // "джерело недоступне". Re-read лишається лише як fallback (шлях без плану /
+    // тести), коли байти не передані.
+    const pre = providedBytes && providedBytes.get(f.fileId);
+    if (pre) { byFile.set(f.fileId, pre); continue; }
     try {
       const b = f.driveId && drivePort.readBytes ? await drivePort.readBytes(f.driveId)
         : (f.uploadedFile?.arrayBuffer ? await f.uploadedFile.arrayBuffer() : null);
