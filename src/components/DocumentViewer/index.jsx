@@ -69,6 +69,8 @@ export function DocumentViewer({
   onDiscussWithAgent,
   onReprocess,
   onGenerateVariant,
+  onLoadAttentionNotes,
+  onRemoveAllMarks,
   onDelete,
 }) {
   // Обраний таб. null = «адвокат ще не вибирав» → застосовується дефолт
@@ -204,6 +206,8 @@ export function DocumentViewer({
         generating={generatingMode === effectiveMode}
         onGenerate={handleGenerate}
         canGenerate={typeof onGenerateVariant === 'function'}
+        onLoadAttentionNotes={onLoadAttentionNotes}
+        onRemoveAllMarks={onRemoveAllMarks}
       />
       <DocumentViewerFooter
         document={effectiveDoc}

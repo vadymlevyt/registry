@@ -110,7 +110,7 @@ describe('adapter + ядро персиститься у .md за суфіксо
 
     const r = await cleanDocument({
       document: scannedDoc, caseData, apiKey: 'k', billAsUserAction: false, mode: 'digest',
-      callAI: vi.fn(async () => aiJson('# Чисто\n\nтекст', [{ page: 1, note: 'увага' }])),
+      callAI: vi.fn(async () => aiJson('# Чисто\n\nтекст', [{ note: 'увага' }])),
       resolveModel: () => 'claude-haiku-4-5-20251001', logAiUsage, activityTracker,
       ...driveDeps,
     });
@@ -137,7 +137,7 @@ describe('adapter + ядро персиститься у .md за суфіксо
     );
     // extended: attentionNotes.
     expect(extended.setExtendedForDocument).toHaveBeenCalledWith(
-      'c1', caseData, 'doc_1', { attentionNotes: [{ page: 1, note: 'увага' }] },
+      'c1', caseData, 'doc_1', { attentionNotes: [{ note: 'увага' }] },
     );
     // C7: токени логуються; activityTracker (дія) — НІ (billAsUserAction:false).
     expect(logAiUsage).toHaveBeenCalledTimes(1);

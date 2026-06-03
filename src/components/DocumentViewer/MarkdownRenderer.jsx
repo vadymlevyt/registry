@@ -13,9 +13,22 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;');
 }
 
-// Inline-розмітка на ВЖЕ екранованому тексті: **жирний**, *курсив*, `код`.
+// Лічильник міток уваги (V2-C). Один сенс: порядковий номер ==мітки== у межах
+// ОДНОГО рендеру документа (data-mark="N", N з 1). markdownToHtml скидає його в
+// 0 на старті; inline() інкрементує на кожну мітку. Рендер синхронний і
+// однопотоковий → перевикористання модульного стану безпечне (без re-entrancy).
+let markCounter = 0;
+
+// Inline-розмітка на ВЖЕ екранованому тексті: ==увага==, **жирний**, *курсив*,
+// `код`. ==…== (V2-C, ТІЛЬКИ Чистий його продукує) → <mark class="attention"
+// data-mark="N"> на екранованому вмісті (XSS-safe — як решта inline). Колір —
+// design-токен --attention-bg (DocumentViewer.css), НЕ hex.
 function inline(escaped) {
   return escaped
+    .replace(/==([^=]+?)==/g, (_m, p1) => {
+      markCounter += 1;
+      return `<mark class="attention" data-mark="${markCounter}">${p1}</mark>`;
+    })
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -44,6 +57,9 @@ function renderTable(headerLine, bodyLines) {
 
 // MD → HTML. Блоковий парсинг по рядках.
 export function markdownToHtml(md) {
+  // Скидаємо лічильник міток уваги на старті рендеру — нумерація data-mark
+  // починається з 1 у документному порядку (пара до списку панелі у в'ювері).
+  markCounter = 0;
   // Прибрати HTML-коментарі (підказки конденсатора, якщо AI лишив).
   const text = String(md || '').replace(/<!--[\s\S]*?-->/g, '');
   const lines = text.replace(/\r\n?/g, '\n').split('\n');

@@ -143,11 +143,13 @@ describe('КРОК 2 — polishToMarkdown (AI-поліш + C7)', () => {
     expect(d.callAI).not.toHaveBeenCalled();
   });
 
-  it('успіх: парсить JSON {markdown, attentionNotes}', async () => {
+  it('успіх: парсить JSON {markdown, attentionNotes} (форма {note}, без page — V2-C)', async () => {
+    // AI міг повернути legacy {page,note} — parse дропає page (форма {note}).
     const d = deps({ callAI: vi.fn(async () => aiJsonResponse('# Чисто', [{ page: 2, note: 'розбіжність' }])) });
     const r = await polishToMarkdown({ draft: 'сирий', apiKey: 'k', ...d });
     expect(r.markdown).toBe('# Чисто');
-    expect(r.attentionNotes).toEqual([{ page: 2, note: 'розбіжність' }]);
+    expect(r.attentionNotes).toEqual([{ note: 'розбіжність' }]);
+    expect(r.attentionNotes[0]).not.toHaveProperty('page');
     expect(r.warning).toBeNull();
   });
 
@@ -225,20 +227,35 @@ describe('КРОК 2 — polishToMarkdown (AI-поліш + C7)', () => {
     expect(p).toMatch(/НЕ міняй ЖОДНОГО слова/i);
   });
 
-  it("mode 'digest' (default) → промт Конспекту (структурує/переказує, без заборони особи/роду)", async () => {
+  it("mode 'clean' → промт містить інструкцію ==мітки== уваги + порядок + форму {note} (V2-C)", async () => {
+    const d = deps();
+    await polishToMarkdown({ draft: 'сирий', apiKey: 'k', mode: 'clean', ...d });
+    const p = promptOf(d.callAI);
+    // Інлайн-маркер ==фраза== і вимога порядку (мітка ↔ запис).
+    expect(p).toMatch(/==фраза==/);
+    expect(p).toMatch(/ПОРЯДОК/i);
+    // JSON-форма attentionNotes — { note } БЕЗ page.
+    expect(p).toMatch(/"note":/);
+    expect(p).not.toMatch(/"page":/);
+  });
+
+  it("mode 'digest' (default) → промт Конспекту (структурує/переказує, без заборони особи/роду, БЕЗ міток)", async () => {
     const d = deps();
     await polishToMarkdown({ draft: 'сирий', apiKey: 'k', ...d });   // default digest
     const p = promptOf(d.callAI);
     expect(p).toMatch(/читабельн/i);
     // Конспект НЕ має жорсткої заборони зміни особи/роду (це Чистий).
     expect(p).not.toMatch(/НЕ міняй особу/i);
+    // Конспект НЕ ставить інлайн-міток і не має page у формі нотатки.
+    expect(p).toMatch(/НЕ став інлайн-міток/i);
+    expect(p).not.toMatch(/"page":/);
   });
 });
 
 // ── КРОК 3 — cleanDocument (оркестрація) ────────────────────────────────────
 function orchDeps(overrides = {}) {
   return {
-    callAI: vi.fn(async () => aiJsonResponse('# Очищено\n\nфінал', [{ page: null, note: 'увага' }])),
+    callAI: vi.fn(async () => aiJsonResponse('# Очищено\n\nфінал', [{ note: 'увага' }])),
     resolveModel: vi.fn(() => 'claude-haiku-4-5-20251001'),
     logAiUsage: vi.fn(),
     activityTracker: { report: vi.fn() },
@@ -286,14 +303,14 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
     const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'case_1' }, apiKey: 'k', ...d });
     expect(r.ok).toBe(true);
     expect(r.markdown).toBe('# Очищено\n\nфінал');
-    expect(r.attentionNotes).toEqual([{ page: null, note: 'увага' }]);
+    expect(r.attentionNotes).toEqual([{ note: 'увага' }]);
     // saveMarkdown отримує 4-й арг mode (default 'digest').
     expect(d.saveMarkdown).toHaveBeenCalledWith(scannedDoc, { id: 'case_1' }, '# Очищено\n\nфінал', 'digest');
     const [, , meta] = d.updateDocumentMeta.mock.calls[0];   // (document, caseData, meta)
     expect(meta.textFormat).toBe('md');
     expect(typeof meta.cleanedAt).toBe('string');
     expect(meta.mode).toBe('digest');
-    expect(meta.attentionNotes).toEqual([{ page: null, note: 'увага' }]);
+    expect(meta.attentionNotes).toEqual([{ note: 'увага' }]);
     // V2-A2: .layout/.txt ЗБЕРІГАЮТЬСЯ — жодного moveRawTxtToArchive/deleteLayout.
     expect(d.moveRawTxtToArchive).not.toHaveBeenCalled();
     expect(d.deleteLayout).not.toHaveBeenCalled();

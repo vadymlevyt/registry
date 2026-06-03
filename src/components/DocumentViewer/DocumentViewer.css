@@ -263,6 +263,118 @@
   font-weight: 600;
 }
 
+/* V2-C — підсвітки уваги Чистого (==мітка==). Колір — токен --attention-bg.
+   Текст лишається кольору документа (override дефолтного <mark> чорного на
+   жовтому). Скрол-таргет для клік-навігації з панелі. */
+.document-viewer__markdown mark.attention {
+  background: var(--attention-bg);
+  color: inherit;
+  border-radius: var(--radius-xs);
+  padding: 0 2px;
+  scroll-margin: 80px;
+  transition: background 0.25s ease;
+}
+
+/* Перемикач показу (CSS, миттєво, нічого не зберігаємо) — ховаємо тло міток. */
+.document-viewer__markdown--marks-hidden mark.attention {
+  background: transparent;
+  padding: 0;
+}
+
+/* Короткий «пульс» при кліку по пункту панелі — привертає око до місця. */
+.document-viewer__markdown mark.attention.is-pulse {
+  animation: attention-pulse 1.1s ease;
+}
+
+@keyframes attention-pulse {
+  0%   { background: var(--attention-bg-pulse); }
+  100% { background: var(--attention-bg); }
+}
+
+/* V2-C — чип + панель поміток уваги (ЛИШЕ режим Чистий). */
+.document-viewer__attention {
+  max-width: 760px;
+  margin: 0 auto var(--space-3);
+}
+
+.document-viewer__attention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: var(--attention-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-full);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.document-viewer__attention-panel {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.document-viewer__attention-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+  cursor: pointer;
+  margin-bottom: var(--space-2);
+}
+
+.document-viewer__attention-list {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.document-viewer__attention-item {
+  display: flex;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.document-viewer__attention-item:hover {
+  color: var(--color-text);
+}
+
+.document-viewer__attention-num {
+  color: var(--color-warning);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.document-viewer__attention-clear {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+
+.document-viewer__attention-clear:disabled {
+  color: var(--color-text-3);
+  cursor: wait;
+}
+
 .document-viewer__loading,
 .document-viewer__empty-state {
   flex: 1;

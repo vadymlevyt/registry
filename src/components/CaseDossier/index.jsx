@@ -33,7 +33,7 @@ import { DeleteDocumentModal } from "./DeleteDocumentModal.jsx";
 import { ArchiveView } from "./ArchiveView.jsx";
 import { generateCaseContext } from "./services/contextGenerator.js";
 import { derivePendingRegen, shouldStartContextRegen } from "./services/contextRelay.js";
-import { partitionForCleaning, runCleanCycle } from "./services/cleanTextCycle.js";
+import * as documentsExtended from "../../services/documentsExtended.js";
 import "./CaseDossier.css";
 
 const CATEGORY_LABELS = {
@@ -43,15 +43,6 @@ const CATEGORY_LABELS = {
 };
 
 const AUTHOR_LABELS = { ours: "Наш", opponent: "Опонент", court: "Суд" };
-
-// Українська множина для «документ» (1 документ / 2 документи / 5 документів).
-function pluralizeDocs(n) {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return "документ";
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "документи";
-  return "документів";
-}
 
 const TAG_COLORS = {
   key: { bg: "rgba(79,124,255,.2)", color: "var(--color-accent)" },
@@ -95,12 +86,6 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [contextLoading, setContextLoading] = useState(false);
   const [contextMsg, setContextMsg] = useState('');
   const [isCreatingContext, setIsCreatingContext] = useState(false);
-  // TASK 3.2 — ретроактивна очистка текстів (Огляд). UI-стан циклу очистки;
-  // вся логіка — у ядрі через ACTION clean_document_text. cleanResult — підсумок
-  // для ResultCard ({cleaned, skipped, errors, degraded, attentionNotes[]}).
-  const [cleanRunning, setCleanRunning] = useState(false);
-  const [cleanProgress, setCleanProgress] = useState('');
-  const [cleanResult, setCleanResult] = useState(null);
   // Естафетна паличка від Document Processor: { caseId, expectedDocIds: string[],
   // scenarioRunId? } | null. Однозначність (#11): «DP-запуск з увімкненим тумблером
   // передав естафету генератору контексту; чекаємо доки expectedDocIds приземляться
@@ -796,40 +781,46 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     return result;
   }
 
-  // ── handleCleanAllTexts — кнопка «Очистити тексти» (Огляд, retroactive N) ───
-  // Фільтр (parent §СКОУП): тільки scanned з сирим текстом (textFormat!=='md').
-  // Підтвердження (дорого — N AI-викликів) → цикл ACTION clean_document_text по
-  // черзі → прогрес «N з M» → ResultCard. UI-стан тут; логіка — ядро.
-  async function handleCleanAllTexts() {
-    if (cleanRunning) return;
-    const { queue } = partitionForCleaning(caseData.documents);
+  // ── V2-C — підсвітки уваги Чистого (тільки в'ювер, по одному документу) ──────
+  // file-контракт для ocrService-швів: id=driveId, NFC-нормалізоване ім'я,
+  // subFolders справи (як cleanTextDriveAdapter/TextContent — щоб знайти
+  // <base>_<id> за тим самим basename).
+  function docFileRef(doc) {
+    const rawName = doc?.originalName || doc?.name || '';
+    const name = typeof rawName.normalize === 'function' ? rawName.normalize('NFC') : rawName;
+    return { id: doc?.driveId, name, subFolders: caseData?.storage?.subFolders };
+  }
 
-    if (queue.length === 0) {
-      toast.info('Немає документів для очистки', {
-        description: 'Скани вже очищено або справа містить лише цифрові документи (DOCX/HTML).',
-      });
-      return;
-    }
-
-    const ok = await systemConfirm(
-      `Запустити очистку ${queue.length} ${pluralizeDocs(queue.length)}?\n\nКожен документ обробляється окремим AI-викликом — це може зайняти час.`,
-      'Очистити тексти'
-    );
-    if (!ok) return;
-
-    setCleanRunning(true);
-    setCleanResult(null);
+  // Причини ==міток== уваги з extended (порядок = порядок міток у .clean.md).
+  // Помилка/відсутність → []: чип і навігація працюють з самого .clean.md.
+  async function handleLoadAttentionNotes(doc) {
+    if (!doc?.id) return [];
     try {
-      const result = await runCleanCycle({
-        documents: caseData.documents,
-        caseId: caseData.id,
-        executeAction: onExecuteAction,
-        onProgress: (text) => setCleanProgress(text),
-      });
-      setCleanResult(result);
-    } finally {
-      setCleanRunning(false);
-      setCleanProgress('');
+      const ext = await documentsExtended.getExtendedForDocument(caseData.id, caseData, doc.id);
+      return Array.isArray(ext?.attentionNotes) ? ext.attentionNotes : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // «Зняти всі назавжди»: re-save вже-стрипнутого (без ==) .clean.md +
+  // очистити extended.attentionNotes. Локальна правка артефакту (без AI, без
+  // зміни registry-полів) — Чистий-варіант лишається (variants.clean). Повертає
+  // false → в'ювер не оновлює текст (помилка Drive).
+  async function handleRemoveAllMarks(doc, strippedMarkdown) {
+    const file = docFileRef(doc);
+    if (!file.id || !file.subFolders?.['02_ОБРОБЛЕНІ']) {
+      toast.warning('Зняття поміток потребує файлу на Drive');
+      return false;
+    }
+    try {
+      await ocrService.writeMarkdownArtifact(file, strippedMarkdown, 'clean');
+      await documentsExtended.setExtendedForDocument(caseData.id, caseData, doc.id, { attentionNotes: [] });
+      toast.success('Помітки знято');
+      return true;
+    } catch (e) {
+      toast.error('Не вдалось зняти помітки', { description: e?.message || String(e) });
+      return false;
     }
   }
 
@@ -1852,31 +1843,14 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               >
                 {contextLoading ? "Створюю..." : "Створити контекст"}
               </button>
-              {/* TASK 3.2 — ретроактивна очистка сирих скан-текстів у гарний Markdown. */}
-              <button
-                disabled={cleanRunning}
-                onClick={handleCleanAllTexts}
-                style={{
-                  background: cleanRunning ? "var(--color-border)" : "rgba(79,124,255,.12)",
-                  color: cleanRunning ? "var(--color-text-3)" : "var(--color-accent)",
-                  border: "none", borderRadius: 'var(--radius-sm)', padding: "8px 16px",
-                  fontSize: 12, fontWeight: 600, cursor: cleanRunning ? "wait" : "pointer"
-                }}
-              >
-                {cleanRunning ? "Очищаю..." : "Очистити тексти"}
-              </button>
+              {/* V2-C — масову очистку текстів прибрано (Огляд = тільки Точний;
+                  AI-режими — у в'ювері по одному документу на вимогу). */}
             </div>
             {contextMsg && (
               <div style={{ marginTop: 8, fontSize: 11, color: contextMsg.startsWith("Помилка") ? "var(--color-danger)" : "var(--color-text-2)" }}>
                 {contextMsg}
               </div>
             )}
-            {cleanProgress && (
-              <div style={{ marginTop: 8, fontSize: 11, color: "var(--color-text-2)" }}>
-                {cleanProgress}
-              </div>
-            )}
-            {cleanResult && <CleanResultCard result={cleanResult} onClose={() => setCleanResult(null)} />}
           </div>
         )}
 
@@ -2309,6 +2283,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             });
           }}
           onGenerateVariant={handleGenerateVariant}
+          onLoadAttentionNotes={handleLoadAttentionNotes}
+          onRemoveAllMarks={handleRemoveAllMarks}
           onReprocess={async (doc) => {
             const subFolders = caseData?.storage?.subFolders;
             if (!doc?.driveId || !subFolders?.['02_ОБРОБЛЕНІ']) {
@@ -2997,60 +2973,3 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   );
 }
 
-// ── CleanResultCard (TASK 3.2) — підсумок ретроактивної очистки текстів ──────
-// Очищено / пропущено / деградовано / помилок + згруповані attentionNotes
-// (текст, без номера сторінки — підсвітки уваги це TASK 3.4). Лише design-токени.
-function CleanResultCard({ result, onClose }) {
-  if (!result) return null;
-  const { cleaned = 0, skipped = 0, degraded = 0, errors = 0, attentionNotes = [] } = result;
-  const hasIssues = degraded > 0 || errors > 0;
-  return (
-    <div style={{
-      marginTop: 'var(--space-3)',
-      padding: 'var(--space-3)',
-      background: hasIssues ? "rgba(241,196,15,.08)" : "rgba(46,204,113,.08)",
-      border: `1px solid ${hasIssues ? "var(--color-warning)" : "var(--color-success)"}`,
-      borderRadius: 'var(--radius-sm)',
-    }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
-          {hasIssues ? <AlertTriangle size={ICON_SIZE.sm} /> : <Check size={ICON_SIZE.sm} />}
-          Очистку завершено
-        </div>
-        <button
-          onClick={onClose}
-          style={{ background: "none", border: "none", color: "var(--color-text-3)", cursor: "pointer", fontSize: 12 }}
-        >✕</button>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
-        <CleanMetric label="Очищено" value={cleaned} />
-        <CleanMetric label="Пропущено (вже .md / цифрові)" value={skipped} />
-        {degraded > 0 && <CleanMetric label="Не завершено (потребує повтору)" value={degraded} />}
-        {errors > 0 && <CleanMetric label="Помилок" value={errors} />}
-      </div>
-      {attentionNotes.length > 0 && (
-        <details style={{ marginTop: 8 }}>
-          <summary style={{ cursor: "pointer", color: "var(--color-text-2)", fontSize: 12 }}>
-            {`Місця уваги (${attentionNotes.length})`}
-          </summary>
-          <ul style={{ marginTop: 6, paddingLeft: 18, fontSize: 11, color: "var(--color-text-2)" }}>
-            {attentionNotes.slice(0, 50).map((n, i) => (
-              <li key={i} style={{ marginBottom: 3 }}>
-                {n.docName ? <strong>{n.docName}: </strong> : null}{n.note}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function CleanMetric({ label, value }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between" }}>
-      <span style={{ color: "var(--color-text-2)" }}>{label}</span>
-      <span style={{ fontWeight: 600 }}>{value}</span>
-    </div>
-  );
-}

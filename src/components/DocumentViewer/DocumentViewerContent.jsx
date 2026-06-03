@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FileText, RefreshCw, AlertTriangle, Sparkles } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
@@ -7,6 +7,7 @@ import { PdfRenderer } from './PdfRenderer.jsx';
 import { DocxRenderer } from './DocxRenderer.jsx';
 import { HtmlRenderer } from './HtmlRenderer.jsx';
 import { MarkdownRenderer } from './MarkdownRenderer.jsx';
+import { countMarks, stripMarks, scrollToMark } from './attentionMarks.js';
 
 // Людський лейбл AI-режиму (для заглушки/повідомлень).
 const VARIANT_LABELS = { clean: 'Чистий', digest: 'Конспект' };
@@ -51,6 +52,8 @@ export function DocumentViewerContent({
   generating,
   onGenerate,
   canGenerate,
+  onLoadAttentionNotes,
+  onRemoveAllMarks,
 }) {
   // Таб «Скан»/«Документ» — нативний рендер оригіналу (scanned/inline) або
   // текстова плашка (рідкісний non-inline searchable).
@@ -71,6 +74,8 @@ export function DocumentViewerContent({
         generating={generating}
         onGenerate={onGenerate}
         canGenerate={canGenerate}
+        onLoadAttentionNotes={onLoadAttentionNotes}
+        onRemoveAllMarks={onRemoveAllMarks}
       />
     );
   }
@@ -94,15 +99,27 @@ export function DocumentViewerContent({
  *   3. готово — миттєвий показ збереженого .md через MarkdownRenderer, БЕЗ
  *      повторного AI. Конспект несе badge «⚠ переказ, не дослівно».
  */
-function VariantContent({ document, caseData, mode, generating, onGenerate, canGenerate }) {
+function VariantContent({ document, caseData, mode, generating, onGenerate, canGenerate, onLoadAttentionNotes, onRemoveAllMarks }) {
   const label = VARIANT_LABELS[mode] || 'Варіант';
   const ready = !!(document?.variants && document.variants[mode]);
+  // Підсвітки уваги — ВИКЛЮЧНО Чистий (parent рішення; НЕ Конспект/Точний/Скан).
+  const isClean = mode === 'clean';
 
   const [text, setText] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // V2-C — стан панелі поміток (лише Чистий). showMarks керує CSS-класом
+  // (миттєво, нічого не зберігаємо); notes — причини з extended (порядок =
+  // порядок ==міток==); markdownRef — ціль scroll-навігації.
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [showMarks, setShowMarks] = useState(true);
+  const [notes, setNotes] = useState([]);
+  const [removing, setRemoving] = useState(false);
+  const markdownRef = useRef(null);
+
   const variantStamp = document?.variants ? document.variants[mode] : null;
+  const markCount = isClean ? countMarks(text) : 0;
 
   useEffect(() => {
     // Поки генерується або ще не згенеровано — нічого не тягнемо.
@@ -150,6 +167,47 @@ function VariantContent({ document, caseData, mode, generating, onGenerate, canG
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [document.id, document.driveId, mode, ready, variantStamp, generating, caseData?.storage?.subFolders]);
+
+  // Скидаємо UI-стан панелі при зміні документа/режиму (панель не «прилипає»).
+  useEffect(() => {
+    setPanelOpen(false);
+    setShowMarks(true);
+    setNotes([]);
+  }, [document.id, mode]);
+
+  // Причини ==міток== з extended — лише коли Чистий готовий і має мітки.
+  // Порядок записів = порядок міток (parent §V2-C.3). Помилка → порожньо
+  // (count з .clean.md лишається, навігація працює без текстів причин).
+  useEffect(() => {
+    if (!isClean || !ready || markCount === 0 || typeof onLoadAttentionNotes !== 'function') {
+      return undefined;
+    }
+    let cancelled = false;
+    Promise.resolve(onLoadAttentionNotes(document))
+      .then(loaded => { if (!cancelled) setNotes(Array.isArray(loaded) ? loaded : []); })
+      .catch(() => { if (!cancelled) setNotes([]); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isClean, ready, markCount, document.id, variantStamp, onLoadAttentionNotes]);
+
+  // «Зняти всі назавжди»: стрип == з тексту → re-save .clean.md + очистити
+  // extended (через батьків onRemoveAllMarks) → локально показуємо стрипнутий
+  // текст (markCount→0 → чип зникає). Чистий-варіант лишається (variants.clean).
+  const handleRemoveAll = async () => {
+    if (removing || typeof onRemoveAllMarks !== 'function' || !text) return;
+    const stripped = stripMarks(text);
+    setRemoving(true);
+    try {
+      const ok = await onRemoveAllMarks(document, stripped);
+      if (ok !== false) {
+        setText(stripped);
+        setNotes([]);
+        setPanelOpen(false);
+      }
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   if (generating) {
     return (
@@ -234,9 +292,94 @@ function VariantContent({ document, caseData, mode, generating, onGenerate, canG
           ⚠ переказ, не дослівно
         </div>
       )}
-      <MarkdownRenderer text={text} />
+      {isClean && markCount > 0 && (
+        <CleanHighlights
+          markCount={markCount}
+          notes={notes}
+          panelOpen={panelOpen}
+          showMarks={showMarks}
+          removing={removing}
+          onTogglePanel={() => setPanelOpen(o => !o)}
+          onToggleShow={() => setShowMarks(s => !s)}
+          onNavigate={n => scrollToMark(markdownRef.current, n)}
+          onRemoveAll={typeof onRemoveAllMarks === 'function' ? handleRemoveAll : null}
+        />
+      )}
+      <div
+        ref={markdownRef}
+        className={isClean && !showMarks ? 'document-viewer__markdown--marks-hidden' : undefined}
+      >
+        <MarkdownRenderer text={text} />
+      </div>
     </div>
   );
+}
+
+/**
+ * CleanHighlights — чип «N поміток» + панель (V2-C, ВИКЛЮЧНО режим Чистий).
+ * Презентаційний: count/notes/стан приходять згори (VariantContent). Чип —
+ * ЄДИНИЙ видимий елемент згорнуто; тап розгортає панель: перемикач показу
+ * (CSS), список пунктів ↔ data-mark за порядком (клік = scroll+пульс),
+ * «Зняти всі назавжди». Лише design-токени/спільні класи, без CSS-островів.
+ */
+function CleanHighlights({ markCount, notes, panelOpen, showMarks, removing, onTogglePanel, onToggleShow, onNavigate, onRemoveAll }) {
+  return (
+    <div className="document-viewer__attention">
+      <button
+        type="button"
+        className="document-viewer__attention-chip"
+        onClick={onTogglePanel}
+        aria-expanded={panelOpen}
+      >
+        <AlertTriangle size={ICON_SIZE.sm} />
+        {`${markCount} ${pluralizeMarks(markCount)}`}
+      </button>
+
+      {panelOpen && (
+        <div className="document-viewer__attention-panel" role="region" aria-label="Помітки уваги">
+          <label className="document-viewer__attention-toggle">
+            <input type="checkbox" checked={showMarks} onChange={onToggleShow} />
+            Підсвічувати в тексті
+          </label>
+
+          <ol className="document-viewer__attention-list">
+            {Array.from({ length: markCount }).map((_, i) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  className="document-viewer__attention-item"
+                  onClick={() => onNavigate(i + 1)}
+                >
+                  <span className="document-viewer__attention-num">{i + 1}.</span>
+                  <span>{(notes[i] && notes[i].note) || 'Перейти до позначеного місця'}</span>
+                </button>
+              </li>
+            ))}
+          </ol>
+
+          {onRemoveAll && (
+            <button
+              type="button"
+              className="document-viewer__attention-clear"
+              onClick={onRemoveAll}
+              disabled={removing}
+            >
+              {removing ? 'Знімаю…' : 'Зняти всі назавжди'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Українська множина для «помітка» (1 помітка / 2 помітки / 5 поміток).
+function pluralizeMarks(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'помітка';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'помітки';
+  return 'поміток';
 }
 
 /**
