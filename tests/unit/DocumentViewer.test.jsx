@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { DocumentViewer } from '../../src/components/DocumentViewer/index.jsx';
+import { DocumentViewer, buildViewerTabs } from '../../src/components/DocumentViewer/index.jsx';
 
 vi.mock('../../src/services/ocrService.js', () => ({
   getCachedText: vi.fn().mockResolvedValue(null),
   getCleanOrRawText: vi.fn().mockResolvedValue(null),
+  getVariantMarkdown: vi.fn().mockResolvedValue(null),
+  getDocumentText: vi.fn().mockResolvedValue(''),
   getCachedLayout: vi.fn().mockResolvedValue(null),
   localizeOcrError: vi.fn(code => code),
 }));
@@ -41,12 +43,15 @@ describe('DocumentViewer', () => {
     expect(screen.getByText(/Оберіть документ/)).toBeInTheDocument();
   });
 
-  it('searchable документ → перемикач прихований', () => {
+  it('searchable документ → перемикач [Документ][Конспект] (V2-B), без Скан/Текст', () => {
     render(<DocumentViewer document={baseDoc} caseData={baseCase} />);
-    expect(screen.queryByRole('tab', { name: /Скан/ })).toBeNull();
+    expect(screen.getByRole('tab', { name: /Документ/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Конспект/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Скан$/ })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /^Текст$/ })).toBeNull();
   });
 
-  it('scanned документ → перемикач видимий', () => {
+  it('scanned документ → перемикач [Скан][Чистий][Конспект] (без layout — без Точного), без Текст', () => {
     render(
       <DocumentViewer
         document={{ ...baseDoc, documentNature: 'scanned' }}
@@ -54,7 +59,9 @@ describe('DocumentViewer', () => {
       />
     );
     expect(screen.getByRole('tab', { name: /Скан/ })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Текст/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Чистий/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Конспект/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Текст$/ })).toBeNull();
   });
 
   it('клік на ✕ викликає onClose', () => {
@@ -73,11 +80,11 @@ describe('DocumentViewer', () => {
     expect(onUpdate).toHaveBeenCalledWith('doc_1', { isKey: true });
   });
 
-  it('перемикання scanned → text зберігається в localStorage', () => {
+  it('перемикання scanned → Конспект зберігається в localStorage (digest)', () => {
     const scanned = { ...baseDoc, documentNature: 'scanned' };
     render(<DocumentViewer document={scanned} caseData={baseCase} />);
-    fireEvent.click(screen.getByRole('tab', { name: /Текст/ }));
-    expect(localStorage.getItem('viewer_mode_doc_1')).toBe('text');
+    fireEvent.click(screen.getByRole('tab', { name: /Конспект/ }));
+    expect(localStorage.getItem('viewer_mode_doc_1')).toBe('digest');
   });
 
   it('searchable PDF → власний PdfRenderer, перемикач прихований (text-плашка не потрібна)', () => {
@@ -123,5 +130,52 @@ describe('DocumentViewer', () => {
   it('кнопка кошика прихована якщо onDelete не передано', () => {
     render(<DocumentViewer document={baseDoc} caseData={baseCase} />);
     expect(screen.queryByLabelText('Видалити')).toBeNull();
+  });
+});
+
+describe('buildViewerTabs (V2-B — набір вкладок)', () => {
+  const values = tabs => tabs.map(t => t.value);
+
+  it('scanned без layout/variants → [Скан][Чистий][Конспект], без exact/text', () => {
+    const tabs = buildViewerTabs({ isScanned: true, exactReady: false, variants: null });
+    expect(values(tabs)).toEqual(['scan', 'clean', 'digest']);
+    expect(values(tabs)).not.toContain('text');
+    expect(values(tabs)).not.toContain('exact');
+    // AI-маркери на clean/digest; badge на digest.
+    expect(tabs.find(t => t.value === 'clean').ai).toBe(true);
+    expect(tabs.find(t => t.value === 'digest').badge).toBe('переказ');
+  });
+
+  it('scanned + exactReady → з\'являється Точний (між Скан і Чистий)', () => {
+    const tabs = buildViewerTabs({ isScanned: true, exactReady: true, variants: null });
+    expect(values(tabs)).toEqual(['scan', 'exact', 'clean', 'digest']);
+  });
+
+  it('variants позначають готовність AI-вкладок (ready)', () => {
+    const tabs = buildViewerTabs({
+      isScanned: true,
+      exactReady: false,
+      variants: { clean: '2026-06-03T00:00:00Z', digest: null },
+    });
+    expect(tabs.find(t => t.value === 'clean').ready).toBe(true);
+    expect(tabs.find(t => t.value === 'digest').ready).toBe(false);
+  });
+
+  it('searchable → [Документ][Конспект]; без Скан/Точний/Чистий/Текст', () => {
+    const tabs = buildViewerTabs({ isScanned: false, exactReady: false, variants: { digest: 'ts' } });
+    expect(values(tabs)).toEqual(['scan', 'digest']);
+    expect(tabs[0].label).toBe('Документ');
+    expect(tabs.find(t => t.value === 'digest').ready).toBe(true);
+    // Жодного Чистого/Точного для searchable (нема OCR-сміття/layout).
+    expect(values(tabs)).not.toContain('clean');
+    expect(values(tabs)).not.toContain('exact');
+    expect(values(tabs)).not.toContain('text');
+  });
+
+  it('жоден набір не містить старого режиму «text»', () => {
+    const scanned = buildViewerTabs({ isScanned: true, exactReady: true, variants: { clean: 'a', digest: 'b' } });
+    const searchable = buildViewerTabs({ isScanned: false, exactReady: false, variants: null });
+    expect(values(scanned)).not.toContain('text');
+    expect(values(searchable)).not.toContain('text');
   });
 });

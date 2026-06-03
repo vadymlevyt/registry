@@ -380,7 +380,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 Документи:
   • add_document — додати один документ у реєстр
   • update_document — змінити поля існуючого документа
-  • clean_document_text — очистити текст скан-документа у гарний Markdown (тільки scanned)
+  • clean_document_text — згенерувати AI-варіант тексту: mode='clean' (Чистий, дослівно, тільки scanned) або mode='digest' (Конспект, переказ, scanned+searchable)
   (видалення документа — ТІЛЬКИ через UI, тобі недоступно)
 
 Провадження:
@@ -755,35 +755,43 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     }
   }
 
-  // ── handleCleanOneDocument — очистити ОДИН скан-документ (Viewer / агент) ───
-  // Тонка обгортка: вся логіка у ядрі 3.1 через ACTION clean_document_text
-  // (executeAction → cleanTextService.cleanDocument через adapter). Тут лише
-  // toast-маппінг результату. Повертає результат ACTION (для Viewer-перечитки).
-  async function handleCleanOneDocument(doc) {
+  // ── handleGenerateVariant — згенерувати AI-варіант (Чистий/Конспект) у в'ювері ─
+  // V2-B: на вимогу з вкладки перемикача (кнопка «Згенерувати»). Тонка обгортка
+  // над ACTION clean_document_text (executeAction → cleanTextService.cleanDocument
+  // через adapter) — НУЛЬ дублювання. Кнопка «Згенерувати» сама є свідомим
+  // кроком (підтвердження не потрібне, parent §V2-B.2). На успіх оновлюємо
+  // selectedDoc.variants[mode] → таб показує свіжий .md. Toast-маппінг результату.
+  async function handleGenerateVariant(doc, mode) {
     if (!doc?.id) return { success: false, error: 'Документ не вибрано' };
-    if (doc.documentNature !== 'scanned') {
-      toast.info('Очистка доступна лише для сканованих документів');
-      return { success: false, skipped: true, reason: 'not_scanned' };
-    }
-    if (doc.textFormat === 'md') {
-      toast.info('Документ уже очищено');
-      return { success: false, skipped: true, reason: 'already_md' };
-    }
+    const wantMode = mode === 'clean' ? 'clean' : 'digest';
     const result = await onExecuteAction('dossier_agent', 'clean_document_text', {
       caseId: caseData.id,
       documentId: doc.id,
+      mode: wantMode,
     });
     if (result?.success) {
+      const cleanedAt = new Date().toISOString();
+      setSelectedDoc(prev => {
+        if (!prev || prev.id !== doc.id) return prev;
+        const prevVariants = (prev.variants && typeof prev.variants === 'object')
+          ? prev.variants : { clean: null, digest: null };
+        return {
+          ...prev,
+          textFormat: 'md',
+          cleanedAt,
+          variants: { ...prevVariants, [wantMode]: cleanedAt },
+        };
+      });
       const noteCount = (result.attentionNotes || []).length;
-      toast.success('Документ очищено', {
+      toast.success(wantMode === 'clean' ? 'Чистий згенеровано' : 'Конспект згенеровано', {
         description: noteCount > 0 ? `AI відмітив ${noteCount} місць уваги` : undefined,
       });
     } else if (result?.degraded) {
-      toast.warning('Очистку не завершено — джерела збережено', {
+      toast.warning('Генерацію не завершено — джерела збережено', {
         description: result.warning || 'Спробуйте повторити пізніше',
       });
     } else if (!result?.skipped) {
-      toast.error('Не вдалось очистити', { description: result?.error || 'Невідома помилка' });
+      toast.error('Не вдалось згенерувати', { description: result?.error || 'Невідома помилка' });
     }
     return result;
   }
@@ -2300,19 +2308,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               description: 'Поки що відкрита панель агента — задайте запитання вручну',
             });
           }}
-          onCleanText={async (doc) => {
-            // TASK 3.2 — кнопка «Очистити документ» у Viewer (один scanned).
-            const r = await handleCleanOneDocument(doc);
-            if (r?.success) {
-              // Форсуємо перечитку Viewer'а (.md): cleanedAt у deps ефекту
-              // TextContent — зміна тригерить getCleanOrRawText на свіжий .md.
-              const cleanedAt = new Date().toISOString();
-              setSelectedDoc(prev => (prev && prev.id === doc.id
-                ? { ...prev, textFormat: 'md', cleanedAt }
-                : prev));
-            }
-            return r;
-          }}
+          onGenerateVariant={handleGenerateVariant}
           onReprocess={async (doc) => {
             const subFolders = caseData?.storage?.subFolders;
             if (!doc?.driveId || !subFolders?.['02_ОБРОБЛЕНІ']) {

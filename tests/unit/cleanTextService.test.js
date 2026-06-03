@@ -255,11 +255,30 @@ function orchDeps(overrides = {}) {
 const scannedDoc = { id: 'doc_1', name: 'Ухвала.pdf', documentNature: 'scanned', driveId: 'drv_1' };
 
 describe('КРОК 3 — cleanDocument (оркестрація)', () => {
-  it('скоуп-гард: documentNature !== "scanned" → skipped', async () => {
+  it('скоуп-гард (V2-B): clean + не-scanned → skipped (ядро не торкає Drive)', async () => {
     const d = orchDeps();
-    const r = await cleanDocument({ document: { ...scannedDoc, documentNature: 'searchable' }, apiKey: 'k', ...d });
+    const r = await cleanDocument({ document: { ...scannedDoc, documentNature: 'searchable' }, mode: 'clean', apiKey: 'k', ...d });
     expect(r).toEqual({ ok: false, skipped: true, reason: 'not_scanned' });
     expect(d.fetchLayout).not.toHaveBeenCalled();
+  });
+
+  it('скоуп-гард (V2-B): digest + searchable → НЕ skipped (Конспект універсальний)', async () => {
+    // digest допускає searchable: layout нема → fetchRawText (.txt) → поліш.
+    const d = orchDeps({
+      fetchLayout: vi.fn(async () => null),
+      fetchRawText: vi.fn(async () => 'цифровий текст документа'),
+    });
+    const r = await cleanDocument({ document: { ...scannedDoc, documentNature: 'searchable' }, mode: 'digest', apiKey: 'k', ...d });
+    expect(r.ok).toBe(true);
+    expect(d.fetchRawText).toHaveBeenCalled();
+    expect(d.saveMarkdown).toHaveBeenCalled();
+  });
+
+  it('скоуп-гард (V2-B): digest default + scanned → працює як раніше', async () => {
+    const d = orchDeps();
+    const r = await cleanDocument({ document: scannedDoc, mode: 'digest', apiKey: 'k', ...d });
+    expect(r.ok).toBe(true);
+    expect(d.fetchLayout).toHaveBeenCalled();
   });
 
   it('повний успіх (V2-A2): .md за суфіксом + метадані; .layout/.txt НЕ чіпаємо', async () => {

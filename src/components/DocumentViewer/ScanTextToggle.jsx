@@ -1,58 +1,63 @@
-import { Image, AlignLeft, FileText } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { ICON_SIZE } from '../UI/icons.js';
 import './ScanTextToggle.css';
 
 /**
- * Перемикач режиму Viewer для scanned документів.
+ * Перемикач режимів перегляду документа (V2-B). Замінює перехідний
+ * Скан/Точний/Текст явним набором режимів за типом документа:
+ *   scanned    → [ Скан ] [ Точний ] [ Чистий ✨ ] [ Конспект ✨ ]
+ *   searchable → [ Документ ] [ Конспект ✨ ]
+ *
+ * Таб «Текст» прибрано — його поведінки розкладені на явні режими
+ * (дайджест → Конспект; сире/механічне → Точний/Скан).
  *
  * Props:
- *   mode      — 'scan' | 'exact' | 'text'
- *   onChange  — (newMode) => void
- *   showExact — показувати опцію «Точний» (V2-A1). true ТІЛЬКИ коли документ
- *               scanned і має layout (рішення приймає DocumentViewer після
- *               проби getCachedLayout). default false — для старих викликів
- *               (Скан/Текст) поведінка незмінна.
+ *   tabs     — масив { value, label, icon, ai?, badge?, ready? }. Набір
+ *              визначає DocumentViewer за documentNature + наявністю layout
+ *              (Точний) + document.variants (Чистий/Конспект готовність).
+ *   mode     — активний value.
+ *   onChange — (value) => void. Перемикання ЗАВЖДИ безпечне/безкоштовне — клік
+ *              по незгенерованому AI-табі лише показує заглушку, AI НЕ стартує
+ *              (генерація — окремою кнопкою у тілі, V2-B.2).
  *
- * «Точний» — детермінований показ тексту скана з layout на льоту (КРОК 1
- * cleanTextService, 0 токенів AI). Стоїть між «Скан» і «Текст»: спершу
- * оригінал-зображення, потім дослівний вирівняний текст з layout, потім
- * поточний «Текст» (.md→.txt) для порівняння.
+ * ✨ (Sparkles) — маркер AI-режиму (Чистий/Конспект). badge («переказ») —
+ * коротка позначка «не дослівно» на Конспекті.
  */
-export function ScanTextToggle({ mode, onChange, showExact = false }) {
+export function ScanTextToggle({ tabs = [], mode, onChange }) {
   return (
     <div className="scan-text-toggle" role="tablist" aria-label="Режим перегляду">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={mode === 'scan'}
-        className={`scan-text-toggle__option ${mode === 'scan' ? 'is-active' : ''}`}
-        onClick={() => onChange('scan')}
-      >
-        <Image size={ICON_SIZE.sm} />
-        <span>Скан</span>
-      </button>
-      {showExact && (
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === 'exact'}
-          className={`scan-text-toggle__option ${mode === 'exact' ? 'is-active' : ''}`}
-          onClick={() => onChange('exact')}
-        >
-          <AlignLeft size={ICON_SIZE.sm} />
-          <span>Точний</span>
-        </button>
-      )}
-      <button
-        type="button"
-        role="tab"
-        aria-selected={mode === 'text'}
-        className={`scan-text-toggle__option ${mode === 'text' ? 'is-active' : ''}`}
-        onClick={() => onChange('text')}
-      >
-        <FileText size={ICON_SIZE.sm} />
-        <span>Текст</span>
-      </button>
+      {tabs.map(tab => {
+        const Icon = tab.icon;
+        const isActive = mode === tab.value;
+        const ungenerated = tab.ai && !tab.ready;
+        return (
+          <button
+            key={tab.value}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            className={[
+              'scan-text-toggle__option',
+              isActive ? 'is-active' : '',
+              ungenerated ? 'scan-text-toggle__option--ungenerated' : '',
+            ].filter(Boolean).join(' ')}
+            onClick={() => onChange(tab.value)}
+          >
+            {Icon ? <Icon size={ICON_SIZE.sm} /> : null}
+            <span>{tab.label}</span>
+            {tab.ai && (
+              <Sparkles
+                size={ICON_SIZE.xs}
+                className="scan-text-toggle__ai-mark"
+                aria-hidden="true"
+              />
+            )}
+            {tab.badge && (
+              <span className="scan-text-toggle__badge">{tab.badge}</span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }

@@ -1589,10 +1589,12 @@ export function createActions(deps) {
       const doc = (targetCase.documents || []).find(d => d.id === documentId);
       if (!doc) return { success: false, error: `Документ ${documentId} не знайдено у справі` };
 
-      // Скоуп-гард: очистка ВИКЛЮЧНО для scanned (parent §СКОУП). searchable
-      // (DOCX/HTML/текстовий PDF) — поза функцією (уже чистий цифровий текст).
-      if (doc.documentNature !== 'scanned') {
-        return { success: false, skipped: true, reason: 'not_scanned', error: 'Очистка доступна лише для сканованих документів' };
+      // Скоуп-гард (V2-B, mode-залежний): 'clean' (Чистий) — ВИКЛЮЧНО scanned
+      // (прибирає OCR-сміття). 'digest' (Конспект) — універсальний (scanned +
+      // searchable: гарний searchable теж варто стиснути, parent §ТРИ РЕЖИМИ).
+      const wantMode = mode === 'clean' ? 'clean' : 'digest';
+      if (wantMode === 'clean' && doc.documentNature !== 'scanned') {
+        return { success: false, skipped: true, reason: 'not_scanned', error: 'Чистий доступний лише для сканованих документів' };
       }
 
       const apiKey = typeof getApiKey === 'function' ? getApiKey() : null;
@@ -1611,7 +1613,7 @@ export function createActions(deps) {
         caseData: targetCase,
         apiKey,
         module: MODULES.CASE_DOSSIER,
-        mode: mode === 'clean' ? 'clean' : 'digest',
+        mode: wantMode,
         billAsUserAction: true,
         ...driveDeps,
       });

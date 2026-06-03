@@ -41,7 +41,7 @@ vi.mock('../../src/services/ocr/claudeVision.js', () => ({ default: { name: 'cla
 vi.mock('../../src/services/ocr/pdfjsLocal.js', () => ({ default: { name: 'pdfjsLocal', canHandle: () => false, extract: vi.fn() } }));
 
 const {
-  getDocumentText, getCleanOrRawText, writeMarkdownArtifact,
+  getDocumentText, getCleanOrRawText, getVariantMarkdown, writeMarkdownArtifact,
 } = await import('../../src/services/ocrService.js');
 
 const SUB = { '02_ОБРОБЛЕНІ': 'folder02' };
@@ -132,5 +132,41 @@ describe('writeMarkdownArtifact — suffix-storage за mode', () => {
     await writeMarkdownArtifact({ id: 'drv_1', name: 'Скан.pdf', subFolders: SUB }, '# c', 'clean');
     expect(store.files.some((f) => f.name === 'Скан_drv_1.digest.md')).toBe(true);
     expect(store.files.some((f) => f.name === 'Скан_drv_1.clean.md')).toBe(true);
+  });
+});
+
+// V2-B — getVariantMarkdown: читач AI-варіанта за РЕЖИМОМ (в'ювер, вкладки).
+describe('getVariantMarkdown — варіант за режимом (V2-B)', () => {
+  const file = { id: 'drv_1', name: 'Скан.pdf', subFolders: SUB };
+
+  it("mode 'clean' → читає <base>_<id>.clean.md", async () => {
+    seedMd('clean.md', '# Чистий дослівний');
+    seedMd('digest.md', '# Конспект переказ');
+    const t = await getVariantMarkdown(file, 'clean');
+    expect(t).toBe('# Чистий дослівний');   // саме clean, не digest
+  });
+
+  it("mode 'digest' → читає <base>_<id>.digest.md", async () => {
+    seedMd('clean.md', '# Чистий дослівний');
+    seedMd('digest.md', '# Конспект переказ');
+    const t = await getVariantMarkdown(file, 'digest');
+    expect(t).toBe('# Конспект переказ');
+  });
+
+  it("mode 'digest' → legacy <base>_<id>.md теж читається як digest", async () => {
+    seedMd('md', '# Legacy дайджест');
+    const t = await getVariantMarkdown(file, 'digest');
+    expect(t).toBe('# Legacy дайджест');
+  });
+
+  it("mode 'clean' БЕЗ .clean.md (є лише legacy .md) → null (legacy ≠ Чистий)", async () => {
+    seedMd('md', '# Legacy дайджест');
+    const t = await getVariantMarkdown(file, 'clean');
+    expect(t).toBeNull();
+  });
+
+  it('варіант не згенеровано → null', async () => {
+    const t = await getVariantMarkdown(file, 'clean');
+    expect(t).toBeNull();
   });
 });

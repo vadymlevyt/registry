@@ -5,6 +5,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 vi.mock('../../src/services/ocrService.js', () => ({
   getCachedText: vi.fn().mockResolvedValue(null),
   getCleanOrRawText: vi.fn().mockResolvedValue(null),
+  getVariantMarkdown: vi.fn().mockResolvedValue(null),
+  getDocumentText: vi.fn().mockResolvedValue(''),
   getCachedLayout: vi.fn().mockResolvedValue(null),
   localizeOcrError: vi.fn(c => c),
 }));
@@ -59,9 +61,9 @@ describe('DocumentViewer workflow', () => {
     fireEvent.click(screen.getByLabelText('Ключовий документ'));
     expect(onUpdate).toHaveBeenCalledWith('doc_42', { isKey: true });
 
-    // 3. Перемикач на Текст → збереження в localStorage
-    fireEvent.click(screen.getByRole('tab', { name: /Текст/ }));
-    expect(localStorage.getItem('viewer_mode_doc_42')).toBe('text');
+    // 3. Перемикач на Конспект → збереження в localStorage (V2-B: digest)
+    fireEvent.click(screen.getByRole('tab', { name: /Конспект/ }));
+    expect(localStorage.getItem('viewer_mode_doc_42')).toBe('digest');
 
     // 4. Закриття
     fireEvent.click(screen.getByLabelText('Закрити'));

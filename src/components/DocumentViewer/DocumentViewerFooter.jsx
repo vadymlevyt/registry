@@ -1,17 +1,20 @@
-import { useState } from 'react';
-import { ExternalLink, Download, Copy, Share2, Bot, RefreshCw, Sparkles } from 'lucide-react';
+import { ExternalLink, Download, Copy, Share2, Bot, RefreshCw } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { toast } from '../../services/toast.js';
 import { driveRequest } from '../../services/driveAuth.js';
-import { getCachedText } from '../../services/ocrService.js';
+import { getDocumentText } from '../../services/ocrService.js';
 
 /**
- * Підвал Viewer'а — 6 дій. Перерозпізнати показуємо тільки для scanned.
+ * Підвал Viewer'а — 5 дій. Перерозпізнати показуємо тільки для scanned.
  * Поділитись — тільки якщо доступний Web Share API (мобільні / частина десктопів).
  *
- * Копіювати працює тільки в режимі text — в scan тексту немає (показуємо
- * підказку перейти в режим Текст).
+ * Копіювати активне у текстових режимах (Точний/Чистий/Конспект) — у «Скан»/
+ * «Документ» копіювати нема чого. Копіюємо ВІРНИЙ текст (getDocumentText, layout→
+ * .txt), НІКОЛИ не переказ-Конспект — для юр-цитат потрібен дослівний шар.
+ *
+ * V2-B: кнопку «Очистити документ» (3.2) прибрано — генерація Чистий/Конспект
+ * живе у вкладках перемикача (один шлях, правило #11).
  */
 export function DocumentViewerFooter({
   document,
@@ -19,24 +22,11 @@ export function DocumentViewerFooter({
   mode,
   onDiscussWithAgent,
   onReprocess,
-  onCleanText,
 }) {
   const isScanned = document.documentNature === 'scanned';
   const hasDrive = !!document.driveId;
-  // TASK 3.2 — «Очистити документ»: лише scanned + сирий (textFormat!=='md').
-  // searchable / вже очищені (.md) — поза скоупом, кнопки немає.
-  const canClean = isScanned && document.textFormat !== 'md' && hasDrive && typeof onCleanText === 'function';
-  const [cleaning, setCleaning] = useState(false);
-
-  const handleClean = async () => {
-    if (cleaning) return;
-    setCleaning(true);
-    try {
-      await onCleanText(document);
-    } finally {
-      setCleaning(false);
-    }
-  };
+  // У режимі «Скан»/«Документ» (value 'scan') тексту для копіювання немає.
+  const canCopy = mode !== 'scan';
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   const handleOpenInDrive = () => {
@@ -78,8 +68,8 @@ export function DocumentViewerFooter({
   };
 
   const handleCopy = async () => {
-    if (mode !== 'text') {
-      toast.info('Перейдіть у режим Текст щоб скопіювати вміст');
+    if (!canCopy) {
+      toast.info('Перейдіть у текстовий режим (Точний/Чистий/Конспект) щоб скопіювати вміст');
       return;
     }
     const subFolders = caseData?.storage?.subFolders;
@@ -88,13 +78,7 @@ export function DocumentViewerFooter({
       return;
     }
     try {
-      const file = {
-        id: document.driveId,
-        name: document.originalName || document.name,
-        mimeType: document.mimeType || 'application/pdf',
-        subFolders,
-      };
-      const text = await getCachedText(file);
+      const text = await getDocumentText(document, caseData);
       if (!text) {
         toast.info('Текст ще не розпізнано — спочатку запустіть розпізнавання');
         return;
@@ -159,7 +143,7 @@ export function DocumentViewerFooter({
         size="sm"
         icon={<Copy size={ICON_SIZE.sm} />}
         onClick={handleCopy}
-        disabled={mode !== 'text'}
+        disabled={!canCopy}
       >
         Копіювати
       </Button>
@@ -193,18 +177,6 @@ export function DocumentViewerFooter({
           disabled={!hasDrive}
         >
           Перерозпізнати
-        </Button>
-      )}
-
-      {canClean && (
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<Sparkles size={ICON_SIZE.sm} />}
-          onClick={handleClean}
-          disabled={cleaning}
-        >
-          {cleaning ? 'Очищаю…' : 'Очистити документ'}
         </Button>
       )}
     </footer>

@@ -9,6 +9,8 @@ const getCachedLayoutMock = vi.fn();
 vi.mock('../../src/services/ocrService.js', () => ({
   getCachedText: vi.fn().mockResolvedValue(null),
   getCleanOrRawText: vi.fn().mockResolvedValue(null),
+  getVariantMarkdown: vi.fn().mockResolvedValue(null),
+  getDocumentText: vi.fn().mockResolvedValue(''),
   getCachedLayout: (...args) => getCachedLayoutMock(...args),
   localizeOcrError: vi.fn(code => code),
 }));
@@ -68,9 +70,11 @@ describe('DocumentViewer — режим Точний (V2-A1)', () => {
     // Клік → рендер тексту з layout через MarkdownRenderer (дослівний зміст).
     fireEvent.click(exactTab);
     expect(await screen.findByText(/Позивач звертається до суду/)).toBeInTheDocument();
-    // Скан/Текст лишаються доступними.
+    // Скан + AI-режими доступні; «Текст» прибрано (V2-B).
     expect(screen.getByRole('tab', { name: /Скан/ })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Текст/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Чистий/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Конспект/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Текст$/ })).toBeNull();
   });
 
   it('searchable документ → проба layout не запускається, опції «Точний» немає', async () => {
@@ -99,7 +103,9 @@ describe('DocumentViewer — режим Точний (V2-A1)', () => {
     });
     expect(screen.queryByRole('tab', { name: /Точний/ })).toBeNull();
     expect(screen.getByRole('tab', { name: /Скан/ })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Текст/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Чистий/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Конспект/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Текст$/ })).toBeNull();
   });
 
   it('помилка getCachedLayout → опція прихована, в\'ювер не падає', async () => {

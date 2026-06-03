@@ -65,6 +65,7 @@ describe('DocumentViewerHeader', () => {
         document={{ ...baseDoc, documentNature: 'scanned' }}
         caseData={baseCase}
         showModeToggle
+        tabs={[{ value: 'scan', label: 'Скан' }, { value: 'digest', label: 'Конспект', ai: true }]}
         mode="scan"
         onModeChange={noop}
         onToggleKey={noop}

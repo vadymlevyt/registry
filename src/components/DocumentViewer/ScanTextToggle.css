@@ -33,6 +33,30 @@
   color: var(--color-accent);
 }
 
+/* AI-маркер (✨) — Чистий/Конспект. Приглушений, не конкурує з лейблом. */
+.scan-text-toggle__ai-mark {
+  color: var(--color-gold);
+  opacity: 0.85;
+}
+
+/* Незгенерований AI-таб — приглушений (натяк що контент ще треба створити). */
+.scan-text-toggle__option--ungenerated {
+  opacity: 0.7;
+}
+
+/* badge «переказ» на Конспекті — попередження «не дослівно». */
+.scan-text-toggle__badge {
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-3, var(--color-surface-2));
+  color: var(--color-text-3);
+  font-weight: var(--weight-medium);
+}
+
 @media (max-width: 768px) {
   .scan-text-toggle__option {
     min-height: 36px;
