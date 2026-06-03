@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FileText } from 'lucide-react';
+import { FileText, Image, AlignLeft, Wand2, ScrollText } from 'lucide-react';
 import { DocumentViewerHeader } from './DocumentViewerHeader.jsx';
 import { DocumentViewerContent } from './DocumentViewerContent.jsx';
 import { DocumentViewerFooter } from './DocumentViewerFooter.jsx';
@@ -13,22 +13,52 @@ const MODE_KEYS_INDEX = 'viewer_mode_index';
 const MODE_KEYS_LIMIT = 100;
 
 /**
+ * buildViewerTabs — набір вкладок перемикача за типом документа (V2-B).
+ *
+ *   scanned    → [ Скан ] [ Точний? ] [ Чистий ✨ ] [ Конспект ✨ ]
+ *   searchable → [ Документ ] [ Конспект ✨ ]
+ *
+ * «Точний» додається лише коли layout зібрався (exactReady) — як V2-A1.
+ * AI-вкладки (Чистий/Конспект) видимі ЗАВЖДИ; `ready` = чи вже згенеровано
+ * (document.variants[mode]) → визначає миттєвий показ .md vs заглушка
+ * «Згенерувати». badge «переказ» на Конспекті — позначка «не дослівно».
+ *
+ * Чистий — лише scanned (OCR-сміття). Конспект — універсальний (scanned +
+ * searchable: гарний searchable теж варто стиснути, parent §ТРИ РЕЖИМИ).
+ *
+ * @returns {Array<{ value, label, icon, ai?, badge?, ready? }>}
+ */
+export function buildViewerTabs({ isScanned, exactReady, variants }) {
+  const v = variants || {};
+  if (isScanned) {
+    const tabs = [{ value: 'scan', label: 'Скан', icon: Image }];
+    if (exactReady) tabs.push({ value: 'exact', label: 'Точний', icon: AlignLeft });
+    tabs.push({ value: 'clean', label: 'Чистий', icon: Wand2, ai: true, ready: !!v.clean });
+    tabs.push({ value: 'digest', label: 'Конспект', icon: ScrollText, ai: true, ready: !!v.digest, badge: 'переказ' });
+    return tabs;
+  }
+  return [
+    { value: 'scan', label: 'Документ', icon: FileText },
+    { value: 'digest', label: 'Конспект', icon: ScrollText, ai: true, ready: !!v.digest, badge: 'переказ' },
+  ];
+}
+
+/**
  * DocumentViewer — переглядач документа справи.
  *
- * Принцип за типом документа:
- *   - Searchable PDF (текст вже є у файлі) — iframe Drive без перемикача.
- *     Адвокат бачить оригінал з форматуванням, виділення/копіювання працюють
- *     нативно через Drive viewer. Окрема Текст-плашка не потрібна — текст є
- *     прямо в документі.
- *   - Scanned (PDF/image без текстового шару) — перемикач Скан/Текст. Скан
- *     показує iframe (PDF) або <img> (image). Текст — плашка з extracted
- *     text як робочий простір (адвокат не може виділяти на зображенні).
- *   - Searchable не-PDF (DOCX, TXT) — Текст-плашка (як було). Drive iframe
- *     для DOCX рендерить Google Docs preview — зміна поведінки відкладена
- *     на окремий мікро-TASK щоб не розширювати скоуп.
+ * Перемикач режимів (V2-B) — явні режими замість перехідного Скан/Точний/Текст:
+ *   - scanned: Скан (оригінал-зображення) / Точний (live layout, 0 токенів) /
+ *     Чистий (AI, дослівний, на вимогу) / Конспект (AI, переказ, на вимогу).
+ *   - searchable: Документ (нативний рендер: PDF/DOCX/...) / Конспект (AI).
+ *
+ * 🔴 Перемикання вкладок ЗАВЖДИ безпечне/безкоштовне. Клік по незгенерованому
+ * AI-табі лише показує заглушку з кнопкою «Згенерувати» — AI стартує ВИКЛЮЧНО
+ * по натисканню кнопки (захист від випадкових витрат). Згенерований таб —
+ * миттєвий показ збереженого .md без повторного AI.
  *
  * Контрольований компонент: батько (CaseDossier) тримає selectedDoc у власному
- * state і передає сюди + обробники подій.
+ * state і передає сюди + обробники подій. Генерація — `onGenerateVariant(doc,
+ * mode)` (батько кличе ACTION clean_document_text і оновлює document.variants).
  */
 export function DocumentViewer({
   document,
@@ -38,65 +68,69 @@ export function DocumentViewer({
   onOpenDetails,
   onDiscussWithAgent,
   onReprocess,
-  onCleanText,
+  onGenerateVariant,
   onDelete,
 }) {
-  const [mode, setMode] = useState(() => loadModePreference(document?.id));
+  // Обраний таб. null = «адвокат ще не вибирав» → застосовується дефолт
+  // (Точний для scanned з layout, інакше Скан/Документ). Окремо від дефолту
+  // щоб дефолт реактивно став Точним коли layout довантажиться.
+  const [selectedMode, setSelectedMode] = useState(() => loadModePreference(document?.id));
+  // Який AI-режим генерується зараз (null = жоден). Локальний UI-стан.
+  const [generatingMode, setGeneratingMode] = useState(null);
 
   // documentNature може бути не визначений на legacy-документах (до v5).
-  // У такому випадку визначаємо за іменем/mime: PDF/image → 'scanned',
-  // docx/txt → 'searchable'. Це дає valid UI поки фонова detection
-  // обновить поле через update_document.
   const inferred = inferNatureFromFile(document) || defaultNatureForUI(document);
   const effectiveNature = document?.documentNature || inferred;
   const isScanned = effectiveNature === 'scanned';
 
-  // isInlineRenderable — широка категорія "Drive iframe рендерить нативно":
-  // searchable PDF, Office (DOCX/XLSX/PPTX), OpenDocument, HTML/TXT/MD/RTF/CSV,
-  // Google Docs/Sheets/Slides. Для таких файлів перемикач Скан/Текст не
-  // потрібен — оригінал з форматуванням і нативним виділенням достатній.
-  // Деталі — у utils/documentTypes.js.
+  // isInlineRenderable — Drive/власний рендер показує оригінал нативно
+  // (searchable PDF, DOCX, HTML, ...). Для таких «Документ»-таб = цей рендер.
   const documentForInfer = document?.documentNature
     ? document
     : (document ? { ...document, documentNature: effectiveNature } : null);
   const inlineRenderable = isInlineRenderable(documentForInfer);
 
-  // Перемикач показуємо тільки для scanned (PDF без текстового шару, image) —
-  // там адвокат свідомо переключається між оригіналом-зображенням і
-  // OCR-текстовою копією.
-  const showModeToggle = !inlineRenderable && isScanned;
-
-  // V2-A1 — режим «Точний»: живий показ тексту скана з layout (КРОК 1
-  // cleanTextService, 0 токенів). Пробуємо layout ТІЛЬКИ коли перемикач
-  // показано (scanned, не inline). Опція «Точний» з'являється лише коли
-  // layout зібрався у непорожній Markdown (exact.status==='ready').
-  const exact = useExactLayout({ document, caseData, enabled: showModeToggle });
+  // V2-A1 — режим «Точний»: живий показ тексту скана з layout (0 токенів).
+  // Пробуємо layout ТІЛЬКИ для scanned не-inline документів.
+  const exactEnabled = isScanned && !inlineRenderable;
+  const exact = useExactLayout({ document, caseData, enabled: exactEnabled });
   const exactReady = exact.status === 'ready';
 
-  // Inline-renderable → завжди scan (iframe Drive). Scanned → за вибором адвоката.
-  // Інше (рідкісний випадок searchable не-inline) → text плашка як було.
-  // mode==='exact' доступний лише коли layout готовий — інакше відкочуємось на
-  // 'scan' (напр. збережена з минулого преференція exact, а layout зник).
-  let effectiveMode = inlineRenderable
-    ? 'scan'
-    : (isScanned ? mode : 'text');
+  const tabs = buildViewerTabs({ isScanned, exactReady, variants: document?.variants });
+  const tabValues = tabs.map(t => t.value);
+
+  // Перемикач показуємо для будь-якого документа (≥2 режими завжди).
+  const showModeToggle = !!document;
+
+  // Дефолт-таб: scanned → Точний (якщо layout готовий), інакше Скан; searchable →
+  // Документ ('scan'). На AI-режим автоматично НЕ потрапляєш (parent §V2-B.2).
+  const defaultMode = isScanned ? (exactReady ? 'exact' : 'scan') : 'scan';
+
+  // Ефективний режим: збережений вибір якщо він валідний для поточного набору,
+  // інакше дефолт. exact доступний лише коли layout готовий.
+  let effectiveMode = (selectedMode && tabValues.includes(selectedMode))
+    ? selectedMode
+    : defaultMode;
   if (effectiveMode === 'exact' && !exactReady) effectiveMode = 'scan';
+
+  // Контент для таба «Скан»/«Документ»: scanned і inline-renderable → нативний
+  // рендер (ScanContent); рідкісний non-inline searchable → текстова плашка.
+  const documentRenderMode = (isScanned || inlineRenderable) ? 'scan' : 'text';
 
   useEffect(() => {
     if (!document?.id) return;
-    setMode(loadModePreference(document.id));
+    setSelectedMode(loadModePreference(document.id));
+    setGeneratingMode(null);
   }, [document?.id]);
 
   useEffect(() => {
-    if (isScanned && document?.id) {
-      saveModePreference(document.id, mode);
+    if (document?.id && selectedMode) {
+      saveModePreference(document.id, selectedMode);
     }
-  }, [mode, document?.id, isScanned]);
+  }, [selectedMode, document?.id]);
 
-  // Якщо documentNature відсутній (legacy <v5 або імпорт без класифікації),
-  // але швидка інференція дала впевнений результат — фіксуємо його через
-  // update_document. Глибока pdf-перевірка не запускається тут (важко без
-  // blob), тільки очевидні висновки за іменем/mimeType. Працює fire-and-forget.
+  // Якщо documentNature відсутній (legacy <v5) але інференція впевнена —
+  // фіксуємо через update_document (fire-and-forget).
   useEffect(() => {
     if (!document?.id || !onUpdate) return;
     if (document.documentNature === 'scanned' || document.documentNature === 'searchable') return;
@@ -120,7 +154,27 @@ export function DocumentViewer({
     onUpdate && onUpdate(document.id, { isKey: nextValue });
   };
 
-  // Для footer "Перерозпізнати" враховуємо ефективну природу.
+  // Перемикання вкладок — лише зміна вигляду. НІКОЛИ не запускає AI (parent
+  // §V2-B.2 — захист від випадкового кліку). Генерація — окремою кнопкою.
+  const handleModeChange = nextMode => {
+    setSelectedMode(nextMode);
+  };
+
+  // Генерація AI-варіанта на вимогу (свідомий клік кнопки «Згенерувати»).
+  // Кличе батьків onGenerateVariant (ACTION clean_document_text + оновлення
+  // document.variants). Поки генерується — спінер у тілі; на успіх батько
+  // оновлює variants → таб показує .md; на помилку — батько toast'ить, таб
+  // лишається у стані заглушки.
+  const handleGenerate = async genMode => {
+    if (generatingMode || typeof onGenerateVariant !== 'function') return;
+    setGeneratingMode(genMode);
+    try {
+      await onGenerateVariant(document, genMode);
+    } finally {
+      setGeneratingMode(null);
+    }
+  };
+
   const effectiveDoc = document?.documentNature
     ? document
     : { ...document, documentNature: effectiveNature };
@@ -131,9 +185,9 @@ export function DocumentViewer({
         document={document}
         caseData={caseData}
         showModeToggle={showModeToggle}
-        showExact={exactReady}
+        tabs={tabs}
         mode={effectiveMode}
-        onModeChange={setMode}
+        onModeChange={handleModeChange}
         onToggleKey={handleToggleKey}
         onOpenDetails={() => onOpenDetails && onOpenDetails(document.id)}
         onDelete={onDelete}
@@ -142,10 +196,14 @@ export function DocumentViewer({
       <DocumentViewerContent
         document={document}
         mode={effectiveMode}
+        documentRenderMode={documentRenderMode}
         caseData={caseData}
         onReprocess={onReprocess}
         exactMarkdown={exact.markdown}
         exactStatus={exact.status}
+        generating={generatingMode === effectiveMode}
+        onGenerate={handleGenerate}
+        canGenerate={typeof onGenerateVariant === 'function'}
       />
       <DocumentViewerFooter
         document={effectiveDoc}
@@ -153,7 +211,6 @@ export function DocumentViewer({
         mode={effectiveMode}
         onDiscussWithAgent={onDiscussWithAgent}
         onReprocess={onReprocess}
-        onCleanText={onCleanText}
       />
     </div>
   );
@@ -161,11 +218,11 @@ export function DocumentViewer({
 
 // Exported для прямих юніт-тестів LRU поведінки.
 export function loadModePreference(documentId) {
-  if (!documentId || typeof localStorage === 'undefined') return 'scan';
+  if (!documentId || typeof localStorage === 'undefined') return null;
   try {
-    return localStorage.getItem(`${MODE_KEY_PREFIX}${documentId}`) || 'scan';
+    return localStorage.getItem(`${MODE_KEY_PREFIX}${documentId}`) || null;
   } catch {
-    return 'scan';
+    return null;
   }
 }
 

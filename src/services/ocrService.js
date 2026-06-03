@@ -217,6 +217,34 @@ async function readDigestMarkdown(file) {
   return null;
 }
 
+// readCleanMarkdown — прочитати Чистий-варіант (<base>_<id>.clean.md). Повертає
+// string або null. На відміну від digest, legacy .md тут НЕ читаємо (Чистий —
+// новий режим V2-A2; legacy .md трактується виключно як digest, parent §A2.6).
+async function readCleanMarkdown(file) {
+  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (!subFolderId) return null;
+  try {
+    const matches = await listFolderFilesByName(subFolderId, markdownCacheFileName(file, 'clean'));
+    if (matches.length > 0) {
+      const text = await readDriveFileText(matches[0].id);
+      if (text != null) return text;
+    }
+  } catch { /* нижче null */ }
+  return null;
+}
+
+// getVariantMarkdown — публічний читач AI-варіанта очистки за РЕЖИМОМ (V2-B).
+// Один сенс (#11): «дай збережений .md саме цього режиму»:
+//   'clean'  → <base>_<id>.clean.md (Чистий, дослівний);
+//   'digest' → <base>_<id>.digest.md (Конспект; + legacy <base>_<id>.md).
+// Повертає string або null (варіант ще не згенеровано). Споживач — VariantContent
+// у в'ювері (вкладки Чистий/Конспект). НЕ змішувати з getCleanOrRawText
+// («найкращий читабельний текст») чи getDocumentText («вірний текст для агента») —
+// три різні питання, три імені.
+export async function getVariantMarkdown(file, mode) {
+  return mode === 'clean' ? readCleanMarkdown(file) : readDigestMarkdown(file);
+}
+
 // getCleanOrRawText — текст документа для viewer/читача (V2-A2). Порядок:
 // (1) Конспект (.digest.md / legacy .md) → format 'md'; (2) ВІРНИЙ текст —
 // layout (page._text) → .txt → format 'txt'. ОКРЕМЕ ім'я (НЕ розширюємо

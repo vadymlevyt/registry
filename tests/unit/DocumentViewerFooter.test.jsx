@@ -4,6 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 
 vi.mock('../../src/services/ocrService.js', () => ({
   getCachedText: vi.fn().mockResolvedValue(null),
+  getDocumentText: vi.fn().mockResolvedValue(''),
   localizeOcrError: vi.fn(code => code),
 }));
 vi.mock('../../src/services/driveAuth.js', () => ({

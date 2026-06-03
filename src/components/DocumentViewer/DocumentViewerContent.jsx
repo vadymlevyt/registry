@@ -1,12 +1,23 @@
 import { useEffect, useState } from 'react';
-import { FileText, RefreshCw, AlertTriangle } from 'lucide-react';
+import { FileText, RefreshCw, AlertTriangle, Sparkles } from 'lucide-react';
 import { Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
-import { getCleanOrRawText, localizeOcrError } from '../../services/ocrService.js';
+import { getCleanOrRawText, getVariantMarkdown, localizeOcrError } from '../../services/ocrService.js';
 import { PdfRenderer } from './PdfRenderer.jsx';
 import { DocxRenderer } from './DocxRenderer.jsx';
 import { HtmlRenderer } from './HtmlRenderer.jsx';
 import { MarkdownRenderer } from './MarkdownRenderer.jsx';
+
+// Людський лейбл AI-режиму (для заглушки/повідомлень).
+const VARIANT_LABELS = { clean: 'Чистий', digest: 'Конспект' };
+
+// Груба оцінка часу генерації за обсягом (~8 стор./хв Haiku-пачка). Лише для
+// підпису кнопки «~N хв» — не контракт, орієнтир для адвоката.
+function estimateMinutes(document) {
+  const pages = Number(document?.pageCount) || 0;
+  if (pages <= 0) return null;
+  return Math.max(1, Math.ceil(pages / 8));
+}
 
 /**
  * Контентна частина Viewer'а.
@@ -32,16 +43,36 @@ import { MarkdownRenderer } from './MarkdownRenderer.jsx';
 export function DocumentViewerContent({
   document,
   mode,
+  documentRenderMode = 'scan',
   caseData,
   onReprocess,
   exactMarkdown,
   exactStatus,
+  generating,
+  onGenerate,
+  canGenerate,
 }) {
+  // Таб «Скан»/«Документ» — нативний рендер оригіналу (scanned/inline) або
+  // текстова плашка (рідкісний non-inline searchable).
   if (mode === 'scan') {
-    return <ScanContent document={document} />;
+    return documentRenderMode === 'text'
+      ? <TextContent document={document} caseData={caseData} onReprocess={onReprocess} />
+      : <ScanContent document={document} />;
   }
   if (mode === 'exact') {
     return <ExactContent markdown={exactMarkdown} status={exactStatus} />;
+  }
+  if (mode === 'clean' || mode === 'digest') {
+    return (
+      <VariantContent
+        document={document}
+        caseData={caseData}
+        mode={mode}
+        generating={generating}
+        onGenerate={onGenerate}
+        canGenerate={canGenerate}
+      />
+    );
   }
   return (
     <TextContent
@@ -49,6 +80,162 @@ export function DocumentViewerContent({
       caseData={caseData}
       onReprocess={onReprocess}
     />
+  );
+}
+
+/**
+ * VariantContent — AI-режими Чистий (`.clean.md`) / Конспект (`.digest.md`).
+ *
+ * Три стани (V2-B.2/3):
+ *   1. generating — спінер «Очищаю...» (AI триває; прогрес-стрімінг — V2-B2).
+ *   2. не згенеровано (document.variants[mode] нема) — ЗАГЛУШКА з кнопкою
+ *      «Згенерувати ✨ (~N хв)». 🔴 AI стартує ВИКЛЮЧНО по цій кнопці, НЕ по
+ *      перемиканні таба (parent §V2-B.2).
+ *   3. готово — миттєвий показ збереженого .md через MarkdownRenderer, БЕЗ
+ *      повторного AI. Конспект несе badge «⚠ переказ, не дослівно».
+ */
+function VariantContent({ document, caseData, mode, generating, onGenerate, canGenerate }) {
+  const label = VARIANT_LABELS[mode] || 'Варіант';
+  const ready = !!(document?.variants && document.variants[mode]);
+
+  const [text, setText] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const variantStamp = document?.variants ? document.variants[mode] : null;
+
+  useEffect(() => {
+    // Поки генерується або ще не згенеровано — нічого не тягнемо.
+    if (generating || !ready) {
+      setText(null);
+      setLoading(false);
+      setError(null);
+      return undefined;
+    }
+    const subFolders = caseData?.storage?.subFolders;
+    if (!document.driveId || !subFolders?.['02_ОБРОБЛЕНІ']) {
+      setLoading(false);
+      setText(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setText(null);
+
+    const rawName = document.originalName || document.name || '';
+    const normalizedName = typeof rawName.normalize === 'function'
+      ? rawName.normalize('NFC')
+      : rawName;
+    const file = {
+      id: document.driveId,
+      name: normalizedName,
+      mimeType: document.mimeType || 'application/pdf',
+      subFolders,
+    };
+
+    getVariantMarkdown(file, mode)
+      .then(md => {
+        if (cancelled) return;
+        setText(md || null);
+        setLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setError(localizeOcrError(err.code) || err.message || 'Не вдалось завантажити варіант');
+        setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document.id, document.driveId, mode, ready, variantStamp, generating, caseData?.storage?.subFolders]);
+
+  if (generating) {
+    return (
+      <div className="document-viewer__loading">
+        <RefreshCw size={ICON_SIZE.md} />
+        <span>Очищаю…</span>
+      </div>
+    );
+  }
+
+  if (!ready) {
+    const minutes = estimateMinutes(document);
+    const hint = minutes ? `~${minutes} хв` : 'кілька хв';
+    return (
+      <div className="document-viewer__empty-state">
+        <Sparkles size={48} />
+        <p>{label} ще не створено</p>
+        <p className="document-viewer__empty-state-detail">
+          {mode === 'digest'
+            ? 'Стислий переказ для швидкого читання (AI). Не дослівно.'
+            : 'Дослівний текст без OCR-сміття (AI).'}
+        </p>
+        {canGenerate && (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Sparkles size={ICON_SIZE.sm} />}
+            onClick={() => onGenerate && onGenerate(mode)}
+          >
+            {`Згенерувати ✨ (${hint})`}
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="document-viewer__loading">
+        <RefreshCw size={ICON_SIZE.md} />
+        <span>Завантаження…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="document-viewer__empty-state">
+        <AlertTriangle size={48} />
+        <p>Не вдалось завантажити {label.toLowerCase()}</p>
+        <p className="document-viewer__empty-state-detail">{error}</p>
+      </div>
+    );
+  }
+
+  if (!text) {
+    return (
+      <div className="document-viewer__empty-state">
+        <FileText size={48} />
+        <p>Варіант недоступний</p>
+        <p className="document-viewer__empty-state-detail">
+          Файл варіанту не знайдено — спробуйте згенерувати заново.
+        </p>
+        {canGenerate && (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<Sparkles size={ICON_SIZE.sm} />}
+            onClick={() => onGenerate && onGenerate(mode)}
+          >
+            Згенерувати заново
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="document-viewer__content document-viewer__content--text">
+      {mode === 'digest' && (
+        <div className="document-viewer__variant-badge" role="note">
+          ⚠ переказ, не дослівно
+        </div>
+      )}
+      <MarkdownRenderer text={text} />
+    </div>
   );
 }
 

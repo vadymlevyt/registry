@@ -4,9 +4,12 @@
 // Three / #11): Document Processor (тумблер «Очистити для читання», 3.1),
 // кнопки ретроактивної очистки (3.2), мультивибір у реєстрі (3.3).
 //
-// Скоуп (наскрізний, перевірено по коду): ТІЛЬКИ documentNature==='scanned'
-// (скани/фото через Document AI — мають layout). searchable (DOCX/HTML/
-// текстовий PDF) — ПОВНІСТЮ ПОЗА функцією: у них уже чистий цифровий текст.
+// Скоуп (V2-B, mode-залежний): режим 'clean' (Чистий) — ТІЛЬКИ
+// documentNature==='scanned' (скани/фото через Document AI — мають OCR-сміття).
+// Режим 'digest' (Конспект) — УНІВЕРСАЛЬНИЙ (scanned + searchable): гарно
+// написаний searchable (DOCX/HTML/текстовий PDF) теж варто стиснути для читання
+// (parent §ТРИ РЕЖИМИ). Скоуп-гард у КРОЦІ 3 (cleanDocument) пропускає 'clean'
+// для не-scanned як skipped.
 //
 // Архітектура — 3-кроковий гібрид (mermaid flow_clean_text.md):
 //   КРОК 1 — layoutToMarkdownDraft: детермінований конденсатор (0 токенів AI).
@@ -512,8 +515,12 @@ export async function cleanDocument({
     return { ok: false, error: 'NO_DOCUMENT' };
   }
 
-  // 0. СКОУП-ГАРД — тільки scanned. searchable повністю поза функцією.
-  if (document.documentNature !== 'scanned') {
+  // 0. СКОУП-ГАРД (V2-B, mode-залежний): 'clean' (Чистий) — ТІЛЬКИ scanned
+  //    (прибирає OCR-сміття; у searchable його нема). 'digest' (Конспект) —
+  //    УНІВЕРСАЛЬНИЙ (parent §ТРИ РЕЖИМИ: гарно написаний searchable теж варто
+  //    стиснути для читання). Джерело searchable-digest — fetchRawText (layout
+  //    нема → .txt через getDocumentText в адаптері).
+  if (mode !== 'digest' && document.documentNature !== 'scanned') {
     return { ok: false, skipped: true, reason: 'not_scanned' };
   }
 

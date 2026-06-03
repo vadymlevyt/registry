@@ -13,14 +13,15 @@ import {
 /**
  * Шапка Viewer'а: перемикач режиму, назва, метарядок, кнопки керування.
  *
- * showModeToggle=true тільки для scanned документів — у searchable PDF немає
- * сенсу показувати картинку, тому одразу режим Текст.
+ * showModeToggle=true → показати перемикач режимів (V2-B). Набір вкладок
+ * приходить готовим у `tabs` (DocumentViewer рахує за documentNature + layout +
+ * variants). Шапка нічого не знає про режими — лише прокидає tabs у перемикач.
  */
 export function DocumentViewerHeader({
   document,
   caseData,
   showModeToggle,
-  showExact = false,
+  tabs = [],
   mode,
   onModeChange,
   onToggleKey,
@@ -34,7 +35,7 @@ export function DocumentViewerHeader({
     <header className="document-viewer__header">
       <div className="document-viewer__header-row">
         {showModeToggle && (
-          <ScanTextToggle mode={mode} onChange={onModeChange} showExact={showExact} />
+          <ScanTextToggle tabs={tabs} mode={mode} onChange={onModeChange} />
         )}
 
         <h2 className="document-viewer__title" title={document.name}>

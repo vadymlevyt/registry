@@ -162,12 +162,14 @@ describe('adapter + ядро персиститься у .md за суфіксо
     );
   });
 
-  it('searchable документ → скоуп-гард: нічого не пишеться', async () => {
+  it('searchable + clean → скоуп-гард (V2-B): нічого не пишеться', async () => {
+    // Чистий (clean) лишається scanned-only. Конспект (digest) для searchable —
+    // окремий шлях (див. cleanTextService/clean_document_text тести).
     const ocr = ocrStub();
     const executeAction = vi.fn();
     const driveDeps = buildCleanDocumentDriveDeps({ executeAction, agentId: 'dossier_agent', ocrService: ocr, documentsExtended: { setExtendedForDocument: vi.fn() } });
     const r = await cleanDocument({
-      document: { ...scannedDoc, documentNature: 'searchable' }, caseData, apiKey: 'k',
+      document: { ...scannedDoc, documentNature: 'searchable' }, caseData, apiKey: 'k', mode: 'clean',
       callAI: vi.fn(), resolveModel: () => 'h', logAiUsage: vi.fn(), activityTracker: { report: vi.fn() },
       ...driveDeps,
     });

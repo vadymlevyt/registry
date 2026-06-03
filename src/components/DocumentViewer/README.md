@@ -4,8 +4,10 @@
 
 ## Призначення
 
-- Показати документ (PDF / image / Office) через Drive iframe preview.
-- Перемикати між **Скан** (картинка) і **Текст** (OCR) — для сканованих документів.
+- Показати документ (PDF / image / Office) через власні рендери / Drive preview.
+- Перемикати **режими перегляду** (V2-B):
+  - scanned: **Скан** (картинка) / **Точний** (live layout, 0 токенів) / **Чистий ✨** (AI, дослівний) / **Конспект ✨** (AI, переказ).
+  - searchable: **Документ** (нативний рендер) / **Конспект ✨** (AI).
 - Швидкі дії над документом: відкрити в Drive, завантажити, копіювати, поділитись, обговорити з агентом, перерозпізнати.
 - Базові метадані одним рядком — категорія, автор, провадження, дата, к-ть сторінок, розмір.
 
@@ -26,12 +28,19 @@ import { DocumentViewer } from '@/components/DocumentViewer';
 | `onOpenDetails` | `(documentId) => void` | Відкрити панель деталей (TASK 11 — поки заглушка) |
 | `onDiscussWithAgent` | `(document) => void` | Передати документ в чат агента |
 | `onReprocess` | `(document) => void` | Перерозпізнати OCR (тільки для scanned) |
+| `onGenerateVariant` | `(document, mode) => Promise<result>` | Згенерувати AI-варіант `'clean'`/`'digest'` на вимогу (кнопка «Згенерувати» у вкладці) |
 
-## Логіка режимів Скан/Текст
+## Логіка режимів (V2-B)
 
-- `documentNature === 'scanned'` — перемикач видимий, дефолт `scan` (або з localStorage)
-- `documentNature === 'searchable'` — перемикач прихований, завжди `text`
-- Збереження вибору режиму на per-document рівні в `localStorage` (LRU 100 останніх)
+- Набір вкладок рахує `buildViewerTabs({ isScanned, exactReady, variants })`:
+  - scanned → `[Скан][Точний?][Чистий✨][Конспект✨]` (Точний — лише коли є layout).
+  - searchable → `[Документ][Конспект✨]`.
+- **Дефолт-таб:** scanned → Точний (якщо layout готовий), інакше Скан; searchable → Документ.
+  На AI-режим автоматично НЕ потрапляєш.
+- 🔴 **Перемикання вкладок НЕ запускає AI.** Незгенерований AI-таб (`variants[mode]` нема) →
+  заглушка з кнопкою «Згенерувати ✨». AI стартує ВИКЛЮЧНО по кнопці (→ `onGenerateVariant`).
+  Згенерований таб → миттєвий показ збереженого `.md` (`getVariantMarkdown`) без повторного AI.
+- Збереження вибору режиму per-document у `localStorage` (LRU 100 останніх).
 
 ## Залежності
 
@@ -50,9 +59,9 @@ DocumentViewer/
 ├── index.jsx                    — головний компонент
 ├── DocumentViewer.css           — стилі (BEM .document-viewer__*)
 ├── DocumentViewerHeader.jsx     — назва, метарядок, кнопки керування
-├── DocumentViewerContent.jsx    — Scan (iframe/img) і Text (OCR-кеш)
-├── DocumentViewerFooter.jsx     — 6 кнопок дій
-├── ScanTextToggle.jsx           — перемикач режиму
+├── DocumentViewerContent.jsx    — Scan/Документ, Точний, Чистий/Конспект (VariantContent)
+├── DocumentViewerFooter.jsx     — 5 кнопок дій
+├── ScanTextToggle.jsx           — перемикач режимів (tabs-driven)
 ├── ScanTextToggle.css
 └── labels.js                    — людські назви + утиліти форматування
 ```

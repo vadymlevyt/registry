@@ -62,14 +62,25 @@ describe('clean_document_text ACTION (TASK 3.2)', () => {
     expect(buildDepsSpy).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'dossier_agent' }));
   });
 
-  it('scanned-гард: searchable → skipped, ядро НЕ викликане', async () => {
+  it('гард (V2-B): clean + searchable → skipped, ядро НЕ викликане', async () => {
     const r = await h.executeAction('dossier_agent', 'clean_document_text', {
-      caseId: 'case_001', documentId: searchableDoc.id,
+      caseId: 'case_001', documentId: searchableDoc.id, mode: 'clean',
     });
     expect(r.success).toBe(false);
     expect(r.skipped).toBe(true);
     expect(r.reason).toBe('not_scanned');
     expect(cleanSpy).not.toHaveBeenCalled();
+  });
+
+  it('гард (V2-B): digest + searchable → НЕ skipped, ядро викликане з mode=digest', async () => {
+    // Конспект універсальний — searchable допускається (parent §ТРИ РЕЖИМИ).
+    const r = await h.executeAction('dossier_agent', 'clean_document_text', {
+      caseId: 'case_001', documentId: searchableDoc.id, mode: 'digest',
+    });
+    expect(r.success).toBe(true);
+    expect(cleanSpy).toHaveBeenCalledTimes(1);
+    expect(cleanSpy.mock.calls[0][0].mode).toBe('digest');
+    expect(cleanSpy.mock.calls[0][0].document.id).toBe(searchableDoc.id);
   });
 
   it('PERMISSIONS: document_processor_agent не має дозволу → blocked', async () => {

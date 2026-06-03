@@ -38,7 +38,10 @@ export function buildCleanDocumentDriveDeps({
 } = {}) {
   return {
     fetchLayout: (document, caseData) => ocrService.getCachedLayout(fileFor(document, caseData)),
-    fetchRawText: (document, caseData) => ocrService.getCachedText(fileFor(document, caseData)),
+    // fetchRawText — ВІРНИЙ текст (no-layout fallback ядра): для scanned без
+    // layout і для searchable-Конспекту (V2-B). getDocumentText робить layout→.txt
+    // (хелпер, parent §ДЖЕРЕЛО ТЕКСТУ) — searchable дістає свій .txt, не Конспект.
+    fetchRawText: (document, caseData) => ocrService.getDocumentText(document, caseData),
     saveMarkdown: (document, caseData, markdown, mode) => ocrService.writeMarkdownArtifact(fileFor(document, caseData), markdown, mode),
     updateDocumentMeta: async (document, caseData, meta) => {
       const caseId = caseData?.id || null;
