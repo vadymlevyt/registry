@@ -44,7 +44,8 @@ export const CLEAN_TEXT_SERVICE_VERSION = '2.0';
 // Дефолтна модель — Haiku (структурна задача, дешева). agentType 'textCleaner'
 // у SYSTEM_DEFAULTS (modelResolver). logAiUsage пише agentType 'text_cleaner'
 // (snake_case — як решта context-у ai_usage[]).
-const TEXT_CLEANER_AGENT = 'textCleaner';
+const TEXT_CLEANER_AGENT = 'textCleaner';   // модель для Чистого (verbatim)
+const TEXT_DIGEST_AGENT = 'textDigest';     // модель для Конспекту (per-mode шов — див. resolveModel у polishToMarkdown)
 const TEXT_CLEANER_USAGE_AGENT = 'text_cleaner';
 const FALLBACK_MODEL = 'claude-haiku-4-5-20251001';
 
@@ -333,7 +334,7 @@ function buildVerbatimPrompt(draft, fileName) {
 5. НЕ міняй особу, рід чи відмінок: «я» лишається «я», «не користувалась» лишається «не користувалась» (НЕ «позивач не користувався»).
 6. ЗБЕРІГАЙ АЛФАВІТ — НЕ транслітеруй, НЕ романізуй. Український/російський текст лишається КИРИЛИЦЕЮ дослівно. НЕ «Prokuror» замість «Прокурор», НЕ «vul.» замість «вул.», НЕ «rozglyanuvshi» замість «розглянувши». Латиницею лишається ЛИШЕ те, що в ОРИГІНАЛІ латиницею (email, домен, латинські назви/моделі авто тощо).
 7. Якщо щось привернуло увагу (дивне формулювання, ймовірна OCR-помилка) — НЕ виправляй, а відміть у attentionNotes. Документ лишається дослівно як є.
-8. Поверни ВЕСЬ текст. Краще лишити сумнівний фрагмент як є, ніж «покращити» його.
+8. Поверни ВЕСЬ текст — ЖОДНЕ потенційно змістовне слово НЕ зникає. Якщо OCR висмикнув фрагмент не на місце (висить окремим рядком: напр. «зникнення, знищення», «КВ. 21.», «р.н.») — встав його у найімовірніше правильне місце (це виправлення OCR), АЛЕ НЕ ВИКИДАЙ. Якщо не знаєш куди вставити — лиши на місці і познач у attentionNotes. Краще лишити сумнівний фрагмент, ніж «покращити» чи видалити його.
 
 Мета: той самий документ КИРИЛИЦЕЮ, лише без сміття розпізнавання — БЕЗ доданих заголовків/секцій, БЕЗ транслітерації, БЕЗ переказу. Якщо вагаєшся — лишай як в оригіналі.
 
@@ -391,7 +392,12 @@ export async function polishToMarkdown({
     return { markdown: '', attentionNotes: [], warning: 'Порожня чернетка', usage: null, truncated: false };
   }
 
-  const model = resolveModel(TEXT_CLEANER_AGENT) || FALLBACK_MODEL;
+  // ШОВ моделі per-mode (planka Picatinny): Чистий і Конспект резолвлять модель
+  // НЕЗАЛЕЖНО через ієрархію modelResolver (user→tenant→system). Зараз обидва =
+  // Haiku (SYSTEM_DEFAULTS). Майбутнє «Sonnet на Конспект, Haiku на Чистий» —
+  // СУТО конфіг (modelPreferences.textDigest), без зміни коду. Борг: UI вибору моделі.
+  const modelAgent = mode === 'clean' ? TEXT_CLEANER_AGENT : TEXT_DIGEST_AGENT;
+  const model = resolveModel(modelAgent) || FALLBACK_MODEL;
   // max_tokens: переданий caller'ом (пачка) або оцінений від чернетки; стеля 64K.
   const max_tokens = Math.min(
     HAIKU_MAX_OUTPUT_TOKENS,

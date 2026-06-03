@@ -41,6 +41,12 @@ export const SYSTEM_DEFAULTS = {
   // Консервативний промпт (НЕ міняє юридичний зміст). Готова точка ієрархії
   // user → tenant → system.
   textCleaner: 'claude-haiku-4-5-20251001',
+
+  // textDigest — модель для Конспекту (clean_text v2, режим 'digest'). ОКРЕМИЙ
+  // ключ від textCleaner (Чистий) — режими резолвлять модель НЕЗАЛЕЖНО (per-mode
+  // шов). Зараз Haiku; кандидат на Sonnet (структурна/творча задача — де інтелект
+  // цінний), що вмикається СУТО конфігом modelPreferences.textDigest, без коду.
+  textDigest: 'claude-haiku-4-5-20251001',
 };
 
 const FALLBACK_MODEL = 'claude-sonnet-4-20250514';
