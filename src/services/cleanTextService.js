@@ -406,13 +406,22 @@ export async function polishToMarkdown({
     maxTokens || maxTokensForEstimate(estimateTokens(draftStr)),
   );
 
+  // requestTimeoutMs під обсяг ВИВОДУ: дефолт callAPIWithRetry — 120с, замало для
+  // clean_text (великий вивід генерується повільно — 8-стор. документ > 2 хв →
+  // AbortError «signal is aborted»). Рахуємо ~25 мс/вих.токен (консервативно ~40 ток/с)
+  // + 60с буфер, у межах [120с, 15хв]. Так одна спроба встигає догенерувати пачку.
+  const requestTimeoutMs = Math.min(
+    900000,
+    Math.max(120000, max_tokens * 25 + 60000),
+  );
+
   let res;
   try {
     res = await callAI({
       model,
       max_tokens,
       messages: [{ role: 'user', content: buildPromptForMode(draftStr, fileName, mode) }],
-    }, { apiKey });
+    }, { apiKey, requestTimeoutMs });
   } catch (err) {
     return {
       markdown: draftStr,
