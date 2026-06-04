@@ -80,8 +80,11 @@ describe('DP без пост-кроку: splitDocumentsV3 НЕ чистить т
 });
 
 // ── Part B — adapter + ядро над ocrService: .md за суфіксом, .layout/.txt цілі ─
+// V2-B2 «Спосіб C»: голий Markdown [+ роздільник + JSON-масив поміток].
 function aiJson(markdown, notes = []) {
-  return { content: [{ type: 'text', text: JSON.stringify({ markdown, attentionNotes: notes }) }], usage: { input_tokens: 1, output_tokens: 2 } };
+  let text = String(markdown);
+  if (notes && notes.length) text += `\n\n---ПОМІТКИ---\n${JSON.stringify(notes)}`;
+  return { content: [{ type: 'text', text }], usage: { input_tokens: 1, output_tokens: 2 } };
 }
 
 function ocrStub() {

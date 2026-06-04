@@ -50,6 +50,7 @@ export function DocumentViewerContent({
   exactMarkdown,
   exactStatus,
   generating,
+  streamingText,
   onGenerate,
   canGenerate,
   onLoadAttentionNotes,
@@ -72,6 +73,7 @@ export function DocumentViewerContent({
         caseData={caseData}
         mode={mode}
         generating={generating}
+        streamingText={streamingText}
         onGenerate={onGenerate}
         canGenerate={canGenerate}
         onLoadAttentionNotes={onLoadAttentionNotes}
@@ -99,7 +101,7 @@ export function DocumentViewerContent({
  *   3. готово — миттєвий показ збереженого .md через MarkdownRenderer, БЕЗ
  *      повторного AI. Конспект несе badge «⚠ переказ, не дослівно».
  */
-function VariantContent({ document, caseData, mode, generating, onGenerate, canGenerate, onLoadAttentionNotes, onRemoveAllMarks }) {
+function VariantContent({ document, caseData, mode, generating, streamingText, onGenerate, canGenerate, onLoadAttentionNotes, onRemoveAllMarks }) {
   const label = VARIANT_LABELS[mode] || 'Варіант';
   const ready = !!(document?.variants && document.variants[mode]);
   // Підсвітки уваги — ВИКЛЮЧНО Чистий (parent рішення; НЕ Конспект/Точний/Скан).
@@ -210,6 +212,19 @@ function VariantContent({ document, caseData, mode, generating, onGenerate, canG
   };
 
   if (generating) {
+    // V2-B2 — стрім: щойно з'явились перші токени, показуємо markdown що НАРОСТАЄ
+    // (throttled рендер вище за течією). Доки токенів нема — спінер «Очищаю…».
+    // Підсвітки/чип (V2-C) — лише на ФІНАЛЬНОМУ тексті (ready), не під час стріму.
+    if (streamingText && streamingText.trim()) {
+      return (
+        <div className="document-viewer__content document-viewer__content--text">
+          <div className="document-viewer__variant-badge document-viewer__variant-badge--streaming" role="status">
+            {`${label} генерується…`}
+          </div>
+          <MarkdownRenderer text={streamingText} />
+        </div>
+      );
+    }
     return (
       <div className="document-viewer__loading">
         <RefreshCw size={ICON_SIZE.md} />

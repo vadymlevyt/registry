@@ -10,6 +10,7 @@ import {
   layoutToMarkdownDraft,
   polishToMarkdown,
   cleanDocument,
+  streamingMarkdownView,
 } from '../../src/services/cleanTextService.js';
 
 // ── Хелпери побудови реального Document AI shape ─────────────────────────────
@@ -110,9 +111,19 @@ describe('КРОК 1 — layoutToMarkdownDraft (конденсатор, реал
 });
 
 // ── КРОК 2 — polishToMarkdown ───────────────────────────────────────────────
+// V2-B2 «Спосіб C»: модель віддає голий Markdown [+ роздільник + JSON-масив
+// поміток]. Хелпер будує саме такий вихід (раніше була JSON-обгортка).
+const ATTENTION_SEPARATOR = '---ПОМІТКИ---';
+function aiResponseText(markdown, attentionNotes = []) {
+  let text = String(markdown);
+  if (attentionNotes && attentionNotes.length) {
+    text += `\n\n${ATTENTION_SEPARATOR}\n${JSON.stringify(attentionNotes)}`;
+  }
+  return text;
+}
 function aiJsonResponse(markdown, attentionNotes = []) {
   return {
-    content: [{ type: 'text', text: JSON.stringify({ markdown, attentionNotes }) }],
+    content: [{ type: 'text', text: aiResponseText(markdown, attentionNotes) }],
     usage: { input_tokens: 100, output_tokens: 200 },
   };
 }
@@ -143,8 +154,8 @@ describe('КРОК 2 — polishToMarkdown (AI-поліш + C7)', () => {
     expect(d.callAI).not.toHaveBeenCalled();
   });
 
-  it('успіх: парсить JSON {markdown, attentionNotes} (форма {note}, без page — V2-C)', async () => {
-    // AI міг повернути legacy {page,note} — parse дропає page (форма {note}).
+  it('успіх (Спосіб C): markdown + роздільник + помітки; форма {note} без page (V2-C)', async () => {
+    // AI міг лишити legacy {page,note} у хвості — parse дропає page (форма {note}).
     const d = deps({ callAI: vi.fn(async () => aiJsonResponse('# Чисто', [{ page: 2, note: 'розбіжність' }])) });
     const r = await polishToMarkdown({ draft: 'сирий', apiKey: 'k', ...d });
     expect(r.markdown).toBe('# Чисто');
@@ -203,11 +214,14 @@ describe('КРОК 2 — polishToMarkdown (AI-поліш + C7)', () => {
     expect(r.warning).toMatch(/не вдалась/);
   });
 
-  it('AI повернув не-JSON непорожнє → беремо як plain + warning', async () => {
-    const d = deps({ callAI: vi.fn(async () => ({ content: [{ type: 'text', text: 'просто текст без json' }], usage: {} })) });
+  it('Спосіб C: вихід без роздільника → весь текст = markdown, нотатки [] (graceful)', async () => {
+    // Модель не поставила роздільник (digest або певний Чистий) → весь вивід —
+    // готовий markdown; вірність тексту збережена, без warning.
+    const d = deps({ callAI: vi.fn(async () => ({ content: [{ type: 'text', text: '# Документ\n\nтіло без роздільника' }], usage: {} })) });
     const r = await polishToMarkdown({ draft: 'd', apiKey: 'k', ...d });
-    expect(r.markdown).toBe('просто текст без json');
-    expect(r.warning).toMatch(/не-JSON/);
+    expect(r.markdown).toBe('# Документ\n\nтіло без роздільника');
+    expect(r.attentionNotes).toEqual([]);
+    expect(r.warning).toBeNull();
   });
 
   // ── РЕЖИМИ ПРОМТУ (V2-A2) ─────────────────────────────────────────────────
@@ -417,5 +431,97 @@ describe('КРОК 3 — cleanDocument (оркестрація)', () => {
   it('документ відсутній → NO_DOCUMENT', async () => {
     const r = await cleanDocument({ document: null, apiKey: 'k', ...orchDeps() });
     expect(r).toEqual({ ok: false, error: 'NO_DOCUMENT' });
+  });
+});
+
+// ── V2-B2 — стрім (Спосіб C) ─────────────────────────────────────────────────
+describe('V2-B2 — streamingMarkdownView (показ ДО роздільника)', () => {
+  it('без роздільника → весь текст', () => {
+    expect(streamingMarkdownView('# Текст\n\nабзац')).toBe('# Текст\n\nабзац');
+  });
+  it('ховає роздільник і JSON-хвіст поміток', () => {
+    expect(streamingMarkdownView('# Текст\n\n---ПОМІТКИ---\n[{"note":"x"}]')).toBe('# Текст');
+  });
+  it('гасить ХВОСТОВИЙ частковий роздільник (≥ «---П») під час потоку', () => {
+    expect(streamingMarkdownView('# Текст\n\n---ПОМІ')).toBe('# Текст');
+  });
+  it('плоский «---» (межа сторінок / лінія) НЕ обрізається', () => {
+    expect(streamingMarkdownView('# А\n\n---')).toBe('# А\n\n---');
+  });
+});
+
+describe('V2-B2 — polishToMarkdown (стрім opt-in)', () => {
+  it('onStreamDelta присутній → callAIStream (стрім), НЕ callAI; емітить markdown без JSON-хвоста', async () => {
+    const callAI = vi.fn();
+    const callAIStream = vi.fn(async (_params, opts) => {
+      // дельти приходять як raw-акумульований (markdown + початок хвоста).
+      opts.onDelta('# Чи', '# Чи');
+      opts.onDelta('сто', '# Чисто');
+      opts.onDelta('\n\n---ПОМІТКИ--', '# Чисто\n\n---ПОМІТКИ--');
+      return aiJsonResponse('# Чисто', [{ note: 'увага' }]);
+    });
+    const seen = [];
+    const r = await polishToMarkdown({
+      draft: 'd', apiKey: 'k', mode: 'clean',
+      onStreamDelta: (md) => seen.push(md),
+      callAI, callAIStream, resolveModel: () => 'm', logAiUsage: vi.fn(),
+    });
+    expect(callAIStream).toHaveBeenCalledTimes(1);
+    expect(callAI).not.toHaveBeenCalled();
+    expect(r.markdown).toBe('# Чисто');
+    expect(r.attentionNotes).toEqual([{ note: 'увага' }]);
+    // Хвостовий частковий роздільник у стрімі прихований (показуємо лише markdown).
+    expect(seen).toEqual(['# Чи', '# Чисто', '# Чисто']);
+    // idleTimeoutMs передається у стрім (не total-timeout).
+    expect(callAIStream.mock.calls[0][1]).toHaveProperty('idleTimeoutMs');
+  });
+
+  it('без onStreamDelta → callAI (нестрімовий), callAIStream НЕ чіпається', async () => {
+    const callAI = vi.fn(async () => aiJsonResponse('# Готово'));
+    const callAIStream = vi.fn();
+    await polishToMarkdown({ draft: 'd', apiKey: 'k', callAI, callAIStream, resolveModel: () => 'm', logAiUsage: vi.fn() });
+    expect(callAI).toHaveBeenCalledTimes(1);
+    expect(callAIStream).not.toHaveBeenCalled();
+    // нестрімовий шлях передає requestTimeoutMs (total), НЕ idleTimeoutMs.
+    expect(callAI.mock.calls[0][1]).toHaveProperty('requestTimeoutMs');
+  });
+});
+
+describe('V2-B2 — cleanDocument (стрім між пачками)', () => {
+  it('onStreamDelta акумулює markdown готових пачок + живої пачки', async () => {
+    const bigPage = (n) => ({ _text: `с${n} `.padEnd(30000, 'я'), blocks: [block(0.1, 0.4, 0.9, 0.5)] });
+    let call = 0;
+    const callAIStream = vi.fn(async (_params, opts) => {
+      call += 1;
+      opts.onDelta(`# П${call}`, `# П${call}`);
+      return aiJsonResponse(`# П${call}`);
+    });
+    const d = orchDeps({ callAIStream, fetchLayout: vi.fn(async () => ({ pages: [bigPage(1), bigPage(2)] })) });
+    const seen = [];
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', onStreamDelta: (md) => seen.push(md), ...d });
+    expect(r.ok).toBe(true);
+    expect(callAIStream.mock.calls.length).toBeGreaterThanOrEqual(2);   // стрім на КОЖНУ пачку
+    // остання емісія несе ОБИДВІ пачки, склеєні роздільником сторінки.
+    const last = seen[seen.length - 1];
+    expect(last).toContain('# П1');
+    expect(last).toContain('# П2');
+    expect(last).toContain('---');
+  });
+
+  it('без onStreamDelta → нестрімовий callAI, callAIStream НЕ викликається', async () => {
+    const callAIStream = vi.fn();
+    const d = orchDeps({ callAIStream });
+    await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', ...d });
+    expect(callAIStream).not.toHaveBeenCalled();
+    expect(d.callAI).toHaveBeenCalled();
+  });
+
+  it('долі артефактів незмінні: повний успіх через стрім → .md збережено', async () => {
+    const callAIStream = vi.fn(async (_params, opts) => { opts.onDelta('# Готово', '# Готово'); return aiJsonResponse('# Готово'); });
+    const d = orchDeps({ callAIStream });
+    const r = await cleanDocument({ document: scannedDoc, caseData: { id: 'c' }, apiKey: 'k', onStreamDelta: () => {}, ...d });
+    expect(r.ok).toBe(true);
+    expect(d.saveMarkdown).toHaveBeenCalledTimes(1);
+    expect(d.updateDocumentMeta).toHaveBeenCalledTimes(1);
   });
 });

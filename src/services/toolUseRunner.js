@@ -443,6 +443,263 @@ export async function callAPIWithRetry(params, options = {}) {
   throw new Error('callAPIWithRetry: unexpected end');
 }
 
+// ── createSSEAccumulator — чистий парсер Anthropic SSE-стріму ────────────────
+//
+// V2-B2 (стрімінг clean_text). Приймає ДЕКОДОВАНІ рядки через .push(chunkStr) і
+// тримає акумульований текст + usage + stop_reason. БЕЗ I/O — щоб юніт-тест міг
+// годувати шматки з ДОВІЛЬНИМИ межами (SSE-подія розрізана між мережевими
+// читаннями). Anthropic SSE: рядки `event: <type>` (ігноруємо) і `data: <json>`
+// (єдине джерело — json несе свій `type`). Неповний рядок (без \n) лишається у
+// буфері до наступного push.
+//
+// Один сенс (#11): акумулятор лише СКЛАДАЄ потік у текст; рішення про показ/
+// парсинг markdown — на споживачі (cleanTextService).
+export function createSSEAccumulator() {
+  let buffer = '';
+  let text = '';
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let stopReason = null;
+  let done = false;
+
+  // Обробити одну SSE-подію; повертає text-фрагмент або null.
+  function handleEvent(evt) {
+    if (!evt || typeof evt !== 'object') return null;
+    switch (evt.type) {
+      case 'message_start':
+        if (evt.message && evt.message.usage) {
+          inputTokens = evt.message.usage.input_tokens || inputTokens;
+          outputTokens = evt.message.usage.output_tokens || outputTokens;
+        }
+        return null;
+      case 'content_block_delta':
+        if (evt.delta && evt.delta.type === 'text_delta' && typeof evt.delta.text === 'string') {
+          return evt.delta.text;
+        }
+        return null;
+      case 'message_delta':
+        if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.usage && evt.usage.output_tokens != null) outputTokens = evt.usage.output_tokens;
+        return null;
+      case 'message_stop':
+        done = true;
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  return {
+    // push(chunkStr) → масив text-фрагментів цього шматка (порядок збережено).
+    push(chunk) {
+      buffer += String(chunk == null ? '' : chunk);
+      const deltas = [];
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('event:') || trimmed.startsWith(':')) continue;
+        if (!trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (!dataStr) continue;
+        if (dataStr === '[DONE]') { done = true; continue; }
+        let evt;
+        try { evt = JSON.parse(dataStr); } catch { continue; }
+        const piece = handleEvent(evt);
+        if (piece) { text += piece; deltas.push(piece); }
+      }
+      return deltas;
+    },
+    get text() { return text; },
+    snapshot() {
+      return {
+        text,
+        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        stop_reason: stopReason,
+        done,
+      };
+    },
+  };
+}
+
+// ── callAPIStreaming — стрімовий шлях (OPT-IN, лише clean_text) ──────────────
+//
+// V2-B2. ОКРЕМА від callAPIWithRetry функція — нестрімовий шлях інших споживачів
+// (triage, contextGenerator…) НЕ зачеплено. Відмінності від callAPIWithRetry:
+//   • body отримує stream:true; відповідь читається як SSE (createSSEAccumulator);
+//   • IDLE-timeout замість TOTAL: лічильник скидається на КОЖНІЙ дельті, тож
+//     довга, але активна генерація НЕ абортиться; idleTimeoutMs тиші (без жодного
+//     токена) = controller.abort() → транзитивно → backoff+retry;
+//   • ретрай ПАЧКИ з нуля при обриві: часткове ВІДКИДАЄТЬСЯ (новий акумулятор
+//     щоспроби), половинки не склеюються.
+// Повертає той самий shape, що callAPIWithRetry: { content:[{type:'text',text}],
+// usage, stop_reason } — downstream-парсинг ідентичний.
+//
+// onDelta(chunkText, accumulatedText) — викликається по мірі надходження токенів
+// (помилка консумера не валить стрім).
+export async function callAPIStreaming(params, options = {}) {
+  const {
+    apiKey,
+    apiUrl = 'https://api.anthropic.com/v1/messages',
+    maxRetries = 5,
+    initialDelayMs = 1500,
+    maxDelayMs = 20000,
+    // idleTimeoutMs — макс. ПАУЗА між токенами (НЕ загальний час запиту). Активна
+    // генерація скидає лічильник на кожній дельті; idleTimeoutMs тиші = abort.
+    idleTimeoutMs = 60000,
+    onDelta,
+  } = options;
+
+  if (!apiKey) {
+    const e = new Error('Немає API ключа');
+    e.userMessage = 'Перевірте API ключ Claude в налаштуваннях.';
+    throw e;
+  }
+
+  let lastError = null;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const controller = new AbortController();
+    let idleTimer = null;
+    let idleAborted = false;
+    const clearIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
+    const resetIdle = () => {
+      clearIdle();
+      idleTimer = setTimeout(() => { idleAborted = true; controller.abort(); }, idleTimeoutMs);
+    };
+
+    let response;
+    try {
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({ ...params, stream: true }),
+        signal: controller.signal,
+      });
+    } catch (networkErr) {
+      // Початковий конект не вдався (мережа) → backoff+retry.
+      lastError = networkErr;
+      console.warn(`[callAPIStreaming] connect error attempt ${attempt + 1}/${maxRetries}:`, networkErr?.message);
+      if (attempt === maxRetries - 1) {
+        const e = new Error('Network error: ' + (networkErr?.message || ''));
+        e.userMessage = 'Не вдалось зв\'язатись з агентом. Перевірте інтернет і спробуйте ще раз.';
+        e.cause = networkErr;
+        throw e;
+      }
+      await sleep(backoffDelay(attempt, initialDelayMs, maxDelayMs));
+      continue;
+    }
+
+    if (!response.ok) {
+      const status = response.status;
+      let errBody = '';
+      try { errBody = await response.text(); } catch {}
+
+      if (status === 401 || status === 403) {
+        const e = new Error(`Auth error ${status}: ${errBody.slice(0, 200)}`);
+        e.userMessage = 'Перевірте API ключ Claude в налаштуваннях.';
+        e.status = status;
+        throw e;
+      }
+      if (status === 400) {
+        const e = new Error(`Bad request ${status}: ${errBody.slice(0, 300)}`);
+        e.userMessage = 'Агент отримав некоректні дані. Спробуйте сформулювати запит інакше.';
+        e.status = status;
+        throw e;
+      }
+      if (status === 429 || status >= 500) {
+        lastError = new Error(`HTTP ${status}: ${errBody.slice(0, 200)}`);
+        lastError.status = status;
+        console.warn(`[callAPIStreaming] retryable status ${status} attempt ${attempt + 1}/${maxRetries}`);
+        if (attempt === maxRetries - 1) {
+          const e = new Error(lastError.message);
+          e.status = status;
+          e.userMessage = status === 429
+            ? 'Забагато запитів за короткий час. Спробуйте через хвилину.'
+            : 'Сервіс агента тимчасово недоступний. Спробуйте через хвилину.';
+          throw e;
+        }
+        let delayMs = backoffDelay(attempt, initialDelayMs, maxDelayMs);
+        if (status === 429) {
+          const ra = parseRetryAfter(response.headers);
+          if (ra != null) delayMs = Math.min(Math.max(ra, 1000), maxDelayMs);
+        }
+        await sleep(delayMs);
+        continue;
+      }
+
+      const e = new Error(`HTTP ${status}: ${errBody.slice(0, 200)}`);
+      e.status = status;
+      e.userMessage = `Помилка сервісу (${status}). Спробуйте ще раз.`;
+      throw e;
+    }
+
+    // ── Читання SSE-тіла ──────────────────────────────────────────────────
+    const reader = response.body && typeof response.body.getReader === 'function'
+      ? response.body.getReader()
+      : null;
+    if (!reader) {
+      const e = new Error('Стрім недоступний: порожнє тіло відповіді');
+      e.userMessage = 'Сервіс агента повернув некоректну відповідь. Спробуйте ще раз.';
+      throw e;
+    }
+
+    const acc = createSSEAccumulator();
+    const decoder = new TextDecoder('utf-8');
+    let streamErr = null;
+    resetIdle();
+    try {
+      while (true) {
+        const { done: rdDone, value } = await reader.read();
+        if (rdDone) break;
+        resetIdle();   // токен прийшов → скидаємо лічильник тиші
+        const chunkStr = typeof value === 'string'
+          ? value
+          : decoder.decode(value, { stream: true });
+        const deltas = acc.push(chunkStr);
+        if (deltas.length && typeof onDelta === 'function') {
+          try { onDelta(deltas.join(''), acc.text); } catch { /* консумер не валить стрім */ }
+        }
+      }
+    } catch (err) {
+      streamErr = err;   // включно з AbortError від idle-timeout
+    } finally {
+      clearIdle();
+    }
+
+    if (streamErr) {
+      // Обрив (мережа / idle-abort) → відкинути часткове, повторити ПАЧКУ з нуля.
+      lastError = idleAborted
+        ? Object.assign(new Error(`Стрім завмер (${idleTimeoutMs}мс без токенів)`), { idle: true })
+        : streamErr;
+      console.warn(`[callAPIStreaming] stream broke attempt ${attempt + 1}/${maxRetries}:`, lastError?.message);
+      if (attempt === maxRetries - 1) {
+        const e = new Error('Stream error: ' + (lastError?.message || ''));
+        e.userMessage = 'Зв\'язок з агентом обірвався під час генерації. Спробуйте ще раз.';
+        e.cause = lastError;
+        throw e;
+      }
+      await sleep(backoffDelay(attempt, initialDelayMs, maxDelayMs));
+      continue;
+    }
+
+    const snap = acc.snapshot();
+    return {
+      content: [{ type: 'text', text: snap.text }],
+      usage: snap.usage,
+      stop_reason: snap.stop_reason,
+    };
+  }
+
+  if (lastError) throw lastError;
+  throw new Error('callAPIStreaming: unexpected end');
+}
+
 // Exponential backoff з jitter (full jitter за рекомендацією AWS).
 // attempt=0 → ~initialDelay, attempt=1 → ~2x, attempt=2 → ~4x, ...
 // Jitter — щоб не синхронізувати retry між паралельними клієнтами.

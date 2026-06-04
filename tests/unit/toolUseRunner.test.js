@@ -6,6 +6,8 @@ import {
   runToolUse,
   runMultiTurnConversation,
   callAPIWithRetry,
+  callAPIStreaming,
+  createSSEAccumulator,
 } from '../../src/services/toolUseRunner.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -469,5 +471,172 @@ describe('callAPIWithRetry', () => {
     const result = await callAPIWithRetry({}, { apiKey: 'k', requestTimeoutMs: 50 });
     expect(result.id).toBe('ok');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── createSSEAccumulator (V2-B2 — чистий парсер SSE) ─────────────────────────
+describe('createSSEAccumulator', () => {
+  // Зібрати SSE-рядки з масиву подій (як шле Anthropic: event:+data:).
+  const sse = (events) => events
+    .map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`)
+    .join('');
+
+  it('акумулює text_delta у повний текст + usage + stop_reason', () => {
+    const acc = createSSEAccumulator();
+    acc.push(sse([{ type: 'message_start', message: { usage: { input_tokens: 10, output_tokens: 0 } } }]));
+    acc.push(sse([{ type: 'content_block_delta', delta: { type: 'text_delta', text: 'Привіт ' } }]));
+    acc.push(sse([{ type: 'content_block_delta', delta: { type: 'text_delta', text: 'світ' } }]));
+    acc.push(sse([{ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } }]));
+    acc.push(sse([{ type: 'message_stop' }]));
+    const s = acc.snapshot();
+    expect(s.text).toBe('Привіт світ');
+    expect(s.usage).toEqual({ input_tokens: 10, output_tokens: 5 });
+    expect(s.stop_reason).toBe('end_turn');
+    expect(s.done).toBe(true);
+  });
+
+  it('склеює подію, розрізану на межі мережевих шматків', () => {
+    const acc = createSSEAccumulator();
+    const full = sse([{ type: 'content_block_delta', delta: { type: 'text_delta', text: 'АБВ' } }]);
+    const mid = Math.floor(full.length / 2);
+    acc.push(full.slice(0, mid));
+    expect(acc.text).toBe('');           // подія ще не завершена (нема \n у хвості data)
+    const deltas = acc.push(full.slice(mid));
+    expect(acc.text).toBe('АБВ');
+    expect(deltas).toEqual(['АБВ']);
+  });
+
+  it('ігнорує event:-рядки і коментарі, парсить лише data:', () => {
+    const acc = createSSEAccumulator();
+    acc.push(': ping\n\n');
+    acc.push('event: content_block_delta\n');
+    acc.push('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"x"}}\n\n');
+    expect(acc.text).toBe('x');
+  });
+
+  it('ламаний JSON у data: ігнорується (не валить акумулятор)', () => {
+    const acc = createSSEAccumulator();
+    acc.push('data: {не json}\n\n');
+    acc.push(sse([{ type: 'content_block_delta', delta: { type: 'text_delta', text: 'ок' } }]));
+    expect(acc.text).toBe('ок');
+  });
+});
+
+// ── callAPIStreaming (V2-B2 — стрімовий шлях, OPT-IN) ───────────────────────
+describe('callAPIStreaming', () => {
+  // Хелпери побудови SSE-шматків.
+  const textChunk = (t) => `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: t } })}\n\n`;
+  const msgDeltaChunk = (stop, out) => `data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stop }, usage: { output_tokens: out } })}\n\n`;
+  const stopChunk = () => `data: ${JSON.stringify({ type: 'message_stop' })}\n\n`;
+
+  // Контрольований reader: видає chunks по черзі; hangAt → ніколи не резолвиться
+  // (тільки reject по signal.abort — для idle-timeout); throwAt → кидає (обрив).
+  function makeReader(chunks, { throwAt, hangAt, signal } = {}) {
+    let i = 0;
+    return {
+      read: () => new Promise((resolve, reject) => {
+        const idx = i;
+        if (hangAt != null && idx === hangAt) {
+          if (signal) signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+          return; // інакше ніколи не резолвиться
+        }
+        if (throwAt != null && idx === throwAt) { i++; reject(new Error('stream broke')); return; }
+        if (idx >= chunks.length) { resolve({ done: true, value: undefined }); return; }
+        i++;
+        resolve({ done: false, value: chunks[idx] });
+      }),
+    };
+  }
+  const streamResp = (chunks, opts) => ({
+    ok: true, status: 200, headers: new Headers(),
+    body: { getReader: () => makeReader(chunks, opts) },
+  });
+  const errResp = (status, body = 'err') => ({
+    ok: false, status, headers: new Headers(), text: async () => body,
+  });
+
+  it('happy: акумулює дельти у text, повертає shape callAPIWithRetry', async () => {
+    const fetchMock = vi.fn(async (_url, init) => streamResp(
+      [textChunk('А'), textChunk('Б'), msgDeltaChunk('end_turn', 7), stopChunk()],
+      { signal: init.signal },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const seen = [];
+    const r = await callAPIStreaming({ model: 'm' }, { apiKey: 'k', onDelta: (_c, acc) => seen.push(acc) });
+    expect(r.content[0].text).toBe('АБ');
+    expect(r.stop_reason).toBe('end_turn');
+    expect(r.usage.output_tokens).toBe(7);
+    expect(seen).toEqual(['А', 'АБ']);   // наростаючий акумульований текст
+    // body несе stream:true
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).stream).toBe(true);
+  });
+
+  it('idle-timeout: пауза без токенів → abort → ретрай ПАЧКИ з нуля', async () => {
+    let attempt = 0;
+    const fetchMock = vi.fn(async (_url, init) => {
+      attempt += 1;
+      if (attempt === 1) {
+        // один токен, далі завмирання → idle-timeout аборт.
+        return streamResp([textChunk('частк')], { hangAt: 1, signal: init.signal });
+      }
+      return streamResp([textChunk('Повний результат'), stopChunk()], { signal: init.signal });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await callAPIStreaming({ model: 'm' }, {
+      apiKey: 'k', idleTimeoutMs: 30, initialDelayMs: 1, maxDelayMs: 5, maxRetries: 3,
+    });
+    expect(attempt).toBe(2);
+    expect(r.content[0].text).toBe('Повний результат');   // часткове відкинуто
+  });
+
+  it('обрив стріму (reader кидає) → відкинути часткове, повторити з нуля', async () => {
+    let attempt = 0;
+    const fetchMock = vi.fn(async (_url, init) => {
+      attempt += 1;
+      if (attempt === 1) return streamResp([textChunk('половина')], { throwAt: 1, signal: init.signal });
+      return streamResp([textChunk('ціле'), stopChunk()], { signal: init.signal });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await callAPIStreaming({ model: 'm' }, { apiKey: 'k', initialDelayMs: 1, maxDelayMs: 5, maxRetries: 3 });
+    expect(attempt).toBe(2);
+    expect(r.content[0].text).toBe('ціле');   // НЕ «половинаціле» — половинки не склеюються
+  });
+
+  it('обрив на всіх спробах → userMessage', async () => {
+    const fetchMock = vi.fn(async (_url, init) => streamResp([textChunk('х')], { throwAt: 1, signal: init.signal }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(callAPIStreaming({ model: 'm' }, { apiKey: 'k', initialDelayMs: 1, maxDelayMs: 5, maxRetries: 2 }))
+      .rejects.toMatchObject({ userMessage: expect.stringMatching(/обірвався|ще раз/) });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('400 → не retry (детермінована помилка)', async () => {
+    const fetchMock = vi.fn(async () => errResp(400, 'bad'));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(callAPIStreaming({}, { apiKey: 'k' })).rejects.toMatchObject({ status: 400 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('429 → retry, потім успіх', async () => {
+    let attempt = 0;
+    const fetchMock = vi.fn(async (_url, init) => {
+      attempt += 1;
+      if (attempt === 1) return errResp(429, 'rate');
+      return streamResp([textChunk('ок'), stopChunk()], { signal: init.signal });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const r = await callAPIStreaming({}, { apiKey: 'k', initialDelayMs: 1, maxDelayMs: 5, maxRetries: 3 });
+    expect(r.content[0].text).toBe('ок');
+    expect(attempt).toBe(2);
+  });
+
+  it('відсутність apiKey → одразу userMessage без fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(callAPIStreaming({}, { apiKey: '' })).rejects.toMatchObject({ userMessage: expect.any(String) });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

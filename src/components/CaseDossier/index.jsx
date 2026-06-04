@@ -746,13 +746,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   // через adapter) — НУЛЬ дублювання. Кнопка «Згенерувати» сама є свідомим
   // кроком (підтвердження не потрібне, parent §V2-B.2). На успіх оновлюємо
   // selectedDoc.variants[mode] → таб показує свіжий .md. Toast-маппінг результату.
-  async function handleGenerateVariant(doc, mode) {
+  async function handleGenerateVariant(doc, mode, onStreamDelta) {
     if (!doc?.id) return { success: false, error: 'Документ не вибрано' };
     const wantMode = mode === 'clean' ? 'clean' : 'digest';
+    // V2-B2 — onStreamDelta (з в'ювера) прокидаємо у ACTION → ядро стрімить
+    // markdown що наростає. Функцію передаємо у params (UI-only, не tool-схема).
     const result = await onExecuteAction('dossier_agent', 'clean_document_text', {
       caseId: caseData.id,
       documentId: doc.id,
       mode: wantMode,
+      ...(typeof onStreamDelta === 'function' ? { onStreamDelta } : {}),
     });
     if (result?.success) {
       const cleanedAt = new Date().toISOString();

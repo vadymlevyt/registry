@@ -123,6 +123,32 @@ describe('DocumentViewer — генерація на вимогу (V2-B)', () =>
     expect(screen.getByRole('button', { name: /Згенерувати/ })).toBeInTheDocument();
   });
 
+  it('V2-B2: onStreamDelta доходить до в\'ювера → текст НАРОСТАЄ під час генерації', async () => {
+    let resolveGen;
+    function StreamHarness() {
+      const [doc, setDoc] = useState(scannedDoc);
+      // Імітує ACTION зі стрімом: емітить проміжний markdown, потім завершує.
+      const onGenerateVariant = async (d, mode, onStreamDelta) => {
+        onStreamDelta('# Початок');
+        await new Promise(r => { resolveGen = r; });
+        onStreamDelta('# Початок\n\nкінець');
+        setDoc(prev => ({ ...prev, variants: { ...prev.variants, [mode]: '2026-06-04T10:00:00Z' } }));
+        return { success: true };
+      };
+      return <DocumentViewer document={doc} caseData={baseCase} onGenerateVariant={onGenerateVariant} />;
+    }
+    render(<StreamHarness />);
+
+    fireEvent.click(screen.getByRole('tab', { name: /Конспект/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Згенерувати/ }));
+
+    // Стрім показує проміжний markdown (throttled — чекаємо flush).
+    expect(await screen.findByText(/Початок/)).toBeInTheDocument();
+    // Завершуємо генерацію → показ збереженого .md (getVariantMarkdown стаб).
+    resolveGen();
+    expect(await screen.findByText(/Конспект документа/)).toBeInTheDocument();
+  });
+
   it('згенерований варіант → перемикання показує .md БЕЗ повторного AI', async () => {
     const executeAction = vi.fn().mockResolvedValue({ success: true, attentionNotes: [] });
     const toast = { success: vi.fn(), warning: vi.fn(), error: vi.fn() };

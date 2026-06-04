@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileText, Image, AlignLeft, Wand2, ScrollText } from 'lucide-react';
 import { DocumentViewerHeader } from './DocumentViewerHeader.jsx';
 import { DocumentViewerContent } from './DocumentViewerContent.jsx';
@@ -11,6 +11,10 @@ import './DocumentViewer.css';
 const MODE_KEY_PREFIX = 'viewer_mode_';
 const MODE_KEYS_INDEX = 'viewer_mode_index';
 const MODE_KEYS_LIMIT = 100;
+
+// V2-B2 — throttle інкрементального рендеру стріму: НЕ ре-рендеримо весь Markdown
+// на кожен токен (перф). Оновлюємо стан не частіше за цей інтервал (мс).
+const STREAM_RENDER_THROTTLE_MS = 200;
 
 /**
  * buildViewerTabs — набір вкладок перемикача за типом документа (V2-B).
@@ -79,6 +83,12 @@ export function DocumentViewer({
   const [selectedMode, setSelectedMode] = useState(() => loadModePreference(document?.id));
   // Який AI-режим генерується зараз (null = жоден). Локальний UI-стан.
   const [generatingMode, setGeneratingMode] = useState(null);
+  // V2-B2 — markdown що НАРОСТАЄ під час стріму генерації (порожньо = ще нема
+  // токенів → спінер). Скидається на старті/завершенні генерації і зміні документа.
+  const [streamingText, setStreamingText] = useState('');
+  // Throttle: latest тримає останній стрім-markdown, timer — заплановане оновлення
+  // стану. Так MarkdownRenderer ре-рендериться не частіше STREAM_RENDER_THROTTLE_MS.
+  const streamRef = useRef({ latest: '', timer: null });
 
   // documentNature може бути не визначений на legacy-документах (до v5).
   const inferred = inferNatureFromFile(document) || defaultNatureForUI(document);
@@ -119,11 +129,35 @@ export function DocumentViewer({
   // рендер (ScanContent); рідкісний non-inline searchable → текстова плашка.
   const documentRenderMode = (isScanned || inlineRenderable) ? 'scan' : 'text';
 
+  // V2-B2 — throttled flush стрім-тексту у стан.
+  const flushStream = useCallback(() => {
+    streamRef.current.timer = null;
+    setStreamingText(streamRef.current.latest);
+  }, []);
+  // Прийняти чергову порцію наростаючого markdown (з ядра через onGenerateVariant).
+  const pushStreamDelta = useCallback((md) => {
+    streamRef.current.latest = md || '';
+    if (streamRef.current.timer) return;            // оновлення вже заплановане
+    streamRef.current.timer = setTimeout(flushStream, STREAM_RENDER_THROTTLE_MS);
+  }, [flushStream]);
+  // Скинути стрім (старт нової генерації / завершення / зміна документа).
+  const resetStream = useCallback(() => {
+    if (streamRef.current.timer) { clearTimeout(streamRef.current.timer); streamRef.current.timer = null; }
+    streamRef.current.latest = '';
+    setStreamingText('');
+  }, []);
+
   useEffect(() => {
     if (!document?.id) return;
     setSelectedMode(loadModePreference(document.id));
     setGeneratingMode(null);
-  }, [document?.id]);
+    resetStream();
+  }, [document?.id, resetStream]);
+
+  // Прибрати висячий throttle-таймер при демонтажі.
+  useEffect(() => () => {
+    if (streamRef.current.timer) clearTimeout(streamRef.current.timer);
+  }, []);
 
   useEffect(() => {
     if (document?.id && selectedMode) {
@@ -170,10 +204,13 @@ export function DocumentViewer({
   const handleGenerate = async genMode => {
     if (generatingMode || typeof onGenerateVariant !== 'function') return;
     setGeneratingMode(genMode);
+    resetStream();
     try {
-      await onGenerateVariant(document, genMode);
+      // V2-B2 — pushStreamDelta тече у в'ювер по мірі генерації (як claude.ai).
+      await onGenerateVariant(document, genMode, pushStreamDelta);
     } finally {
       setGeneratingMode(null);
+      resetStream();
     }
   };
 
@@ -204,6 +241,7 @@ export function DocumentViewer({
         exactMarkdown={exact.markdown}
         exactStatus={exact.status}
         generating={generatingMode === effectiveMode}
+        streamingText={generatingMode === effectiveMode ? streamingText : ''}
         onGenerate={handleGenerate}
         canGenerate={typeof onGenerateVariant === 'function'}
         onLoadAttentionNotes={onLoadAttentionNotes}

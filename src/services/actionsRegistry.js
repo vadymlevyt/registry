@@ -1580,7 +1580,10 @@ export function createActions(deps) {
     // mode ('digest'|'clean', DEFAULT 'digest', parent §A2.7) — який режим
     // очистки запустити. Default digest зберігає поточну поведінку наявних
     // викликів/кнопок (перемикач режимів додасть V2-B).
-    clean_document_text: async ({ caseId, documentId, mode = 'digest' }) => {
+    // onStreamDelta (V2-B2, UI-ін'єкція) — опційний стрім-callback. Присутній
+    // ЛИШЕ коли в'ювер кличе генерацію (не в tool_use схемі — модель функцію не
+    // передає). Є → cleanDocument стрімить markdown що наростає; нема → нестрімово.
+    clean_document_text: async ({ caseId, documentId, mode = 'digest', onStreamDelta }) => {
       if (!caseId || !documentId) {
         return { success: false, error: "caseId, documentId обов'язкові" };
       }
@@ -1615,6 +1618,7 @@ export function createActions(deps) {
         module: MODULES.CASE_DOSSIER,
         mode: wantMode,
         billAsUserAction: true,
+        onStreamDelta: typeof onStreamDelta === 'function' ? onStreamDelta : undefined,
         ...driveDeps,
       });
 

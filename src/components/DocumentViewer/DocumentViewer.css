@@ -185,6 +185,12 @@
   text-align: center;
 }
 
+/* V2-B2 — нейтральна (не-warning) плашка «генерується…» над стрім-текстом. */
+.document-viewer__variant-badge--streaming {
+  background: var(--color-surface-2);
+  color: var(--color-text-2);
+}
+
 .document-viewer__text {
   margin: 0;
   max-width: 760px;
