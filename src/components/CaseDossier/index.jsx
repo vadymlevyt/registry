@@ -2195,7 +2195,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 </div>
               )}
 
-              <div style={{ flex: 1, overflowY: "auto", padding: 6 }}>
+              <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: 6 }}>
                 {filteredDocs.length === 0 ? (
                   <div style={{ padding: 'var(--space-5)', textAlign: "center", color: "var(--color-text-3)", fontSize: 12 }}>{"Немає документів"}</div>
                 ) : filteredDocs.map(doc => {
@@ -2431,8 +2431,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
       {/* BODY */}
       <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
-        {/* Основний вміст вкладки */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto', minWidth: 0 }}>
+        {/* Основний вміст вкладки.
+            «Матеріали» має власні скрол-зони (ліва панель — список; права — в'юер),
+            тож зовнішній скрол їй вимкнено: інакше швидкий (momentum) скрол списку
+            чейнився на цю обгортку і прокручував усю панель разом із шапкою
+            (фільтри/бар мультивибору/Дерево-Реєстр зникали). Решта вкладок —
+            довгі форми, їм скрол потрібен. */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: activeTab === 'materials' ? 'hidden' : 'auto', minWidth: 0 }}>
           {activeTab === "overview" && renderOverview()}
           {activeTab === "materials" && renderMaterials()}
           {activeTab === "docwork" && (
