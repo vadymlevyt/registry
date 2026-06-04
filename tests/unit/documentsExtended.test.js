@@ -72,6 +72,7 @@ const {
   getExtendedForDocument,
   setExtendedForDocument,
   deleteExtendedForDocument,
+  deleteExtendedForDocuments,
   invalidateCache,
 } = await import('../../src/services/documentsExtended.js');
 const driveAuth = await import('../../src/services/driveAuth.js');
@@ -178,6 +179,37 @@ describe('documentsExtended', () => {
     it('повертає false якщо документа і так не було', async () => {
       const removed = await deleteExtendedForDocument(caseId, caseData, 'doc_unknown');
       expect(removed).toBe(false);
+    });
+  });
+
+  describe('deleteExtendedForDocuments — батч (TASK bulk_delete_unify)', () => {
+    it('прибирає всі передані id за один прохід і повертає кількість', async () => {
+      await setExtendedForDocument(caseId, caseData, 'doc_a', { tags: ['a'] });
+      await setExtendedForDocument(caseId, caseData, 'doc_b', { tags: ['b'] });
+      await setExtendedForDocument(caseId, caseData, 'doc_c', { tags: ['c'] });
+
+      const removed = await deleteExtendedForDocuments(caseId, caseData, ['doc_a', 'doc_b']);
+      expect(removed).toBe(2);
+
+      // doc_a, doc_b — порожній шаблон; doc_c — лишився.
+      invalidateCache(caseId);
+      const all = await loadExtendedForCase(caseId, caseData);
+      expect(all.doc_a).toBeUndefined();
+      expect(all.doc_b).toBeUndefined();
+      expect(all.doc_c.tags).toEqual(['c']);
+    });
+
+    it('ігнорує id яких немає, рахує лише реально прибрані', async () => {
+      await setExtendedForDocument(caseId, caseData, 'doc_a', { tags: ['a'] });
+      const removed = await deleteExtendedForDocuments(caseId, caseData, ['doc_a', 'doc_ghost']);
+      expect(removed).toBe(1);
+    });
+
+    it('порожній список / нема збігів → 0, без save', async () => {
+      const removed = await deleteExtendedForDocuments(caseId, caseData, []);
+      expect(removed).toBe(0);
+      const removed2 = await deleteExtendedForDocuments(caseId, caseData, ['nope']);
+      expect(removed2).toBe(0);
     });
   });
 });

@@ -8,7 +8,8 @@ import JobProgressTopbar from './components/JobProgressTopbar';
 import GlobalProgressScreen from './components/DocumentProcessorV2/GlobalProgressScreen.jsx';
 import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx';
 import { ECITSRegistryBadge } from './components/ECITSBanner/RegistryBadge.jsx';
-import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, backupRegistryDataPreV9, backupRegistryDataPreV10, backupRegistryDataPreV11, deleteDriveFile, deleteOcrCacheForDocument } from './services/driveService';
+import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, backupRegistryDataPreV9, backupRegistryDataPreV10, backupRegistryDataPreV11, deleteDriveFile, deleteOcrCacheForDocument, deleteDocumentsArtifactsBatch } from './services/driveService';
+import { clearResume as clearOcrResume } from './services/ocr/resumeStore';
 import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
@@ -22,7 +23,7 @@ import {
 } from './services/eventBusTopics';
 import { canOverwrite, buildAlternativeSourceRecord } from './services/sourcePolicy';
 import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
-import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument } from './services/documentsExtended';
+import { saveExtendedForCase, loadExtendedForCase, deleteExtendedForDocument, deleteExtendedForDocuments } from './services/documentsExtended';
 import { createDocument, validateDocument } from './services/documentFactory';
 import { createActions } from './services/actionsRegistry';
 import * as extensionBridge from './services/extensionBridge';
@@ -4900,6 +4901,10 @@ function App() {
     deleteDriveFile,
     deleteOcrCacheForDocument,
     deleteExtendedForDocument,
+    // TASK bulk_delete_unify — батч-видалення (Drive-батч + extended-батч + resume).
+    deleteDocumentsArtifactsBatch,
+    deleteExtendedForDocuments,
+    clearResume: clearOcrResume,
     // TASK 3.2 — clean_document_text читає API-ключ свіжо з localStorage (не
     // замикає stale-снапшот). cleanDocument/build-deps — дефолти ядра 3.1.
     getApiKey: () => localStorage.getItem('claude_api_key') || '',

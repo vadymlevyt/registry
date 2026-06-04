@@ -109,6 +109,24 @@ export async function deleteExtendedForDocument(caseId, caseData, documentId) {
   return true;
 }
 
+// Видалити extended-записи ПАЧКИ документів зі справи за ОДИН прохід
+// (read + filter + save) замість N окремих викликів deleteExtendedForDocument
+// (TASK bulk_delete_unify, фікс повільності + нуль сиріт). Після save —
+// invalidateCache, щоб наступний load читав свіже з Drive. Повертає кількість
+// реально прибраних записів (відсутні id ігноруються).
+export async function deleteExtendedForDocuments(caseId, caseData, documentIds) {
+  if (!caseId || !Array.isArray(documentIds) || documentIds.length === 0) return 0;
+  const all = await loadExtendedForCase(caseId, caseData);
+  const idSet = new Set(documentIds);
+  const present = Object.keys(all).filter(id => idSet.has(id));
+  if (present.length === 0) return 0;
+  const next = { ...all };
+  for (const id of present) delete next[id];
+  await saveExtendedForCase(caseId, caseData, next);
+  invalidateCache(caseId);
+  return present.length;
+}
+
 // Інвалідувати кеш справи (після зовнішніх змін на Drive).
 export function invalidateCache(caseId) {
   if (caseId == null) {

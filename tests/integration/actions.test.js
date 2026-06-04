@@ -170,6 +170,107 @@ describe('executeAction integration', () => {
     });
   });
 
+  describe('delete_documents / restore_documents — батч (TASK bulk_delete_unify)', () => {
+    let docs;
+    beforeEach(async () => {
+      docs = [
+        createDocument({ name: 'A', driveId: 'da', size: 1 }),
+        createDocument({ name: 'B', driveId: 'db', originalDriveId: 'db_orig', size: 1 }),
+        createDocument({ name: 'C', driveId: 'dc', size: 1 }),
+      ];
+      for (const d of docs) {
+        await h.executeAction('dossier_agent', 'add_document', { caseId: 'case_001', document: d });
+      }
+    });
+
+    it('блокується без _fromUI (UI-only)', async () => {
+      const r = await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: docs.map(d => d.id), mode: 'full',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/UI/);
+    });
+
+    it('mode=archive — один прохід виставляє status archived усім', async () => {
+      const ids = [docs[0].id, docs[2].id];
+      const r = await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: ids, mode: 'archive', _fromUI: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.mode).toBe('archive');
+      expect(r.deleted.sort()).toEqual(ids.sort());
+      const byId = Object.fromEntries(h.getCases()[0].documents.map(d => [d.id, d.status]));
+      expect(byId[docs[0].id]).toBe('archived');
+      expect(byId[docs[1].id]).not.toBe('archived');
+      expect(byId[docs[2].id]).toBe('archived');
+    });
+
+    it('mode=full — прибирає всі id з реєстру і кличе Drive-батч (driveId+originalDriveId)', async () => {
+      const ids = docs.map(d => d.id);
+      const r = await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: ids, mode: 'full', _fromUI: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.deleted.sort()).toEqual(ids.sort());
+      expect(h.getCases()[0].documents).toHaveLength(0);
+      const deleted = h.getDeletedDriveIds();
+      expect(deleted).toContain('da');
+      expect(deleted).toContain('db');
+      expect(deleted).toContain('db_orig'); // оригінал поряд
+      expect(deleted).toContain('dc');
+    });
+
+    it('mode=registry_only — реєстр чистий, Drive не чіпається', async () => {
+      const r = await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: [docs[0].id], mode: 'registry_only', _fromUI: true,
+      });
+      expect(r.success).toBe(true);
+      expect(h.getCases()[0].documents).toHaveLength(2);
+      expect(h.getDeletedDriveIds()).toHaveLength(0);
+    });
+
+    it('частковий збіг: неіснуючі id → у failed, наявні видалено', async () => {
+      const r = await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: [docs[0].id, 'ghost'], mode: 'full', _fromUI: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.deleted).toEqual([docs[0].id]);
+      expect(r.failed).toEqual(['ghost']);
+    });
+
+    it('порожній documentIds → error', async () => {
+      const r = await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: [], mode: 'full', _fromUI: true,
+      });
+      expect(r.success).toBe(false);
+    });
+
+    it('restore_documents — один прохід повертає status active (не UI-only)', async () => {
+      const ids = [docs[0].id, docs[1].id];
+      // спершу архівуємо
+      await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: ids, mode: 'archive', _fromUI: true,
+      });
+      const r = await h.executeAction('dossier_agent', 'restore_documents', {
+        caseId: 'case_001', documentIds: ids,
+      });
+      expect(r.success).toBe(true);
+      expect(r.restored.sort()).toEqual(ids.sort());
+      const byId = Object.fromEntries(h.getCases()[0].documents.map(d => [d.id, d.status]));
+      expect(byId[docs[0].id]).toBe('active');
+      expect(byId[docs[1].id]).toBe('active');
+    });
+
+    it('time_entries / ai_usage НЕ зачіпаються видаленням документа', async () => {
+      // Леджери — свідома межа (B.4). Видалення документа їх не торкає.
+      const before = h.getTimeEntries().length;
+      await h.executeAction('dossier_agent', 'delete_documents', {
+        caseId: 'case_001', documentIds: docs.map(d => d.id), mode: 'full', _fromUI: true,
+      });
+      expect(h.getTimeEntries().length).toBe(before);
+    });
+  });
+
   describe('add_hearing', () => {
     it('успішно додає засідання для dossier_agent', async () => {
       const result = await h.executeAction('dossier_agent', 'add_hearing', {

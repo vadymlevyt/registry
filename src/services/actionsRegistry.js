@@ -39,6 +39,7 @@ import { MODULES, categoryForCase } from './moduleNames';
 // окремим UI-only шляхом (deleteCasePermanently) і тут не фігурує.
 export const UI_ONLY_ACTIONS = new Set([
   'delete_document',
+  'delete_documents',
   'delete_proceeding',
 ]);
 
@@ -120,6 +121,14 @@ export function createActions(deps) {
     deleteDriveFile,
     deleteOcrCacheForDocument,
     deleteExtendedForDocument,
+    // TASK bulk_delete_unify — батч-видалення (фікс повільності + нуль сиріт).
+    // deleteDocumentsArtifactsBatch: ОДИН LIST 02_ОБРОБЛЕНІ + пул паралельних
+    // DELETE (driveService). deleteExtendedForDocuments: ОДИН read+filter+save
+    // documents_extended (documentsExtended). clearResume: чистка in-memory
+    // OCR resume-стану по driveId (ocr/resumeStore). Тести стабують.
+    deleteDocumentsArtifactsBatch,
+    deleteExtendedForDocuments,
+    clearResume,
     // TASK 3.2 — clean_document_text. getApiKey: () => claude_api_key (App.jsx
     // читає localStorage; null у тестах без AI). cleanDocument / build-deps —
     // DI-шви (тести стабують, бо торкаються Drive+AI); якщо не передані —
@@ -941,6 +950,152 @@ export function createActions(deps) {
       return outcome;
     },
 
+    // delete_documents — БАТЧ-видалення пачки документів (TASK bulk_delete_unify).
+    // mode ∈ {'full','registry_only','archive'} — точний паритет із single
+    // delete_document (archive — той самий наявний overload, не новий сенс).
+    // Перформанс: N документів → ОДИН setCases (1 перезапис реєстру) + ОДИН
+    // прохід documents_extended + ОДИН LIST 02_ОБРОБЛЕНІ + паралельні DELETE
+    // (пул). Замість N×(setCases + LIST + послідовні DELETE).
+    // Повертає { success, mode, deleted:[ids], failed:[ids], message }.
+    delete_documents: async ({ caseId, documentIds, mode = 'full' }) => {
+      if (!caseId || !Array.isArray(documentIds) || documentIds.length === 0) {
+        return { success: false, error: "caseId і непорожній documentIds[] обов'язкові" };
+      }
+      if (!['full', 'registry_only', 'archive'].includes(mode)) {
+        return { success: false, error: `Невідомий режим: ${mode}` };
+      }
+      const targetCase = getCases().find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const idSet = new Set(documentIds);
+      const docs = (targetCase.documents || []).filter(d => idSet.has(d.id));
+      const foundIds = docs.map(d => d.id);
+      const missing = documentIds.filter(id => !foundIds.includes(id));
+      if (docs.length === 0) {
+        return {
+          success: false,
+          error: 'Жоден з документів не знайдено у справі',
+          deleted: [],
+          failed: documentIds,
+        };
+      }
+
+      const now = new Date().toISOString();
+
+      // Архівування — лише status; файли і extended лишаються. ОДИН setCases.
+      if (mode === 'archive') {
+        setCases(prev => prev.map(c =>
+          c.id === caseId
+            ? {
+                ...c,
+                documents: c.documents.map(d =>
+                  idSet.has(d.id) ? { ...d, status: 'archived', updatedAt: now } : d
+                ),
+                updatedAt: now,
+              }
+            : c
+        ));
+        return {
+          success: true,
+          mode: 'archive',
+          deleted: foundIds,
+          failed: missing,
+          message: `Архівовано документів: ${foundIds.length}`,
+        };
+      }
+
+      // mode 'full' / 'registry_only' — прибрати з реєстру ОДНИМ setCases.
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              documents: c.documents.filter(d => !idSet.has(d.id)),
+              updatedAt: now,
+            }
+          : c
+      ));
+
+      // documents_extended — ОДИН батч read+filter+save (+invalidateCache).
+      // graceful failure — реєстр уже почищено, не блокуємо.
+      try {
+        await deleteExtendedForDocuments(caseId, targetCase, foundIds);
+      } catch (err) {
+        console.warn('[delete_documents] documents_extended batch cleanup failed:', err?.message || err);
+      }
+
+      if (mode === 'registry_only') {
+        return {
+          success: true,
+          mode: 'registry_only',
+          deleted: foundIds,
+          failed: missing,
+          message: `Видалено з реєстру: ${foundIds.length} (файли лишились на Drive)`,
+        };
+      }
+
+      // mode 'full' — нуль сиріт (B.4):
+      //   • Drive-батч: driveId + originalDriveId + усі `_<driveId>.*` у
+      //     02_ОБРОБЛЕНІ (.txt/.layout.json/.clean.md/.digest.md + майбутні).
+      //   • resumeStore: in-memory partial-OCR стан по кожному driveId.
+      // time_entries[]/ai_usage[] зі своїм documentId НЕ чіпаємо — це
+      // бухгалтерські леджери (свідома межа, див. TASK B.4).
+      let driveResult = { deletedCount: 0, failedCount: 0 };
+      try {
+        driveResult = await deleteDocumentsArtifactsBatch(targetCase, docs);
+      } catch (err) {
+        console.warn('[delete_documents] Drive batch cleanup failed:', err?.message || err);
+      }
+      for (const d of docs) {
+        if (!d.driveId) continue;
+        try {
+          clearResume?.(d.driveId);
+        } catch (err) {
+          console.warn('[delete_documents] clearResume failed:', err?.message || err);
+        }
+      }
+
+      return {
+        success: true,
+        mode: 'full',
+        deleted: foundIds,
+        failed: missing,
+        driveDeleted: driveResult.deletedCount,
+        driveFailed: driveResult.failedCount,
+        message: `Видалено повністю: ${foundIds.length} (з реєстру і з Drive)`,
+      };
+    },
+
+    // restore_documents — БАТЧ-відновлення з архіву (інверсія archive).
+    // ОДИН setCases — усім documentIds status:'active'. Без Drive, без extended.
+    restore_documents: async ({ caseId, documentIds }) => {
+      if (!caseId || !Array.isArray(documentIds) || documentIds.length === 0) {
+        return { success: false, error: "caseId і непорожній documentIds[] обов'язкові" };
+      }
+      const targetCase = getCases().find(c => c.id === caseId);
+      if (!targetCase) {
+        return { success: false, error: `Справу ${caseId} не знайдено` };
+      }
+      const idSet = new Set(documentIds);
+      const restored = (targetCase.documents || []).filter(d => idSet.has(d.id)).map(d => d.id);
+      const now = new Date().toISOString();
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              documents: c.documents.map(d =>
+                idSet.has(d.id) ? { ...d, status: 'active', updatedAt: now } : d
+              ),
+              updatedAt: now,
+            }
+          : c
+      ));
+      return { success: true, restored };
+    },
+
+    // delete_document — ОБГОРТКА над delete_documents (одна логіка видалення,
+    // нуль дублювання — TASK bulk_delete_unify). Зберігає старий single-контракт
+    // { success, mode, documentId, message } для існуючих callers/тестів.
     delete_document: async ({ caseId, documentId, mode = 'full' }) => {
       if (!caseId || !documentId) {
         return { success: false, error: "caseId і documentId обов'язкові" };
@@ -956,92 +1111,17 @@ export function createActions(deps) {
       if (!doc) {
         return { success: false, error: `Документ ${documentId} не знайдено у справі` };
       }
+      const docName = doc.name;
 
-      // Архівування — тільки status, файли і extended лишаються.
-      if (mode === 'archive') {
-        setCases(prev => prev.map(c =>
-          c.id === caseId
-            ? {
-                ...c,
-                documents: c.documents.map(d =>
-                  d.id === documentId
-                    ? { ...d, status: 'archived', updatedAt: new Date().toISOString() }
-                    : d
-                ),
-                updatedAt: new Date().toISOString(),
-              }
-            : c
-        ));
-        return {
-          success: true,
-          mode: 'archive',
-          documentId,
-          message: `Документ "${doc.name}" архівовано`,
-        };
-      }
+      const batch = await ACTIONS.delete_documents({ caseId, documentIds: [documentId], mode });
+      if (!batch.success) return batch;
 
-      // mode === 'full' або 'registry_only' — видаляємо з реєстру.
-      setCases(prev => prev.map(c =>
-        c.id === caseId
-          ? {
-              ...c,
-              documents: c.documents.filter(d => d.id !== documentId),
-              updatedAt: new Date().toISOString(),
-            }
-          : c
-      ));
-
-      // Прибрати запис з documents_extended (graceful failure — не блокує реєстр).
-      try {
-        await deleteExtendedForDocument(caseId, targetCase, documentId);
-      } catch (err) {
-        console.warn('[delete_document] documents_extended cleanup failed:', err?.message || err);
-      }
-
-      if (mode === 'registry_only') {
-        return {
-          success: true,
-          mode: 'registry_only',
-          documentId,
-          message: `Документ "${doc.name}" видалено з реєстру (файли лишились на Drive)`,
-        };
-      }
-
-      // mode === 'full' — видалити ВСЕ що повʼязане з документом:
-      //   • driveId (PDF з 01_ОРИГІНАЛИ — для конвертованих DOCX/HTML/image,
-      //     або сам файл для PDF/інших)
-      //   • originalDriveId (DOCX/HTML/інший оригінал поряд з PDF після TASK A
-      //     конвертації — null для звичайних PDF/image)
-      //   • OCR-кеш (.txt і .layout.json у 02_ОБРОБЛЕНІ)
-      // Кожне видалення в окремий try/catch — падіння одного не блокує інші.
-      // Реєстр уже почищено вище, навіть якщо Drive-операції впадуть, документ
-      // у UI вже зник.
-      if (doc.driveId) {
-        try {
-          await deleteDriveFile(doc.driveId);
-        } catch (err) {
-          console.warn(`[delete_document] Drive file delete failed: ${err?.message || err}`);
-        }
-      }
-      if (doc.originalDriveId) {
-        try {
-          await deleteDriveFile(doc.originalDriveId);
-        } catch (err) {
-          console.warn(`[delete_document] Original file delete failed: ${err?.message || err}`);
-        }
-      }
-      try {
-        await deleteOcrCacheForDocument(targetCase, doc);
-      } catch (err) {
-        console.warn(`[delete_document] OCR cache cleanup failed: ${err?.message || err}`);
-      }
-
-      return {
-        success: true,
-        mode: 'full',
-        documentId,
-        message: `Документ "${doc.name}" видалено повністю (з реєстру і з Drive)`,
+      const MESSAGES = {
+        archive: `Документ "${docName}" архівовано`,
+        registry_only: `Документ "${docName}" видалено з реєстру (файли лишились на Drive)`,
+        full: `Документ "${docName}" видалено повністю (з реєстру і з Drive)`,
       };
+      return { success: true, mode, documentId, message: MESSAGES[mode] };
     },
 
     add_proceeding: async ({ caseId, proceeding }) => {
@@ -1717,6 +1797,12 @@ export function createActions(deps) {
       'update_processing_context',
       // TASK 3.2 — ретроактивна очистка тексту скан-документа (голос/чат + кнопки UI).
       'clean_document_text',
+      // TASK bulk_delete_unify — батч-відновлення з архіву (НЕ деструктивне,
+      // не UI-only; дзеркало single-restore через update_document).
+      'restore_documents',
+      // delete_documents у allowlist для повноти, але реально гейтиться
+      // UI_ONLY_ACTIONS (вимагає _fromUI — агент без UI не викличе).
+      'delete_documents',
       // delete_document, delete_proceeding — НЕ дозволено, лише UI (UI_ONLY_ACTIONS).
     ],
 

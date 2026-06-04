@@ -58,6 +58,21 @@ export function createHarness({ initialCases = [], cleanDeps = {} } = {}) {
     deleteDriveFile: async (id) => { if (id) deletedDriveIds.push(id); },
     deleteOcrCacheForDocument: async () => {},
     deleteExtendedForDocument: async () => {},
+    // TASK bulk_delete_unify — батч-видалення стаби. deleteDocumentsArtifactsBatch
+    // реплікує old-контракт getDeletedDriveIds: пушить driveId + originalDriveId
+    // кожного документа (реальна функція ще додає `_<driveId>.*` з 02_ОБРОБЛЕНІ,
+    // але у тесті Drive-LIST не мокається — перевіряємо лише прямі id).
+    deleteDocumentsArtifactsBatch: async (caseData, docs) => {
+      let deletedCount = 0;
+      for (const d of (docs || [])) {
+        for (const id of [d?.driveId, d?.originalDriveId]) {
+          if (id) { deletedDriveIds.push(id); deletedCount++; }
+        }
+      }
+      return { deletedCount, failedCount: 0 };
+    },
+    deleteExtendedForDocuments: async () => 0,
+    clearResume: () => {},
     // TASK 3.2 — clean_document_text DI-шви (стаби; за замовчуванням не вантажимо
     // реальне ядро → ніякого pdfjs у тест-середовищі).
     getApiKey: cleanDeps.getApiKey || (() => 'test-key'),

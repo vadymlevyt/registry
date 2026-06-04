@@ -1,5 +1,5 @@
 import { ArrowLeft, ArchiveRestore, Trash2 } from 'lucide-react';
-import { Button, Checkbox } from '../UI';
+import { Button, Checkbox, BulkActionBar, useSelection } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import './ArchiveView.css';
 
@@ -11,27 +11,28 @@ import './ArchiveView.css';
  * відновити документ. Це свідоме розмежування: Viewer працює з активними
  * документами, Архів — окремий простір для управління архівом.
  *
+ * Мультивибір — через СПІЛЬНІ useSelection + BulkActionBar (TASK
+ * bulk_delete_unify): ті самі хук і панель, що в Реєстрі. Верхніх кнопок
+ * «Відновити всі»/«Видалити всі» більше немає — select-all + батч-бар їх
+ * повністю замінюють.
+ *
  * Дві категорії дій:
  *   - над одним документом: «Відновити» / «Видалити» (на картці)
- *   - над виділеними / усіма: батч-кнопки зверху і знизу
+ *   - над виділеними: «Відновити обрані» / «Видалити обрані» (батч-бар)
+ *
+ * onRestoreSelected(ids) / onDeleteSelected(ids) отримують масив id вибору.
  */
 export function ArchiveView({
   archived,
-  selectedIds,
-  onSelectAll,
-  onToggleSelected,
   onExit,
   onRestoreOne,
-  onRestoreAll,
   onRestoreSelected,
   onDeleteOne,
-  onDeleteAll,
   onDeleteSelected,
 }) {
   const total = archived.length;
-  const selectedCount = selectedIds.size;
-  const allSelected = total > 0 && selectedCount === total;
-  const someSelected = selectedCount > 0 && selectedCount < total;
+  const allIds = archived.map((d) => d.id);
+  const sel = useSelection(allIds);
 
   return (
     <div className="archive-view">
@@ -45,27 +46,6 @@ export function ArchiveView({
           <ArrowLeft size={ICON_SIZE.sm} />
           <span>Повернутись до матеріалів</span>
         </button>
-
-        {total > 0 && (
-          <div className="archive-view__bulk-actions">
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<ArchiveRestore size={ICON_SIZE.sm} />}
-              onClick={onRestoreAll}
-            >
-              Відновити всі ({total})
-            </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              icon={<Trash2 size={ICON_SIZE.sm} />}
-              onClick={onDeleteAll}
-            >
-              Видалити всі ({total})
-            </Button>
-          </div>
-        )}
       </div>
 
       {total === 0 ? (
@@ -75,56 +55,43 @@ export function ArchiveView({
         </div>
       ) : (
         <>
-          <div className="archive-view__select-all">
-            <Checkbox
-              checked={allSelected}
-              indeterminate={someSelected}
-              onChange={onSelectAll}
-              label={`Виділити всі (${total})`}
-            />
-            {selectedCount > 0 && (
-              <span className="archive-view__select-count">
-                Виділено: {selectedCount}
-              </span>
-            )}
-          </div>
+          <BulkActionBar
+            total={total}
+            selectedCount={sel.count}
+            allSelected={sel.allSelected}
+            someSelected={sel.someSelected}
+            onToggleSelectAll={(checked) => (checked ? sel.selectAll() : sel.clear())}
+          >
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<ArchiveRestore size={ICON_SIZE.sm} />}
+              onClick={() => onRestoreSelected(Array.from(sel.selectedIds))}
+            >
+              Відновити обрані ({sel.count})
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon={<Trash2 size={ICON_SIZE.sm} />}
+              onClick={() => onDeleteSelected(Array.from(sel.selectedIds))}
+            >
+              Видалити обрані ({sel.count})
+            </Button>
+          </BulkActionBar>
 
           <div className="archive-view__list">
             {archived.map((doc) => (
               <ArchiveCard
                 key={doc.id}
                 document={doc}
-                selected={selectedIds.has(doc.id)}
-                onToggleSelected={(value) => onToggleSelected(doc.id, value)}
+                selected={sel.isSelected(doc.id)}
+                onToggleSelected={(value) => sel.toggle(doc.id, value)}
                 onRestore={() => onRestoreOne(doc)}
                 onDelete={() => onDeleteOne(doc)}
               />
             ))}
           </div>
-
-          {selectedCount > 0 && (
-            <div className="archive-view__batch-bar" role="toolbar">
-              <span className="archive-view__batch-label">
-                Виділено: {selectedCount} з {total}
-              </span>
-              <Button
-                variant="primary"
-                size="sm"
-                icon={<ArchiveRestore size={ICON_SIZE.sm} />}
-                onClick={onRestoreSelected}
-              >
-                Відновити обрані ({selectedCount})
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                icon={<Trash2 size={ICON_SIZE.sm} />}
-                onClick={onDeleteSelected}
-              >
-                Видалити обрані ({selectedCount})
-              </Button>
-            </div>
-          )}
         </>
       )}
     </div>

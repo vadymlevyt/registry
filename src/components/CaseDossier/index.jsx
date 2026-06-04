@@ -24,7 +24,7 @@ import {
   ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2, Wrench,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
-import { DatePicker, DateTimePicker, Input, Modal, Button } from "../UI";
+import { DatePicker, DateTimePicker, Input, Modal, Button, Checkbox, BulkActionBar, useSelection } from "../UI";
 import { DocumentViewer } from "../DocumentViewer";
 import { AddDocumentModal } from "./AddDocumentModal.jsx";
 import DocumentProcessorV2 from "../DocumentProcessorV2";
@@ -984,8 +984,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   }, [treeExpanded]);
 
   // Архів матеріалів — режим перегляду архівних документів і batch-операцій.
+  // Вибір архіву тепер живе всередині ArchiveView через спільний useSelection
+  // (TASK bulk_delete_unify) — окремий state тут не потрібен.
   const [showArchived, setShowArchived] = useState(false);
-  const [selectedArchivedIds, setSelectedArchivedIds] = useState(() => new Set());
 
   // Модалка видалення документа з Viewer'а.
   const [deleteDocOpen, setDeleteDocOpen] = useState(false);
@@ -1052,6 +1053,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     if (docFilters.author !== "all" && d.author !== docFilters.author) return false;
     return true;
   });
+
+  // Мультивибір у вкладці Реєстр — спільний useSelection (TASK bulk_delete_unify).
+  // allIds синхронізується з фільтрами: документ, що випав з filteredDocs,
+  // автоматично виходить із вибору (логіка хука).
+  const registrySel = useSelection(filteredDocs.map(d => d.id));
 
   const categoryLabel = {
     civil: "Цивільна", criminal: "Кримінальна",
@@ -2040,82 +2046,41 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           {showArchived && (
             <ArchiveView
               archived={archivedDocuments}
-              selectedIds={selectedArchivedIds}
-              onExit={() => { setShowArchived(false); setSelectedArchivedIds(new Set()); }}
-              onSelectAll={(all) => {
-                if (all) setSelectedArchivedIds(new Set(archivedDocuments.map(d => d.id)));
-                else setSelectedArchivedIds(new Set());
-              }}
-              onToggleSelected={(id, value) => {
-                setSelectedArchivedIds(prev => {
-                  const next = new Set(prev);
-                  if (value) next.add(id); else next.delete(id);
-                  return next;
-                });
-              }}
+              onExit={() => setShowArchived(false)}
               onRestoreOne={async (doc) => {
                 if (!onExecuteAction) return;
-                const r = await onExecuteAction('dossier_agent', 'update_document', {
-                  caseId: caseData.id, documentId: doc.id, fields: { status: 'active' },
+                const r = await onExecuteAction('dossier_agent', 'restore_documents', {
+                  caseId: caseData.id, documentIds: [doc.id],
                 });
                 if (r?.success) toast.success(`«${doc.name}» відновлено`);
                 else toast.error('Не вдалось відновити', { description: r?.error });
               }}
-              onRestoreAll={async () => {
-                const ok = await systemConfirm(`Відновити всі ${archivedDocuments.length} документів з архіву?`);
-                if (!ok || !onExecuteAction) return;
-                for (const doc of archivedDocuments) {
-                  await onExecuteAction('dossier_agent', 'update_document', {
-                    caseId: caseData.id, documentId: doc.id, fields: { status: 'active' },
-                  });
-                }
-                toast.success(`Відновлено документів: ${archivedDocuments.length}`);
-                setShowArchived(false);
-                setSelectedArchivedIds(new Set());
-              }}
-              onRestoreSelected={async () => {
-                if (!onExecuteAction) return;
-                const ids = Array.from(selectedArchivedIds);
-                for (const id of ids) {
-                  await onExecuteAction('dossier_agent', 'update_document', {
-                    caseId: caseData.id, documentId: id, fields: { status: 'active' },
-                  });
-                }
-                toast.success(`Відновлено документів: ${ids.length}`);
-                setSelectedArchivedIds(new Set());
+              onRestoreSelected={async (ids) => {
+                if (!onExecuteAction || ids.length === 0) return;
+                const r = await onExecuteAction('dossier_agent', 'restore_documents', {
+                  caseId: caseData.id, documentIds: ids,
+                });
+                if (r?.success) toast.success(`Відновлено документів: ${r.restored.length}`);
+                else toast.error('Не вдалось відновити', { description: r?.error });
               }}
               onDeleteOne={async (doc) => {
                 const ok = await systemConfirm(`Видалити «${doc.name}» назавжди? Файл зникне з Drive і реєстру.`);
                 if (!ok || !onExecuteAction) return;
-                const r = await onExecuteAction('dossier_agent', 'delete_document', {
-                  caseId: caseData.id, documentId: doc.id, mode: 'full', _fromUI: true,
+                const r = await onExecuteAction('dossier_agent', 'delete_documents', {
+                  caseId: caseData.id, documentIds: [doc.id], mode: 'full', _fromUI: true,
                 });
                 if (r?.success) toast.success(`«${doc.name}» видалено повністю`);
                 else toast.error('Не вдалось видалити', { description: r?.error });
               }}
-              onDeleteAll={async () => {
-                const ok = await systemConfirm(`Видалити назавжди всі ${archivedDocuments.length} архівних документів? Файли зникнуть з Drive.`);
-                if (!ok || !onExecuteAction) return;
-                for (const doc of archivedDocuments) {
-                  await onExecuteAction('dossier_agent', 'delete_document', {
-                    caseId: caseData.id, documentId: doc.id, mode: 'full', _fromUI: true,
-                  });
-                }
-                toast.success(`Видалено документів: ${archivedDocuments.length}`);
-                setShowArchived(false);
-                setSelectedArchivedIds(new Set());
-              }}
-              onDeleteSelected={async () => {
-                const ids = Array.from(selectedArchivedIds);
+              onDeleteSelected={async (ids) => {
+                if (ids.length === 0) return;
                 const ok = await systemConfirm(`Видалити назавжди ${ids.length} обраних документів? Файли зникнуть з Drive.`);
                 if (!ok || !onExecuteAction) return;
-                for (const id of ids) {
-                  await onExecuteAction('dossier_agent', 'delete_document', {
-                    caseId: caseData.id, documentId: id, mode: 'full', _fromUI: true,
-                  });
-                }
-                toast.success(`Видалено документів: ${ids.length}`);
-                setSelectedArchivedIds(new Set());
+                const r = await onExecuteAction('dossier_agent', 'delete_documents', {
+                  caseId: caseData.id, documentIds: ids, mode: 'full', _fromUI: true,
+                });
+                if (r?.success) toast.success(`Видалено документів: ${r.deleted.length}`);
+                else toast.error('Не вдалось видалити', { description: r?.error });
               }}
             />
           )}
@@ -2183,6 +2148,56 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 </div>
               </div>
 
+              {/* Мультивибір (TASK bulk_delete_unify) — спільні BulkActionBar +
+                  useSelection. Дві дії: «Архівувати обрані» / «Видалити обрані
+                  повністю». По одному systemConfirm на дію. */}
+              {filteredDocs.length > 0 && (
+                <div style={{ padding: "6px 8px", flexShrink: 0 }}>
+                  <BulkActionBar
+                    total={filteredDocs.length}
+                    selectedCount={registrySel.count}
+                    allSelected={registrySel.allSelected}
+                    someSelected={registrySel.someSelected}
+                    onToggleSelectAll={(checked) => (checked ? registrySel.selectAll() : registrySel.clear())}
+                  >
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={async () => {
+                        const ids = Array.from(registrySel.selectedIds);
+                        if (ids.length === 0 || !onExecuteAction) return;
+                        const ok = await systemConfirm(`Архівувати ${ids.length} обраних документів?`);
+                        if (!ok) return;
+                        const r = await onExecuteAction('dossier_agent', 'delete_documents', {
+                          caseId: caseData.id, documentIds: ids, mode: 'archive', _fromUI: true,
+                        });
+                        if (r?.success) { toast.success(`Архівовано документів: ${r.deleted.length}`); registrySel.clear(); }
+                        else toast.error('Не вдалось архівувати', { description: r?.error });
+                      }}
+                    >
+                      Архівувати обрані ({registrySel.count})
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={async () => {
+                        const ids = Array.from(registrySel.selectedIds);
+                        if (ids.length === 0 || !onExecuteAction) return;
+                        const ok = await systemConfirm(`Видалити ${ids.length} обраних документів повністю? Файли зникнуть з Drive.`);
+                        if (!ok) return;
+                        const r = await onExecuteAction('dossier_agent', 'delete_documents', {
+                          caseId: caseData.id, documentIds: ids, mode: 'full', _fromUI: true,
+                        });
+                        if (r?.success) { toast.success(`Видалено документів: ${r.deleted.length}`); registrySel.clear(); }
+                        else toast.error('Не вдалось видалити', { description: r?.error });
+                      }}
+                    >
+                      Видалити обрані повністю ({registrySel.count})
+                    </Button>
+                  </BulkActionBar>
+                </div>
+              )}
+
               <div style={{ flex: 1, overflowY: "auto", padding: 6 }}>
                 {filteredDocs.length === 0 ? (
                   <div style={{ padding: 'var(--space-5)', textAlign: "center", color: "var(--color-text-3)", fontSize: 12 }}>{"Немає документів"}</div>
@@ -2190,6 +2205,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   const proc = proceedings.find(p => p.id === doc.procId);
                   return (
                     <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(59,130,246,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "all .15s" }}>
+                      <span onClick={(e) => e.stopPropagation()} style={{ flexShrink: 0, display: "flex" }}>
+                        <Checkbox
+                          checked={registrySel.isSelected(doc.id)}
+                          onChange={(v) => registrySel.toggle(doc.id, v)}
+                          size="sm"
+                        />
+                      </span>
                       <span style={{ fontSize: 13, flexShrink: 0 }}>{doc.icon}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>

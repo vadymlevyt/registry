@@ -535,26 +535,53 @@ export async function deleteDriveFile(fileId) {
   return true;
 }
 
-// Видалити OCR-кеш документа з 02_ОБРОБЛЕНІ. Видаляє пару:
-// `${basename}_${driveId}.txt` і `${basename}_${driveId}.layout.json` —
-// якщо layout існує. Повертає true якщо хоч щось видалено.
-// Парна інвалідація гарантує що не лишиться сирітський layout зі старим
-// текстом після натискання "Розпізнати зараз".
+// runWithConcurrency — виконати fn над items з обмеженою кількістю одночасних
+// викликів (пул воркерів). Замість послідовного await-циклу (повільно) і
+// замість Promise.all над усіма (ризик rate-limit / сплеск запитів) —
+// фіксований пул. Кожен виклик fn має сам ловити свої помилки; раннер їх не
+// перехоплює і не зупиняється (один воркер впав — інші продовжують лише якщо
+// fn не кинув; тому загортайте fn у try/catch на боці виклику).
+export async function runWithConcurrency(items, limit, fn) {
+  const list = Array.isArray(items) ? items : [];
+  const results = new Array(list.length);
+  let idx = 0;
+  const poolSize = Math.max(1, Math.min(limit || 1, list.length));
+  const worker = async () => {
+    while (idx < list.length) {
+      const cur = idx++;
+      results[cur] = await fn(list[cur], cur);
+    }
+  };
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
+  return results;
+}
+
+// matchArtifactFileIds — знайти id усіх файлів папки, що належать документу
+// за СТАБІЛЬНИМ суфіксом `_<driveId>.` в імені. Імена артефактів мають форму
+// `<base>_<driveId>.<ext>`; driveId унікальний і стабільний, тому суфікс
+// ловить ВСІ типи похідних (.txt, .layout.json, .clean.md, .digest.md і
+// будь-який майбутній) — без хардкоду переліку розширень (нуль сиріт).
+// allFiles — вже завантажений список {id,name} (один LIST на пачку).
+export function matchArtifactFileIds(allFiles, driveId) {
+  if (!driveId || !Array.isArray(allFiles)) return [];
+  const needle = `_${driveId}.`;
+  return allFiles
+    .filter(f => typeof f?.name === 'string' && f.name.includes(needle))
+    .map(f => f.id);
+}
+
+// Видалити OCR-кеш ОДНОГО документа з 02_ОБРОБЛЕНІ (зворотна сумісність —
+// single-шлях). Перероблено на суфікс-матч `_<driveId>.` (TASK bulk_delete_unify),
+// тому чистить і `.txt`, і `.layout.json`, і `.clean.md`/`.digest.md` (раніше
+// лишались сиротами — баг #4). Спільна логіка пошуку — matchArtifactFileIds,
+// та сама що у deleteDocumentsArtifactsBatch (нуль розбіжних реалізацій).
+// q= по parent, фільтрація у JS — імена містять кирилицю від baseName,
+// правило #8 забороняє кирилицю у q= filter. Повертає true якщо щось видалено.
 export async function deleteOcrCacheForDocument(caseData, doc) {
   if (!caseData || !doc || !doc.driveId) return false;
   const subFolderId = caseData?.storage?.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return false;
 
-  const sanitize = (n) => (n || '')
-    .replace(/\.[^/.]+$/, '')
-    .replace(/[/\\]/g, '_')
-    .slice(0, 150);
-  const baseName = sanitize(doc.originalName || doc.name || '');
-  const textCacheName = `${baseName}_${doc.driveId}.txt`;
-  const layoutCacheName = `${baseName}_${doc.driveId}.layout.json`;
-
-  // q= по parent, фільтрація у JS — кеш-імена містять кирилицю від baseName,
-  // правило #8 забороняє кирилицю у q= filter.
   const q = `'${subFolderId}' in parents and trashed=false`;
   const res = await driveRequest(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
@@ -563,19 +590,81 @@ export async function deleteOcrCacheForDocument(caseData, doc) {
   const data = await res.json();
   const all = data.files || [];
 
+  const ids = matchArtifactFileIds(all, doc.driveId);
   let deletedAny = false;
-  for (const name of [textCacheName, layoutCacheName]) {
-    const target = all.find(f => f.name === name);
-    if (target) {
-      try {
-        await deleteDriveFile(target.id);
-        deletedAny = true;
-      } catch (e) {
-        console.warn('[deleteOcrCacheForDocument] delete failed:', name, e.message);
-      }
+  for (const id of ids) {
+    try {
+      await deleteDriveFile(id);
+      deletedAny = true;
+    } catch (e) {
+      console.warn('[deleteOcrCacheForDocument] delete failed:', id, e.message);
     }
   }
   return deletedAny;
+}
+
+// deleteDocumentsArtifactsBatch — швидке видалення Drive-артефактів ПАЧКИ
+// документів (TASK bulk_delete_unify, фікс повільності). Замість N×(LIST 02 +
+// послідовні DELETE) на документ — ОДИН LIST 02_ОБРОБЛЕНІ + дедуп усіх fileId +
+// паралельні DELETE з обмеженою конкурентністю (пул). Кожне видалення в
+// try/catch — падіння одного не блокує інші.
+//
+// Збирає для кожного документа:
+//   • doc.driveId         — основний файл (PDF/оригінал; id незалежний від папки)
+//   • doc.originalDriveId  — оригінал поряд (DOCX/HTML після конвертації)
+//   • усі `_<driveId>.*` у 02_ОБРОБЛЕНІ — суфікс-матч (matchArtifactFileIds)
+//
+// Повертає { deletedCount, failedCount }.
+export async function deleteDocumentsArtifactsBatch(caseData, docs, { concurrency = 6 } = {}) {
+  const list = Array.isArray(docs) ? docs : [];
+  const fileIds = new Set();
+
+  // Прямі id кожного документа (незалежні від папки).
+  for (const doc of list) {
+    if (doc?.driveId) fileIds.add(doc.driveId);
+    if (doc?.originalDriveId) fileIds.add(doc.originalDriveId);
+  }
+
+  // ОДИН LIST 02_ОБРОБЛЕНІ → суфікс-матч по кожному документу.
+  const subFolderId = caseData?.storage?.subFolders?.['02_ОБРОБЛЕНІ'];
+  if (subFolderId) {
+    try {
+      const q = `'${subFolderId}' in parents and trashed=false`;
+      const res = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const all = data.files || [];
+        for (const doc of list) {
+          for (const id of matchArtifactFileIds(all, doc?.driveId)) fileIds.add(id);
+          // originalDriveId теж може мати похідні (рідко, але нуль сиріт).
+          if (doc?.originalDriveId) {
+            for (const id of matchArtifactFileIds(all, doc.originalDriveId)) fileIds.add(id);
+          }
+        }
+      } else {
+        console.warn('[deleteDocumentsArtifactsBatch] LIST 02_ОБРОБЛЕНІ failed:', res.status);
+      }
+    } catch (e) {
+      console.warn('[deleteDocumentsArtifactsBatch] LIST error:', e?.message || e);
+    }
+  }
+
+  const unique = Array.from(fileIds);
+  let deletedCount = 0;
+  let failedCount = 0;
+  await runWithConcurrency(unique, concurrency, async (id) => {
+    try {
+      await deleteDriveFile(id);
+      deletedCount++;
+    } catch (e) {
+      failedCount++;
+      console.warn('[deleteDocumentsArtifactsBatch] delete failed:', id, e?.message || e);
+    }
+  });
+
+  return { deletedCount, failedCount };
 }
 
 // DP-3 §4.11 — вільне місце на Drive перед стартом великого пакета.

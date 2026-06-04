@@ -45,6 +45,8 @@ const ALL_INDIVIDUAL_TOOLS = [
 // Дії які свідомо ВИКЛЮЧЕНІ з DOSSIER_AGENT_TOOLS (але можуть бути у PERMISSIONS).
 const EXCLUDED_FROM_DOSSIER_TOOLS = {
   delete_document:    'UI-only — модифікує файли на Drive, потребує підтвердження',
+  delete_documents:   'UI-only батч — модифікує файли на Drive, потребує підтвердження (TASK bulk_delete_unify)',
+  restore_documents:  'батч-UI-хелпер архіву — відновлення через кнопки, не tool-use (TASK bulk_delete_unify)',
   delete_proceeding:  'UI-only — каскадно обнуляє procId документів',
   add_time_entry:           'окремий шар білінгу',
   update_time_entry:        'окремий шар білінгу',
