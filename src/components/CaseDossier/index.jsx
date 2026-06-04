@@ -2023,10 +2023,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             <button
               type="button"
               className={`materials-archive-toggle ${showArchived ? 'materials-archive-toggle--active' : ''}`}
-              onClick={() => {
-                setShowArchived(v => !v);
-                setSelectedArchivedIds(new Set());
-              }}
+              onClick={() => setShowArchived(v => !v)}
               title="Архів матеріалів"
             >
               <Archive size={12} />
