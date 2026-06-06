@@ -42,6 +42,15 @@
 
 `metadata` (частковий OCR через Document AI) як окремий третій режим **НЕ робимо** — Vision-по-2-сторінках і є його чесна форма.
 
+### Повна відмова від `.txt` (закриває §7.1) — наскрізна вимога
+
+Інгест **не пише `.txt` ніде**. Підстава (звірено з кодом): конвертер DOC/HTML іде через `pdfLibHtmlRenderer.htmlToPdfViaPdfLib` → **searchable PDF** (текстовий шар у самому PDF), а scanned уже лишає лише layout (V2-A2). Отже:
+- **scanned** → лише `.layout` (вже так);
+- **searchable PDF** (просто додали) → текст із текстового шару PDF **на вимогу** через `ocrService.extractText`/`getDocumentText`;
+- **DOC/HTML** → конвертер дає searchable PDF → те саме (едж «DOCX/HTML — `.txt` єдине сховище» з §7.1 **зникає**).
+
+**Точка верифікації:** перед прибиранням write-точки `.txt` переконатися, що `getDocumentText`/`extractText` для searchable дістають текст із **текстового шару PDF** (pdfjsLocal), а не з фізичного `.txt`; жоден споживач (contextGenerator helper-first, агент, в'ювер) не залежить від наявності `.txt`. Старі `.txt` на Drive **лишаються** (backward-compat: `getDocumentText` читає layout→`.txt`→екстракт); разова міграція старих `.txt` — **опційно, окремо** (поза цим таском).
+
 ### Vision-метадані (перші 1-2 стор. → проти канонічної схеми)
 
 Промт повертає JSON; усі поля — **пропозиції, адвокат може поправити** (недетермінованість):
@@ -132,6 +141,7 @@ DocumentProcessorV2/DrivePicker.jsx .. видалено (злито у component
 - C: DP «просто додати» — комбо PDF/HTML/DOC/image → кожен у PDF, без нарізки; артефакти коректні (HTML/DOC searchable, scanned PDF за ocrMode).
 - D: «без OCR» — файл у `01` без артефактів у `02`; Vision повертає метадані; рендер у в'ювері; білінг (ai_usage) не загублено.
 - E: «стиснути» — PDF меншає, нарізка не ламається; зображення downscale.
+- `.txt`: інгест НЕ створює `.txt` (scanned/searchable/DOC/HTML); `getDocumentText`/`extractText` дають текст searchable з PDF на вимогу; старі `.txt` читаються (backward-compat); жоден споживач не зламався.
 - Інтеграційні: `createDocument`/`executeAction`-контракт незмінний; білінг-інструментація присутня.
 
 ## ДЖЕРЕЛА В РЕПО
