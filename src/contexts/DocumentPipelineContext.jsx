@@ -28,6 +28,7 @@ import { DocumentPipelineContext, useDocumentPipeline } from './documentPipeline
 export { DocumentPipelineContext, useDocumentPipeline };
 
 import { createStreamingExecutor } from '../services/documentPipeline/streamingExecutor.js';
+import { createIngest } from '../services/documentPipeline/ingest.js';
 import { createDefaultDrivePort } from '../services/documentPipeline/drivePort.js';
 import { createDiagLogger } from '../services/documentPipeline/diagLogger.js';
 import { createWorkerClient } from '../services/documentPipeline/workerClient.js';
@@ -280,6 +281,12 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     return executor.resume(input);
   }, [executor]);
 
+  // TASK 4 · етап A — єдина труба додавання. ingest.js — тонкий фасад поверх
+  // того самого `run` (Context-обгортка над executor): нормалізує вхід і
+  // прокидає ocrMode/compress як опції прогону (інертні до D/E). DP і модалка
+  // кличуть ОДНУ цю точку замість прямого run.
+  const { ingestFiles } = useMemo(() => createIngest({ runPipeline: run }), [run]);
+
   const cancel = useCallback(() => { cancelledRef.current = true; }, []);
   const keepPartial = useCallback((caseId, jobId) => executor.keepPartial(caseId, jobId), [executor]);
   const discardAll = useCallback((caseId, jobId) => executor.discardAll(caseId, jobId), [executor]);
@@ -340,11 +347,11 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   }, [executeAction, run, getActor, executor]);
 
   const value = useMemo(() => ({
-    run, resume, cancel, keepPartial, discardAll,
+    run, ingestFiles, resume, cancel, keepPartial, discardAll,
     ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   }), [
-    run, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
+    run, ingestFiles, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   ]);
 

@@ -36,7 +36,8 @@ describe('DP-4 UI — triage_whole_volume у «Питання» (TASK degenerate
       }],
       errors: [],
     });
-    const ctx = { run, cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+    // TASK 4 · етап A — DP кличе ingestFiles (фасад); той самий стаб-результат.
+    const ctx = { run: vi.fn(), ingestFiles: run, cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
 
     const { container } = render(
       <DocumentPipelineContext.Provider value={ctx}>

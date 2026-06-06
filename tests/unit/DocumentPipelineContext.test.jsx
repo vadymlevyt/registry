@@ -25,7 +25,7 @@ function Probe() {
   const p = useDocumentPipeline();
   return (
     <div>
-      <span data-testid="api">{['run', 'cancel', 'resume', 'keepPartial', 'discardAll']
+      <span data-testid="api">{['run', 'ingestFiles', 'cancel', 'resume', 'keepPartial', 'discardAll']
         .every((k) => typeof p[k] === 'function') ? 'ok' : 'no'}</span>
       <span data-testid="pending">{JSON.stringify(p.ecitsPending)}</span>
     </div>

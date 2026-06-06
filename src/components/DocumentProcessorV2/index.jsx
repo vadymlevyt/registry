@@ -579,7 +579,10 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
         collectDataset: getSplitterDatasetEnabled(),
         fragmentsCombined: false,
       };
-      const res = await pipeline.run(input, options);
+      // TASK 4 · етап A — єдина труба додавання (ingest.js). Опції ті самі
+      // (ocrMode='full'/compress=false дефолтяться у ingest, інертні до D/E) →
+      // поведінка незмінна; DP більше не кличе pipeline.run напряму.
+      const res = await pipeline.ingestFiles(input, options);
       if (res?.cancelled) {
         setCancelInfo({ jobId: res.jobId, readyCount: (res.readyDocuments || []).length });
       } else if (res?.blocked) {

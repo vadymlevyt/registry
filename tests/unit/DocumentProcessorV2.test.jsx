@@ -16,7 +16,7 @@ import { DocumentPipelineContext } from '../../src/contexts/DocumentPipelineCont
 import DocumentProcessorV2 from '../../src/components/DocumentProcessorV2/index.jsx';
 import * as store from '../../src/services/documentPipeline/jobProgressStore.js';
 
-const CTX = { run: vi.fn(), cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+const CTX = { run: vi.fn(), ingestFiles: vi.fn(), cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
 const CASE = { id: 'case_t', name: 'Тест', storage: { subFolders: {} } };
 
 function renderDP() {

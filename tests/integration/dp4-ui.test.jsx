@@ -22,14 +22,15 @@ const CASE = { id: 'case_dp4', name: 'Справа DP-4', storage: { subFolders:
 describe('DP-4 UI flow (вибір → запуск → результат)', () => {
   beforeEach(() => store._resetForTests());
 
-  it('вибраний файл вмикає «Розпочати»; клік викликає run(input,options) і показує документи', async () => {
-    const run = vi.fn().mockResolvedValue({
+  it('вибраний файл вмикає «Розпочати»; клік викликає ingestFiles(input,options) і показує документи', async () => {
+    // TASK 4 · етап A — DP кличе єдину трубу ingestFiles (не run напряму).
+    const ingestFiles = vi.fn().mockResolvedValue({
       ok: true,
       documents: [{ id: 'd1', name: 'Позовна заява.pdf', category: 'pleading', pageCount: 3 }],
       decisions: [],
       errors: [],
     });
-    const ctx = { run, cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+    const ctx = { run: vi.fn(), ingestFiles, cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
 
     const { container } = render(
       <DocumentPipelineContext.Provider value={ctx}>
@@ -53,12 +54,12 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
       fireEvent.click(startBtn2);
     });
 
-    expect(run).toHaveBeenCalledTimes(1);
-    const [input, options] = run.mock.calls[0];
+    expect(ingestFiles).toHaveBeenCalledTimes(1);
+    const [input, options] = ingestFiles.mock.calls[0];
     expect(input.caseId).toBe('case_dp4');
     expect(input.files).toHaveLength(1);
     expect(input.files[0].name).toBe('позов.pdf');
-    // 7 перемикачів + системні опції прокинуті у run (V2-A2 прибрав cleanForReading)
+    // 7 перемикачів + системні опції прокинуті у ingestFiles (V2-A2 прибрав cleanForReading)
     expect(options).toMatchObject({
       organizeByProceedings: true,
       integrityCheck: true,
