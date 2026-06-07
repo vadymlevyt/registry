@@ -17,6 +17,14 @@
   margin-left: auto;
 }
 
+/* Порожній стан: контейнер лишається в layout (тримає висоту бара,
+   щоб список матеріалів нижче не перераховував flex:1 при першому
+   виділенні), але невидимий і виключений з focus/AT. */
+.bulk-action-bar__actions--empty {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 @media (max-width: 768px) {
   .bulk-action-bar__actions {
     width: 100%;
