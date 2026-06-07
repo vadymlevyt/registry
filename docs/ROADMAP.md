@@ -136,6 +136,11 @@ jsPDF (спільний `/Resources`, ламав нарізку) → pdf-lib (в
 
 **Стан:** ⬜ записано в `tracking_debt.md` #52. Дизайн контекст-важеля (3 режими на документ) — §7.3.
 
+### 7.8 Уніфікація шару виклику AI (agent-runner) ⬜ (записано в борг #55)
+Виникло при обговоренні агентів (склейка/нарізка/контекст/cleanText/Vision). **Стан:** вибір моделі вже спільний (`resolveModel`); API-виклик частково спільний (`services/api.js` `callAPIWithRetry`/`callAPIStreaming` + `toolUseRunner.js`), АЛЕ адопція нерівна (App.jsx ×3, Dashboard, `claudeVision`, `contextGenerator`, `imageSortingAgent` — прямий `fetch`) і **білінг логується вручну на кожній точці**. **Ідея:** тонкий `callAgent({agentType, system, messages, tools?, stream?})` поверх наявних раннерів — сам резолвить модель і **сам логує `ai_usage`+`activityTracker`** (централізований білінг = головний виграш, прибирає клас багів «забули інструментацію»). Скоуп: програмні агенти першими; стабільні чат-агенти (QI/Dashboard/Dossier) — не чіпати.
+
+**Зв'язок із tool-use міграцією — доповнює, не замінює:** tool-use уніфікує агентів-**аналізаторів** (через `toolUseRunner` — triage/classify/sort, у D — Vision-екстракт метаданих); **текст-генерація** (контекст/cleanText/Vision-текст) — не tool-use, лишається на `callAPIStreaming`. `callAgent` — парасоля над обома + білінг. Кластер із боргами #51 (UI вибору моделі) і #54 (OCR-провайдер). Окремий cross-cutting TASK ПІСЛЯ TASK 4.
+
 ---
 
 ## 8. ПОЗА ЦИМ ROADMAP (ширша картина — лише перелік)
