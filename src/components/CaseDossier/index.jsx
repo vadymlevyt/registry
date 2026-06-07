@@ -2099,7 +2099,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                       <span style={{ fontSize: 9, color: "var(--color-text-3)" }}>{procDocs.length}</span>
                     </div>
                     {procDocs.map(doc => (
-                      <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 6px 18px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, transition: "all .15s" }}>
+                      <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px 6px 18px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, transition: "background-color .15s, border-color .15s" }}>
                         <span style={{ fontSize: 13, flexShrink: 0 }}>{doc.icon}</span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 11, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{doc.name}</div>
@@ -2116,7 +2116,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
           {/* РЕЄСТР з фільтрами */}
           {!showArchived && matMode === "registry" && (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            // transform: translateZ(0) — явна промоція підтреку реєстру (фільтри +
+            // бар мультивибору + скрол-список) у власний композитний шар. Без неї
+            // Chromium лишав підтрек у неявному/squashed-шарі, чия інвалідація при
+            // ре-рендері (клік чекбокса) ламалась, коли внутрішній список був
+            // прокручений (scrollTop>0): стале темне полотно (фон панелі,
+            // --color-bg) не перемальовувалось і читалось як «чорна штора»
+            // (бар+список темніли,
+            // кнопки масових дій зникали). Вибір на самому верху (scrollTop 0)
+            // інвалідацію не ламав. Remount вкладки лікував, бо створював шар
+            // заново — явна промоція дає той самий чистий керований шар без remount.
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", transform: "translateZ(0)" }}>
               <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
 
                 {/* Фільтр провадження */}
@@ -2204,7 +2214,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 ) : filteredDocs.map(doc => {
                   const proc = proceedings.find(p => p.id === doc.procId);
                   return (
-                    <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(59,130,246,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "all .15s" }}>
+                    <div key={doc.id} onClick={() => setSelectedDoc(doc)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", borderRadius: 'var(--radius-sm)', cursor: "pointer", background: selectedDoc?.id === doc.id ? "var(--color-surface-2)" : "transparent", border: `1px solid ${selectedDoc?.id === doc.id ? "var(--color-accent)" : "transparent"}`, marginBottom: 2, borderLeft: proc?.type === "appeal" ? "3px solid rgba(59,130,246,.45)" : proc?.type === "cassation" ? "3px solid rgba(243,156,18,.45)" : "1px solid transparent", transition: "background-color .15s, border-color .15s" }}>
                       <span onClick={(e) => e.stopPropagation()} style={{ flexShrink: 0, display: "flex" }}>
                         <Checkbox
                           checked={registrySel.isSelected(doc.id)}
