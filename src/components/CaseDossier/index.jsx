@@ -2116,17 +2116,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
 
           {/* РЕЄСТР з фільтрами */}
           {!showArchived && matMode === "registry" && (
-            // transform: translateZ(0) — явна промоція підтреку реєстру (фільтри +
-            // бар мультивибору + скрол-список) у власний композитний шар. Без неї
-            // Chromium лишав підтрек у неявному/squashed-шарі, чия інвалідація при
-            // ре-рендері (клік чекбокса) ламалась, коли внутрішній список був
-            // прокручений (scrollTop>0): стале темне полотно (фон панелі,
-            // --color-bg) не перемальовувалось і читалось як «чорна штора»
-            // (бар+список темніли,
-            // кнопки масових дій зникали). Вибір на самому верху (scrollTop 0)
-            // інвалідацію не ламав. Remount вкладки лікував, бо створював шар
-            // заново — явна промоція дає той самий чистий керований шар без remount.
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", transform: "translateZ(0)" }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
               <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
 
                 {/* Фільтр провадження */}
@@ -2208,7 +2198,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 </div>
               )}
 
-              <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: 6 }}>
+              <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", padding: 6, transform: "translateZ(0)", willChange: "transform" }}>
                 {filteredDocs.length === 0 ? (
                   <div style={{ padding: 'var(--space-5)', textAlign: "center", color: "var(--color-text-3)", fontSize: 12 }}>{"Немає документів"}</div>
                 ) : filteredDocs.map(doc => {
