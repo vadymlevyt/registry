@@ -9,8 +9,8 @@
 ## Чек-ліст етапів
 
 - [x] **A — `ingest.js` (труба в одну).** Фасад `ingestFiles(input, options)` поверх Context-`run`; DP переведено на нього (behavior-preserving). 🔹 _(зведено в main)_
-- [x] **B — винос DrivePicker** з `AddDocumentModal.jsx` → `components/DrivePicker/` (behavior-preserving).
-- [ ] **B2 — злиття пікерів** (`DocumentProcessorV2/DrivePicker.jsx` → спільний). 🔹
+- [x] **B — винос DrivePicker** з `AddDocumentModal.jsx` → `components/DrivePicker/` (behavior-preserving). _(зведено в main)_
+- [x] **B2 — злиття пікерів** (`DocumentProcessorV2/DrivePicker.jsx` → спільний; старий файл видалено). 🔹
 - [ ] **C — DP-сценарій «просто додати»** (комбо готових файлів без нарізки). 🔹
 - [ ] **D — `ocrMode` + «без OCR»** (Vision 2 стор. → метадані). 🔹
 - [ ] **E — тумблер «стиснути перед обробкою».** 🔹
@@ -51,6 +51,23 @@
 **Тести:** новий `tests/unit/DrivePicker.test.jsx` (4: browse/single-pick/multi-images select+confirm/closed); наявні `AddDocumentModal.test.jsx` Drive-visibility — зелені без змін (перевіряють пікер крізь модалку). `npm test` — **1946 passed**; `npm run build` — **success**.
 
 **Дубль-шлях CaseDossier (нагадування власника):** міграцію `CaseDossier` `pipeline.run` (≈2764) + `runOcrWithRetryUI` на `ingestFiles` роблю на **етапі C** — там зʼявляється семантика «додати як є» (add_as_is/skipPdfSlicing), яка потрібна модалці (один документ без нарізки), і там же розберу долю Claude Vision-фолбеку (стрім-шлях зараз лише Document AI).
+
+## Етап B2 — злиття пікерів (один спільний `DrivePicker`)
+
+**Зроблено** (підхід зі спеки: спільне ядро = обʼєднання можливостей; presentation/multiFilter пропи):
+- Друга копія `DocumentProcessorV2/DrivePicker.jsx` (148 рядків) **видалена**; DP тепер споживає той самий `components/DrivePicker/`.
+- Єдиний `DrivePicker({ presentation, selectionMode, multiFilter, sources, onPick, onPickMulti, … })`:
+  - `presentation: 'inline' | 'modal'` — тонка оболонка над спільним ядром (модалка→`inline` із toggle-секцією; DP→`modal` через `Modal` з Скасувати/Обрати у футері).
+  - `selectionMode: 'single' | 'multi'` + `multiFilter: 'images' | 'all'` — розділено колишній хардкод `multi-images` (правило #11: `selectionMode`=скільки, `multiFilter`=які файли). Модалка-склейка → `multi/images`; DP → `multi/all`.
+  - `sources` — обидва пікери дістають **усі 3 джерела** (Мій Drive / Поділилися / Спільні) + breadcrumb-навігацію (DP підвищився: був лише stack по Моєму Drive).
+- Ядро віддає **сирі** Drive-обʼєкти (`{id,name,mimeType,size}`); споживач мапить сам. DP `addDriveFiles` адаптовано (raw→внутрішня форма `selected[]`), толерантно до обох форм. `ImageMergePanel.addDriveFiles` уже читає raw — без змін.
+- `DrivePickerSection` лишено як inline-пресет-аліас (зворотна сумісність імпорту модалки).
+
+**Поведінка:** модалка — без змін; DP — той самий результат вибору (мультивибір будь-яких файлів), плюс bonus breadcrumb/джерела.
+
+**Тести:** `DrivePicker.test.jsx` розширено (multi/images, multi/all з сирими обʼєктами, presentation=modal діалог); `DocumentProcessorV2`/`AddDocumentModal` зелені. `npm test` — **1948 passed**; build — **success**.
+
+**Борг (нотатка):** CSS-класи лишилися `add-document-modal__drive-*` (працюють в обох оболонках). Нейтралізація імен на `drive-picker__*` — косметика, винесено у `tracking_debt` (не блокує, не вимагалось B2).
 
 ## schemaVersion / міграція (рішення — на етапі D)
 

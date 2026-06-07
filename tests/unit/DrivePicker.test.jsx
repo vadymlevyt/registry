@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
-// TASK 4 · етап B — DrivePickerSection винесено зі AddDocumentModal у
-// components/DrivePicker/. Тест фіксує поведінку винесеного пікера:
-// browse, single-pick, multi-images select+confirm, джерела (chips).
+// TASK 4 · етапи B/B2 — спільний DrivePicker (винос + злиття 2 копій).
+// Тест фіксує: browse, single-pick, multi select+confirm (images vs all),
+// джерела (chips), presentation inline vs modal.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 
 const driveRequest = vi.fn();
 vi.mock('../../src/services/driveAuth.js', () => ({
   driveRequest: (...args) => driveRequest(...args),
 }));
 
-import { DrivePickerSection } from '../../src/components/DrivePicker/index.jsx';
+import { DrivePicker, DrivePickerSection } from '../../src/components/DrivePicker/index.jsx';
 
 const FILES = [
   { id: 'fold1', name: 'Папка А', mimeType: 'application/vnd.google-apps.folder' },
@@ -49,7 +49,7 @@ describe('DrivePickerSection (винос, етап B)', () => {
     expect(onPick.mock.calls[0][0].id).toBe('pdf1');
   });
 
-  it('multi-images: лише папки+зображення; select+confirm → onPickMulti([images])', async () => {
+  it('multi/images: лише папки+зображення; select+confirm → onPickMulti([images])', async () => {
     const onPickMulti = vi.fn();
     render(
       <DrivePickerSection
@@ -58,10 +58,11 @@ describe('DrivePickerSection (винос, етап B)', () => {
         onToggle={() => {}}
         onPick={() => {}}
         onPickMulti={onPickMulti}
-        selectionMode="multi-images"
+        selectionMode="multi"
+        multiFilter="images"
       />,
     );
-    // PDF відфільтровано у multi-images; зображення і папка лишаються.
+    // PDF відфільтровано у multiFilter='images'; зображення і папка лишаються.
     expect(await screen.findByText('скан.jpg')).toBeInTheDocument();
     expect(screen.getByText('Папка А')).toBeInTheDocument();
     expect(screen.queryByText('позов.pdf')).toBeNull();
@@ -73,7 +74,45 @@ describe('DrivePickerSection (винос, етап B)', () => {
     expect(onPickMulti.mock.calls[0][0].map((f) => f.id)).toEqual(['img1']);
   });
 
-  it('закритий: список не рендериться', () => {
+  it('multi/all: усі файли обираються (PDF не відфільтровано); сирі обʼєкти у onPickMulti', async () => {
+    const onPickMulti = vi.fn();
+    render(
+      <DrivePicker
+        isOpen
+        presentation="modal"
+        selectionMode="multi"
+        multiFilter="all"
+        initialFolderId="root"
+        onClose={() => {}}
+        onPickMulti={onPickMulti}
+      />,
+    );
+    // multiFilter='all' → PDF показано і клікабельне.
+    expect(await screen.findByText('позов.pdf')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('позов.pdf'));
+    fireEvent.click(await screen.findByRole('button', { name: /Обрати 1/ }));
+    expect(onPickMulti).toHaveBeenCalledTimes(1);
+    // Сирий Drive-обʼєкт (id/mimeType), споживач мапить сам.
+    expect(onPickMulti.mock.calls[0][0][0]).toMatchObject({ id: 'pdf1', mimeType: 'application/pdf' });
+  });
+
+  it('presentation=modal: рендериться у діалозі з заголовком + Скасувати', async () => {
+    render(
+      <DrivePicker
+        isOpen
+        presentation="modal"
+        selectionMode="multi"
+        multiFilter="all"
+        initialFolderId="root"
+        onClose={() => {}}
+        onPickMulti={() => {}}
+      />,
+    );
+    expect(await screen.findByText('Вибір файлів з Google Drive')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Скасувати' })).toBeInTheDocument();
+  });
+
+  it('закритий inline: список не рендериться', () => {
     render(<DrivePickerSection isOpen={false} initialFolderId="root" onToggle={() => {}} onPick={() => {}} />);
     expect(screen.queryByText('позов.pdf')).toBeNull();
   });

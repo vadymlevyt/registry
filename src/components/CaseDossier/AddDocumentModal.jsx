@@ -262,7 +262,8 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
               onToggle={() => setMergeDrivePickerOpen(false)}
               onPick={() => { /* single not used у multi mode */ }}
               onPickMulti={handleMergeDrivePickMulti}
-              selectionMode="multi-images"
+              selectionMode="multi"
+              multiFilter="images"
             />
           )}
         </div>

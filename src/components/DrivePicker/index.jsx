@@ -1,33 +1,49 @@
-// ── DrivePicker (TASK 4 · етап B — винос зі AddDocumentModal) ────────────────
-// Спільний inline-браузер Drive з breadcrumb. Винесено з AddDocumentModal.jsx
-// без зміни поведінки (модалка стала тонким оркестратором). B2 зведе сюди другу
-// копію з DocumentProcessorV2/DrivePicker.jsx (конфіг single/multi, modal/inline).
+// ── DrivePicker (TASK 4 · етапи B/B2 — один спільний пікер) ──────────────────
+// Спільне ядро Drive-пікера для обох споживачів: модалка додавання документа
+// (inline-секція) і Document Processor (modal-вікно). B2 звів сюди другу копію
+// (DocumentProcessorV2/DrivePicker.jsx видалено) — ОБ'ЄДНАННЯ можливостей:
+// breadcrumb-навігація (багатша за DP-stack) + 3 джерела (Мій Drive / Поділилися
+// зі мною / Спільні Drive) доступні обом.
 //
-// Три режими (mode):
-//   'myDrive'      — навігація по папках Мого Drive (q='<folderId>' in parents)
-//   'sharedWithMe' — плоский список (q='sharedWithMe=true')
-//   'sharedDrives' — список спільних дисків, потім всередині них
-// folderId і sharedDriveCtx — спільні координати "де ми зараз".
-// breadcrumb — обчислюється підняттям по parents[] до кореня (правило #8: без
-// кирилиці в q=, тут і немає — тільки id-фільтри).
-// Параметр selectionMode керує поведінкою:
-//   'single'        — один клік по файлу одразу обирає (default, як було)
-//   'multi-images'  — checkbox біля файлів, фільтрація mimeType image/*,
-//                     кнопка "Обрати N зображень" внизу. onPickMulti(files[])
-//                     викликається при підтвердженні. Папки відкриваються
-//                     як зазвичай — checkbox тільки на файлах.
+// Конфігурація (правило #11 — кожен проп один сенс):
+//   presentation 'inline' | 'modal' — зовнішня оболонка (модалка→inline,
+//                                      DP→modal). Тонка обгортка над тим самим ядром.
+//   selectionMode 'single' | 'multi' — скільки файлів обираємо за раз.
+//   multiFilter  'images' | 'all'    — у multi: які файли (склейка фото → images,
+//                                      DP → all). НЕ хардкод «лише зображення».
+//   sources      []                  — які чипи джерел показувати (default — усі).
+//   onPick(rawItem)        — single: один сирий Drive-обʼєкт {id,name,mimeType,size,…}.
+//   onPickMulti(rawItem[]) — multi: масив сирих Drive-обʼєктів (споживач мапить сам).
+//
+// Drive-патерн правила #8: лише id-фільтри у q=, нуль кирилиці. OAuth токен
+// живе ~1 год → 401 показуємо як «перепідключіть Drive».
 import { useState, useEffect, useCallback } from 'react';
 import { ChevronRight, ChevronDown, Cloud } from 'lucide-react';
-import { Button } from '../UI';
+import { Modal, Button } from '../UI';
 import { ICON_SIZE } from '../UI/icons.js';
 import { driveRequest } from '../../services/driveAuth.js';
 import { SourceSwitcher } from './SourceSwitcher.jsx';
 import { Breadcrumb } from './Breadcrumb.jsx';
 import { DriveList } from './DriveList.jsx';
-import { FOLDER_MIME, PAGE_LIMIT, multiPlural } from './helpers.js';
+import { FOLDER_MIME, PAGE_LIMIT, multiPlural, DEFAULT_SOURCES } from './helpers.js';
 import './styles.css';
 
-export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, onPickMulti, selectionMode = 'single' }) {
+export function DrivePicker({
+  isOpen,
+  initialFolderId,
+  presentation = 'inline',
+  selectionMode = 'single',
+  multiFilter = 'all',
+  sources = DEFAULT_SOURCES,
+  onToggle,
+  onClose,
+  onPick,
+  onPickMulti,
+  title = 'Вибір файлів з Google Drive',
+}) {
+  const isModal = presentation === 'modal';
+  const isMulti = selectionMode === 'multi';
+
   const [mode, setMode] = useState('myDrive');
   const [folderId, setFolderId] = useState(initialFolderId || 'root');
   const [breadcrumb, setBreadcrumb] = useState([]);
@@ -53,6 +69,7 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
   // Одноразова перевірка чи є хоч один Shared Drive — щоб показати/сховати чип.
   useEffect(() => {
     if (!isOpen) return;
+    if (!sources.includes('sharedDrives')) return;
     let cancelled = false;
     (async () => {
       try {
@@ -65,7 +82,7 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
       } catch (e) {}
     })();
     return () => { cancelled = true; };
-  }, [isOpen]);
+  }, [isOpen, sources]);
 
   const buildBreadcrumb = useCallback(async (fid) => {
     if (mode === 'sharedWithMe' && !fid) {
@@ -242,9 +259,9 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
 
   function handleItemClick(item) {
     const isFolder = item.mimeType === FOLDER_MIME;
-    // Multi-images: для файлів — toggle вибору, для папок — звичайна навігація.
-    // Файли не-зображення у multi-images mode НЕ кликабельні (filtered у DriveList).
-    if (!isFolder && selectionMode === 'multi-images') {
+    // Multi: для файлів — toggle вибору, для папок — звичайна навігація.
+    // Не-релевантні файли у multi/images НЕ кликабельні (filtered у DriveList).
+    if (!isFolder && isMulti) {
       setSelectedFiles((prev) => {
         const next = new Map(prev);
         if (next.has(item.id)) next.delete(item.id);
@@ -254,7 +271,8 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
       return;
     }
     if (!isFolder) {
-      onPick(item);
+      if (typeof onPick === 'function') onPick(item);
+      if (isModal && typeof onClose === 'function') onClose();
       return;
     }
     if (item.__isSharedDrive) {
@@ -272,6 +290,7 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
       onPickMulti(Array.from(selectedFiles.values()));
     }
     setSelectedFiles(new Map());
+    if (isModal && typeof onClose === 'function') onClose();
   }
 
   function handleCrumbClick(crumb) {
@@ -298,6 +317,65 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
     else loadFolder(folderId);
   }
 
+  // Підпис кнопки підтвердження мультивибору (images → з плюралом, all → просто).
+  const confirmLabel = multiFilter === 'images'
+    ? `Обрати ${selectedFiles.size} зображен${multiPlural(selectedFiles.size)}`
+    : `Обрати ${selectedFiles.size > 0 ? selectedFiles.size : ''}`.trim();
+
+  // Спільне ядро браузера (джерела + breadcrumb + список). Однакове в обох
+  // оболонках — різниця лише в зовнішній рамці й місці кнопки підтвердження.
+  const browse = (
+    <>
+      <SourceSwitcher
+        mode={mode}
+        sharedDrivesAvail={sharedDrivesAvail}
+        onChange={handleSourceChange}
+        sources={sources}
+      />
+      <Breadcrumb crumbs={breadcrumb} onClick={handleCrumbClick} />
+      <DriveList
+        items={items}
+        loading={loading}
+        error={error}
+        hitLimit={hitLimit}
+        onItemClick={handleItemClick}
+        onRetry={handleRetry}
+        selectionMode={selectionMode}
+        multiFilter={multiFilter}
+        selectedFiles={selectedFiles}
+      />
+    </>
+  );
+
+  // ── Modal-оболонка (DP) ─────────────────────────────────────────────────
+  if (isModal) {
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title={title}
+        size="lg"
+        actions={
+          <>
+            <Button variant="ghost" onClick={onClose}>Скасувати</Button>
+            {isMulti && (
+              <Button
+                variant="primary"
+                disabled={selectedFiles.size === 0}
+                onClick={handleConfirmMulti}
+              >
+                {confirmLabel}
+              </Button>
+            )}
+          </>
+        }
+      >
+        <div className="add-document-modal__drive-browser">{browse}</div>
+      </Modal>
+    );
+  }
+
+  // ── Inline-оболонка (модалка додавання документа) ────────────────────────
   return (
     <div className="add-document-modal__drive-section">
       <button
@@ -313,26 +391,8 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
 
       {isOpen && (
         <div className="add-document-modal__drive-browser">
-          <SourceSwitcher
-            mode={mode}
-            sharedDrivesAvail={sharedDrivesAvail}
-            onChange={handleSourceChange}
-          />
-
-          <Breadcrumb crumbs={breadcrumb} onClick={handleCrumbClick} />
-
-          <DriveList
-            items={items}
-            loading={loading}
-            error={error}
-            hitLimit={hitLimit}
-            onItemClick={handleItemClick}
-            onRetry={handleRetry}
-            selectionMode={selectionMode}
-            selectedFiles={selectedFiles}
-          />
-
-          {selectionMode === 'multi-images' && (
+          {browse}
+          {isMulti && (
             <div className="add-document-modal__drive-multi-footer">
               <span className="add-document-modal__drive-multi-count">
                 Обрано {selectedFiles.size}
@@ -343,7 +403,7 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
                 onClick={handleConfirmMulti}
                 disabled={selectedFiles.size === 0}
               >
-                Обрати {selectedFiles.size} зображен{multiPlural(selectedFiles.size)}
+                {confirmLabel}
               </Button>
             </div>
           )}
@@ -351,4 +411,10 @@ export function DrivePickerSection({ isOpen, initialFolderId, onToggle, onPick, 
       )}
     </div>
   );
+}
+
+// Зворотна сумісність: тонкий inline-пресет (модалка історично імпортувала
+// DrivePickerSection). Делегує у DrivePicker з presentation='inline'.
+export function DrivePickerSection(props) {
+  return <DrivePicker {...props} presentation="inline" />;
 }

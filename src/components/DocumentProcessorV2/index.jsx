@@ -20,7 +20,7 @@ import { getSplitterDatasetEnabled, setSplitterDatasetEnabled, getCurrentUserId,
 import * as eventBus from '../../services/eventBus.js';
 import { DOCUMENT_BATCH_PROCESSED } from '../../services/eventBusTopics.js';
 import { useDocumentPipeline } from '../../contexts/DocumentPipelineContext.jsx';
-import { DrivePicker } from './DrivePicker.jsx';
+import { DrivePicker } from '../DrivePicker/index.jsx';
 import { RecognizeTextModal } from './modals/RecognizeTextModal.jsx';
 import { CompressFilesModal } from './modals/CompressFilesModal.jsx';
 import { InboxConflictModal } from './modals/InboxConflictModal.jsx';
@@ -153,12 +153,19 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     ]);
   };
 
+  // B2: спільний DrivePicker віддає СИРІ Drive-обʼєкти ({id,name,mimeType,size}).
+  // Мапимо у внутрішню форму selected[] (driveId/mime), яку читають buildRunInput
+  // і startImageMergeProcessing. Толерантні до обох форм (raw і старої нормалізованої).
   const addDriveFiles = (picked) => {
     setSelected((prev) => [
       ...prev,
       ...picked.map((p) => ({
-        key: nextKey(), name: p.name, size: p.size, mime: p.mime,
-        origin: 'drive', driveId: p.driveId,
+        key: nextKey(),
+        name: p.name,
+        size: Number(p.size) || 0,
+        mime: p.mimeType || p.mime || null,
+        origin: 'drive',
+        driveId: p.id || p.driveId,
       })),
     ]);
   };
@@ -948,7 +955,10 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       <DrivePicker
         isOpen={drivePickerOpen}
         onClose={() => setDrivePickerOpen(false)}
-        onPick={addDriveFiles}
+        presentation="modal"
+        selectionMode="multi"
+        multiFilter="all"
+        onPickMulti={addDriveFiles}
         initialFolderId={caseData?.storage?.driveFolderId || 'root'}
       />
       <RecognizeTextModal
