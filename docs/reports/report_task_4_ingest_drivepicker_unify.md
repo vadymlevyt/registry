@@ -8,8 +8,8 @@
 
 ## Чек-ліст етапів
 
-- [x] **A — `ingest.js` (труба в одну).** Фасад `ingestFiles(input, options)` поверх Context-`run`; DP переведено на нього (behavior-preserving). 🔹
-- [ ] **B — винос DrivePicker** з `AddDocumentModal.jsx` → `components/DrivePicker/`.
+- [x] **A — `ingest.js` (труба в одну).** Фасад `ingestFiles(input, options)` поверх Context-`run`; DP переведено на нього (behavior-preserving). 🔹 _(зведено в main)_
+- [x] **B — винос DrivePicker** з `AddDocumentModal.jsx` → `components/DrivePicker/` (behavior-preserving).
 - [ ] **B2 — злиття пікерів** (`DocumentProcessorV2/DrivePicker.jsx` → спільний). 🔹
 - [ ] **C — DP-сценарій «просто додати»** (комбо готових файлів без нарізки). 🔹
 - [ ] **D — `ocrMode` + «без OCR»** (Vision 2 стор. → метадані). 🔹
@@ -38,6 +38,19 @@
 **schemaVersion:** без змін (етап A не торкається структур даних).
 
 ---
+
+## Етап B — винос DrivePicker
+
+**Зроблено:** inline DrivePicker-сімейство (~550 рядків) винесено зі `AddDocumentModal.jsx` у нову теку `src/components/DrivePicker/`:
+- `index.jsx` (`DrivePickerSection` — оркестратор browse/breadcrumb/3 джерела), `SourceSwitcher.jsx`, `Breadcrumb.jsx`, `DriveList.jsx`, `DriveListItem.jsx`, `helpers.js` (`FOLDER_MIME`/`PAGE_LIMIT`/`filterForSelectionMode`/`multiPlural`), `styles.css`.
+- CSS-блок drive-* перенесено зі `AddDocumentModal.css` у `DrivePicker/styles.css` **з тими самими іменами класів** (behavior-preserving; нейтралізація імен — на B2 при злитті).
+- `AddDocumentModal.jsx` 1040 → **478 рядків**: лишилися лише модальні `StartButton`/`stripExtension`/`FileUploadZone` + сам компонент; обидва місця, де модалка вживає пікер (single-форма і merge-mode), тепер дротують імпортований `DrivePickerSection`. Прибрано осиротілі імпорти (`driveRequest`, `useCallback`, 7 lucide-іконок) і константи.
+
+**Поведінка:** ідентична — той самий компонент, ті самі класи, ті самі пропси (`selectionMode` single/multi-images).
+
+**Тести:** новий `tests/unit/DrivePicker.test.jsx` (4: browse/single-pick/multi-images select+confirm/closed); наявні `AddDocumentModal.test.jsx` Drive-visibility — зелені без змін (перевіряють пікер крізь модалку). `npm test` — **1946 passed**; `npm run build` — **success**.
+
+**Дубль-шлях CaseDossier (нагадування власника):** міграцію `CaseDossier` `pipeline.run` (≈2764) + `runOcrWithRetryUI` на `ingestFiles` роблю на **етапі C** — там зʼявляється семантика «додати як є» (add_as_is/skipPdfSlicing), яка потрібна модалці (один документ без нарізки), і там же розберу долю Claude Vision-фолбеку (стрім-шлях зараз лише Document AI).
 
 ## schemaVersion / міграція (рішення — на етапі D)
 
