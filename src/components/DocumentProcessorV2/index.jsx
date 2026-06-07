@@ -29,6 +29,7 @@ import { DpImageMergeEditor } from './DpImageMergeEditor.jsx';
 import { isImageFile } from '../ImageEditor/constants.js';
 import { ProcessingProgress } from '../ImageEditor/ProcessingProgress.jsx';
 import { prepareImagesForMerge } from '../../services/imageDocument/prepareImagesForMerge.js';
+import { downscaleImage } from '../../services/imageDocument/downscaleImage.js';
 import { groupImagesIntoDocuments } from '../../services/sortation/imageDocumentGrouper.js';
 import { sortImageDocument } from '../../services/imageDocument/sortImageDocument.js';
 import { rebuildFromOcrResults } from '../../services/imageDocument/pdfRebuild.js';
@@ -235,6 +236,78 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     };
   };
 
+  // ── 1C «просто додати» (add_as_is) · вхід для non-streaming труби ────────
+  // Кожен файл → raw File (converterService приводить до PDF: HTML/DOCX →
+  // searchable PDF, фото → imageToPdf, PDF → passthrough). Фото проходять
+  // downscale (≤2400px) перед конвертацією — менший PDF, нижчий пік памʼяті.
+  // Drive/INBOX-файли матеріалізуються у File (конвертер очікує File/Blob, а
+  // не лише driveId — інакше DOCX/фото з Drive не сконвертувались би).
+  const buildAddAsIsInput = async () => {
+    const files = [];
+    const materialize = async (origin) => {
+      // origin: { key, name, mime, file?, driveId? } | INBOX {id,name,mimeType}
+      let rawFile = null;
+      if (origin.file) {
+        rawFile = origin.file;
+      } else if (origin.driveId || origin.id) {
+        const id = origin.driveId || origin.id;
+        const res = await driveRequest(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`);
+        if (!res.ok) throw new Error(`Drive HTTP ${res.status} (${origin.name})`);
+        const blob = await res.blob();
+        rawFile = new File([blob], origin.name, {
+          type: origin.mime || origin.mimeType || blob.type || 'application/octet-stream',
+        });
+      }
+      if (!rawFile) return null;
+      // Downscale лише для фото (no-op якщо вже ≤ maxDim).
+      if (isImageFile({ name: rawFile.name, type: rawFile.type })) {
+        try {
+          const ds = await downscaleImage(rawFile);
+          if (ds && ds !== rawFile) {
+            rawFile = new File([ds], rawFile.name, { type: ds.type || rawFile.type || 'image/jpeg' });
+          }
+        } catch (e) {
+          console.warn('[buildAddAsIsInput] downscale failed (non-fatal):', e?.message || e);
+        }
+      }
+      return rawFile;
+    };
+
+    for (const s of selected) {
+      const rawFile = await materialize({
+        name: s.name, mime: s.mime, file: s.origin === 'device' ? s.file : null, driveId: s.driveId,
+      });
+      if (!rawFile) continue;
+      files.push({
+        fileId: s.key, name: rawFile.name, size: rawFile.size,
+        originalMime: rawFile.type || s.mime || null, raw: rawFile,
+      });
+    }
+    for (const f of inboxSelected) {
+      const rawFile = await materialize({ id: f.id, name: f.name, mimeType: f.mimeType });
+      if (!rawFile) continue;
+      files.push({
+        fileId: `inbox_${f.id}`, name: rawFile.name, size: rawFile.size,
+        originalMime: rawFile.type || f.mimeType || null, raw: rawFile,
+      });
+    }
+    return {
+      caseId: caseData.id,
+      caseData,
+      agentId: 'document_processor_agent',
+      source: 'manual',
+      addedBy: 'user',
+      module: MODULES.DOCUMENT_PROCESSOR,
+      operation: 'add_document',
+      conversionContext: {
+        caseId: caseData.id,
+        module: MODULES.DOCUMENT_PROCESSOR,
+        operation: 'add_document',
+      },
+      files,
+    };
+  };
+
   // ── 1B image_merge_unify: чи весь батч — фото? ─────────────────────────
   // Детермінований вибір сценарію НА ВХОДІ. Корінь падіння який лагодимо:
   // streamingExecutor.streamFile жене кожен файл через chunk-OCR PDF до
@@ -253,6 +326,15 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     || inboxSelected.some((f) => isImageFile({ name: f.name, type: f.mimeType }));
   const hasAnyNonImage = () => selected.some((s) => !isImageFile({ name: s.name, type: s.mime }))
     || inboxSelected.some((f) => !isImageFile({ name: f.name, type: f.mimeType }));
+
+  // 1C — чи це PDF (mime або розширення). Маршрутизація «просто додати»:
+  // all-PDF → стрім-шлях (нарізка пропускається triage'ем, behavior-preserve);
+  // будь-який не-PDF / комбо → non-streaming add_as_is (усі типи за раз).
+  const isPdfLike = ({ name, mime }) =>
+    (typeof mime === 'string' && mime === 'application/pdf')
+    || /\.pdf$/i.test(String(name || ''));
+  const hasAnyNonPdf = () => selected.some((s) => !isPdfLike({ name: s.name, mime: s.mime }))
+    || inboxSelected.some((f) => !isPdfLike({ name: f.name, mime: f.mimeType }));
 
   // ── 1B: запуск image-merge сценарію (повз pipeline.run) ─────────────────
   const startImageMergeProcessing = async () => {
@@ -555,22 +637,27 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       setInboxConflict({ newCount: selected.length });
       return;
     }
-    // 1B image_merge_unify — детермінований вибір сценарію НА ВХОДІ:
-    //   • all-image (device/drive) + toggle skipPdfSlicing=false → DP image-merge editor
-    //   • all-image + toggle skipPdfSlicing=true → звичайний pipeline (per-file
-    //     image_merge solo, без grouper'а — адвокат каже «не групувати»)
-    //   • мікс photo+PDF — toast + борг (1B scope boundary, не latch)
-    //   • all-PDF / mix без фото — звичайний pipeline
+    // Маршрутизація сценаріїв (детермінований вибір НА ВХОДІ):
+    //   • all-image + toggle OFF → DP image-merge editor (склейка авто).
+    //   • toggle ON «Просто додати» + будь-який НЕ-PDF / комбо → add_as_is
+    //     (non-streaming, усі типи за раз; кожен файл = один документ). 1C.
+    //   • toggle ON + all-PDF → стрім-шлях (triage пропускає нарізку,
+    //     behavior-preserve — як було).
+    //   • toggle OFF + мікс photo+PDF → toast (нарізка-мікс поза scope; для
+    //     комбо адвокат вмикає «Просто додати»).
+    //   • toggle OFF + all-PDF / mix без фото → стрім-шлях з AI Triage.
     if (isAllImagesInput() && !settings.skipPdfSlicing) {
       await startImageMergeProcessing();
       return;
     }
-    if (hasAnyImage() && hasAnyNonImage()) {
-      // Мікс — поза scope 1B. Акуратний toast (без крах) + лишаємо адвоката
-      // вирішити: або зняти non-image файли і отримати editor, або зняти
-      // фото і добавити PDF окремо.
-      toast.warning('Мікс фото + PDF: оберіть або тільки фото, або тільки PDF', {
-        description: 'Інтерактивна склейка фото у DP працює лише для чистих наборів фото. PDF-нарізку запускайте окремо.',
+    // 1C — «Просто додати» на всі типи. Не-PDF або комбо → non-streaming
+    // add_as_is труба; чисто-PDF лишається на стрім-шляху (нижче).
+    const useAddAsIs = settings.skipPdfSlicing === true && hasAnyNonPdf();
+    if (!useAddAsIs && hasAnyImage() && hasAnyNonImage()) {
+      // Мікс фото+PDF у режимі НАРІЗКИ (toggle OFF) — поза scope. Підказуємо
+      // увімкнути «Просто додати» для комбо без нарізки.
+      toast.warning('Мікс фото + PDF: увімкніть «Просто додати файли» для комбо', {
+        description: 'Нарізка працює лише для чистих наборів. Для змішаного набору без нарізки — тумблер «Просто додати файли».',
       });
       return;
     }
@@ -578,17 +665,19 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     setResult(null);
     pipeline.expandProgress?.();        // новий run → повноекранний прогрес (не топбар)
     try {
-      const input = await buildRunInput();
+      const input = useAddAsIs ? await buildAddAsIsInput() : await buildRunInput();
       if (input.files.length === 0) { toast.warning('Немає файлів для обробки'); setRunning(false); return; }
       const options = {
         ...settings,
         autoConfirm: true,
         collectDataset: getSplitterDatasetEnabled(),
         fragmentsCombined: false,
+        // 1C — маршрут труби: add_as_is (не-PDF/комбо, кожен файл = документ)
+        // або slice (стрім-нарізка/просто-PDF). ingest читає options.mode.
+        ...(useAddAsIs ? { mode: 'add_as_is' } : {}),
       };
-      // TASK 4 · етап A — єдина труба додавання (ingest.js). Опції ті самі
-      // (ocrMode='full'/compress=false дефолтяться у ingest, інертні до D/E) →
-      // поведінка незмінна; DP більше не кличе pipeline.run напряму.
+      // TASK 4 · етап A/C — єдина труба додавання (ingest.js). mode маршрутизує
+      // slice↔add_as_is; решта опцій ті самі. DP не кличе pipeline.run напряму.
       const res = await pipeline.ingestFiles(input, options);
       if (res?.cancelled) {
         setCancelInfo({ jobId: res.jobId, readyCount: (res.readyDocuments || []).length });

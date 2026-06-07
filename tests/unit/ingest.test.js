@@ -58,4 +58,41 @@ describe('ingest.createIngest', () => {
     const res = await ingestFiles({ files: [{ fileId: 'f0' }] });
     expect(res).toBe(result);
   });
+
+  // ── TASK 4 · етап C — маршрутизація mode (slice ↔ add_as_is) ──────────────
+  it('mode add_as_is → runAddAsIs, НЕ runPipeline; mode НЕ прокидається далі', async () => {
+    const runPipeline = vi.fn(async () => ({ ok: true }));
+    const runAddAsIs = vi.fn(async () => ({ ok: true, documents: [{ id: 'd1' }] }));
+    const { ingestFiles } = createIngest({ runPipeline, runAddAsIs });
+    const input = { caseId: 'c1', files: [{ fileId: 'f0', raw: {} }] };
+    const res = await ingestFiles(input, { mode: 'add_as_is', deferOcr: true, ocrMode: 'full' });
+    expect(res.documents).toEqual([{ id: 'd1' }]);
+    expect(runAddAsIs).toHaveBeenCalledTimes(1);
+    expect(runPipeline).not.toHaveBeenCalled();
+    const [passedInput, opts] = runAddAsIs.mock.calls[0];
+    expect(passedInput).toBe(input);
+    expect(opts).not.toHaveProperty('mode');     // mode маршрутизує, не тече далі
+    expect(opts.deferOcr).toBe(true);            // pipelineSettings прокинуто
+    expect(opts.ocrMode).toBe('full');
+  });
+
+  it('mode slice (дефолт) → runPipeline; runAddAsIs не чіпається', async () => {
+    const runPipeline = vi.fn(async () => ({ ok: true }));
+    const runAddAsIs = vi.fn(async () => ({ ok: true }));
+    const { ingestFiles } = createIngest({ runPipeline, runAddAsIs });
+    await ingestFiles({ files: [{ fileId: 'f0' }] }, { skipPdfSlicing: true });
+    expect(runPipeline).toHaveBeenCalledTimes(1);
+    expect(runAddAsIs).not.toHaveBeenCalled();
+    const [, opts] = runPipeline.mock.calls[0];
+    expect(opts).not.toHaveProperty('mode');
+  });
+
+  it('mode add_as_is без runAddAsIs — кидає (а не тихо в slice)', async () => {
+    const runPipeline = vi.fn(async () => ({ ok: true }));
+    const { ingestFiles } = createIngest({ runPipeline });
+    await expect(
+      ingestFiles({ files: [{ fileId: 'f0' }] }, { mode: 'add_as_is' }),
+    ).rejects.toThrow(/runAddAsIs/);
+    expect(runPipeline).not.toHaveBeenCalled();
+  });
 });

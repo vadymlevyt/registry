@@ -19,11 +19,23 @@
 // етапі D — тут лише дефолт, щоб ingest не нав'язував поведінки.
 export const DEFAULT_OCR_MODE = 'full';
 
+// Режими інгесту (один сенс на значення, правило #11):
+//   'slice'      — конвеєр з нарізкою/потоковим OCR (streamingExecutor + AI
+//                  Triage). Default: DP-нарізка і поточна поведінка.
+//   'add_as_is'  — кожен файл = один документ, БЕЗ нарізки; усі типи
+//                  (PDF/HTML/DOCX/image) і будь-яка КОМБІНАЦІЯ за раз через
+//                  converterService (non-streaming per-file). Споживачі:
+//                  модалка «+ Додати документ» і DP-тумблер «Просто додати».
+export const INGEST_MODE = Object.freeze({ SLICE: 'slice', ADD_AS_IS: 'add_as_is' });
+
 // createIngest — фабрика фасаду.
-//   runPipeline(input, options) → Promise<result>
-//     ЄДИНА залежність: функція запуску конвеєра. Контракт результату —
-//     той самий що executor.run (ok/jobId/documents/decisions/errors/…).
-export function createIngest({ runPipeline } = {}) {
+//   runPipeline(input, options)  → Promise<result>
+//     Запуск конвеєра з нарізкою (streamingExecutor.run через Context-обгортку).
+//     Контракт результату — той самий що executor.run.
+//   runAddAsIs(input, options)?  → Promise<result>
+//     Non-streaming per-file додавання (mode 'add_as_is'). Опційний: якщо не
+//     переданий, виклик з mode 'add_as_is' кине (TASK 4 етап C активує).
+export function createIngest({ runPipeline, runAddAsIs } = {}) {
   if (typeof runPipeline !== 'function') {
     throw new Error('createIngest: runPipeline обовʼязковий');
   }
@@ -31,25 +43,38 @@ export function createIngest({ runPipeline } = {}) {
   // ingestFiles — єдина точка входу додавання.
   //   input   — { caseId, caseData, files:[...], agentId, source, addedBy,
   //              conversionContext?, jobId? } (той самий вхід що executor.run).
-  //   options — { ocrMode?, compress?, onProgress?, ...pipelineSettings }.
-  //             pipelineSettings (skipPdfSlicing/autoConfirm/collectDataset/…)
-  //             прокидаються БЕЗ змін — ingest їх не інтерпретує.
-  // Повертає той самий результат, що runPipeline; на порожньому вході —
-  // { ok:false, error:{ code:'NO_FILES' } } (не кидає — caller показує toast).
+  //   options — { mode?, ocrMode?, compress?, onProgress?, ...pipelineSettings }.
+  //             mode маршрутизує (slice ↔ add_as_is) і НЕ прокидається далі.
+  //             pipelineSettings (skipPdfSlicing/autoConfirm/collectDataset/
+  //             buildDocumentMetadata/deferOcr/…) прокидаються БЕЗ змін.
+  // Повертає той самий результат, що runPipeline/runAddAsIs; на порожньому
+  // вході — { ok:false, error:{ code:'NO_FILES' } } (не кидає — caller toast).
   async function ingestFiles(input = {}, options = {}) {
     const files = Array.isArray(input.files) ? input.files : [];
     if (files.length === 0) {
       return { ok: false, error: { code: 'NO_FILES', message: 'Немає файлів для обробки' } };
     }
     const {
+      mode = INGEST_MODE.SLICE,
       ocrMode = DEFAULT_OCR_MODE,
       compress = false,
       ...pipelineSettings
     } = options;
     // ocrMode/compress лягають у опції прогону поряд з налаштуваннями DP.
-    // Споживачі (streamingExecutor/buildPipelineDeps) з'являться у D/E; на
-    // етапі A вони присутні, але інертні → поведінка байт-у-байт та сама.
+    // Споживачі ocrMode/compress у streaming-гілці з'являться у D/E.
     const runOptions = { ...pipelineSettings, ocrMode, compress };
+
+    // 'add_as_is' — труба без нарізки (усі типи + комбо). Один файл = один
+    // документ; converterService приводить до PDF; searchable/конвертовані
+    // читаються на вимогу. Етап C — спільний шлях для модалки і DP «просто
+    // додати».
+    if (mode === INGEST_MODE.ADD_AS_IS) {
+      if (typeof runAddAsIs !== 'function') {
+        throw new Error('createIngest: runAddAsIs обовʼязковий для mode add_as_is');
+      }
+      return runAddAsIs(input, runOptions);
+    }
+
     return runPipeline(input, runOptions);
   }
 

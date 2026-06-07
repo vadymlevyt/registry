@@ -11,7 +11,7 @@
 - [x] **A — `ingest.js` (труба в одну).** Фасад `ingestFiles(input, options)` поверх Context-`run`; DP переведено на нього (behavior-preserving). 🔹 _(зведено в main)_
 - [x] **B — винос DrivePicker** з `AddDocumentModal.jsx` → `components/DrivePicker/` (behavior-preserving). _(зведено в main)_
 - [x] **B2 — злиття пікерів** (`DocumentProcessorV2/DrivePicker.jsx` → спільний; старий файл видалено). 🔹
-- [ ] **C — DP-сценарій «просто додати»** (комбо готових файлів без нарізки). 🔹
+- [x] **C — DP «просто додати» на всі типи + комбо; усунення дубль-шляху CaseDossier; Vision-фолбек збережено.** 🔹
 - [ ] **D — `ocrMode` + «без OCR»** (Vision 2 стор. → метадані). 🔹
 - [ ] **E — тумблер «стиснути перед обробкою».** 🔹
 
@@ -68,6 +68,91 @@
 **Тести:** `DrivePicker.test.jsx` розширено (multi/images, multi/all з сирими обʼєктами, presentation=modal діалог); `DocumentProcessorV2`/`AddDocumentModal` зелені. `npm test` — **1948 passed**; build — **success**.
 
 **Борг (нотатка):** CSS-класи лишилися `add-document-modal__drive-*` (працюють в обох оболонках). Нейтралізація імен на `drive-picker__*` — косметика, винесено у `tracking_debt` (не блокує, не вимагалось B2).
+
+## Етап C — «просто додати» на всі типи + одна труба (усунення дубль-шляху)
+
+**Суть:** додано non-streaming труби `add_as_is` (кожен файл = один документ, без
+нарізки, усі типи + будь-яка комбінація), і модалка `+ Додати документ` переведена
+з власного `createDocumentPipeline` на спільний `ingestFiles` (C4 — дубль-шлях
+усунено). all-PDF «просто додати» лишається на стрім-шляху — behavior-preserve.
+
+**Маршрутизація труби (`ingest.js`, `INGEST_MODE`):**
+- `mode:'slice'` (default) → `runPipeline` (streamingExecutor + AI Triage) — як було.
+- `mode:'add_as_is'` → `runAddAsIs` (non-streaming per-file). `mode` маршрутизує і
+  **НЕ тече далі** в опції прогону. Виклик add_as_is без `runAddAsIs` — кидає
+  (не тихо в slice).
+
+**`runAddAsIs` (DocumentPipelineContext):** non-streaming труба поверх спільного
+диригента `createDocumentPipeline` (convert→detect(passthrough)→…→persist→emit).
+Обробляє всі типи через `converterService` (HTML/DOCX→searchable PDF, фото→
+imageToPdf, PDF→passthrough) і будь-яку комбінацію (диригент циклить per file).
+DI-шви (модаль ін'єктує своє, DP лишає дефолт):
+- `buildDocumentMetadata` — дефолт `defaultAddAsIsMetadata` (ім'я з файлу, nature
+  виводиться, category/author/procId=null → маркер «потребує перегляду»). Модаль
+  передає форму-білдер адвоката.
+- `uploadFile` — дефолт `uploadToOriginals`; модаль передає `uploadFileLocal`
+  (verify/ensureSubFolders — точна поведінка).
+- `persistDocument` — дефолт `document_processor_agent/add_documents` (той самий
+  шлях що стрім); модаль передає `dossier_agent/add_document` + updateCase-fallback.
+- `deferOcr` — модаль ставить `true` (робить власний пост-OCR з Vision); DP лишає
+  дефолтний `ocrEnrichAddAsIs`.
+
+**DP «просто додати» (DocumentProcessorV2):** тумблер `skipPdfSlicing` («Просто
+додати файли») — РОЗШИРЕНО наявний УВІМК-шлях (правило #11, не новий перемикач):
+- all-image + toggle OFF → image-merge editor (склейка авто) — як було.
+- toggle ON + будь-який НЕ-PDF / комбо → `add_as_is` (новий `buildAddAsIsInput`:
+  матеріалізує device/Drive/INBOX у `File`; фото проходять `downscaleImage` ≤2400px
+  перед конвертацією). Кожен файл = один документ.
+- toggle ON + all-PDF → стрім-шлях (triage пропускає нарізку) — behavior-preserve.
+- toggle OFF + мікс фото+PDF → toast підказує увімкнути «Просто додати» (раніше
+  глухий reject; нарізка-мікс далі поза scope).
+
+**Дубль-шлях CaseDossier (C4):** `CaseDossier/index.jsx` модаль `onSubmit` більше
+НЕ будує приватний `createDocumentPipeline` — кличе `docPipeline.ingestFiles(input,
+{ mode:'add_as_is', deferOcr:true, buildDocumentMetadata, uploadFile, persistDocument })`.
+Імпорти `createDocumentPipeline`/`convertToPdf`/`getCurrentUser`/`DOCUMENT_INGESTED`
+прибрано (мертві після міграції). Пост-OCR блок (гілки А/Б/В + `runOcrWithRetryUI`)
+лишився в модалці незмінним. `runOcrWithRetryUI` (зокрема reprocess-кнопка
+~2326) — НЕ чіпали (інший шов).
+
+**Claude Vision-фолбек (засторога спеки):** ЗБЕРЕЖЕНО, не втрачено тихо.
+- Модаль: `deferOcr:true` → `runAddAsIs` не OCR-ить сам; модаль робить власний
+  пост-OCR через `runOcrWithRetryUI` з повним Vision-діалогом (NETWORK exhausted →
+  systemConfirm → forceProvider:'claudeVision'). Resilience не змінилась.
+- DP «просто додати»: `ocrEnrichAddAsIs` — best-effort Document AI (каскад
+  pdfjsLocal→documentAi; searchable дешево через pdfjsLocal, не Document AI). Це
+  **паритет з поточним стрім-«просто додати»**, який теж лише Document AI (Vision
+  у стрім-шляху ніколи не було). Vision доступний пізніше через в'ювер
+  «Розпізнати». Свідомо без Vision у DP-батчі (немає інтерактивного діалогу).
+
+**Білінг:** не загублено. Конвертація інструментується у `converterService`
+(`document_converted`) — одна точка, спільна. OCR: Document AI — не Anthropic-виклик
+(`ai_usage` не застосовний); Claude Vision у модалці логує `ai_usage` всередині
+`claudeVision`/ocrService (незмінено). `add_documents`/`add_document` проходять
+через `executeAction` (audit/billing/permissions на місці).
+
+**`.txt` / searchable:** поведінку НЕ міняли в C (як і етап A). DOCX/HTML і далі
+пишуть `.txt` (текст з конвертера); scanned — layout. Повна відмова від `.txt`
+(наскрізна вимога спеки) — окремий шов, поза вузьким scope C (узгоджено з нотаткою
+етапу A). Споживачі (`getDocumentText`) не змінювались.
+
+**Межі (свідомо НЕ робив у C):** `ocrMode='none'`/Vision-метадані — етап D;
+стиснення — етап E; нейтралізація CSS-класів пікера — borg; `.txt`-removal —
+окремо. add_as_is комбо: збій конвертації одного файла зупиняє батч (single-file
+семантика `createDocumentPipeline`; batch-continue — розширення поза C).
+
+**Тести (нові/оновлені):**
+- `tests/unit/ingest.test.js` (+3): маршрутизація mode add_as_is→runAddAsIs;
+  slice(дефолт)→runPipeline; add_as_is без runAddAsIs кидає; `mode` не тече далі.
+- `tests/unit/runAddAsIs.test.jsx` (новий, 2): persist через
+  document_processor_agent/add_documents + дефолтні канонічні метадані
+  (name/nature/folder/source); deferOcr пропускає OCR; комбо → N документів.
+- `tests/integration/dp4-add-as-is.test.jsx` (новий, 2): toggle ON + DOCX →
+  ingestFiles{mode:add_as_is} з raw-файлом + module/conversionContext; toggle ON +
+  all-PDF → стрім-шлях (mode не виставляється).
+- `npm test` — **1955 passed**; `npm run build` — **success**.
+
+**schemaVersion:** без змін (C не торкається структур даних).
 
 ## schemaVersion / міграція (рішення — на етапі D)
 

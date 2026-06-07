@@ -3,11 +3,9 @@ import { createCaseStructure, getDriveFiles, readDriveFile, createDriveFile, upd
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
-import { convertToPdf } from "../../services/converter/converterService.js";
-import { createDocumentPipeline } from "../../services/documentPipeline.js";
+import { useDocumentPipeline } from "../../contexts/documentPipelineContextCore.js";
 import * as eventBus from "../../services/eventBus.js";
-import { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED } from "../../services/eventBusTopics.js";
-import { getCurrentUser } from "../../services/tenantService.js";
+import { DOCUMENT_BATCH_PROCESSED } from "../../services/eventBusTopics.js";
 import { inferNatureFromFile, defaultNatureForUI } from "../../services/detectDocumentNature.js";
 import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
 import { toast } from "../../services/toast.js";
@@ -57,6 +55,11 @@ const PROC_COLORS = {
 };
 
 export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected, onExecuteAction, setAiUsage }) {
+  // TASK 4 · етап C — спільна труба додавання. Модалка «+ Додати документ»
+  // йде через docPipeline.ingestFiles({mode:'add_as_is'}) замість приватного
+  // createDocumentPipeline (усунення дубль-шляху C4). Пост-OCR з Vision-
+  // фолбеком лишається тут (deferOcr=true → runAddAsIs не OCR-ить сам).
+  const docPipeline = useDocumentPipeline();
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -2740,52 +2743,53 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             };
           };
 
-          const pipeline = createDocumentPipeline({
-            convertToPdf,
-            uploadFile: uploadFileLocal,
-            createDocument,
-            buildDocumentMetadata,
-            persistDocument: async ({ caseId, document }) => {
-              if (onExecuteAction) {
-                return await onExecuteAction('dossier_agent', 'add_document', { caseId, document });
-              }
-              const updated = [...(caseData.documents || []), document];
-              updateCase && updateCase(caseData.id, 'documents', updated);
-              return { success: true };
-            },
-            eventBus,
-            topics: { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED },
-            getActor: () => {
-              const u = (typeof getCurrentUser === 'function' && getCurrentUser()) || {};
-              return { userId: u.userId ?? null, tenantId: u.tenantId ?? null };
-            },
-          });
-
-          const result = await pipeline.run({
-            caseId: caseData.id,
-            caseData,
-            agentId: 'dossier_agent',
-            source: 'manual',
-            addedBy: 'user',
-            module: MODULES.CASE_DOSSIER,
-            operation: 'add_document',
-            conversionContext: {
+          // TASK 4 · етап C — одна труба: модалка йде через спільний
+          // docPipeline.ingestFiles({mode:'add_as_is'}) (усунення дубль-шляху
+          // C4). Модаль-специфіку (uploadFileLocal з verify, dossier_agent/
+          // add_document + updateCase-fallback, форма-метадані) ін'єктуємо як
+          // deps → поведінка байт-у-байт та сама. deferOcr=true: пост-OCR з
+          // Claude Vision-фолбеком лишається нижче в модалці.
+          const result = await docPipeline.ingestFiles(
+            {
               caseId: caseData.id,
+              caseData,
+              agentId: 'dossier_agent',
+              source: 'manual',
+              addedBy: 'user',
               module: MODULES.CASE_DOSSIER,
               operation: 'add_document',
+              conversionContext: {
+                caseId: caseData.id,
+                module: MODULES.CASE_DOSSIER,
+                operation: 'add_document',
+              },
+              files: [{
+                fileId: 'doc',
+                raw: (!isDriveSource && file && driveConnected) ? file : null,
+                isDriveSource,
+                driveId: isDriveSource ? file._driveId : null,
+                name: file?.name || null,
+                size: file?.size || 0,
+                type: file?.type || null,
+                originalMime: isDriveSource ? (file?.type || null) : null,
+                mergeArtifacts: mergeArtifacts || null,
+              }],
             },
-            files: [{
-              fileId: 'doc',
-              raw: (!isDriveSource && file && driveConnected) ? file : null,
-              isDriveSource,
-              driveId: isDriveSource ? file._driveId : null,
-              name: file?.name || null,
-              size: file?.size || 0,
-              type: file?.type || null,
-              originalMime: isDriveSource ? (file?.type || null) : null,
-              mergeArtifacts: mergeArtifacts || null,
-            }],
-          });
+            {
+              mode: 'add_as_is',
+              deferOcr: true,
+              buildDocumentMetadata,
+              uploadFile: uploadFileLocal,
+              persistDocument: async ({ caseId, document }) => {
+                if (onExecuteAction) {
+                  return await onExecuteAction('dossier_agent', 'add_document', { caseId, document });
+                }
+                const updated = [...(caseData.documents || []), document];
+                updateCase && updateCase(caseData.id, 'documents', updated);
+                return { success: true };
+              },
+            },
+          );
 
           // Помилки → ТІ САМІ toast'и що були inline (модаль лишається
           // відкритою, документ не створюється, на Drive нічого — TASK A).
