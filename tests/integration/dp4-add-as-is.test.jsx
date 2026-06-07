@@ -99,7 +99,7 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(options.ocrMode).toBe('none');
   });
 
-  it('toggle ON + all-PDF → стрім-шлях (mode НЕ виставляється)', async () => {
+  it('toggle ON + all-PDF + повний OCR → стрім-шлях (mode НЕ виставляється)', async () => {
     const ingestFiles = vi.fn().mockResolvedValue({
       ok: true, documents: [{ id: 'd1', name: 'Позов.pdf' }], decisions: [], errors: [],
     });
@@ -119,8 +119,40 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
 
     expect(ingestFiles).toHaveBeenCalledTimes(1);
     const [, options] = ingestFiles.mock.calls[0];
-    // all-PDF: нарізку пропускає triage (skipPdfSlicing), але труба — slice.
+    // all-PDF + повний OCR: нарізку пропускає triage (skipPdfSlicing), труба — slice.
     expect(options.skipPdfSlicing).toBe(true);
     expect(options.mode).toBeUndefined();
+  });
+
+  it('toggle ON + all-PDF + «без OCR» → add_as_is з ocrMode:none (етап D, фікс A)', async () => {
+    // Корінь повільності A: раніше чистий PDF з «без OCR» НЕ потрапляв в
+    // add_as_is (умова вимагала НЕ-PDF) → ішов на нарізку. Тепер «без OCR»
+    // маршрутизує будь-який вхід (вкл. чистий PDF) в add_as_is.
+    const ingestFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Позов' }], decisions: [], errors: [], files: [],
+    });
+    const { container } = renderDP(ingestFiles);
+
+    const fileInput = container.querySelector('input[type="file"]');
+    const pdf = new File([new Uint8Array([1, 2, 3])], 'позов.pdf', { type: 'application/pdf' });
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [pdf] } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Просто додати файли'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Без розпізнавання тексту'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
+    });
+
+    expect(ingestFiles).toHaveBeenCalledTimes(1);
+    const [input, options] = ingestFiles.mock.calls[0];
+    expect(options.mode).toBe('add_as_is');     // чистий PDF теж окремою лінією
+    expect(options.ocrMode).toBe('none');        // без OCR
+    expect(input.files).toHaveLength(1);
+    expect(input.files[0].raw).toBeInstanceOf(File);
   });
 });

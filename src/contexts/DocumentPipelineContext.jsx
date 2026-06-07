@@ -374,11 +374,20 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   const metadataEnrichAddAsIs = useCallback(async ({ item, document, caseData }) => {
     const driveId = item.driveId || document?.driveId || null;
     if (!driveId || !document) return;
+    // localBlob — байти, що вже в памʼяті add-флоу (конвертований PDF або
+    // passthrough-оригінал). Vision рендерить 1-2 стор. саме з нього → файл
+    // читається ОДИН раз, без повторного завантаження всього файлу з Drive
+    // заради двох сторінок. Drive-source (пікер) блоба не має → renderFileToImages
+    // сам завантажить за id (fallback). Один сенс (#11): «байти для Vision».
+    const localBlob = item.uploadedFile instanceof Blob
+      ? item.uploadedFile
+      : (item.raw instanceof Blob ? item.raw : null);
     const ocrFile = {
       id: driveId,
       name: item.uploadedFile?.name || document?.originalName || document?.name || 'document.pdf',
       mimeType: item.originalMime || 'application/pdf',
       subFolders: caseData?.storage?.subFolders,
+      ...(localBlob ? { localBlob } : {}),
     };
     await enrichDocumentWithVisionMetadata({
       ocrFile,

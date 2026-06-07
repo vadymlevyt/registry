@@ -640,8 +640,10 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     //   • all-image + toggle OFF → DP image-merge editor (склейка авто).
     //   • toggle ON «Просто додати» + будь-який НЕ-PDF / комбо → add_as_is
     //     (non-streaming, усі типи за раз; кожен файл = один документ). 1C.
-    //   • toggle ON + all-PDF → стрім-шлях (triage пропускає нарізку,
-    //     behavior-preserve — як було).
+    //   • toggle ON + all-PDF + «без OCR» → add_as_is (D): чистий PDF теж іде
+    //     окремою лінією — лише 01 + Vision 1-2 стор., БЕЗ нарізки/OCR/02.
+    //   • toggle ON + all-PDF + повний OCR → стрім-шлях (triage пропускає
+    //     нарізку, behavior-preserve — як було).
     //   • toggle OFF + мікс photo+PDF → toast (нарізка-мікс поза scope; для
     //     комбо адвокат вмикає «Просто додати»).
     //   • toggle OFF + all-PDF / mix без фото → стрім-шлях з AI Triage.
@@ -649,9 +651,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       await startImageMergeProcessing();
       return;
     }
-    // 1C — «Просто додати» на всі типи. Не-PDF або комбо → non-streaming
-    // add_as_is труба; чисто-PDF лишається на стрім-шляху (нижче).
-    const useAddAsIs = settings.skipPdfSlicing === true && hasAnyNonPdf();
+    // 1C/D — «Просто додати» на всі типи. Не-PDF/комбо → non-streaming add_as_is.
+    // Чистий PDF іде на add_as_is ТІЛЬКИ коли «без OCR» (D): окрема лінія без
+    // нарізки (лише 01 + Vision 1-2 стор.). Чистий PDF з повним OCR лишається на
+    // стрім-шляху (нижче). Це лише МАРШРУТИЗАЦІЯ — логіку нарізки не чіпає.
+    const useAddAsIs = settings.skipPdfSlicing === true
+      && (hasAnyNonPdf() || settings.skipOcr === true);
     if (!useAddAsIs && hasAnyImage() && hasAnyNonImage()) {
       // Мікс фото+PDF у режимі НАРІЗКИ (toggle OFF) — поза scope. Підказуємо
       // увімкнути «Просто додати» для комбо без нарізки.
