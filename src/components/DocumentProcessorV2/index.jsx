@@ -541,16 +541,11 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       const up = await uploadBytesToDrive(originalsFolderId, pdfName, bytes, 'application/pdf');
       const driveId = up.id;
 
-      // 02_ОБРОБЛЕНІ best-effort (text + layout). V2-A2 (parent §ДОЛЯ .txt):
-      // `.txt` пишемо ⇔ layout ВІДСУТНІЙ. Фото-склейка має layoutJson (page._text)
-      // → `.txt` зайвий (getDocumentText/getCleanOrRawText читають із layout).
+      // 02_ОБРОБЛЕНІ best-effort — ЛИШЕ layout. TASK 4 §7.1: `.txt` не пишемо.
+      // Фото-склейка має layoutJson (page._text) → вірне джерело для
+      // getDocumentText/getCleanOrRawText. Без layout текст дістається з
+      // текстового шару PDF на вимогу (extractTextLayer).
       try {
-        if (rebuilt.extractedText && rebuilt.extractedText.trim() && !rebuilt.layoutJson) {
-          await ocrService.writeExtractedTextArtifact(
-            { id: driveId, name: pdfName, subFolders: caseData?.storage?.subFolders },
-            rebuilt.extractedText,
-          );
-        }
         if (rebuilt.layoutJson) {
           const layoutObj = typeof rebuilt.layoutJson === 'string'
             ? JSON.parse(rebuilt.layoutJson)

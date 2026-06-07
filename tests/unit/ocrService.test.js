@@ -1,7 +1,9 @@
-// Юніт-тести фасаду ocrService — фокус на парі .txt / .layout.json у 02_ОБРОБЛЕНІ.
-// Принцип (V2-A2): .txt пишемо ⇔ layout ВІДСУТНІЙ (текст без pageStructure).
-// Коли провайдер повернув pageStructure — пишемо .layout.json і НЕ пишемо .txt
-// (вірний текст читається з layout). .layout.json — тільки коли масив непорожній.
+// Юніт-тести фасаду ocrService — артефакти у 02_ОБРОБЛЕНІ.
+// Принцип (TASK 4 §7.1, повна відмова від .txt): фасад НІКОЛИ не пише .txt.
+// scanned (pageStructure) → .layout.json (вірний текст читається з layout);
+// searchable (текст без pageStructure) → НЕ кешуємо (текст у текстовому шарі
+// самого PDF, дістається на вимогу через extractTextLayer). .layout.json —
+// тільки коли масив pageStructure непорожній.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // ── Мок-стан Drive ──────────────────────────────────────────────────────────
@@ -79,7 +81,7 @@ vi.mock('../../src/services/ocr/claudeVision.js', () => makeProvider('claudeVisi
 vi.mock('../../src/services/ocr/pdfjsLocal.js', () => makeProvider('pdfjsLocal'));
 
 // Імпорт ПІСЛЯ моків (vi.mock hoisting працює, але явність кращ для читача)
-const { extractText, writeExtractedTextArtifact, writeLayoutArtifact } = await import('../../src/services/ocrService.js');
+const { extractText, writeLayoutArtifact } = await import('../../src/services/ocrService.js');
 
 function fileFixture(overrides = {}) {
   return {
@@ -98,8 +100,8 @@ beforeEach(() => {
   mockProviderState.pdfjsLocal = { canHandle: true, result: null, error: null };
 });
 
-describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕНІ', () => {
-  it('searchable PDF: pdfjsLocal повертає текст без pageStructure → пишемо тільки .txt', async () => {
+describe('extractText — артефакти у 02_ОБРОБЛЕНІ (TASK 4 §7.1: без .txt)', () => {
+  it('searchable PDF: pdfjsLocal повертає текст без pageStructure → НЕ пишемо нічого (.txt прибрано)', async () => {
     mockProviderState.pdfjsLocal.result = {
       text: 'Це текст з searchable PDF',
       pageCount: 3,
@@ -110,11 +112,13 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     expect(result.provider).toBe('pdfjsLocal');
     expect(result.text).toContain('searchable PDF');
     expect(result.hasLayout).toBe(false);
-    expect(result.cacheWritten).toBe(true);
+    expect(result.cacheWritten).toBe(false);
     expect(result.layoutWritten).toBe(false);
 
+    // TASK 4 §7.1: searchable текст у самому PDF → жодного артефакту в 02.
+    expect(driveState.uploads).toHaveLength(0);
     const names = driveState.uploads.map((u) => u.name);
-    expect(names).toContain('scan_drive_file_1.txt');
+    expect(names).not.toContain('scan_drive_file_1.txt');
     expect(names).not.toContain('scan_drive_file_1.layout.json');
   });
 
@@ -208,8 +212,10 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
     });
     expect(result.provider).toBe('claudeVision');
     expect(result.hasLayout).toBe(false);
+    expect(result.cacheWritten).toBe(false);
+    // TASK 4 §7.1: текст без pageStructure → .txt НЕ пишемо (нічого в 02).
     const names = driveState.uploads.map((u) => u.name);
-    expect(names).toContain('scan_drive_file_1.txt');
+    expect(names).not.toContain('scan_drive_file_1.txt');
     expect(names).not.toContain('scan_drive_file_1.layout.json');
   });
 
@@ -347,62 +353,9 @@ describe('extractText — запис .txt і .layout.json у 02_ОБРОБЛЕН
   });
 });
 
-describe('writeExtractedTextArtifact — запис .txt БЕЗ виклику OCR провайдера', () => {
-  it('пише .txt у 02_ОБРОБЛЕНІ з канонічною назвою <basename>_<driveId>.txt', async () => {
-    const file = fileFixture({ name: 'pozov_kiseliovoi.docx', id: 'drv_abc' });
-    const ok = await writeExtractedTextArtifact(file, 'Позовна заява про стягнення коштів');
-
-    expect(ok).toBe(true);
-    expect(driveState.uploads).toHaveLength(1);
-    expect(driveState.uploads[0].name).toBe('pozov_kiseliovoi_drv_abc.txt');
-    expect(driveState.uploads[0].folderId).toBe('folder_obrob');
-    expect(driveState.uploads[0].content).toBe('Позовна заява про стягнення коштів');
-    expect(driveState.uploads[0].mimeType).toBe('text/plain');
-  });
-
-  it('не викликає жодного OCR провайдера (нема Document AI, Claude Vision, pdfjs)', async () => {
-    // Очищаємо лічильники моків від попередніх тестів у файлі (extractText
-    // викликав їх). Перевіряємо що writeExtractedTextArtifact САМ не торкає
-    // жодного провайдера — це не OCR pipeline, а пряме збереження тексту.
-    const { default: docAi } = await import('../../src/services/ocr/documentAi.js');
-    const { default: claudeV } = await import('../../src/services/ocr/claudeVision.js');
-    const { default: pdfjs } = await import('../../src/services/ocr/pdfjsLocal.js');
-    docAi.extract.mockClear();
-    claudeV.extract.mockClear();
-    pdfjs.extract.mockClear();
-
-    const file = fileFixture({ name: 'doc.html', id: 'drv_xyz' });
-    await writeExtractedTextArtifact(file, 'Текст ухвали з HTML');
-
-    expect(docAi.extract).not.toHaveBeenCalled();
-    expect(claudeV.extract).not.toHaveBeenCalled();
-    expect(pdfjs.extract).not.toHaveBeenCalled();
-  });
-
-  it('не пише .layout.json — DOCX/HTML pageStructure не має за визначенням', async () => {
-    const file = fileFixture({ name: 'doc.docx', id: 'drv_1' });
-    await writeExtractedTextArtifact(file, 'A'.repeat(100));
-
-    const names = driveState.uploads.map((u) => u.name);
-    expect(names).toContain('doc_drv_1.txt');
-    expect(names).not.toContain('doc_drv_1.layout.json');
-  });
-
-  it('повертає false і нічого не пише коли немає 02_ОБРОБЛЕНІ subFolder', async () => {
-    const file = { id: 'drv_2', name: 'doc.html', subFolders: {} };
-    const ok = await writeExtractedTextArtifact(file, 'Достатньо тексту тут є');
-    expect(ok).toBe(false);
-    expect(driveState.uploads).toHaveLength(0);
-  });
-
-  it('повертає false і нічого не пише коли текст порожній', async () => {
-    const file = fileFixture();
-    expect(await writeExtractedTextArtifact(file, '')).toBe(false);
-    expect(await writeExtractedTextArtifact(file, '   ')).toBe(false);
-    expect(await writeExtractedTextArtifact(file, null)).toBe(false);
-    expect(driveState.uploads).toHaveLength(0);
-  });
-});
+// TASK 4 §7.1: writeExtractedTextArtifact (.txt-запис) ВИДАЛЕНО разом з усім
+// .txt-машинерієм фасаду — DOC/HTML конвертуються у searchable PDF, текст живе
+// в текстовому шарі PDF. Окремих .txt-тестів більше нема.
 
 // ── B1 · writeLayoutArtifact: object-only вхід, strip image/tokens завжди ────
 // Корінь bug B1 (15.05.2026): DocumentPipelineContext.writeLayout02 робив

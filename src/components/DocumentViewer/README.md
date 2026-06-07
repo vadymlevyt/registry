@@ -46,7 +46,9 @@ import { DocumentViewer } from '@/components/DocumentViewer';
 
 - `lucide-react` — іконки
 - `services/ocrService.js`:
-  - `getCachedText(file)` — підтягнути текст з `02_ОБРОБЛЕНІ`
+  - `getCleanOrRawText(file)` — найкращий читабельний текст: digest `.md` → scanned layout → searchable текстовий шар PDF (TASK 4 §7.1: `.txt` прибрано)
+  - `getDocumentText(doc, caseData)` — ВІРНИЙ текст для копіювання/агента (layout / текстовий шар PDF, ніколи не Конспект)
+  - `getVariantMarkdown(file, mode)` — збережений AI-варіант (`.clean.md` / `.digest.md`)
   - `extractText(file, { skipCache: true })` — для перерозпізнання (виклик з батька через `onReprocess`)
   - `localizeOcrError(code)` — людська локалізація помилок
 - `services/driveAuth.js` — `driveRequest` для скачування

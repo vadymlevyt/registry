@@ -5,9 +5,16 @@
 // у 02_ОБРОБЛЕНІ і пише результат назад.
 //
 // Збереження артефактів у 02_ОБРОБЛЕНІ:
-//   - <basename>_<driveId>.txt          — текст, завжди коли є непорожній
 //   - <basename>_<driveId>.layout.json  — pageStructure, лише коли провайдер
 //                                          фактично повернув непорожній масив.
+//
+// ПОВНА ВІДМОВА ВІД .txt (TASK 4 §7.1): фасад БІЛЬШЕ не пише і не читає .txt.
+// Два типи документів — два джерела ВІРНОГО тексту:
+//   - scanned    → layout (page._text) із .layout.json;
+//   - searchable → текстовий шар самого PDF на вимогу (extractTextLayer,
+//                  pdfjsLocal, БЕЗ OCR/Document AI). DOC/HTML конвертуються у
+//                  searchable PDF (pdf-lib drawText) → текст живе в PDF.
+// `.txt` — мертвий дубль (і запис, і читання прибрано, без legacy-милиць).
 //
 // Контракт результату назовні:
 //   { text, pageCount, hasLayout, provider, fromCache, cacheWritten,
@@ -46,10 +53,6 @@ function sanitizeBasename(name) {
     .replace(/\.[^/.]+$/, '')
     .replace(/[/\\]/g, '_')
     .slice(0, 150);
-}
-
-function textCacheFileName(file) {
-  return `${sanitizeBasename(file.name)}_${file.id}.txt`;
 }
 
 function layoutCacheFileName(file) {
@@ -108,22 +111,8 @@ async function uploadTextFile(folderId, fileName, content, mimeType = 'text/plai
   return await res.json();
 }
 
-async function checkCache(file) {
-  const subFolderId = file.subFolders?.['02_ОБРОБЛЕНІ'];
-  if (!subFolderId) return null;
-  const name = textCacheFileName(file);
-  const matches = await listFolderFilesByName(subFolderId, name);
-  if (matches.length === 0) return null;
-  try {
-    const text = await readDriveFileText(matches[0].id);
-    return text;
-  } catch (e) {
-    return null;
-  }
-}
-
 // Записує файл у 02_ОБРОБЛЕНІ, попередньо видаливши існуючий з такою назвою.
-// Використовується для .txt і .layout.json — пара тримається синхронізованою.
+// Використовується для .layout.json і .md — пара тримається синхронізованою.
 async function writeArtifact(file, fileName, content, mimeType) {
   const subFolderId = file.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return false;
@@ -176,16 +165,6 @@ function serializeLayout({ provider, pageStructure }) {
     generatedAt: new Date().toISOString(),
     pages: stripHeavyFields(pageStructure),
   });
-}
-
-// ── Public cache lookup (DocumentViewer) ────────────────────────────────────
-
-export async function getCachedText(file) {
-  try {
-    return await checkCache(file);
-  } catch {
-    return null;
-  }
 }
 
 // joinLayoutText — ВІРНИЙ текст з layout: з'єднати page._text усіх сторінок
@@ -245,16 +224,34 @@ export async function getVariantMarkdown(file, mode) {
   return mode === 'clean' ? readCleanMarkdown(file) : readDigestMarkdown(file);
 }
 
-// getCleanOrRawText — текст документа для viewer/читача (V2-A2). Порядок:
+// extractTextLayer — ВІРНИЙ текст searchable-документа з ТЕКСТОВОГО ШАРУ PDF
+// (pdfjsLocal, БЕЗ OCR/Document AI, БЕЗ запису будь-яких артефактів). Після
+// повної відмови від .txt (TASK 4 §7.1) — ЄДИНЕ джерело тексту searchable:
+// текст живе в самому PDF (конвертер DOC/HTML дає searchable PDF через
+// pdf-lib drawText; нативні searchable PDF теж мають текстовий шар), дістаємо
+// на вимогу. Скани без текстового шару → pdfjsLocal кидає UNSUPPORTED (це не
+// searchable; джерело сканів — layout). driveId завжди вказує на PDF у
+// 01_ОРИГІНАЛИ → mimeType форсуємо 'application/pdf'.
+//
+// Один сенс (#11): «витягни текстовий шар PDF за driveId, нічого не пишучи».
+async function extractTextLayer(file) {
+  if (!file?.id) return '';
+  const res = await pdfjsLocal.extract({
+    id: file.id,
+    name: file.name || '',
+    mimeType: 'application/pdf',
+  });
+  return (res?.text || '').trim();
+}
+
+// getCleanOrRawText — текст документа для viewer/читача. Порядок:
 // (1) Конспект (.digest.md / legacy .md) → format 'md'; (2) ВІРНИЙ текст —
-// layout (page._text) → .txt → format 'txt'. ОКРЕМЕ ім'я (НЕ розширюємо
-// getCachedText подвійним сенсом — правило #11): getCachedText = «сирий
-// .txt-кеш OCR»; getCleanOrRawText = «найкращий читабельний текст».
+// scanned: layout (page._text); searchable: текстовий шар PDF (extractTextLayer).
+// ОКРЕМЕ ім'я (правило #11): getCleanOrRawText = «найкращий читабельний текст»
+// (на відміну від getDocumentText = «вірний текст для агента», який .md не дає).
 //
-// Layout-fallback (V2-A2): нові скани більше не мають .txt (лише .layout) —
-// без цього кроку «Текст» був би порожній. НІКОЛИ не повертає Чистий/.clean.md.
-//
-// Повертає { text, format:'md'|'txt' } або null якщо нема жодного.
+// TASK 4 §7.1: .txt прибрано як джерело повністю. НІКОЛИ не повертає
+// Чистий/.clean.md. Повертає { text, format:'md'|'txt' } або null.
 export async function getCleanOrRawText(file) {
   const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
   if (!subFolderId) return null;
@@ -266,64 +263,70 @@ export async function getCleanOrRawText(file) {
       const t = joinLayoutText(layout);
       if (t && t.trim()) return { text: t, format: 'txt' };
     }
-  } catch { /* layout збій → пробуємо .txt */ }
+  } catch { /* layout збій → пробуємо текстовий шар */ }
   try {
-    const txt = await checkCache(file);
-    if (txt != null) return { text: txt, format: 'txt' };
-  } catch { /* нижче null */ }
+    const t = await extractTextLayer(file);
+    if (t && t.trim()) return { text: t, format: 'txt' };
+  } catch { /* нема текстового шару → null */ }
   return null;
 }
 
 // fileRefForDocument — file-контракт {id,name,subFolders} з документа + caseData.
 // NFC-нормалізація імені (як TextContent/useExactLayout/adapter — щоб
-// getCachedLayout/getCachedText знайшли <base>_<id> за тим самим basename).
+// getCachedLayout знайшов <base>_<id> за тим самим basename).
 function fileRefForDocument(documentObj, caseData) {
   const rawName = documentObj?.originalName || documentObj?.name || '';
   const name = typeof rawName.normalize === 'function' ? rawName.normalize('NFC') : rawName;
   return { id: documentObj?.driveId, name, subFolders: caseData?.storage?.subFolders };
 }
 
-// getDocumentText — ЄДИНА точка «дай ВІРНИЙ текст документа» (#11, V2-A2).
-// scanned з layout → з'єднаний page._text (вірний шар, ≈ старий .txt);
-// no-layout/searchable/legacy → .txt-кеш. НІКОЛИ не Конспект/.md (це переказ —
-// агент/contextGenerator цитувати з нього не можуть). Споживачі (агент досьє,
-// contextGenerator) ходять сюди → коли пізніше приберемо .txt, міняється лише
-// ця функція. Повертає string ('' якщо джерела нема — caller вирішує що далі).
+// getDocumentText — ЄДИНА точка «дай ВІРНИЙ текст документа» (#11).
+// scanned з layout → з'єднаний page._text (вірний шар); searchable → текстовий
+// шар PDF (extractTextLayer, pdfjsLocal, БЕЗ OCR). НІКОЛИ не Конспект/.md (це
+// переказ — агент/contextGenerator цитувати з нього не можуть).
+//
+// TASK 4 §7.1 (повна відмова від .txt): .txt більше не джерело. Старі скани
+// лише з .txt без layout тут отримають '' — для них нічого не лишаємо
+// (адвокат перевидалить/додасть). Споживачі (агент досьє, contextGenerator,
+// в'ювер-footer) ходять сюди. Повертає string ('' якщо джерела нема).
 export async function getDocumentText(documentObj, caseData) {
   const file = fileRefForDocument(documentObj, caseData);
-  if (!file.id || !file.subFolders?.['02_ОБРОБЛЕНІ']) return '';
-  try {
-    const layout = await getCachedLayout(file);
-    if (layout) {
-      const t = joinLayoutText(layout);
-      if (t && t.trim()) return t;
-    }
-  } catch { /* layout збій → пробуємо .txt */ }
-  try {
-    const txt = await checkCache(file);
-    if (txt != null && String(txt).trim()) return String(txt);
-  } catch { /* нижче '' */ }
-  return '';
-}
+  if (!file.id) return '';
+  const nature = documentObj?.documentNature;
 
-// writeExtractedTextArtifact — публічний запис .txt у 02_ОБРОБЛЕНІ для caller'а
-// який отримав текст БЕЗ OCR (DOCX через mammoth, HTML через innerText).
-// Використовує той самий механізм що внутрішній writeArtifact: ту ж назву
-// (<basename>_<driveId>.txt), той самий шлях. Це гарантує що ocrService.getCachedText
-// знайде його при наступному відкритті документа.
-//
-// Один сенс: «записати plain-текст у 02_ОБРОБЛЕНІ так, ніби це результат OCR».
-// .layout.json не пишеться — pageStructure у DOCX/HTML немає за визначенням.
-//
-// Параметри:
-//   file — { id (driveId), name, subFolders: { '02_ОБРОБЛЕНІ': folderId } }
-//   text — plain-текст
-//
-// Повертає: true якщо записано, false якщо немає subFolder або помилка запису.
-// Помилка не кидається — кеш не критичний, документ уже на Drive.
-export async function writeExtractedTextArtifact(file, text) {
-  if (!text || !text.trim()) return false;
-  return await writeArtifact(file, textCacheFileName(file), text, 'text/plain');
+  // scanned → ВІРНИЙ текст ВИКЛЮЧНО з layout (page._text). Скан без layout
+  // (старий .txt-only) → '' — .txt прибрано як джерело (нічого не лишаємо).
+  if (nature === 'scanned') {
+    if (!file.subFolders?.['02_ОБРОБЛЕНІ']) return '';
+    try {
+      const layout = await getCachedLayout(file);
+      if (layout) {
+        const t = joinLayoutText(layout);
+        if (t && t.trim()) return t;
+      }
+    } catch { /* layout збій → '' */ }
+    return '';
+  }
+
+  // Невідома природа з layout — спершу layout (на випадок скана без позначки),
+  // щоб не марнувати завантаження PDF. searchable layout не має — пропускаємо.
+  if (nature !== 'searchable' && file.subFolders?.['02_ОБРОБЛЕНІ']) {
+    try {
+      const layout = await getCachedLayout(file);
+      if (layout) {
+        const t = joinLayoutText(layout);
+        if (t && t.trim()) return t;
+      }
+    } catch { /* нижче текстовий шар */ }
+  }
+
+  // searchable (і невідома природа без layout) → текстовий шар самого PDF
+  // (на вимогу, без OCR).
+  try {
+    const t = await extractTextLayer(file);
+    if (t && t.trim()) return t;
+  } catch { /* нема текстового шару → '' */ }
+  return '';
 }
 
 // writeLayoutArtifact — публічний запис .layout.json для caller'а який зібрав
@@ -360,10 +363,9 @@ export async function writeLayoutArtifact(file, layout) {
 }
 
 // ── Артефакти очистки тексту (TASK 3.1 cleanTextService Drive-шви) ───────────
-// Ці функції — реалізація Drive-швів cleanDocument: читач layout/txt,
-// запис .md, прибирання .txt/.layout. Їх же перевикористовує adapter для
-// кнопок 3.2 (cleanTextDriveAdapter.js). Усі — best-effort (cleanDocument
-// сам трактує move/delete як некритичні).
+// Ці функції — реалізація Drive-швів cleanDocument: читач layout, запис .md.
+// Їх же перевикористовує adapter для кнопок 3.2 (cleanTextDriveAdapter.js).
+// Усі — best-effort. TASK 4 §7.1: жодних .txt-швів (move/archive прибрано).
 
 // getCachedLayout — прочитати <basename>_<id>.layout.json з 02_ОБРОБЛЕНІ і
 // розпарсити (fetchLayout-шов). Повертає об'єкт { pages:[...] } або null.
@@ -387,49 +389,6 @@ export async function getCachedLayout(file) {
 export async function writeMarkdownArtifact(file, markdown, mode = 'digest') {
   if (!markdown || !String(markdown).trim()) return false;
   return await writeArtifact(file, markdownCacheFileName(file, mode), String(markdown), 'text/markdown');
-}
-
-// findOrCreateSubfolder — знайти/створити підпапку name під parentId. name —
-// латиниця (`_raw_txt`) → q= безпечне (rule #8: фільтр по mimeType, не кирилиця).
-async function findOrCreateSubfolder(parentId, name) {
-  const q = `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const res = await driveRequest(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1000`
-  );
-  if (res.ok) {
-    const data = await res.json();
-    const found = (data.files || []).find((f) => f.name === name);
-    if (found) return found.id;
-  }
-  const meta = { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] };
-  const create = await driveRequest('https://www.googleapis.com/drive/v3/files?fields=id', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(meta),
-  });
-  if (!create.ok) return null;
-  const created = await create.json();
-  return created.id || null;
-}
-
-// archiveRawTxt — перемістити <basename>_<id>.txt з 02_ОБРОБЛЕНІ у
-// 02_ОБРОБЛЕНІ/_raw_txt/ (moveRawTxtToArchive-шов). Best-effort: нема .txt → false.
-export async function archiveRawTxt(file) {
-  const subFolderId = file?.subFolders?.['02_ОБРОБЛЕНІ'];
-  if (!subFolderId) return false;
-  try {
-    const matches = await listFolderFilesByName(subFolderId, textCacheFileName(file));
-    if (matches.length === 0) return false;
-    const rawFolderId = await findOrCreateSubfolder(subFolderId, '_raw_txt');
-    if (!rawFolderId) return false;
-    const res = await driveRequest(
-      `https://www.googleapis.com/drive/v3/files/${matches[0].id}?addParents=${rawFolderId}&removeParents=${subFolderId}&fields=id,parents`,
-      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' }
-    );
-    return res.ok;
-  } catch {
-    return false;
-  }
 }
 
 // deleteLayoutArtifact — видалити <basename>_<id>.layout.json з 02_ОБРОБЛЕНІ.
@@ -463,23 +422,10 @@ export async function extractText(file, options = {}) {
   const t0 = Date.now();
   const warnings = [];
 
-  // 1. Кеш .txt
-  if (options.skipCache !== true) {
-    const cached = await checkCache(file);
-    if (cached !== null) {
-      return {
-        text: cached,
-        pageCount: 0,
-        hasLayout: false,
-        provider: 'cache',
-        fromCache: true,
-        cacheWritten: false,
-        layoutWritten: false,
-        durationMs: Date.now() - t0,
-        warnings: [],
-      };
-    }
-  }
+  // 1. TASK 4 §7.1: жодного .txt-кеша. scanned кешується у .layout.json (нижче);
+  //    searchable не кешується — текст дістається з текстового шару PDF на вимогу
+  //    (getDocumentText/getCleanOrRawText → extractTextLayer). options.skipCache
+  //    лишається параметром провайдерів (resume/перерозпізнавання layout).
 
   // 2. Ланцюжок провайдерів (forced override або з матриці)
   const forced = options.forceProvider || getForceProvider();
@@ -553,26 +499,16 @@ export async function extractText(file, options = {}) {
         : undefined;
       const finalPageCount = (mergedPageStructure.length || 0) + (result.pageCount || 0);
 
-      // 4. Запис у кеш. options.skipCache керує лише ЧИТАННЯМ старого кеша —
-      // запис свіжого результату відбувається завжди, бо при перерозпізнаванні
-      // (skipCache: true) свіжий текст і layout замінюють старий.
-      let cacheWritten = false;
+      // 4. Запис у кеш — ЛИШЕ .layout.json (scanned). TASK 4 §7.1: `.txt`
+      // більше не пишемо нікому. Коли провайдер повернув pageStructure
+      // (Document AI / фото-склейка) — layout містить page._text (вірне
+      // джерело для getDocumentText/getCleanOrRawText). Searchable (pdfjsLocal
+      // без pageStructure) не кешуємо — текст у самому PDF (extractTextLayer на
+      // вимогу). cacheWritten лишається в контракті результату завжди false.
+      const cacheWritten = false;
       let layoutWritten = false;
       const hasPageStructure = Array.isArray(finalPageStructure) && finalPageStructure.length > 0;
 
-      // V2-A2 (parent §ДОЛЯ .txt): `.txt` пишемо ⇔ layout ВІДСУТНІЙ. Коли провайдер
-      // повернув pageStructure (Document AI / фото-склейка) — layout містить
-      // page._text, тож `.txt` зайвий (getDocumentText/getCleanOrRawText читають
-      // вірний текст із layout). Лишаємо `.txt` лише без layout (pdfjsLocal без
-      // pageStructure / провайдери що дають тільки текст).
-      if (finalText && finalText.trim().length > 0 && !hasPageStructure) {
-        cacheWritten = await writeArtifact(
-          file,
-          textCacheFileName(file),
-          finalText,
-          'text/plain'
-        );
-      }
       if (hasPageStructure) {
         layoutWritten = await writeArtifact(
           file,

@@ -18,11 +18,11 @@
 // (agentType 'case_context_generator') + activityTracker.report('agent_call')
 // живуть ТУТ — один шлях логування на обох споживачів, без дублювання.
 //
-// Джерело тексту (рішення адвоката, наслідок 1C): беремо самі документи з
-// 01_ОРИГІНАЛИ/02_ОБРОБЛЕНІ (виключаючи .txt-кеш) і женемо через
-// ocrService.extractTextBatch. OCR сам витягує текстовий шар searchable-PDF.
-// НЕ перемикати на «читати лише .txt» — інакше text-layer PDF (яким 1C не
-// пише .txt) випадуть з контексту.
+// Джерело тексту (TASK 4 §7.1, повна відмова від .txt): спершу ВІРНИЙ текст
+// через ocrService.getDocumentText (scanned → layout page._text; searchable →
+// текстовий шар самого PDF через extractTextLayer, БЕЗ OCR). Нерозв'язані
+// документи (ще не оброблені скани) ідуть у extractTextBatch (Document AI →
+// layout). Жодного .txt — ні читання, ні запису.
 //
 // DI-шви: side-effect залежності (Drive/OCR/AI/білінг) мають дефолти —
 // реальні імпорти для застосунку; тести підставляють стаби через параметри.
@@ -463,13 +463,12 @@ export async function generateCaseContext(params) {
   //    chunks, копії, дублі 01/02 → завищений лік (89/91 замість 43) і ~45
   //    layout-помилок (.layout.json — JSON, валив OCR). Реєстр = рівно реальні
   //    документи справи (#7).
-  //    V2-A2: ВІРНИЙ текст спершу через ocrService.getDocumentText (хелпер #11:
-  //    scanned→layout page._text, no-layout/searchable→.txt — БЕЗ повторного
-  //    OCR і НІКОЛИ не Конспект). Документи, які хелпер не розв'язав (ще не
-  //    оброблені / text-layer без кешу), ідуть у extractTextBatch (OCR/pdfjsLocal
-  //    fallback). Так агент/контекст беруть ВІРНЕ джерело, а нові скани (без .txt,
-  //    лише layout) не перезапускають Document AI. Хелпер інжектується через
-  //    ocrService — тести без нього падають на extractTextBatch (поведінка як була).
+  //    TASK 4 §7.1: ВІРНИЙ текст спершу через ocrService.getDocumentText
+  //    (хелпер #11: scanned→layout page._text; searchable→текстовий шар PDF
+  //    через extractTextLayer — БЕЗ OCR і НІКОЛИ не Конспект). Документи, які
+  //    хелпер не розв'язав (ще не оброблені скани без layout), ідуть у
+  //    extractTextBatch (Document AI → layout). Жодного .txt. Хелпер інжектується
+  //    через ocrService — тести без нього падають на extractTextBatch.
   onProgress("Збираю документи...");
   const registryDocs = Array.isArray(caseData?.documents) ? caseData.documents : [];
   const skipped = [];   // документи без driveId — нічого читати, пропускаємо з warning
@@ -490,7 +489,7 @@ export async function generateCaseContext(params) {
       }
     }
     filesForOcr.push({
-      id: d.driveId,                                  // кеш .txt за driveId + download провайдером
+      id: d.driveId,                                  // driveId → download провайдером (Document AI → layout)
       name: docName,
       mimeType: 'application/pdf',                     // канонічний формат зберігання (TASK A)
       driveFolderId: folderId,
