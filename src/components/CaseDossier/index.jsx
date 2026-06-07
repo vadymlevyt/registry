@@ -2286,18 +2286,8 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           <div style={{ width: 4, height: 40, borderRadius: 2, background: 'var(--color-text-3)', pointerEvents: 'none' }} />
         </div>
 
-        {/* Viewer.
-            key за документом — повний remount при зміні вибору (empty↔doc, doc↔doc).
-            Корінь «чорної штори» реєстру (docs/diagnostics/diagnostic_registry_black_curtain.md):
-            без key React мутував той самий вузол .document-viewer на місці (empty→content)
-            і вставляв важкий pdf.js <iframe> у спільний position:relative/overflow:hidden
-            .materials-layout → стале темне композитне полотно лягало поверх списку лівої
-            панелі (фон панелі і в'юера — той самий токен --color-bg → «штора»). remount-шлях
-            (перемикання вкладки) це лікував,
-            бо фінальний layout ідентичний — отже паінт/композит, не CSS. key робить кожне
-            відкриття тим самим зціленим remount-шляхом. */}
+        {/* Viewer */}
         <DocumentViewer
-          key={selectedDoc?.id || 'empty'}
           document={selectedDoc}
           caseData={caseData}
           onClose={() => setSelectedDoc(null)}
