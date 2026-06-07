@@ -68,6 +68,37 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(input.conversionContext).toBeTruthy();
   });
 
+  it('toggle ON + «без OCR» + DOCX → ocrMode:none у options (етап D)', async () => {
+    const ingestFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Договір' }], decisions: [], errors: [], files: [],
+    });
+    const { container } = renderDP(ingestFiles);
+
+    const fileInput = container.querySelector('input[type="file"]');
+    const docx = new File([new Uint8Array([1, 2, 3])], 'Договір.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [docx] } });
+    });
+    // Спочатку «Просто додати», далі «Без розпізнавання тексту» (другий вмикається
+    // лише разом із першим — disabled поки skipPdfSlicing OFF).
+    await act(async () => {
+      fireEvent.click(screen.getByText('Просто додати файли'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Без розпізнавання тексту'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
+    });
+
+    expect(ingestFiles).toHaveBeenCalledTimes(1);
+    const [, options] = ingestFiles.mock.calls[0];
+    expect(options.mode).toBe('add_as_is');
+    expect(options.ocrMode).toBe('none');
+  });
+
   it('toggle ON + all-PDF → стрім-шлях (mode НЕ виставляється)', async () => {
     const ingestFiles = vi.fn().mockResolvedValue({
       ok: true, documents: [{ id: 'd1', name: 'Позов.pdf' }], decisions: [], errors: [],

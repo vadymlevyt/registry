@@ -60,6 +60,10 @@ const DEFAULT_SETTINGS = {
   // add_as_is solo. Працює і у міксі PDF+фото (інакше AI Triage поріже
   // PDF попри toggle). НЕ вимикає OCR, метадані, класифікацію.
   skipPdfSlicing: false,         // 9
+  // TASK 4 етап D — skipOcr: «без OCR». Дійсний ЛИШЕ разом зі «Просто додати»
+  // (add_as_is) — до НАРІЗКИ не застосовується (там OCR обов'язковий для меж).
+  // Vision читає 1-2 стор. → пропонує метадані; артефактів у 02 не створюється.
+  skipOcr: false,                // 10
 };
 
 let keySeq = 0;
@@ -670,6 +674,8 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
         // 1C — маршрут труби: add_as_is (не-PDF/комбо, кожен файл = документ)
         // або slice (стрім-нарізка/просто-PDF). ingest читає options.mode.
         ...(useAddAsIs ? { mode: 'add_as_is' } : {}),
+        // D — «без OCR» дійсний ЛИШЕ у add_as_is (нарізка завжди з повним OCR).
+        ...(useAddAsIs && settings.skipOcr ? { ocrMode: 'none' } : {}),
       };
       // TASK 4 · етап A/C — єдина труба додавання (ingest.js). mode маршрутизує
       // slice↔add_as_is; решта опцій ті самі. DP не кличе pipeline.run напряму.
@@ -880,6 +886,13 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
               description="кожен PDF — окремий документ, без AI-нарізки"
               checked={settings.skipPdfSlicing}
               onChange={setToggle('skipPdfSlicing')}
+            />
+            <Toggle
+              label="Без розпізнавання тексту"
+              description="лише з «Просто додати»: AI прочитає перші сторінки і запропонує дані, повне розпізнавання — пізніше"
+              checked={settings.skipOcr}
+              disabled={!settings.skipPdfSlicing}
+              onChange={setToggle('skipOcr')}
             />
           </div>
           <div className="dpv2-settings-group">

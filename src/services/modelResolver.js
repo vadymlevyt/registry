@@ -47,6 +47,13 @@ export const SYSTEM_DEFAULTS = {
   // шов). Зараз Haiku; кандидат на Sonnet (структурна/творча задача — де інтелект
   // цінний), що вмикається СУТО конфігом modelPreferences.textDigest, без коду.
   textDigest: 'claude-haiku-4-5-20251001',
+
+  // metadataExtractor — режим «без OCR» (TASK 4 етап D): Claude Vision читає
+  // перші 1-2 сторінки документа і пропонує метадані (date/category/author/
+  // name/gist), БЕЗ повного OCR і артефактів у 02. Haiku 4.5 (зір) — дешева
+  // структурна задача (cheap-before-expensive). Усі поля — ПРОПОЗИЦІЇ, адвокат
+  // править. Готова точка ієрархії user → tenant → system.
+  metadataExtractor: 'claude-haiku-4-5-20251001',
 };
 
 const FALLBACK_MODEL = 'claude-sonnet-4-20250514';

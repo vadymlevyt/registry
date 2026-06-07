@@ -416,6 +416,21 @@ export function hasOcrSupport(file) {
   return hasAnyProvider(file);
 }
 
+// canVisionMetadata — чи здатний Claude Vision прочитати метадані цього файла
+// (режим «без OCR», TASK 4 D). PDF / image — так; XLSX/PPTX/passthrough — ні.
+export function canVisionMetadata(file) {
+  return claudeVision.canHandle(file);
+}
+
+// extractMetadata — режим «без OCR» (TASK 4 етап D). Фасад над claudeVision:
+// Vision читає перші 1-2 сторінки → ПРОПОНУЄ метадані документа
+// { date, category, author, name, gist } БЕЗ повного OCR і БЕЗ артефактів у 02
+// (нічого не пише на Drive). Споживачі: модалка single-add і DP «просто додати»
+// з тумблером «без OCR» через documentMetadata.enrichDocumentWithVisionMetadata.
+export async function extractMetadata(file, options = {}) {
+  return claudeVision.extractMetadata(file, options);
+}
+
 // ── extractText ─────────────────────────────────────────────────────────────
 
 export async function extractText(file, options = {}) {

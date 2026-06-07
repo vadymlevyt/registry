@@ -32,6 +32,7 @@ import { ArchiveView } from "./ArchiveView.jsx";
 import { generateCaseContext } from "./services/contextGenerator.js";
 import { derivePendingRegen, shouldStartContextRegen } from "./services/contextRelay.js";
 import * as documentsExtended from "../../services/documentsExtended.js";
+import { enrichDocumentWithVisionMetadata } from "../../services/documentMetadata.js";
 import "./CaseDossier.css";
 
 const CATEGORY_LABELS = {
@@ -2689,7 +2690,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         onClose={() => setDocModalOpen(false)}
         caseData={{ ...caseData, proceedings }}
         driveConnected={driveConnected}
-        onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts }) => {
+        onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts, ocrMode = 'full' }) => {
           // ── Інтеграція на documentPipeline (тонкий диригент DP-1) ──────────
           // Детермінований core (convert → upload → createDocument →
           // add_document → emit) проходить через диригент. Post-persist OCR-
@@ -2776,6 +2777,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             },
             {
               mode: 'add_as_is',
+              // «без OCR» (етап D) → ocrMode 'none'. deferOcr=true: пост-крок
+              // (повний OCR АБО Vision-метадані) робить модалка нижче за ocrMode.
+              ocrMode,
               deferOcr: true,
               buildDocumentMetadata,
               uploadFile: uploadFileLocal,
@@ -2823,6 +2827,42 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           );
           if (suspiciousWarning) {
             toast.warning('PDF створено, але може бути неповним', { description: suspiciousWarning });
+          }
+
+          // TASK 4 етап D — «без OCR»: повного OCR НЕ робимо, артефактів у 02
+          // НЕ створюємо. Vision читає 1-2 стор. → пропонує метадані
+          // (date/category/author/name + gist у extended). Спільний оркестратор
+          // (той самий код що DP). Best-effort: збій не валить додавання —
+          // документ уже в 01, «Розпізнати» доступне у переглядачі пізніше.
+          if (ocrMode === 'none') {
+            toast.success('Документ додано');
+            if (driveId && fileForInfer && ocrService.canVisionMetadata({ mimeType: fileForInfer.type, name: fileForInfer.name })) {
+              const tId = toast.info('AI читає документ і пропонує дані...', { persistent: true });
+              try {
+                const res = await enrichDocumentWithVisionMetadata({
+                  ocrFile: {
+                    id: driveId,
+                    name: fileForInfer.name,
+                    mimeType: fileForInfer.type,
+                    subFolders: caseData?.storage?.subFolders,
+                  },
+                  doc,
+                  caseId: caseData.id,
+                  caseData,
+                  executeAction: onExecuteAction,
+                  agentId: 'dossier_agent',
+                  options: { apiKey: localStorage.getItem('claude_api_key'), aiUsageSink: setAiUsage },
+                });
+                toast.dismiss(tId);
+                if (res?.ok) {
+                  toast.info('AI запропонував дані документа — перевірте і за потреби поправте');
+                }
+              } catch (e) {
+                toast.dismiss(tId);
+                console.warn('[AddDoc · без OCR] метадані не вдались (non-fatal):', e?.message || e);
+              }
+            }
+            return;
           }
 
           // Post-persist OCR pipeline — точно той самий ланцюг що був inline.

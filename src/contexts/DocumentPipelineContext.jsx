@@ -46,6 +46,7 @@ import { convertToPdf } from '../services/converter/converterService.js';
 import { createDocumentPipeline as createAddAsIsPipeline } from '../services/documentPipeline.js';
 import { inferNatureFromFile, defaultNatureForUI } from '../services/detectDocumentNature.js';
 import * as ocrService from '../services/ocrService.js';
+import { enrichDocumentWithVisionMetadata } from '../services/documentMetadata.js';
 import { findOrCreateFolder, uploadBytesToDrive } from '../services/driveService.js';
 import { callAPIWithRetry } from '../services/toolUseRunner.js';
 import { resolveModel } from '../services/modelResolver.js';
@@ -365,12 +366,37 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     }
   }, [executeAction]);
 
+  // TASK 4 · етап D — «без OCR» пост-крок (ocrMode='none'). Замість повного OCR
+  // (ocrEnrichAddAsIs) — Vision читає 1-2 стор. → пропонує метадані; артефактів
+  // у 02 НЕ створюємо (нічого на Drive). Спільний оркестратор
+  // enrichDocumentWithVisionMetadata (той самий код що модалка). Best-effort:
+  // збій метаданих не валить додавання (документ уже в 01, «Розпізнати» пізніше).
+  const metadataEnrichAddAsIs = useCallback(async ({ item, document, caseData }) => {
+    const driveId = item.driveId || document?.driveId || null;
+    if (!driveId || !document) return;
+    const ocrFile = {
+      id: driveId,
+      name: item.uploadedFile?.name || document?.originalName || document?.name || 'document.pdf',
+      mimeType: item.originalMime || 'application/pdf',
+      subFolders: caseData?.storage?.subFolders,
+    };
+    await enrichDocumentWithVisionMetadata({
+      ocrFile,
+      doc: document,
+      caseId: caseData.id,
+      caseData,
+      executeAction,
+      agentId: 'document_processor_agent',
+    });
+  }, [executeAction]);
+
   // TASK 4 · етап C — runAddAsIs: non-streaming труба «просто додати». Кожен
   // файл = один документ, БЕЗ нарізки; усі типи + будь-яка комбінація через
   // спільний диригент createDocumentPipeline (convert→persist→emit). Споживачі:
   // DP-тумблер «Просто додати» (комбо/не-PDF) і модалка (один файл). OCR —
   // ін'єктований пост-крок: модалка передає deferOcr=true і робить власний
-  // Vision-OCR з result; DP лишає дефолтний ocrEnrichAddAsIs.
+  // Vision-OCR з result; DP лишає дефолтний ocrEnrichAddAsIs (ocrMode='full')
+  // або metadataEnrichAddAsIs (ocrMode='none', «без OCR»).
   const runAddAsIs = useCallback(async (input, options = {}) => {
     const opt = options || {};
     const buildDocumentMetadata = typeof opt.buildDocumentMetadata === 'function'
@@ -412,20 +438,27 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     const result = await pipeline.run(input);
 
     // Пост-persist OCR. deferOcr=true (модалка) → пропускаємо: модалка робить
-    // власний Vision-OCR. Інакше дефолтний best-effort enrich по кожному
-    // створеному документу (DP «просто додати»).
+    // власний пост-крок (повний OCR з Vision-фолбеком АБО Vision-метадані за
+    // своїм тумблером). Інакше (DP) — дефолтний best-effort enrich по кожному
+    // створеному документу: ocrMode='none' → Vision-метадані (без 02);
+    // інакше → повний OCR (ocrEnrichAddAsIs).
+    const noOcr = opt.ocrMode === 'none';
     if (result.ok && opt.deferOcr !== true) {
       for (const fileItem of result.files || []) {
         if (!fileItem.document) continue;
         try {
-          await ocrEnrichAddAsIs({ item: fileItem, document: fileItem.document, caseData: input.caseData });
+          if (noOcr) {
+            await metadataEnrichAddAsIs({ item: fileItem, document: fileItem.document, caseData: input.caseData });
+          } else {
+            await ocrEnrichAddAsIs({ item: fileItem, document: fileItem.document, caseData: input.caseData });
+          }
         } catch (e) {
-          console.warn('[runAddAsIs] ocrEnrich failed (non-fatal):', e?.message || e);
+          console.warn('[runAddAsIs] post-persist enrich failed (non-fatal):', e?.message || e);
         }
       }
     }
     return result;
-  }, [executeAction, getActor, ocrEnrichAddAsIs]);
+  }, [executeAction, getActor, ocrEnrichAddAsIs, metadataEnrichAddAsIs]);
 
   // TASK 4 · етап A/C — єдина труба додавання. ingest.js — тонкий фасад поверх
   // `run` (streaming, mode 'slice') і `runAddAsIs` (non-streaming, mode

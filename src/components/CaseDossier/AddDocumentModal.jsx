@@ -54,6 +54,9 @@ const initialState = (caseData) => ({
   date: '',
   isKey: false,
   file: null,
+  // TASK 4 етап D — «без OCR»: Claude Vision читає 1-2 стор. → пропонує
+  // метадані, файл лише в 01_ОРИГІНАЛИ (без повного OCR/артефактів у 02).
+  noOcr: false,
 });
 
 /**
@@ -176,6 +179,8 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
         date: state.date.trim() || null,
         isKey: state.isKey,
         file: state.file,
+        // «без OCR» (етап D) → ocrMode 'none'; інакше 'full' (повний OCR).
+        ocrMode: state.noOcr ? 'none' : 'full',
       });
       onClose();
     } catch (err) {
@@ -352,6 +357,13 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
           description="Документ буде виділено зірочкою у списку"
           checked={state.isKey}
           onChange={(v) => setState((s) => ({ ...s, isKey: v }))}
+        />
+
+        <Toggle
+          label="Без розпізнавання тексту"
+          description="Швидко: AI прочитає перші сторінки і запропонує дані. Повне розпізнавання — пізніше у переглядачі."
+          checked={state.noOcr}
+          onChange={(v) => setState((s) => ({ ...s, noOcr: v }))}
         />
 
         <FileUploadZone
