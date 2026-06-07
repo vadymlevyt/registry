@@ -247,13 +247,10 @@ export function DocumentPipelineProvider({ executeAction, children }) {
               const { renderImageMergeToPdf } = await import('../services/sortation/imageMergeRenderer.js');
               return renderImageMergeToPdf({ images, runInWorker: workerClient.runInWorker });
             },
-            writeText02: async ({ caseData, driveId, name, text, format }) => {
-              try {
-                await ocrService.writeExtractedTextArtifact(
-                  { id: driveId, name, subFolders: caseData?.storage?.subFolders }, text,
-                );
-              } catch { /* кеш не критичний */ }
-            },
+            // TASK 4 §7.1: writeText02 НЕ ін'єктуємо — `.txt` більше не пишемо.
+            // splitDocumentsV3 гард `typeof writeText02 === 'function'` → no-op.
+            // scanned кешується у .layout.json (writeLayout02); searchable
+            // дістає текст із текстового шару PDF на вимогу (extractTextLayer).
             writeLayout02: async ({ caseData, driveId, name, layoutJson }) => {
               try {
                 // B1 (20.05.2026): передаємо ОБ'ЄКТ, не string. Стара версія
@@ -324,26 +321,23 @@ export function DocumentPipelineProvider({ executeAction, children }) {
 
   // TASK 4 · етап C — default OCR-enrich для «просто додати» (non-streaming).
   // Пост-крок ПІСЛЯ persist для одного документа: scanned/image → OCR через
-  // ocrService (каскад pdfjsLocal→documentAi; пише .layout/.txt у 02 за чинною
-  // політикою, оновлює nature). DOCX/HTML — текст уже витягнуто конвертером
-  // (extractedText), Document AI НЕ викликаємо (CLAUDE.md ЗАБОРОНЕНО на
-  // конвертованому PDF). Best-effort: збій не валить додавання — «Розпізнати»
-  // у в'ювері лишається. Vision-фолбек тут НЕ потрібен (паритет з поточним
-  // стрім-«просто додати», теж лише Document AI); модалка робить власний OCR з
-  // Vision (deferOcr=true) і цей крок пропускає.
+  // ocrService (каскад pdfjsLocal→documentAi; пише ЛИШЕ .layout у 02, оновлює
+  // nature). DOCX/HTML — конвертер дав searchable PDF, текст у текстовому шарі
+  // PDF (TASK 4 §7.1: .txt НЕ пишемо, дістаємо на вимогу); Document AI НЕ
+  // викликаємо (CLAUDE.md ЗАБОРОНЕНО на конвертованому PDF). Best-effort: збій
+  // не валить додавання — «Розпізнати» у в'ювері лишається. Vision-фолбек тут
+  // НЕ потрібен; модалка робить власний OCR з Vision (deferOcr=true) і цей крок
+  // пропускає.
   const ocrEnrichAddAsIs = useCallback(async ({ item, document, caseData }) => {
     const subFolders = caseData?.storage?.subFolders;
     const driveId = item.driveId || document?.driveId || null;
     if (!driveId || !subFolders?.['02_ОБРОБЛЕНІ']) return;
 
-    // DOCX/HTML — searchable з текстовим шаром; пишемо .txt напряму (як модалка
-    // гілка А), Document AI не чіпаємо. mergeLayoutJson не очікується тут.
+    // DOCX/HTML — конвертер дав searchable PDF (pdf-lib drawText, текстовий шар
+    // у самому PDF). TASK 4 §7.1: `.txt` НЕ пишемо — текст дістається з
+    // текстового шару PDF на вимогу (getDocumentText/extractTextLayer).
+    // Document AI не чіпаємо (CLAUDE.md ЗАБОРОНЕНО на конвертованому PDF).
     if (item.extractedText && item.extractedText.trim()) {
-      try {
-        await ocrService.writeExtractedTextArtifact(
-          { id: driveId, name: document.name, subFolders }, item.extractedText,
-        );
-      } catch (e) { console.warn('[ocrEnrichAddAsIs] writeText failed:', e?.message || e); }
       return;
     }
 

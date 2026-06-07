@@ -131,10 +131,9 @@ DI-шви (модаль ін'єктує своє, DP лишає дефолт):
 `claudeVision`/ocrService (незмінено). `add_documents`/`add_document` проходять
 через `executeAction` (audit/billing/permissions на місці).
 
-**`.txt` / searchable:** поведінку НЕ міняли в C (як і етап A). DOCX/HTML і далі
-пишуть `.txt` (текст з конвертера); scanned — layout. Повна відмова від `.txt`
-(наскрізна вимога спеки) — окремий шов, поза вузьким scope C (узгоджено з нотаткою
-етапу A). Споживачі (`getDocumentText`) не змінювались.
+**`.txt` / searchable:** у C поведінку не міняли (як етап A). Повна відмова від
+`.txt` (наскрізна вимога спеки §7.1) винесена в окремий фоллов-ап — див. розділ
+нижче.
 
 **Межі (свідомо НЕ робив у C):** `ocrMode='none'`/Vision-метадані — етап D;
 стиснення — етап E; нейтралізація CSS-класів пікера — borg; `.txt`-removal —
@@ -154,9 +153,66 @@ DI-шви (модаль ін'єктує своє, DP лишає дефолт):
 
 **schemaVersion:** без змін (C не торкається структур даних).
 
+## Фоллов-ап — повна відмова від `.txt` (закриття §7.1)
+
+**Принцип:** `.txt` — мертвий дубль. Прибрано **повністю** (і запис, і читання),
+без legacy-милиць і перехідних етапів. Два типи документів — два джерела
+ВІРНОГО тексту:
+- **scanned** → `layout` (`page._text` із `.layout.json`);
+- **searchable** → **текстовий шар самого PDF** на вимогу через нову
+  `extractTextLayer` (pdfjsLocal, БЕЗ OCR / Document AI). DOC/HTML конвертуються
+  у searchable PDF через `pdfLibHtmlRenderer` (`pdf-lib` `drawText` — реальний
+  текстовий шар), тож текст живе в PDF — `.txt` зайвий.
+
+**Точка верифікації (звірено з кодом):** `htmlToPdf`/`docxToPdf` →
+`htmlToPdfViaPdfLib` (`pdf-lib` `page.drawText`) → searchable PDF з текстовим
+шаром. `pdfjsLocal.extract` дістає цей шар. Жоден споживач не залежить від
+фізичного `.txt`.
+
+**Читання (`src/services/ocrService.js`):**
+- Нова приватна `extractTextLayer(file)` — текст із текстового шару PDF за
+  driveId (mimeType форсовано `application/pdf`), нічого не пише.
+- `getDocumentText(doc, caseData)` — gating по `documentNature`: `scanned` →
+  лише `layout` (скан без layout → `''`, нічого не лишаємо); `searchable` →
+  `extractTextLayer`; невідома природа → layout, інакше текстовий шар.
+- `getCleanOrRawText(file)` — digest `.md` → layout → `extractTextLayer`
+  (`.txt` як джерело прибрано).
+- `extractText` — прибрано `.txt`-кеш (і читання, і запис); `cacheWritten`
+  завжди `false`; scanned кешується лише у `.layout.json`.
+- Видалено мертвий `.txt`-машинерій: `checkCache`, `getCachedText`,
+  `writeExtractedTextArtifact`, `archiveRawTxt`, `findOrCreateSubfolder`,
+  `textCacheFileName`.
+
+**Запис (усі точки додавання — `.txt` прибрано):**
+- `DocumentPipelineContext`: `ocrEnrichAddAsIs` DOCX/HTML-гілка → early-return
+  без запису; `writeText02`-dep більше НЕ ін'єктується (`splitDocumentsV3` гард
+  `typeof writeText02==='function'` → no-op). scanned далі пише `layout`
+  (`writeLayout02`) — не чіпали.
+- `CaseDossier` модаль (гілка А DOCX/HTML): прибрано `.txt`-запис; layout
+  фото-склейки лишається.
+- `DocumentProcessorV2` image-merge: прибрано `.txt`-запис; layout лишається.
+- Хибний warning «не вдалось зберегти кеш» на «Розпізнати» прибрано (searchable
+  → текст у PDF, не збій кеша).
+
+**Старі скани лише з `.txt` без layout:** для них свідомо нічого не лишаємо —
+`getDocumentText` поверне `''`, адвокат перевидалить/додасть (як домовлено).
+Старі `.txt`-файли на Drive не видаляються кодом (поза скоупом), але повністю
+ігноруються логікою. Окрему перевірку наявних таких сканів виконати по даних
+Drive (registry_data.json) не можна з пісочниці — перевіряється на місці.
+
+**Тести:**
+- `tests/unit/getDocumentText.test.js` — переписано: searchable → текстовий шар
+  (`extractTextLayer`); старий `.txt` без layout/шару → `''`/`null` (`.txt` НЕ
+  джерело); pdfjsLocal-мок керований.
+- `tests/unit/ocrService.test.js` — `extractText`: searchable → нічого не
+  пишемо (було «тільки .txt»); claudeVision без pageStructure → без `.txt`;
+  блок `writeExtractedTextArtifact` видалено.
+- `npm test` — **1952 passed (156 files)**; `npm run build` — **success**.
+
 ## schemaVersion / міграція (рішення — на етапі D)
 
-_Заповнюється на етапі D._
+_Заповнюється на етапі D._ Фоллов-ап `.txt` — без зміни схеми (метадані не
+торкаються).
 
 ## ROADMAP — позначки
 

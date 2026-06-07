@@ -572,17 +572,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
     }
 
     // Успіх — повідомляємо і оновлюємо документ.
-    // V2-A2: кеш збережено якщо записано .txt АБО layout. Скани з layout
-    // більше НЕ пишуть .txt (cacheWritten=false), але layoutWritten=true —
-    // це повноцінний кеш («Точний»/getCachedText читають layout). Без цього
-    // умова давала хибний warning «не вдалось зберегти кеш» на кожному ре-OCR.
+    // TASK 4 §7.1 (повна відмова від .txt): scanned → layout записано
+    // (layoutWritten=true, «Точний» читає layout). searchable (pdfjsLocal) →
+    // текст у текстовому шарі самого PDF, окремий артефакт НЕ потрібен —
+    // дістається на вимогу (getDocumentText/extractTextLayer). Обидва — успіх,
+    // не збій кеша (хибний warning прибрано).
     if (!silentSuccess) {
-      if (ocrResult?.cacheWritten || ocrResult?.layoutWritten) {
+      if (ocrResult?.layoutWritten) {
         toast.success('Текст розпізнано і збережено');
       } else {
-        toast.warning('Текст розпізнано, але не вдалось зберегти кеш на Drive', {
-          description: 'При повторному відкритті може знадобитись повторне розпізнавання',
-        });
+        toast.success('Текст розпізнано');
       }
     }
 
@@ -2842,25 +2841,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           };
 
           // Гілка А — текст уже витягнуто конвертером (DOCX mammoth / HTML
-          // innerText). Document AI НЕ викликаємо: пишемо .txt у 02_ОБРОБЛЕНІ
-          // напряму (та сама назва — getCachedText знайде при відкритті).
+          // innerText), конвертер дав searchable PDF (pdf-lib drawText). Document
+          // AI НЕ викликаємо. TASK 4 §7.1: `.txt` НЕ пишемо — текст живе в
+          // текстовому шарі PDF, дістається на вимогу (getDocumentText/
+          // extractTextLayer). Фото-склейка (mergeLayoutJson є) — пишемо layout.
           if (extractedText) {
             toast.success('Документ додано');
-            // V2-A2 (parent §ДОЛЯ .txt): `.txt` пишемо ⇔ layout ВІДСУТНІЙ.
-            // Фото-склейка (mergeLayoutJson є) → layout містить page._text,
-            // `.txt` зайвий. DOCX/HTML (без layout) → `.txt` лишається (searchable).
-            if (!mergeLayoutJson) {
-              try {
-                const written = await ocrService.writeExtractedTextArtifact(ocrFile, extractedText);
-                if (!written) {
-                  toast.warning('Текст витягнуто, але не вдалось зберегти кеш на Drive', {
-                    description: 'При відкритті документа текст можна витягти повторно',
-                  });
-                }
-              } catch (e) {
-                console.warn('[writeExtractedTextArtifact] failed:', e?.message || e);
-              }
-            }
             if (mergeLayoutJson) {
               try {
                 // B1 (20.05.2026): writeLayoutArtifact приймає лише object —

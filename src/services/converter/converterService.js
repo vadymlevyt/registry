@@ -29,11 +29,12 @@
 //   durationMs    — час конвертації у мс.
 //
 // ── Що з extractedText робить caller ────────────────────────────────────────
-// Якщо `extractedText` непорожній — caller (AddDocumentModal onSubmit у
-// CaseDossier) записує його у 02_ОБРОБЛЕНІ як .txt напряму через
-// ocrService.writeExtractedTextArtifact і ПРОПУСКАЄ runOcrWithRetryUI. Document AI
-// для DOCX/HTML не викликається — текст уже витягнуто з джерела, render-PDF
-// дав би гірший OCR. Це економить токени Document AI і прискорює додавання.
+// `extractedText` — plain-текст, витягнутий конвертером для попередньої
+// перевірки/прев'ю. TASK 4 §7.1 (повна відмова від .txt): caller його НЕ
+// зберігає у 02_ОБРОБЛЕНІ — DOC/HTML конвертуються у searchable PDF (pdf-lib
+// drawText), текст живе в текстовому шарі самого PDF і дістається на вимогу
+// (ocrService.getDocumentText/extractTextLayer). Document AI для DOC/HTML не
+// викликається — render-PDF дав би гірший OCR, а текст уже є в PDF.
 //
 // ── SAAS і Multi-user готовність ────────────────────────────────────────────
 // Конвертація — pure utility, не торкається даних реєстру. Але приймає context
