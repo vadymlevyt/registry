@@ -21,13 +21,17 @@
 import { compressPdfBuffer, DEFAULT_COMPRESSION_PRESET } from './imageCompressor.js';
 
 // maybeCompressFileForAdd — стиснути ОДИН файл перед додаванням, якщо це PDF.
+//   opts.onProgress(done,total) — посторінковий прогрес (для UI великих томів).
 //   file → File (стиснений PDF) | оригінал (не-PDF / збій / рушій пропустив).
 export async function maybeCompressFileForAdd(file, opts = {}) {
   try {
     const isPdf = file?.type === 'application/pdf' || /\.pdf$/i.test(file?.name || '');
     if (!isPdf || typeof file?.arrayBuffer !== 'function') return file;
     const ab = await file.arrayBuffer();
-    const c = await compressPdfBuffer(ab, { preset: opts.preset || DEFAULT_COMPRESSION_PRESET });
+    const c = await compressPdfBuffer(ab, {
+      preset: opts.preset || DEFAULT_COMPRESSION_PRESET,
+      onProgress: typeof opts.onProgress === 'function' ? opts.onProgress : undefined,
+    });
     if (c && c.bytes && c.compressed) {
       return new File([c.bytes], file.name, { type: 'application/pdf' });
     }

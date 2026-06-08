@@ -2755,10 +2755,36 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // інʼєктуємо як deps.
           const rawForAdd = (!isDriveSource && file && driveConnected) ? file : null;
 
+          // Прогрес довгих фаз для великих томів (без нього модалка виглядає як
+          // «висить»). Toast без update-API → throttled dismiss+add (раз на ~1.2с).
+          // Дає і UX, і діагностику: видно, де час — у стисненні чи завантаженні.
+          let compressToastId = null;
+          let lastCompressTick = 0;
+          const compressFileWithProgress = async (f) => {
+            try {
+              return await maybeCompressFileForAdd(f, {
+                onProgress: (done, total) => {
+                  const now = Date.now();
+                  if (now - lastCompressTick < 1200 && done < total) return;
+                  lastCompressTick = now;
+                  if (compressToastId != null) toast.dismiss(compressToastId);
+                  compressToastId = toast.info(`Стиснення: ${done} / ${total} стор.`, { persistent: true });
+                },
+              });
+            } finally {
+              if (compressToastId != null) { toast.dismiss(compressToastId); compressToastId = null; }
+            }
+          };
+          const uploadFileWithProgress = async (f, cd) => {
+            const tId = toast.info('Завантаження на Drive…', { persistent: true });
+            try { return await uploadFileLocal(f, cd); }
+            finally { toast.dismiss(tId); }
+          };
+
           const addFiles = createAddFiles({
             convertToPdf,
-            uploadFile: uploadFileLocal,
-            compressFile: maybeCompressFileForAdd,
+            uploadFile: uploadFileWithProgress,
+            compressFile: compressFileWithProgress,
             createDocument,
             persistDocument: async ({ caseId, document }) => {
               if (onExecuteAction) {

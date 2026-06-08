@@ -53,7 +53,14 @@ describe('maybeCompressFileForAdd', () => {
   it('передає пресет у рушій', async () => {
     compressPdfBuffer.mockResolvedValue({ bytes: new Uint8Array([1]), compressed: true });
     await maybeCompressFileForAdd(pdfFile(), { preset: 'strong' });
-    expect(compressPdfBuffer).toHaveBeenCalledWith(expect.anything(), { preset: 'strong' });
+    expect(compressPdfBuffer).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ preset: 'strong' }));
+  });
+
+  it('forward onProgress у рушій (прогрес великих томів)', async () => {
+    compressPdfBuffer.mockResolvedValue({ bytes: new Uint8Array([1]), compressed: true });
+    const onProgress = vi.fn();
+    await maybeCompressFileForAdd(pdfFile(), { onProgress });
+    expect(compressPdfBuffer).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ onProgress }));
   });
 });
 
