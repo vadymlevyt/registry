@@ -151,9 +151,11 @@ describe('createTriageStage — нормалізація AI-плану', () => {
 });
 
 describe('createTriageStage — graceful', () => {
-  it('нема транспорту → passthrough', async () => {
+  it('нема транспорту → passthrough (+ DIAG decision)', async () => {
     const res = await createTriageStage({})(ctxOf([{ fileId: 'f0' }]));
-    expect(res).toEqual({ ok: true });
+    expect(res.ok).toBe(true);
+    expect(res.ctx?.reconstructionPlan).toBeUndefined();
+    expect(res.decisions[0].type).toBe('triage_skipped');
   });
 
   it('AI кидає → НЕ фатально, warning, без плану', async () => {
@@ -164,10 +166,12 @@ describe('createTriageStage — graceful', () => {
     expect(res.ctx.files[0].warnings.some((w) => /triage: Triage down/.test(w))).toBe(true);
   });
 
-  it('AI повернув 0 документів → passthrough', async () => {
+  it('AI повернув 0 документів → passthrough (+ DIAG decision)', async () => {
     const triage = vi.fn(async () => ({ documents: [], unusedPages: [] }));
     const res = await createTriageStage({ triage })(ctxOf([{ fileId: 'f0' }]));
-    expect(res).toEqual({ ok: true });
+    expect(res.ok).toBe(true);
+    expect(res.ctx?.reconstructionPlan).toBeUndefined();
+    expect(res.decisions[0].type).toBe('triage_empty');
   });
 
   it('нема live-файлів → passthrough', async () => {

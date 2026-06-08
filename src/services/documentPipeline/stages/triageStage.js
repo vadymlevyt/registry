@@ -301,7 +301,11 @@ export function createTriageStage(stageDeps = {}) {
     }
 
     // ── AI Triage ────────────────────────────────────────────────────────
-    if (typeof triage !== 'function') return { ok: true };   // нема транспорту → passthrough
+    if (typeof triage !== 'function') {
+      // DIAG (empty-02 розслідування): нема транспорту → passthrough → fallback
+      // persist (гілка B splitDocumentsV3) → артефакти 02 НЕ пишуться.
+      return { ok: true, decisions: [{ type: 'triage_skipped', scope: 'triage', message: 'Triage-транспорт відсутній — пакет без плану (fallback persist, 02 не пишеться).' }] };
+    }
     const artifacts = live.map((f) => ({
       fileId: f.fileId,
       name: f.name,
@@ -309,6 +313,9 @@ export function createTriageStage(stageDeps = {}) {
       pageCount: f.pageCount || null,
       passport: passportOf(f, getStreamedText, getStreamedLayout),
     }));
+    // DIAG: скільки артефактів прийшло у триаж з ПОРОЖНІМ паспортом (сигнал що
+    // streamed-текст не доїхав по-файлово для мульти-файлу).
+    const emptyPassports = artifacts.filter((a) => !((a.passport || '').toString().trim())).length;
     let plan;
     try {
       const raw = await triage({ artifacts, userHint: buildUserHint(ctx), caseId: ctx.job.caseId });
@@ -318,9 +325,14 @@ export function createTriageStage(stageDeps = {}) {
       return {
         ok: true,
         ctx: { ...ctx, files: ctx.files.map((f) => ({ ...f, warnings: [...(f.warnings || []), `triage: ${err?.message || err}`] })) },
+        // DIAG: триаж кинув → без плану → fallback persist → 02 не пишеться.
+        decisions: [{ type: 'triage_error', scope: 'triage', message: `Triage не дав плану (помилка): ${err?.message || err}`, meta: { artifactsCount: artifacts.length, emptyPassports } }],
       };
     }
-    if (plan.documents.length === 0) return { ok: true };     // нічого не виділено → passthrough
+    if (plan.documents.length === 0) {
+      // DIAG: триаж повернув 0 документів → без плану → fallback persist → 02 не пишеться.
+      return { ok: true, decisions: [{ type: 'triage_empty', scope: 'triage', message: 'Triage повернув 0 документів — пакет без плану (fallback persist, 02 не пишеться).', meta: { artifactsCount: artifacts.length, totalPages: artifacts.reduce((s, a) => s + (a.pageCount || 0), 0), emptyPassports } }] };
+    }
 
     if (isDegeneratePlan(plan, live)) {
       // Свідомий стоп пайплайна: AI не зміг розрізнити межі, повертає тома
