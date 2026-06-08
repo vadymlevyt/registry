@@ -2764,11 +2764,17 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             try {
               return await maybeCompressFileForAdd(f, {
                 onProgress: (done, total) => {
+                  // ОДИН toast «виїхав» і лічильник тікає в ньому НА МІСЦІ (update,
+                  // без dismiss+add → без мерехтіння). Throttle ~250мс.
                   const now = Date.now();
-                  if (now - lastCompressTick < 1200 && done < total) return;
+                  if (compressToastId != null && now - lastCompressTick < 250 && done < total) return;
                   lastCompressTick = now;
-                  if (compressToastId != null) toast.dismiss(compressToastId);
-                  compressToastId = toast.info(`Стиснення: ${done} / ${total} стор.`, { persistent: true });
+                  const title = `Стиснення: ${done} / ${total} стор.`;
+                  if (compressToastId == null) {
+                    compressToastId = toast.info(title, { persistent: true });
+                  } else {
+                    toast.update(compressToastId, { title });
+                  }
                 },
               });
             } finally {

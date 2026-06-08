@@ -28,6 +28,10 @@ export function ToastContainer() {
         const handle = timersRef.current.get(event.id);
         if (handle) { clearTimeout(handle); timersRef.current.delete(event.id); }
         setToasts(prev => prev.filter(t => t.id !== event.id));
+      } else if (event.type === 'update') {
+        // Оновлення НА МІСЦІ (прогрес довгих операцій) — без мерехтіння.
+        // Таймер не чіпаємо (persistent не має; non-persistent лишає свій).
+        setToasts(prev => prev.map(t => (t.id === event.id ? { ...t, ...event.patch } : t)));
       } else if (event.type === 'clear') {
         timersRef.current.forEach(h => clearTimeout(h));
         timersRef.current.clear();

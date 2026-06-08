@@ -65,6 +65,20 @@ describe('toast service', () => {
     expect(received[0].id).toBe(id);
   });
 
+  it('toast.update(id, patch) генерує update event (прогрес на місці)', () => {
+    const id = toast.info('Стиснення: 0 / 10 стор.', { persistent: true });
+    received.length = 0;
+    toast.update(id, { title: 'Стиснення: 5 / 10 стор.' });
+    expect(received[0].type).toBe('update');
+    expect(received[0].id).toBe(id);
+    expect(received[0].patch.title).toBe('Стиснення: 5 / 10 стор.');
+  });
+
+  it('toast.update(null) — no-op (без event)', () => {
+    toast.update(null, { title: 'x' });
+    expect(received).toHaveLength(0);
+  });
+
   it('toast.show з готового message-обʼєкта', () => {
     const msg = { variant: 'warning', title: 'T', description: 'D' };
     toast.show(msg);

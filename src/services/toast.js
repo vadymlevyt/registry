@@ -49,6 +49,14 @@ export const toast = {
     subscribers.forEach(fn => fn({ type: 'dismiss', id }));
   },
 
+  // Оновити наявний toast НА МІСЦІ (без dismiss+add — без мерехтіння). Для
+  // прогресу довгих операцій: один toast «виїхав» і лічильник тікає в ньому до
+  // кінця. patch — часткові поля (зазвичай { title }). Невідомий id — no-op.
+  update(id, patch = {}) {
+    if (id == null) return;
+    subscribers.forEach(fn => fn({ type: 'update', id, patch }));
+  },
+
   clear() {
     subscribers.forEach(fn => fn({ type: 'clear' }));
   },
