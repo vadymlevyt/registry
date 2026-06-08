@@ -38,13 +38,11 @@ const AUTHOR_OPTIONS = [
   { value: 'third_party', label: 'Третя сторона' },
 ];
 
-// Підтримувані типи для кнопки "Додати файл" (single). Збігається з MIME-чеками
-// у converterService — PDF / HTML / DOCX / image (HEIC iPhone). Інші формати
-// (XLSX, ZIP, MD, TXT) залишаються у списку для passthrough — Drive iframe
-// покаже preview, OCR pipeline пропустить їх.
-// `image/*` — щоб iOS/iPadOS не сірив HEIC/HEIF (розширення `.heic` без MIME
-// там не вмикається у пікері). Покриває всі фото-формати одним махом.
-const ACCEPT_FILE_TYPES = '.pdf,image/*,.heic,.heif,.doc,.docx,application/msword,.xlsx,.pptx,.zip,.md,.txt,.html,.htm';
+// БЕЗ обмеження форматів у пікері (як у Document Processor) — щоб НІЧОГО не
+// сіріло на Android/iPad (розширення на кшталт `.heic`/`.doc` там примхливо
+// вмикаються). converterService сам маршрутизує: PDF/HTML/DOCX/image → PDF,
+// решта → passthrough (Drive прев'ю). Один підхід із DP, нуль сірого.
+const ACCEPT_FILE_TYPES = '';
 
 // Дві операційні гілки: одиничний документ vs склейка кількох зображень.
 // Mode 'merge' у TASK A — лише плейсхолдер з повідомленням; реалізація у TASK B.
