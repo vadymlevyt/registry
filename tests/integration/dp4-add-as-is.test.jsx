@@ -102,11 +102,14 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(options.ocrMode).toBe('none');
   });
 
-  it('toggle ON + all-PDF + повний OCR → стрім-шлях pipeline.run (addFiles НЕ кличеться)', async () => {
-    const run = vi.fn().mockResolvedValue({
-      ok: true, documents: [{ id: 'd1', name: 'Позов.pdf' }], decisions: [], errors: [],
+  it('toggle ON + all-PDF + повний OCR → addFiles (НЕ нарізка), ocrMode full', async () => {
+    // Рішення власника: «Просто додати» = ЗАВЖДИ простий додаток без нарізки.
+    // Раніше all-PDF+повний OCR з увімкненим тумблером ішов у стрім-нарізку
+    // («знову полізли в процесор») — тепер addFiles, кожен PDF цілим документом.
+    const addFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Позов.pdf' }], files: [], errors: [],
     });
-    const addFiles = vi.fn();
+    const run = vi.fn();
     const { container } = renderDP({ run, addFiles });
 
     const fileInput = container.querySelector('input[type="file"]');
@@ -121,11 +124,10 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
 
-    // all-PDF + повний OCR: нарізку пропускає triage (skipPdfSlicing), труба — slice (run).
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(addFiles).not.toHaveBeenCalled();
-    const [, options] = run.mock.calls[0];
-    expect(options.skipPdfSlicing).toBe(true);
+    expect(addFiles).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+    const [, options] = addFiles.mock.calls[0];
+    expect(options.ocrMode).toBe('full');
   });
 
   it('toggle ON + all-PDF + «без OCR» → addFiles з ocrMode:none (чистий PDF окремою лінією)', async () => {

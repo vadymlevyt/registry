@@ -707,25 +707,22 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     }
     // Маршрутизація сценаріїв (детермінований вибір НА ВХОДІ):
     //   • all-image + toggle OFF → DP image-merge editor (склейка авто).
-    //   • toggle ON «Просто додати» + будь-який НЕ-PDF / комбо → add_as_is
-    //     (non-streaming, усі типи за раз; кожен файл = один документ). 1C.
-    //   • toggle ON + all-PDF + «без OCR» → add_as_is (D): чистий PDF теж іде
-    //     окремою лінією — лише 01 + Vision 1-2 стор., БЕЗ нарізки/OCR/02.
-    //   • toggle ON + all-PDF + повний OCR → стрім-шлях (triage пропускає
-    //     нарізку, behavior-preserve — як було).
+    //   • toggle ON «Просто додати» → ЗАВЖДИ addFiles (простий per-file додаток),
+    //     НІКОЛИ нарізка/стрім-блоки — незалежно від типу і OCR-режиму.
+    //     Повний OCR розпізнає кожен файл ЦІЛИМ документом (layout у 02), але
+    //     НЕ ріже на шматки. «Без OCR» — лише 01, без артефактів.
     //   • toggle OFF + мікс photo+PDF → toast (нарізка-мікс поза scope; для
     //     комбо адвокат вмикає «Просто додати»).
-    //   • toggle OFF + all-PDF / mix без фото → стрім-шлях з AI Triage.
+    //   • toggle OFF + all-PDF / mix без фото → стрім-шлях з AI Triage (нарізка).
     if (isAllImagesInput() && !settings.skipPdfSlicing) {
       await startImageMergeProcessing();
       return;
     }
-    // 1C/D — «Просто додати» на всі типи. Не-PDF/комбо → non-streaming add_as_is.
-    // Чистий PDF іде на add_as_is ТІЛЬКИ коли «без OCR» (D): окрема лінія без
-    // нарізки (лише 01 + Vision 1-2 стор.). Чистий PDF з повним OCR лишається на
-    // стрім-шляху (нижче). Це лише МАРШРУТИЗАЦІЯ — логіку нарізки не чіпає.
-    const useAddAsIs = settings.skipPdfSlicing === true
-      && (hasAnyNonPdf() || settings.skipOcr === true);
+    // «Просто додати» (skipPdfSlicing) → ЗАВЖДИ простий додаток без нарізки.
+    // Виправлення (рішення власника): раніше all-PDF+повний OCR з увімкненим
+    // «Просто додати» все одно йшов у стрім-нарізку (блоки/OCR) — «знову полізли
+    // в процесор». Тепер тумблер однозначний: увімкнено → ніякої нарізки.
+    const useAddAsIs = settings.skipPdfSlicing === true;
     if (!useAddAsIs && hasAnyImage() && hasAnyNonImage()) {
       // Мікс фото+PDF у режимі НАРІЗКИ (toggle OFF) — поза scope. Підказуємо
       // увімкнути «Просто додати» для комбо без нарізки.
