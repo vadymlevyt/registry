@@ -1,12 +1,47 @@
 // TASK 4 E — imageCompressor: пресети, resolvePreset, scanned-guard (чисті
 // функції). Render-цикл (canvas/pdf.js) браузерний — у Node не виконується;
 // реальний обсяг стиснення перевіряє адвокат на пристрої (не юніт-тест).
-import { describe, it, expect } from 'vitest';
+//
+// Виняток — ГАРД «стиснення ніколи не збільшує розмір»: він суто про
+// співвідношення outBytes vs inBytes, тож мокаємо pdf.js/pdf-lib/canvas і
+// керуємо розміром виходу через globalThis.__MOCK_SAVE_BYTES (нижче).
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// pdf-lib mock: PDFDocument.create() → fake outDoc; save() віддає буфер розміру
+// globalThis.__MOCK_SAVE_BYTES (керуємо в тесті — більший/менший за вхід).
+vi.mock('pdf-lib', () => ({
+  PDFDocument: {
+    create: async () => ({
+      embedJpg: async () => ({}),
+      addPage: () => ({ drawImage: () => {} }),
+      save: async () => new Uint8Array(globalThis.__MOCK_SAVE_BYTES ?? 0),
+    }),
+  },
+}));
+
+// pdfjs-dist mock: одна scanned-сторінка (короткий текстовий шар → 'scanned',
+// guard пропускає до перебудови).
+vi.mock('pdfjs-dist', () => ({
+  getDocument: () => ({
+    promise: Promise.resolve({
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: ({ scale = 1 }) => ({ width: 1000 * scale, height: 1400 * scale }),
+        getTextContent: async () => ({ items: [{ str: '' }] }),
+        render: () => ({ promise: Promise.resolve() }),
+        cleanup: () => {},
+      }),
+      destroy: () => {},
+    }),
+  }),
+}));
+
 import {
   COMPRESSION_PRESETS,
   DEFAULT_COMPRESSION_PRESET,
   resolvePreset,
   isCompressibleNature,
+  compressPdfBuffer,
 } from '../../src/services/compression/imageCompressor.js';
 
 describe('imageCompressor — пресети', () => {
@@ -72,5 +107,47 @@ describe('imageCompressor — isCompressibleNature (scanned-guard, одна де
   it('порожній вхід → false', () => {
     expect(isCompressibleNature({})).toBe(false);
     expect(isCompressibleNature()).toBe(false);
+  });
+});
+
+describe('imageCompressor — ГАРД «стиснення ніколи не збільшує розмір»', () => {
+  // Мінімальний canvas-стаб: toBlob → Blob із заданим обсягом JPEG-байтів.
+  // Розмір JPEG несуттєвий (per-page), бо guard зважує лише save() vs вхід.
+  beforeEach(() => {
+    globalThis.document = {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => ({}),
+        toBlob: (cb) => cb({ arrayBuffer: async () => new Uint8Array(10).buffer }),
+      }),
+    };
+  });
+  afterEach(() => {
+    delete globalThis.document;
+    delete globalThis.__MOCK_SAVE_BYTES;
+  });
+
+  it('outBytes >= inBytes → ОРИГІНАЛ незмінним (pass-through, not_smaller)', async () => {
+    const input = new Uint8Array(1000); // вхід 1000 байт
+    globalThis.__MOCK_SAVE_BYTES = 5000; // перебудова роздула до 5000
+    const res = await compressPdfBuffer(input, { scannedGuard: false });
+    expect(res.compressed).toBe(false);
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toBe('not_smaller');
+    expect(res.inBytes).toBe(1000);
+    expect(res.outBytes).toBe(1000);          // outBytes = inBytes (оригінал)
+    expect(res.bytes).toBe(input);             // ТОЙ САМИЙ буфер, незмінний
+  });
+
+  it('outBytes < inBytes → стиснутий результат (compressed)', async () => {
+    const input = new Uint8Array(5000);
+    globalThis.__MOCK_SAVE_BYTES = 1000;      // перебудова менша за вхід
+    const res = await compressPdfBuffer(input, { scannedGuard: false });
+    expect(res.compressed).toBe(true);
+    expect(res.skipped).toBe(false);
+    expect(res.inBytes).toBe(5000);
+    expect(res.outBytes).toBe(1000);
+    expect(res.bytes.byteLength).toBe(1000);   // повертає перебудований буфер
   });
 });

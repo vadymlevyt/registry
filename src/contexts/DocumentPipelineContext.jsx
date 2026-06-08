@@ -349,11 +349,21 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       return;
     }
 
+    // localBlob — байти, що ВЖЕ в памʼяті add-флоу (те саме, що залив на Drive:
+    // конвертований/стиснений PDF або passthrough-оригінал). Передаємо у OCR —
+    // провайдери (documentAi/pdfjsLocal) читають їх локально замість повторного
+    // завантаження всього файлу з Drive. Drive-source (пікер) блоба не має →
+    // провайдер тягне за id (fallback). Один сенс (#11): «байти для OCR».
+    // Паритет з metadataEnrichAddAsIs.
+    const localBlob = item.uploadedFile instanceof Blob
+      ? item.uploadedFile
+      : (item.raw instanceof Blob ? item.raw : null);
     const ocrFile = {
       id: driveId,
       name: item.uploadedFile?.name || document?.originalName || document?.name || 'document.pdf',
       mimeType: item.originalMime || 'application/pdf',
       subFolders,
+      ...(localBlob ? { localBlob } : {}),
     };
     if (!ocrService.hasOcrSupport(ocrFile)) return;
     try {

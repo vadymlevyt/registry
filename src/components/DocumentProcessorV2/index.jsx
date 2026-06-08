@@ -118,6 +118,10 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   // (Drive-source блоба не має — борг #40). Browser-only (canvas): у тесті/без
   // canvas тихо лишається без естимату (best-effort).
   const [sizeEstimates, setSizeEstimates] = useState({});
+  // Дзеркало sizeEstimates у ref — щоб ефект-розрахунку перевіряв «вже пораховано»
+  // БЕЗ sizeEstimates у своїх deps. Інакше кожен записаний естимат перезапускав
+  // ефект → шторм паралельних pdfjs-рендерів (контенція/пам'ять → «через раз»).
+  const sizeEstimatesRef = useRef({});
 
   // ── 1B image_merge_unify: окремий під-флоу для all-image вхідного набору ──
   // Коли всі обрані файли — image/*, DP перехоплює запуск ДО pipeline.run і
@@ -155,26 +159,38 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
 
   // TASK 4 E крок 5 — фоновий розрахунок прогнозу розміру для device-PDF, коли
   // тумблер «Стиснути» УВІМК. Семпл перших 1-2 стор. → екстраполяція. Скип:
-  // вже пораховане (guard по key), Drive-source (нема блоба), не-PDF (рушій
-  // однаково пропустить). cancelled-прапор гасить race при швидкій зміні набору.
+  // вже пораховане (guard по key через ref, НЕ через deps), Drive-source (нема
+  // блоба), не-PDF (рушій однаково пропустить). cancelled-прапор гасить race при
+  // швидкій зміні набору.
+  //
+  // sizeEstimates СВІДОМО поза deps: інакше кожен записаний естимат перезапускав
+  // ефект → шторм паралельних pdfjs-рендерів (контенція/пам'ять → нестабільний
+  // прогноз «через раз / треба оновити»). Перевірка «вже пораховано» — через
+  // sizeEstimatesRef (live-дзеркало). Рахується раз на файл, стабільно.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!settings.compressAll) return undefined;
     let cancelled = false;
     (async () => {
       for (const s of selected) {
         if (cancelled) return;
-        if (sizeEstimates[s.key]) continue;
+        if (sizeEstimatesRef.current[s.key]) continue;
         const isPdf = s.mime === 'application/pdf' || /\.pdf$/i.test(s.name || '');
         if (s.origin !== 'device' || !s.file || !isPdf) continue;
         try {
           const ab = await s.file.arrayBuffer();
           const est = await estimateCompressedSize(ab, { preset: DEFAULT_COMPRESSION_PRESET });
-          if (!cancelled) setSizeEstimates((prev) => ({ ...prev, [s.key]: est }));
-        } catch { /* best-effort: без естимату */ }
+          if (cancelled) return;
+          sizeEstimatesRef.current = { ...sizeEstimatesRef.current, [s.key]: est };
+          setSizeEstimates((prev) => ({ ...prev, [s.key]: est }));
+        } catch (e) {
+          // best-effort: лишаємо файл без естимату, але не ковтаємо тихо
+          console.warn('[DPv2] size estimate failed for', s.name, e);
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [settings.compressAll, selected, sizeEstimates]);
+  }, [settings.compressAll, selected]);
 
   // ── Зона 1 · додавання файлів ─────────────────────────────────────────────
   const addDeviceFiles = (fileList) => {

@@ -53,15 +53,27 @@ export default {
       return { text: text.trim(), pageCount: 1, warnings: [] };
     }
 
-    // 2. Завантажити байти
-    const dl = await driveRequest(
-      `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
-    );
-    if (dl.status === 401 || dl.status === 403) {
-      throw makeError('AUTH', `Drive download auth ${dl.status}`);
+    // 2. Завантажити байти. file.localBlob — Blob/File уже в памʼяті (add-флоу
+    //    щойно завантажив ці байти на Drive) → читаємо локально, без зайвого
+    //    Drive-кругу. Інакше (Drive-source пікер) — тягнемо за id. Дзеркало
+    //    documentAi.extract (той самий localBlob-контракт).
+    let arrayBuffer;
+    if (file.localBlob instanceof Blob) {
+      try {
+        arrayBuffer = await file.localBlob.arrayBuffer();
+      } catch (e) {
+        throw makeError('UNKNOWN', `localBlob.arrayBuffer: ${e?.message || e}`);
+      }
+    } else {
+      const dl = await driveRequest(
+        `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
+      );
+      if (dl.status === 401 || dl.status === 403) {
+        throw makeError('AUTH', `Drive download auth ${dl.status}`);
+      }
+      if (!dl.ok) throw makeError('UNKNOWN', `Drive download ${dl.status}`);
+      arrayBuffer = await dl.arrayBuffer();
     }
-    if (!dl.ok) throw makeError('UNKNOWN', `Drive download ${dl.status}`);
-    const arrayBuffer = await dl.arrayBuffer();
 
     const lname = (file.name || '').toLowerCase();
     const isText =

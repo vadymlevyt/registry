@@ -222,6 +222,26 @@ export async function compressPdfBuffer(input, opts = {}) {
   const outU8 = await outDoc.save({ useObjectStreams: true });
   try { pdf.destroy(); } catch { /* noop */ }
 
+  // 🛡 ГАРД «стиснення ніколи не збільшує розмір» (TASK 4 E крок 3): рушій
+  // нормалізує до longEdge незалежно від вхідного розміру, тож для вже малих /
+  // вже стиснутих PDF (або апскейлу помірно-малої сторінки) перебудова може дати
+  // outBytes >= inBytes. Стиснення = «зменши або лиши як є», НІКОЛИ не «роздуй» →
+  // віддаємо ОРИГІНАЛ незмінним (pass-through), як на guard-skip.
+  if (outU8.byteLength >= inBytes) {
+    return {
+      bytes: inputU8,
+      compressed: false,
+      skipped: true,
+      reason: 'not_smaller',
+      inBytes,
+      outBytes: inBytes,
+      pageCount,
+      maxMP,
+      firstPt,
+      totalMs: (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0,
+    };
+  }
+
   return {
     bytes: outU8,
     compressed: true,
