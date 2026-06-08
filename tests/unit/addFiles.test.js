@@ -254,3 +254,46 @@ describe('addFiles — події', () => {
     expect(res.ok).toBe(true);
   });
 });
+
+describe('addFiles — стиснення (ін\'єктований крок, після convert)', () => {
+  it('compress:true → compressFile кличеться на фінальному файлі, результат заливається', async () => {
+    const compressFile = vi.fn(async () => new File([new Uint8Array([9])], 'c.pdf', { type: 'application/pdf' }));
+    const { deps } = makeDeps({ compressFile });
+    const res = await createAddFiles(deps).addFiles(baseInput(), { compress: true });
+    expect(compressFile).toHaveBeenCalledTimes(1);
+    // uploadFile отримав стиснений файл (вихід compressFile), не оригінал.
+    const uploaded = deps.uploadFile.mock.calls[0][0];
+    expect(uploaded.name).toBe('c.pdf');
+    expect(res.ok).toBe(true);
+  });
+
+  it('compress:false → compressFile НЕ кличеться', async () => {
+    const compressFile = vi.fn(async (f) => f);
+    const { deps } = makeDeps({ compressFile });
+    await createAddFiles(deps).addFiles(baseInput(), { compress: false });
+    expect(compressFile).not.toHaveBeenCalled();
+  });
+
+  it('compress:true без deps.compressFile → не кидає, документ додається', async () => {
+    const { deps } = makeDeps();
+    const res = await createAddFiles(deps).addFiles(baseInput(), { compress: true });
+    expect(res.ok).toBe(true);
+  });
+
+  it('Drive-source + compress:true → compressFile НЕ кличеться (нема uploadedFile)', async () => {
+    const compressFile = vi.fn(async (f) => f);
+    const { deps } = makeDeps({ compressFile });
+    await createAddFiles(deps).addFiles(baseInput([
+      { fileId: 'doc', raw: null, isDriveSource: true, driveId: 'drive_picked', type: 'application/pdf', name: 'x.pdf' },
+    ]), { compress: true });
+    expect(compressFile).not.toHaveBeenCalled();
+  });
+
+  it('compressFile кинув → best-effort: документ усе одно додається', async () => {
+    const compressFile = vi.fn(async () => { throw new Error('canvas'); });
+    const { deps } = makeDeps({ compressFile });
+    const res = await createAddFiles(deps).addFiles(baseInput(), { compress: true });
+    expect(res.ok).toBe(true);
+    expect(res.documents).toHaveLength(1);
+  });
+});

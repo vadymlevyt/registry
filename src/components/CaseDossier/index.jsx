@@ -2746,20 +2746,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           };
 
           // TASK 4 (rework) · Стадія C — модалка йде через ОКРЕМИЙ сервіс
-          // addFiles (нуль звʼязку з нарізкою/склейкою). Стиснення — окремий
-          // ФРОНТ-КРОК ПЕРЕД додаванням (тільки device-файл; рушій сам пропускає
-          // текстові PDF). OCR — пост-крок нижче (повний OCR при ocrMode='full';
-          // «без OCR» взагалі не розпізнає). Модаль-специфіку (uploadFileLocal з
-          // verify, dossier_agent/add_document + updateCase-fallback, форма-
-          // метадані) інʼєктуємо як deps.
-          let rawForAdd = (!isDriveSource && file && driveConnected) ? file : null;
-          if (compress && rawForAdd) {
-            rawForAdd = await maybeCompressFileForAdd(rawForAdd);
-          }
+          // addFiles (нуль звʼязку з нарізкою/склейкою). Стиснення — ін'єктований
+          // крок ВСЕРЕДИНІ addFiles на фінальному PDF (після convert: стискає і
+          // скани, і конвертовані зображення; рушій сам пропускає текстові).
+          // OCR — пост-крок нижче (повний OCR при ocrMode='full'; «без OCR»
+          // взагалі не розпізнає). Модаль-специфіку (uploadFileLocal з verify,
+          // dossier_agent/add_document + updateCase-fallback, форма-метадані)
+          // інʼєктуємо як deps.
+          const rawForAdd = (!isDriveSource && file && driveConnected) ? file : null;
 
           const addFiles = createAddFiles({
             convertToPdf,
             uploadFile: uploadFileLocal,
+            compressFile: maybeCompressFileForAdd,
             createDocument,
             persistDocument: async ({ caseId, document }) => {
               if (onExecuteAction) {
@@ -2800,7 +2799,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 mergeArtifacts: mergeArtifacts || null,
               }],
             },
-            { ocrMode, buildDocumentMetadata },
+            { ocrMode, compress, buildDocumentMetadata },
           );
 
           // Помилки → ТІ САМІ toast'и що були inline (модаль лишається

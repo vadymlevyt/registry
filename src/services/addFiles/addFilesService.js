@@ -15,8 +15,10 @@
 // окремий сценарій на тип. «Кожен файл своїм шляхом» виходить САМО — бо кроки
 // труби РОЗУМНІ і самі маршрутизують за типом, керовані ДАНИМИ:
 //   • convertToPdf — фасад converterService: PDF→як є, HTML/DOCX/зображення→PDF;
-//   • стиснення — НЕ тут (окремий фронт-крок ПЕРЕД викликом addFiles, бо
-//     стиснення живе окремо і годує також нарізку — §1.3 handoff);
+//   • стиснення — ОПЦІЙНИЙ ін'єктований крок (deps.compressFile + опція
+//     compress). Застосовується до ФІНАЛЬНОГО PDF ПЕРЕД заливкою — після
+//     convert, тож зображення (вже як PDF) теж стискаються; рушій сам пропускає
+//     текстові/searchable PDF. Ядро addFiles НЕ імпортує компресор (DI);
 //   • OCR — НЕ тут (пост-крок консюмера; `ocrMode:'none'` = «без OCR» —
 //     розпізнавання взагалі не запускається, артефактів у 02 немає, лише
 //     базові метадані + файл у 01_ОРИГІНАЛИ).
@@ -113,7 +115,7 @@ function normalizeFile(f, i) {
 // консюмер міг зробити пост-крок OCR (повний OCR при ocrMode='full') і показати
 // помилки. Не кидає — усі провали повертаються як { ok:false, error }.
 async function addOneFile(item, ctx, deps) {
-  const { caseId, caseData, conversionContext, job } = ctx;
+  const { caseId, caseData, conversionContext, job, compress } = ctx;
   const warnings = [...(item.warnings || [])];
 
   let uploadedFile = null;
@@ -156,6 +158,20 @@ async function addOneFile(item, ctx, deps) {
   if (item.mergeArtifacts) {
     extractedText = item.mergeArtifacts.extractedText || null;
     mergeLayoutJson = item.mergeArtifacts.layoutJson || null;
+  }
+
+  // 1b. СТИСНЕННЯ (опція) — на ФІНАЛЬНОМУ PDF ПЕРЕД заливкою. Рушій
+  //     ін'єктований (deps.compressFile), сам має scanned-guard: сканований /
+  //     зображення-PDF → downscale; текстовий / searchable PDF → pass-through.
+  //     Зображення стискаються САМЕ тут (після convert image→PDF, тож HEIC уже
+  //     JPEG). Drive-source (uploadedFile нема, лише driveId) не чіпаємо —
+  //     віддалений файл не тягнемо. Best-effort: збій → нестиснений файл.
+  if (compress && uploadedFile && typeof deps.compressFile === 'function') {
+    try {
+      uploadedFile = await deps.compressFile(uploadedFile);
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('[addFiles] compress best-effort failed:', e?.message || e);
+    }
   }
 
   // 2. UPLOAD у 01_ОРИГІНАЛИ (Drive-source уже має driveId — пропускаємо).
@@ -304,6 +320,7 @@ export function createAddFiles(deps = {}) {
       caseData: job.caseData,
       conversionContext: job.conversionContext,
       job,
+      compress: options.compress === true,
     };
 
     const results = [];
