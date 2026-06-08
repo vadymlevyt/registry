@@ -28,7 +28,6 @@ import { DocumentPipelineContext, useDocumentPipeline } from './documentPipeline
 export { DocumentPipelineContext, useDocumentPipeline };
 
 import { createStreamingExecutor } from '../services/documentPipeline/streamingExecutor.js';
-import { createIngest } from '../services/documentPipeline/ingest.js';
 import { createDefaultDrivePort } from '../services/documentPipeline/drivePort.js';
 import { createDiagLogger } from '../services/documentPipeline/diagLogger.js';
 import { createWorkerClient } from '../services/documentPipeline/workerClient.js';
@@ -47,10 +46,7 @@ import { compressPdfBuffer, DEFAULT_COMPRESSION_PRESET } from '../services/compr
 import { createAddFiles } from '../services/addFiles/addFilesService.js';
 import { maybeCompressFileForAdd } from '../services/compression/compressFrontStep.js';
 import { toast } from '../services/toast.js';
-import { createDocumentPipeline as createAddAsIsPipeline } from '../services/documentPipeline.js';
-import { inferNatureFromFile, defaultNatureForUI } from '../services/detectDocumentNature.js';
 import * as ocrService from '../services/ocrService.js';
-import { enrichDocumentWithVisionMetadata } from '../services/documentMetadata.js';
 import { uploadFileToCaseFolder } from '../services/driveService.js';
 import { callAPIWithRetry } from '../services/toolUseRunner.js';
 import { resolveModel } from '../services/modelResolver.js';
@@ -129,45 +125,6 @@ async function ocrChunkBytes({ bytes }) {
 // наявних call-sites (persist / buildPipelineDeps / addFilesRun).
 async function uploadToOriginals(file, caseData) {
   return uploadFileToCaseFolder(file, caseData);
-}
-
-// defaultAddAsIsMetadata — дефолтний білдер канонічних метаданих для
-// non-streaming «просто додати» (DP-тумблер). Один файл = один документ:
-// назва з імені файлу, nature виводиться (DOCX/HTML конвертер → searchable),
-// решта класифікації (category/author/procId) лишається null → маркер
-// «потребує перегляду». Модалка передає власний buildDocumentMetadata
-// (форма адвоката) і цей дефолт не використовує.
-function defaultAddAsIsMetadata({ item, driveId, originalDriveId, job }) {
-  const fileForInfer = item.uploadedFile
-    || (item.raw ? { type: item.raw.type, name: item.raw.name } : { type: item.type, name: item.name });
-  const isTextExtractedConvert =
-    item.converterType === 'docxToPdf' || item.converterType === 'htmlToPdf';
-  const nature = isTextExtractedConvert
-    ? 'searchable'
-    : (inferNatureFromFile({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
-        || defaultNatureForUI({ mimeType: fileForInfer.type, originalName: fileForInfer.name })
-        || 'searchable');
-  const base = (item.name || 'Документ').replace(/\.[^.]+$/, '');
-  return {
-    name: base,
-    category: null,
-    author: null,
-    procId: null,
-    date: null,
-    isKey: false,
-    driveId: driveId || null,
-    driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-    size: item.uploadedFile?.size || item.size || 0,
-    originalName: item.name || null,
-    originalDriveId: originalDriveId || null,
-    originalMime: item.originalMime ?? null,
-    folder: '01_ОРИГІНАЛИ',
-    addedBy: job?.addedBy || 'user',
-    namingStatus: 'auto',
-    documentNature: nature,
-    // source — канал ПОХОДЖЕННЯ (правило addedBy↔source): успадковуємо з job.
-    source: job?.source || 'manual',
-  };
 }
 
 export function DocumentPipelineProvider({ executeAction, children }) {
@@ -377,138 +334,6 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     }
   }, [executeAction]);
 
-  // TASK 4 · етап D — «без OCR» пост-крок (ocrMode='none'). Замість повного OCR
-  // (ocrEnrichAddAsIs) — Vision читає 1-2 стор. → пропонує метадані; артефактів
-  // у 02 НЕ створюємо (нічого на Drive). Спільний оркестратор
-  // enrichDocumentWithVisionMetadata (той самий код що модалка). Best-effort:
-  // збій метаданих не валить додавання (документ уже в 01, «Розпізнати» пізніше).
-  const metadataEnrichAddAsIs = useCallback(async ({ item, document, caseData }) => {
-    const driveId = item.driveId || document?.driveId || null;
-    if (!driveId || !document) return;
-    // localBlob — байти, що вже в памʼяті add-флоу (конвертований PDF або
-    // passthrough-оригінал). Vision рендерить 1-2 стор. саме з нього → файл
-    // читається ОДИН раз, без повторного завантаження всього файлу з Drive
-    // заради двох сторінок. Drive-source (пікер) блоба не має → renderFileToImages
-    // сам завантажить за id (fallback). Один сенс (#11): «байти для Vision».
-    const localBlob = item.uploadedFile instanceof Blob
-      ? item.uploadedFile
-      : (item.raw instanceof Blob ? item.raw : null);
-    const ocrFile = {
-      id: driveId,
-      name: item.uploadedFile?.name || document?.originalName || document?.name || 'document.pdf',
-      mimeType: item.originalMime || 'application/pdf',
-      subFolders: caseData?.storage?.subFolders,
-      ...(localBlob ? { localBlob } : {}),
-    };
-    await enrichDocumentWithVisionMetadata({
-      ocrFile,
-      doc: document,
-      caseId: caseData.id,
-      caseData,
-      executeAction,
-      agentId: 'document_processor_agent',
-    });
-  }, [executeAction]);
-
-  // TASK 4 · етап E — maybeCompressFile: стиснути ОДИН файл перед додаванням
-  // (add_as_is). Стискаємо лише PDF (рушій сам має scanned-guard: searchable →
-  // pass-through); не-PDF (DOCX-оригінал, інше) повертаємо як є. Best-effort:
-  // будь-який збій → оригінал (документ усе одно має додатись, правило resilience).
-  const maybeCompressFile = useCallback(async (file) => {
-    try {
-      const isPdf = file?.type === 'application/pdf' || /\.pdf$/i.test(file?.name || '');
-      if (!isPdf || typeof file?.arrayBuffer !== 'function') return file;
-      const ab = await file.arrayBuffer();
-      const c = await compressPdfBuffer(ab, { preset: DEFAULT_COMPRESSION_PRESET });
-      if (c && c.bytes && c.compressed) {
-        return new File([c.bytes], file.name, { type: 'application/pdf' });
-      }
-      return file;
-    } catch (e) {
-      console.warn('[maybeCompressFile] best-effort failed:', e?.message || e);
-      return file;
-    }
-  }, []);
-
-  // TASK 4 · етап C — runAddAsIs: non-streaming труба «просто додати». Кожен
-  // файл = один документ, БЕЗ нарізки; усі типи + будь-яка комбінація через
-  // спільний диригент createDocumentPipeline (convert→persist→emit). Споживачі:
-  // DP-тумблер «Просто додати» (комбо/не-PDF) і модалка (один файл). OCR —
-  // ін'єктований пост-крок: модалка передає deferOcr=true і робить власний
-  // Vision-OCR з result; DP лишає дефолтний ocrEnrichAddAsIs (ocrMode='full')
-  // або metadataEnrichAddAsIs (ocrMode='none', «без OCR»).
-  const runAddAsIs = useCallback(async (input, options = {}) => {
-    const opt = options || {};
-    const buildDocumentMetadata = typeof opt.buildDocumentMetadata === 'function'
-      ? opt.buildDocumentMetadata
-      : defaultAddAsIsMetadata;
-
-    // persistDocument — модалка передає власний (dossier_agent/add_document +
-    // updateCase-fallback, behavior-preserve); DP лишає дефолт
-    // (document_processor_agent/add_documents — той самий шлях що стрім).
-    const persistDocument = typeof opt.persistDocument === 'function'
-      ? opt.persistDocument
-      : async ({ caseId, document }) => {
-          try {
-            const r = await executeAction('document_processor_agent', 'add_documents', {
-              caseId, documents: [document],
-            });
-            return r?.success ? { success: true } : { success: false, error: r?.error || 'add_documents failed' };
-          } catch (err) {
-            return { success: false, error: err?.message || String(err) };
-          }
-        };
-
-    // uploadFile — модалка передає власний uploadFileLocal (verify/ensure
-    // subFolders, behavior-preserve); DP лишає дефолт uploadToOriginals.
-    const baseUploadFile = typeof opt.uploadFile === 'function' ? opt.uploadFile : uploadToOriginals;
-
-    // TASK 4 E — стиснення ПЕРЕД додаванням (опція з тумблера, фіксований
-    // Середній). Обгортка над uploadFile — ЄДИНА точка: стискаємо сам файл
-    // перед завантаженням на Drive. Рушій має scanned-guard (searchable PDF /
-    // не-PDF → pass-through), тож DOCX-оригінал поряд і текстові PDF проходять
-    // як є. Best-effort: збій → оригінал (resilience, документ усе одно додається).
-    const uploadFile = opt.compress === true
-      ? async (file, caseData) => baseUploadFile(await maybeCompressFile(file), caseData)
-      : baseUploadFile;
-
-    const pipeline = createAddAsIsPipeline({
-      convertToPdf,
-      uploadFile,
-      createDocument,
-      buildDocumentMetadata,
-      persistDocument,
-      eventBus,
-      topics: { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED },
-      updateCaseContext: opt.updateCaseContext === true,
-      getActor,
-    });
-
-    const result = await pipeline.run(input);
-
-    // Пост-persist OCR. deferOcr=true (модалка) → пропускаємо: модалка робить
-    // власний пост-крок (повний OCR з Vision-фолбеком АБО Vision-метадані за
-    // своїм тумблером). Інакше (DP) — дефолтний best-effort enrich по кожному
-    // створеному документу: ocrMode='none' → Vision-метадані (без 02);
-    // інакше → повний OCR (ocrEnrichAddAsIs).
-    const noOcr = opt.ocrMode === 'none';
-    if (result.ok && opt.deferOcr !== true) {
-      for (const fileItem of result.files || []) {
-        if (!fileItem.document) continue;
-        try {
-          if (noOcr) {
-            await metadataEnrichAddAsIs({ item: fileItem, document: fileItem.document, caseData: input.caseData });
-          } else {
-            await ocrEnrichAddAsIs({ item: fileItem, document: fileItem.document, caseData: input.caseData });
-          }
-        } catch (e) {
-          console.warn('[runAddAsIs] post-persist enrich failed (non-fatal):', e?.message || e);
-        }
-      }
-    }
-    return result;
-  }, [executeAction, getActor, ocrEnrichAddAsIs, metadataEnrichAddAsIs, maybeCompressFile]);
-
   // TASK 4 (rework) · Стадія D — DP «просто додати» через ОКРЕМИЙ сервіс
   // addFiles (той самий, що модалка; нуль звʼязку з нарізкою). DP-deps:
   // uploadToOriginals + document_processor_agent/add_documents. Стиснення —
@@ -565,14 +390,6 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     }
     return result;
   }, [executeAction, getActor, ocrEnrichAddAsIs]);
-
-  // TASK 4 · етап A/C — єдина труба додавання. ingest.js — тонкий фасад поверх
-  // `run` (streaming, mode 'slice') і `runAddAsIs` (non-streaming, mode
-  // 'add_as_is'). DP і модалка кличуть ОДНУ цю точку; mode маршрутизує.
-  const { ingestFiles } = useMemo(
-    () => createIngest({ runPipeline: run, runAddAsIs }),
-    [run, runAddAsIs],
-  );
 
   const cancel = useCallback(() => { cancelledRef.current = true; }, []);
   const keepPartial = useCallback((caseId, jobId) => executor.keepPartial(caseId, jobId), [executor]);
@@ -634,11 +451,11 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   }, [executeAction, run, getActor, executor]);
 
   const value = useMemo(() => ({
-    run, ingestFiles, addFiles: addFilesRun, resume, cancel, keepPartial, discardAll,
+    run, addFiles: addFilesRun, resume, cancel, keepPartial, discardAll,
     ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   }), [
-    run, ingestFiles, addFilesRun, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
+    run, addFilesRun, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   ]);
 
