@@ -64,9 +64,14 @@ export const CONVERT_DOCX_TO_PDF = true;
 // ── Detection helpers ───────────────────────────────────────────────────────
 
 const MIME_HTML = ['text/html', 'application/xhtml+xml'];
+// ТІЛЬКИ OOXML .docx — його читає mammoth. Старий бінарний .doc
+// (application/msword, OLE-сигнатура D0CF11E0) mammoth НЕ підтримує: docxToPdf
+// валідує ZIP-сигнатуру (PK) і кидає для .doc → CONVERT_FAILED → документ не
+// додавався взагалі. Тому .doc СВІДОМО НЕ тут — він піде у passthrough
+// (заливається в 01_ОРИГІНАЛИ як є; Drive показує превʼю .doc). Один сенс (#11):
+// MIME_DOCX = «формати, які вміє конвертувати mammoth», не «усі Word-формати».
 const MIME_DOCX = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/msword',
 ];
 
 // Симетрично до сімейств вище — мапінг розширень → image MIME. Використовується

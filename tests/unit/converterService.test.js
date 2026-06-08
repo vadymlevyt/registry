@@ -98,6 +98,16 @@ describe('converterService — маршрутизація за типом фай
       expect(result.warnings[0]).toContain('не конвертується');
       expect(reportActivity).not.toHaveBeenCalled();
     });
+
+    it('старий .doc (application/msword) → passthrough, НЕ docx (mammoth його не вміє)', async () => {
+      // Регресія: .doc маршрутизувався в docxToPdf → hasDocxSignature кидав →
+      // CONVERT_FAILED → документ не додавався. Тепер .doc іде у passthrough
+      // (заливається як є; Drive показує превʼю). canConvert для .doc → false.
+      expect(canConvert(fakeFile('лист.doc', 'application/msword'))).toBe(false);
+      const result = await convertToPdf(fakeFile('лист.doc', 'application/msword'), {});
+      expect(result.converter).toBe('passthrough');
+      expect(result.pdfName).toBe('лист');
+    });
   });
 
   describe('convertToPdf — image routing (regression guard для .jpeg)', () => {
