@@ -740,24 +740,26 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     try {
       const input = useAddAsIs ? await buildAddAsIsInput() : await buildRunInput();
       if (input.files.length === 0) { toast.warning('Немає файлів для обробки'); setRunning(false); return; }
-      const options = {
-        ...settings,
-        autoConfirm: true,
-        collectDataset: getSplitterDatasetEnabled(),
-        fragmentsCombined: false,
-        // 1C — маршрут труби: add_as_is (не-PDF/комбо, кожен файл = документ)
-        // або slice (стрім-нарізка/просто-PDF). ingest читає options.mode.
-        ...(useAddAsIs ? { mode: 'add_as_is' } : {}),
-        // D — «без OCR» дійсний ЛИШЕ у add_as_is (нарізка завжди з повним OCR).
-        ...(useAddAsIs && settings.skipOcr ? { ocrMode: 'none' } : {}),
-        // E — стиснути перед обробкою (тумблер compressAll → compress:true).
-        // Труба спільна: рушій стискає лише scanned PDF (guard), фіксований
-        // Середній. Перед нарізкою (slice) це КРИТИЧНО для §3.2 (slice-able).
-        compress: settings.compressAll === true,
-      };
-      // TASK 4 · етап A/C — єдина труба додавання (ingest.js). mode маршрутизує
-      // slice↔add_as_is; решта опцій ті самі. DP не кличе pipeline.run напряму.
-      const res = await pipeline.ingestFiles(input, options);
+      // TASK 4 (rework) · Стадія D — маршрут: add_as_is → ОКРЕМИЙ сервіс
+      // addFiles (нуль звʼязку з нарізкою; стиснення/OCR-пост-крок усередині);
+      // slice → стрім-нарізка (pipeline.run). «без OCR» дійсний ЛИШЕ у add_as_is.
+      let res;
+      if (useAddAsIs) {
+        res = await pipeline.addFiles(input, {
+          ocrMode: settings.skipOcr ? 'none' : 'full',
+          compress: settings.compressAll === true,
+          updateCaseContext: settings.updateCaseContext === true,
+        });
+      } else {
+        res = await pipeline.run(input, {
+          ...settings,
+          autoConfirm: true,
+          collectDataset: getSplitterDatasetEnabled(),
+          fragmentsCombined: false,
+          // Стиснення scanned PDF ПЕРЕД нарізкою — КРИТИЧНО для §3.2 (slice-able).
+          compress: settings.compressAll === true,
+        });
+      }
       if (res?.cancelled) {
         setCancelInfo({ jobId: res.jobId, readyCount: (res.readyDocuments || []).length });
       } else if (res?.blocked) {
@@ -780,6 +782,9 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       toast.error('Не вдалось запустити обробку', { description: e?.message });
     } finally {
       setRunning(false);
+      // Скидаємо режимні тумблери після прогону — щоб режим не лишався «липким»
+      // (минулого разу скан «не нарізався», бо «Просто додати» лишався увімкненим).
+      setSettings((s) => ({ ...s, skipPdfSlicing: false, skipOcr: false, compressAll: false }));
     }
   };
 

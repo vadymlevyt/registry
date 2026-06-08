@@ -44,6 +44,9 @@ import * as jobProgressStore from '../services/documentPipeline/jobProgressStore
 import { createDocument } from '../services/documentFactory.js';
 import { convertToPdf } from '../services/converter/converterService.js';
 import { compressPdfBuffer, DEFAULT_COMPRESSION_PRESET } from '../services/compression/imageCompressor.js';
+import { createAddFiles } from '../services/addFiles/addFilesService.js';
+import { maybeCompressFileForAdd } from '../services/compression/compressFrontStep.js';
+import { toast } from '../services/toast.js';
 import { createDocumentPipeline as createAddAsIsPipeline } from '../services/documentPipeline.js';
 import { inferNatureFromFile, defaultNatureForUI } from '../services/detectDocumentNature.js';
 import * as ocrService from '../services/ocrService.js';
@@ -515,6 +518,63 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     return result;
   }, [executeAction, getActor, ocrEnrichAddAsIs, metadataEnrichAddAsIs, maybeCompressFile]);
 
+  // TASK 4 (rework) · Стадія D — DP «просто додати» через ОКРЕМИЙ сервіс
+  // addFiles (той самий, що модалка; нуль звʼязку з нарізкою). DP-deps:
+  // uploadToOriginals + document_processor_agent/add_documents. Стиснення —
+  // ін'єктований крок з прогрес-тостом (один toast, лічильник на місці).
+  // Пост-крок OCR: повний OCR (ocrMode='full') → layout у 02 по кожному
+  // документу (ocrEnrichAddAsIs); «без OCR» (none) → НІЧОГО (без Vision —
+  // metadataEnrichAddAsIs БІЛЬШЕ НЕ ВИКЛИКАЄТЬСЯ, рішення власника).
+  const addFilesRun = useCallback(async (input, options = {}) => {
+    const ocrMode = options.ocrMode || 'full';
+
+    let compressToastId = null;
+    let lastTick = 0;
+    const compressFile = async (f) => {
+      try {
+        return await maybeCompressFileForAdd(f, {
+          onProgress: (done, total) => {
+            const now = Date.now();
+            if (compressToastId != null && now - lastTick < 250 && done < total) return;
+            lastTick = now;
+            const title = `Стиснення: ${done} / ${total} стор.`;
+            if (compressToastId == null) compressToastId = toast.info(title, { persistent: true });
+            else toast.update(compressToastId, { title });
+          },
+        });
+      } finally {
+        if (compressToastId != null) { toast.dismiss(compressToastId); compressToastId = null; }
+      }
+    };
+
+    const svc = createAddFiles({
+      convertToPdf,
+      uploadFile: uploadToOriginals,
+      compressFile,
+      createDocument,
+      persistDocument: async ({ caseId, document }) => {
+        try {
+          const r = await executeAction('document_processor_agent', 'add_documents', { caseId, documents: [document] });
+          return r?.success ? { success: true } : { success: false, error: r?.error || 'add_documents failed' };
+        } catch (err) { return { success: false, error: err?.message || String(err) }; }
+      },
+      eventBus,
+      topics: { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED },
+      getActor,
+    });
+
+    const result = await svc.addFiles(input, options);
+
+    if (result.ok && ocrMode !== 'none') {
+      for (const f of result.files || []) {
+        if (!f.document) continue;
+        try { await ocrEnrichAddAsIs({ item: f, document: f.document, caseData: input.caseData }); }
+        catch (e) { console.warn('[addFilesRun] OCR enrich failed (non-fatal):', e?.message || e); }
+      }
+    }
+    return result;
+  }, [executeAction, getActor, ocrEnrichAddAsIs]);
+
   // TASK 4 · етап A/C — єдина труба додавання. ingest.js — тонкий фасад поверх
   // `run` (streaming, mode 'slice') і `runAddAsIs` (non-streaming, mode
   // 'add_as_is'). DP і модалка кличуть ОДНУ цю точку; mode маршрутизує.
@@ -583,11 +643,11 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   }, [executeAction, run, getActor, executor]);
 
   const value = useMemo(() => ({
-    run, ingestFiles, resume, cancel, keepPartial, discardAll,
+    run, ingestFiles, addFiles: addFilesRun, resume, cancel, keepPartial, discardAll,
     ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   }), [
-    run, ingestFiles, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
+    run, ingestFiles, addFilesRun, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   ]);
 

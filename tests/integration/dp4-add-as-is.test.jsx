@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// TASK 4 · етап C — DP «просто додати» на всі типи + комбо.
+// TASK 4 (rework) · Стадія D — DP «просто додати» на ОКРЕМИЙ сервіс addFiles.
 // Тумблер «Просто додати файли» (skipPdfSlicing) + будь-який НЕ-PDF / комбо
-// → ingestFiles(input, { mode:'add_as_is' }); кожен файл = один документ,
-// без нарізки. all-PDF лишається на стрім-шляху (mode не виставляється).
+// (або «без OCR» на чистому PDF) → pipeline.addFiles(input, { ocrMode, compress }).
+// all-PDF + повний OCR лишається на стрім-шляху pipeline.run (нарізка).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/services/ocrService.js', () => ({
   extractText: vi.fn(async () => ({ text: '', pageStructure: null })),
@@ -20,8 +20,13 @@ import * as store from '../../src/services/documentPipeline/jobProgressStore.js'
 
 const CASE = { id: 'case_aai', name: 'Справа add-as-is', storage: { subFolders: {} } };
 
-function renderDP(ingestFiles) {
-  const ctx = { run: vi.fn(), ingestFiles, cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+function renderDP({ addFiles, run } = {}) {
+  const ctx = {
+    run: run || vi.fn().mockResolvedValue({ ok: true, documents: [], decisions: [], errors: [] }),
+    addFiles: addFiles || vi.fn().mockResolvedValue({ ok: true, documents: [], files: [], errors: [] }),
+    ingestFiles: vi.fn(),
+    cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {},
+  };
   return render(
     <DocumentPipelineContext.Provider value={ctx}>
       <DocumentProcessorV2 caseData={CASE} onExecuteAction={vi.fn()} driveConnected={false} />
@@ -32,11 +37,11 @@ function renderDP(ingestFiles) {
 describe('DP-4 · «просто додати» (add_as_is) маршрутизація', () => {
   beforeEach(() => store._resetForTests());
 
-  it('toggle ON + НЕ-PDF (DOCX) → ingestFiles з mode:add_as_is і raw-файлом', async () => {
-    const ingestFiles = vi.fn().mockResolvedValue({
-      ok: true, documents: [{ id: 'd1', name: 'Договір', category: null }], decisions: [], errors: [], files: [],
+  it('toggle ON + НЕ-PDF (DOCX) → addFiles з raw-файлом (повний OCR за дефолтом)', async () => {
+    const addFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Договір', category: null }], files: [], errors: [],
     });
-    const { container } = renderDP(ingestFiles);
+    const { container } = renderDP({ addFiles });
 
     // Додаємо DOCX (не-PDF, не-image — без downscale/canvas у jsdom).
     const fileInput = container.querySelector('input[type="file"]');
@@ -56,10 +61,9 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
 
-    expect(ingestFiles).toHaveBeenCalledTimes(1);
-    const [input, options] = ingestFiles.mock.calls[0];
-    expect(options.mode).toBe('add_as_is');
-    expect(options.skipPdfSlicing).toBe(true);
+    expect(addFiles).toHaveBeenCalledTimes(1);
+    const [input, options] = addFiles.mock.calls[0];
+    expect(options.ocrMode).toBe('full');
     expect(input.files).toHaveLength(1);
     expect(input.files[0].raw).toBeInstanceOf(File);
     expect(input.files[0].name).toBe('Договір.docx');
@@ -68,11 +72,11 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(input.conversionContext).toBeTruthy();
   });
 
-  it('toggle ON + «без OCR» + DOCX → ocrMode:none у options (етап D)', async () => {
-    const ingestFiles = vi.fn().mockResolvedValue({
-      ok: true, documents: [{ id: 'd1', name: 'Договір' }], decisions: [], errors: [], files: [],
+  it('toggle ON + «без OCR» + DOCX → ocrMode:none (без Vision)', async () => {
+    const addFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Договір' }], files: [], errors: [],
     });
-    const { container } = renderDP(ingestFiles);
+    const { container } = renderDP({ addFiles });
 
     const fileInput = container.querySelector('input[type="file"]');
     const docx = new File([new Uint8Array([1, 2, 3])], 'Договір.docx', {
@@ -93,17 +97,17 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
 
-    expect(ingestFiles).toHaveBeenCalledTimes(1);
-    const [, options] = ingestFiles.mock.calls[0];
-    expect(options.mode).toBe('add_as_is');
+    expect(addFiles).toHaveBeenCalledTimes(1);
+    const [, options] = addFiles.mock.calls[0];
     expect(options.ocrMode).toBe('none');
   });
 
-  it('toggle ON + all-PDF + повний OCR → стрім-шлях (mode НЕ виставляється)', async () => {
-    const ingestFiles = vi.fn().mockResolvedValue({
+  it('toggle ON + all-PDF + повний OCR → стрім-шлях pipeline.run (addFiles НЕ кличеться)', async () => {
+    const run = vi.fn().mockResolvedValue({
       ok: true, documents: [{ id: 'd1', name: 'Позов.pdf' }], decisions: [], errors: [],
     });
-    const { container } = renderDP(ingestFiles);
+    const addFiles = vi.fn();
+    const { container } = renderDP({ run, addFiles });
 
     const fileInput = container.querySelector('input[type="file"]');
     const pdf = new File([new Uint8Array([1, 2, 3])], 'позов.pdf', { type: 'application/pdf' });
@@ -117,21 +121,21 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
 
-    expect(ingestFiles).toHaveBeenCalledTimes(1);
-    const [, options] = ingestFiles.mock.calls[0];
-    // all-PDF + повний OCR: нарізку пропускає triage (skipPdfSlicing), труба — slice.
+    // all-PDF + повний OCR: нарізку пропускає triage (skipPdfSlicing), труба — slice (run).
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(addFiles).not.toHaveBeenCalled();
+    const [, options] = run.mock.calls[0];
     expect(options.skipPdfSlicing).toBe(true);
-    expect(options.mode).toBeUndefined();
   });
 
-  it('toggle ON + all-PDF + «без OCR» → add_as_is з ocrMode:none (етап D, фікс A)', async () => {
+  it('toggle ON + all-PDF + «без OCR» → addFiles з ocrMode:none (чистий PDF окремою лінією)', async () => {
     // Корінь повільності A: раніше чистий PDF з «без OCR» НЕ потрапляв в
     // add_as_is (умова вимагала НЕ-PDF) → ішов на нарізку. Тепер «без OCR»
-    // маршрутизує будь-який вхід (вкл. чистий PDF) в add_as_is.
-    const ingestFiles = vi.fn().mockResolvedValue({
-      ok: true, documents: [{ id: 'd1', name: 'Позов' }], decisions: [], errors: [], files: [],
+    // маршрутизує будь-який вхід (вкл. чистий PDF) у addFiles.
+    const addFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Позов' }], files: [], errors: [],
     });
-    const { container } = renderDP(ingestFiles);
+    const { container } = renderDP({ addFiles });
 
     const fileInput = container.querySelector('input[type="file"]');
     const pdf = new File([new Uint8Array([1, 2, 3])], 'позов.pdf', { type: 'application/pdf' });
@@ -148,9 +152,8 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
 
-    expect(ingestFiles).toHaveBeenCalledTimes(1);
-    const [input, options] = ingestFiles.mock.calls[0];
-    expect(options.mode).toBe('add_as_is');     // чистий PDF теж окремою лінією
+    expect(addFiles).toHaveBeenCalledTimes(1);
+    const [input, options] = addFiles.mock.calls[0];
     expect(options.ocrMode).toBe('none');        // без OCR
     expect(input.files).toHaveLength(1);
     expect(input.files[0].raw).toBeInstanceOf(File);
