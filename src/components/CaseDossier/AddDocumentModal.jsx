@@ -42,7 +42,7 @@ const AUTHOR_OPTIONS = [
 // у converterService — PDF / HTML / DOCX / image (HEIC iPhone). Інші формати
 // (XLSX, ZIP, MD, TXT) залишаються у списку для passthrough — Drive iframe
 // покаже preview, OCR pipeline пропустить їх.
-const ACCEPT_FILE_TYPES = '.pdf,.jpeg,.jpg,.png,.heic,.webp,.doc,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm';
+const ACCEPT_FILE_TYPES = '.pdf,.jpeg,.jpg,.png,.heic,.webp,.doc,.docx,application/msword,.xlsx,.pptx,.zip,.md,.txt,.html,.htm';
 
 // Дві операційні гілки: одиничний документ vs склейка кількох зображень.
 // Mode 'merge' у TASK A — лише плейсхолдер з повідомленням; реалізація у TASK B.

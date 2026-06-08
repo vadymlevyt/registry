@@ -446,13 +446,26 @@ function getExtension(name) {
 // Без цього прапора Viewer розпізнавав конвертовані DOCX як DOCX за originalName
 // і кидав mammoth у render PDF-блоба — «Can't find end of central directory».
 //
+// 🔑 ТІЛЬКИ формати, які converterService РЕАЛЬНО конвертує в PDF (docx/html/
+// image). Старий .doc, .xlsx, .zip тощо — PASSTHROUGH: driveId = оригінал, НЕ
+// PDF. Раніше будь-який non-pdf originalMime хибно вважався «конвертованим» →
+// .doc рендерився як PDF (PdfRenderer) і не показувався взагалі. Тепер
+// passthrough-типи падають у каскад нижче → Drive-iframe прев'ю (Google
+// показує .doc/.xlsx нативно).
+//
 // Legacy документи (до TASK A) мають originalMime === null → false → каскад
 // isPdf/isDocx/isHtml працює як раніше.
+const CONVERTED_SOURCE_MIMES = [
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
+  'text/html',
+  'application/xhtml+xml',
+];
 function wasConvertedToPdf(doc) {
   const originalMime = (doc.originalMime || '').toLowerCase();
   if (!originalMime) return false;
   if (originalMime === 'application/pdf') return false; // passthrough — не конвертували
-  return true;
+  if (originalMime.startsWith('image/')) return true;   // image → PDF (imageToPdf)
+  return CONVERTED_SOURCE_MIMES.includes(originalMime); // лише docx/html, решта passthrough
 }
 
 function isPdf(doc) {
