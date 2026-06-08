@@ -26,7 +26,7 @@
 | Блок | Стан | Дія в таску |
 |---|---|---|
 | `converterService.convertToPdf` (HTML/DOCX/image/HEIC→PDF) | ✅ є | переюз як є |
-| `compressionService.compressPdf` (pdf-lib) | ✅ є (готовий сервіс) | підключити тумблером (етап E) |
+| Стиснення: реальний рушій `processFile` у стенді `public/lab/pdf-recompress.html` | стенд ✅ / у застосунку ⬜ | перенести як є у спільний сервіс (етап E); НЕ `compressPdf` (слабкий re-save) |
 | `downscaleImage` (~2400px, авто у `prepareImagesForMerge` крок 1.5) | ✅ є | переюз як є |
 | `streamingExecutor` (пачковий конвеєр: RAM-чанки/resume/нарізка) | ✅ є | основа `ingest.js` |
 | `claudeVision.js` (рендер сторінок + виклик Claude) | ✅ є (фолбек OCR) | основа режиму «без OCR» (етап D) |
@@ -105,7 +105,18 @@ DocumentProcessorV2/DrivePicker.jsx .. видалено (злито у component
 
 **D — `ocrMode` + «без OCR».** Розетка `ocrMode` у `ingest.js`: `full` (поточна поведінка) + «без OCR» (Vision 2 стор. → метадані, файл лише в `01`, без артефактів). Тумблер у модалці і DP. 🔹
 
-**E — тумблер «стиснути перед обробкою».** Переюз `compressionService.compressPdf` (PDF) і `downscaleImage` (зображення — вже авто). Тумблер у модалці/DP; стиснення ПЕРЕД OCR/нарізкою; pdf-lib не ламає нарізку (доктрина §7.6). 🔹
+**E — тумблер «стиснути перед обробкою» (ОСТАННІЙ).** Деталі — `docs/consultations/admin_context_compression_wiring.md` + `docs/tasks/TASK_file_tools_compression_doctrine.md`.
+
+> 🚨 **НЕ `compressionService.compressPdf`** — він СЛАБКИЙ (pdf-lib re-save, 1-2%). Реальний рушій — у стенді `public/lab/pdf-recompress.html` (функція `processFile(file, longEdge, quality)`: pdf.js render кожної стор. → JPEG → **pdf-lib `embedJpg`+`addPage`+`drawImage`** → `save`).
+
+Кроки:
+1. **Перенести `processFile` ЯК Є** у спільний параметричний сервіс (напр. `services/compression/imageCompressor.js`): єдина адаптація — CDN-бібліотеки стенда → npm `pdfjs-dist`+`pdf-lib` (вже в застосунку), логіка байт-у-байт та сама. Константа `COMPRESSION_PRESETS` = Слабкий ~2200/0.8 · **Середній 1800/0.7 (стандарт)** · Сильний ~1600/0.65 (підлога 1400/0.6; weak/strong — попередні значення). `standaloneCompressor`/`CompressFilesModal` перевести на цей сервіс (слабкий `compressPdf` як «стиснення» прибрати).
+2. **`scanned-guard` + pass-through** — ОДНА детекція по системі (та сама, що `documentNature`/scanned): стискаємо лише **скановані PDF (на основі зображень) + зображення**; усе інше (HTML/DOC/текст-PDF) **проходить як є**; пайплайн НЕ падає/не зупиняється; чесний тост «стискаються лише скановані PDF/зображення».
+3. **Дротувати `compress`-опцію** (закладена на A, інертна) у трубі — стиснення ПЕРЕД обробкою (нарізкою/додаванням), **фіксований Середній**. **pdf-lib-перебудова (per-page resources) КРИТИЧНА** — інакше нарізка (`copyPages`) тягне всі зображення в кожен чанк → >40 МБ → падіння (доктрина §3.2). Тобто стиснення на вході існує і для того, щоб потім нарізалось.
+4. **Тумблери «стиснути»** у **DP** (`compressAll` ~53/909 — під'єднати) **і в модалці** single-add — обидва лише виставляють `compress:true` (дешево, бо труба спільна). Батч-рівень (як «без OCR»); per-файл → борг #56.
+5. **Прогноз розміру** — у списку файлів коли тумблер УВІМК: стиснути **семпл перших 1-2 стор.** → екстраполяція × `pageCount` → показати «→ ~X МБ» (+ сума пакету). `processFile` уже віддає `outBytes`. (Останній крок; оцінка з `~`.)
+
+**Межі E (ПОЗА):** вкладка «Інструменти» з UI-пікером 3 пресетів (§7.4) — лише UI поверх **готового** сервісу, потім; одиночне зображення→PDF (`converter/imageToPdf` 0.92, прогалина); per-файл вибір (#56); склейку НЕ чіпати (downscale є); борг #40. 🔹
 
 Кожен етап: behavior-preserving (крім нових можливостей D/E), тести зелені перед наступним.
 
