@@ -46,6 +46,8 @@ registry/
 │   │   └── documentSchema.js   — канонічна схема документа (23 + 6 полів) v5
 │   └── services/
 │       ├── driveAuth.js, driveService.js — Google Drive API
+│       │   (uploadFileToCaseFolder — СПІЛЬНА точка заливки файлу у папку справи:
+│       │    модалка+DP+майбутні; читає байти ПЕРЕД upload, правильний MIME)
 │       ├── ocrService.js + ocr/ — OCR провайдер-патерн (planka Picatinny)
 │       │   ├── documentAi.js  — Document AI (основний)
 │       │   ├── claudeVision.js — fallback
@@ -56,6 +58,9 @@ registry/
 │       │   ├── docxToPdf.js   — DOCX → PDF (mammoth + html2pdf)
 │       │   ├── imageToPdf.js  — JPG/PNG/HEIC/WEBP → PDF (jsPDF)
 │       │   └── heicToJpeg.js  — HEIC → JPEG (heic2any pre-step)
+│       ├── addFiles/addFilesService.js — СПІЛЬНИЙ сервіс «просто додати» (TASK 4 rework):
+│       │                   createAddFiles(deps) — модалка і DP «просто додати»; нуль зв'язку з нарізкою
+│       ├── compression/imageCompressor.js — рушій стиснення (зі стенда); compressFrontStep.js — фронт-крок
 │       ├── documentFactory.js — createDocument(), validateDocument(), needsReview()
 │       ├── documentsExtended.js — lazy-load для .metadata/documents_extended.json
 │       ├── migrations/
