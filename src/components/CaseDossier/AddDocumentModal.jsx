@@ -14,6 +14,9 @@ import { ImageMergePanel } from './ImageMergePanel/index.jsx';
 // Drive-пікер винесено у спільну теку (TASK 4 · етап B) — модалка лишається
 // тонким оркестратором, лише дротує DrivePickerSection.
 import { DrivePickerSection } from '../DrivePicker/index.jsx';
+// Спільні тумблери опцій додавання (TASK 4 rework · Стадія B) — один текст і
+// поведінка з Document Processor.
+import { OcrToggle, CompressToggle } from '../DocumentIngest/IngestOptionsToggles.jsx';
 import './AddDocumentModal.css';
 import './ImageMergePanel.css';
 
@@ -54,9 +57,12 @@ const initialState = (caseData) => ({
   date: '',
   isKey: false,
   file: null,
-  // TASK 4 етап D — «без OCR»: Claude Vision читає 1-2 стор. → пропонує
-  // метадані, файл лише в 01_ОРИГІНАЛИ (без повного OCR/артефактів у 02).
+  // «Без розпізнавання тексту» (ocrMode none) — опція швидкого додавання:
+  // розпізнавання не запускається, артефактів немає, лише базові метадані.
   noOcr: false,
+  // «Стиснути файли» — фронт-крок: зменшує скани/фото перед додаванням
+  // (рушій сам пропускає текстові). Default OFF.
+  compress: false,
 });
 
 /**
@@ -179,8 +185,10 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
         date: state.date.trim() || null,
         isKey: state.isKey,
         file: state.file,
-        // «без OCR» (етап D) → ocrMode 'none'; інакше 'full' (повний OCR).
+        // «без OCR» → ocrMode 'none'; інакше 'full' (повний OCR, дефолт).
         ocrMode: state.noOcr ? 'none' : 'full',
+        // «Стиснути» → фронт-крок стиснення перед додаванням (consumer).
+        compress: state.compress,
       });
       onClose();
     } catch (err) {
@@ -359,11 +367,14 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
           onChange={(v) => setState((s) => ({ ...s, isKey: v }))}
         />
 
-        <Toggle
-          label="Без розпізнавання тексту"
-          description="Швидко: AI прочитає перші сторінки і запропонує дані. Повне розпізнавання — пізніше у переглядачі."
+        <OcrToggle
           checked={state.noOcr}
           onChange={(v) => setState((s) => ({ ...s, noOcr: v }))}
+        />
+
+        <CompressToggle
+          checked={state.compress}
+          onChange={(v) => setState((s) => ({ ...s, compress: v }))}
         />
 
         <FileUploadZone

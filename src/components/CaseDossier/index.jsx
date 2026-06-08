@@ -3,9 +3,12 @@ import { createCaseStructure, getDriveFiles, readDriveFile, createDriveFile, upd
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
-import { useDocumentPipeline } from "../../contexts/documentPipelineContextCore.js";
 import * as eventBus from "../../services/eventBus.js";
-import { DOCUMENT_BATCH_PROCESSED } from "../../services/eventBusTopics.js";
+import { DOCUMENT_BATCH_PROCESSED, DOCUMENT_INGESTED } from "../../services/eventBusTopics.js";
+import { createAddFiles } from "../../services/addFiles/addFilesService.js";
+import { convertToPdf } from "../../services/converter/converterService.js";
+import { maybeCompressFileForAdd } from "../../services/compression/compressFrontStep.js";
+import { getCurrentUserId, getCurrentTenantId } from "../../services/tenantService.js";
 import { inferNatureFromFile, defaultNatureForUI } from "../../services/detectDocumentNature.js";
 import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
 import { toast } from "../../services/toast.js";
@@ -32,7 +35,6 @@ import { ArchiveView } from "./ArchiveView.jsx";
 import { generateCaseContext } from "./services/contextGenerator.js";
 import { derivePendingRegen, shouldStartContextRegen } from "./services/contextRelay.js";
 import * as documentsExtended from "../../services/documentsExtended.js";
-import { enrichDocumentWithVisionMetadata } from "../../services/documentMetadata.js";
 import "./CaseDossier.css";
 
 const CATEGORY_LABELS = {
@@ -56,11 +58,10 @@ const PROC_COLORS = {
 };
 
 export default function CaseDossier({ caseData, cases, updateCase, onClose, onSaveIdea, onCloseCase, onDeleteCase, notes: notesProp, onAddNote, onUpdateNote, onDeleteNote, onPinNote, driveConnected, onExecuteAction, setAiUsage }) {
-  // TASK 4 · етап C — спільна труба додавання. Модалка «+ Додати документ»
-  // йде через docPipeline.ingestFiles({mode:'add_as_is'}) замість приватного
-  // createDocumentPipeline (усунення дубль-шляху C4). Пост-OCR з Vision-
-  // фолбеком лишається тут (deferOcr=true → runAddAsIs не OCR-ить сам).
-  const docPipeline = useDocumentPipeline();
+  // TASK 4 (rework) · Стадія C — модалка «+ Додати документ» додає через
+  // окремий сервіс addFiles (services/addFiles), нуль звʼязку з нарізкою.
+  // Стиснення — окремий фронт-крок; OCR — пост-крок (повний OCR при 'full',
+  // «без OCR» нічого не розпізнає). Див. onSubmit AddDocumentModal нижче.
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -2708,10 +2709,11 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // source. Лишається у шарі що вже володіє detectDocumentNature —
           // диригент і persist-стадія domain-free. DP-2 classify-стадія
           // візьме цю відповідальність на себе без зміни диригента.
-          const buildDocumentMetadata = ({ item, driveId, originalDriveId }) => {
-            const fileForInfer = item.uploadedFile || file;
+          const buildDocumentMetadata = ({ item, driveId, originalDriveId, uploadedFile, conversion }) => {
+            const fileForInfer = uploadedFile || file;
+            const converterType = conversion?.converter || null;
             const isTextExtractedConvert =
-              item.converterType === 'docxToPdf' || item.converterType === 'htmlToPdf';
+              converterType === 'docxToPdf' || converterType === 'htmlToPdf';
             const initialNature = isTextExtractedConvert
               ? 'searchable'
               : (fileForInfer
@@ -2728,10 +2730,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               isKey,
               driveId: driveId || null,
               driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-              size: item.uploadedFile?.size || file?.size || 0,
+              size: uploadedFile?.size || file?.size || 0,
               originalName: file?.name || null,
               originalDriveId: originalDriveId || null,
-              originalMime: item.originalMime ?? (isDriveSource ? (file?.type || null) : null),
+              originalMime: conversion?.originalMime ?? (isDriveSource ? (file?.type || null) : null),
               folder: '01_ОРИГІНАЛИ',
               addedBy: 'user',
               namingStatus: 'manual',
@@ -2743,13 +2745,36 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             };
           };
 
-          // TASK 4 · етап C — одна труба: модалка йде через спільний
-          // docPipeline.ingestFiles({mode:'add_as_is'}) (усунення дубль-шляху
-          // C4). Модаль-специфіку (uploadFileLocal з verify, dossier_agent/
-          // add_document + updateCase-fallback, форма-метадані) ін'єктуємо як
-          // deps → поведінка байт-у-байт та сама. deferOcr=true: пост-OCR з
-          // Claude Vision-фолбеком лишається нижче в модалці.
-          const result = await docPipeline.ingestFiles(
+          // TASK 4 (rework) · Стадія C — модалка йде через ОКРЕМИЙ сервіс
+          // addFiles (нуль звʼязку з нарізкою/склейкою). Стиснення — окремий
+          // ФРОНТ-КРОК ПЕРЕД додаванням (тільки device-файл; рушій сам пропускає
+          // текстові PDF). OCR — пост-крок нижче (повний OCR при ocrMode='full';
+          // «без OCR» взагалі не розпізнає). Модаль-специфіку (uploadFileLocal з
+          // verify, dossier_agent/add_document + updateCase-fallback, форма-
+          // метадані) інʼєктуємо як deps.
+          let rawForAdd = (!isDriveSource && file && driveConnected) ? file : null;
+          if (compress && rawForAdd) {
+            rawForAdd = await maybeCompressFileForAdd(rawForAdd);
+          }
+
+          const addFiles = createAddFiles({
+            convertToPdf,
+            uploadFile: uploadFileLocal,
+            createDocument,
+            persistDocument: async ({ caseId, document }) => {
+              if (onExecuteAction) {
+                return await onExecuteAction('dossier_agent', 'add_document', { caseId, document });
+              }
+              const updated = [...(caseData.documents || []), document];
+              updateCase && updateCase(caseData.id, 'documents', updated);
+              return { success: true };
+            },
+            eventBus,
+            topics: { DOCUMENT_INGESTED, DOCUMENT_BATCH_PROCESSED },
+            getActor: () => ({ userId: getCurrentUserId() || null, tenantId: getCurrentTenantId() || null }),
+          }).addFiles;
+
+          const result = await addFiles(
             {
               caseId: caseData.id,
               caseData,
@@ -2765,7 +2790,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               },
               files: [{
                 fileId: 'doc',
-                raw: (!isDriveSource && file && driveConnected) ? file : null,
+                raw: rawForAdd,
                 isDriveSource,
                 driveId: isDriveSource ? file._driveId : null,
                 name: file?.name || null,
@@ -2775,31 +2800,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 mergeArtifacts: mergeArtifacts || null,
               }],
             },
-            {
-              mode: 'add_as_is',
-              // «без OCR» (етап D) → ocrMode 'none'. deferOcr=true: пост-крок
-              // (повний OCR АБО Vision-метадані) робить модалка нижче за ocrMode.
-              ocrMode,
-              // «стиснути» (етап E) → compress true. runAddAsIs обгортає
-              // uploadFile рушієм (scanned-guard: текстові PDF проходять як є).
-              compress,
-              deferOcr: true,
-              buildDocumentMetadata,
-              uploadFile: uploadFileLocal,
-              persistDocument: async ({ caseId, document }) => {
-                if (onExecuteAction) {
-                  return await onExecuteAction('dossier_agent', 'add_document', { caseId, document });
-                }
-                const updated = [...(caseData.documents || []), document];
-                updateCase && updateCase(caseData.id, 'documents', updated);
-                return { success: true };
-              },
-            },
+            { ocrMode, buildDocumentMetadata },
           );
 
           // Помилки → ТІ САМІ toast'и що були inline (модаль лишається
           // відкритою, документ не створюється, на Drive нічого — TASK A).
-          if (!result.ok || result.stoppedAt) {
+          if (!result.ok) {
             const e = (result.errors && result.errors[0]) || {};
             if (e.code === 'CONVERT_FAILED') {
               console.error('Conversion error:', e.message);
@@ -2810,7 +2816,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             } else {
               toast.error('Не вдалось додати документ', { description: e.message });
             }
-            throw new Error(e.message || 'documentPipeline failed');
+            throw new Error(e.message || 'addFiles failed');
           }
 
           const persistedItem = result.files[0] || {};
@@ -2832,39 +2838,12 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             toast.warning('PDF створено, але може бути неповним', { description: suspiciousWarning });
           }
 
-          // TASK 4 етап D — «без OCR»: повного OCR НЕ робимо, артефактів у 02
-          // НЕ створюємо. Vision читає 1-2 стор. → пропонує метадані
-          // (date/category/author/name + gist у extended). Спільний оркестратор
-          // (той самий код що DP). Best-effort: збій не валить додавання —
-          // документ уже в 01, «Розпізнати» доступне у переглядачі пізніше.
+          // «без OCR» — нічого не розпізнаємо: документ уже в 01_ОРИГІНАЛИ з
+          // базовими метаданими (форма адвоката), видимий у переглядачі.
+          // Жодного Vision / Document AI / артефактів у 02. Розпізнати —
+          // пізніше через в'ювер («Розпізнати»). Опція швидкого додавання.
           if (ocrMode === 'none') {
             toast.success('Документ додано');
-            if (driveId && fileForInfer && ocrService.canVisionMetadata({ mimeType: fileForInfer.type, name: fileForInfer.name })) {
-              const tId = toast.info('AI читає документ і пропонує дані...', { persistent: true });
-              try {
-                const res = await enrichDocumentWithVisionMetadata({
-                  ocrFile: {
-                    id: driveId,
-                    name: fileForInfer.name,
-                    mimeType: fileForInfer.type,
-                    subFolders: caseData?.storage?.subFolders,
-                  },
-                  doc,
-                  caseId: caseData.id,
-                  caseData,
-                  executeAction: onExecuteAction,
-                  agentId: 'dossier_agent',
-                  options: { apiKey: localStorage.getItem('claude_api_key'), aiUsageSink: setAiUsage },
-                });
-                toast.dismiss(tId);
-                if (res?.ok) {
-                  toast.info('AI запропонував дані документа — перевірте і за потреби поправте');
-                }
-              } catch (e) {
-                toast.dismiss(tId);
-                console.warn('[AddDoc · без OCR] метадані не вдались (non-fatal):', e?.message || e);
-              }
-            }
             return;
           }
 
