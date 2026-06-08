@@ -18,7 +18,7 @@ vi.mock('../../src/services/driveAuth.js', () => ({
   driveRequest: (...args) => mockDriveRequest(...args),
 }));
 
-const { findOrCreateFolder } = await import('../../src/services/driveService.js');
+const { findOrCreateFolder, uploadFileToCaseFolder } = await import('../../src/services/driveService.js');
 
 function jsonResponse(data) {
   return { json: async () => data };
@@ -107,5 +107,45 @@ describe('findOrCreateFolder — захист від дублів папок', (
 
     expect(res).toEqual(existing);
     expect(mockDriveRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('uploadFileToCaseFolder — спільна точка завантаження', () => {
+  beforeEach(() => { mockDriveRequest.mockReset(); });
+  afterEach(() => { vi.clearAllMocks(); });
+
+  it('читає БАЙТИ файлу (arrayBuffer) ПЕРЕД заливкою і вантажить у subFolder справи', async () => {
+    // Ядро фіксу: читаємо байти в пам'ять (а не віддаємо сам File) — Drive-backed
+    // файл із системного пікера так заливається, а старим FormData-способом падав.
+    mockDriveRequest.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'up_1' }) });
+    const caseData = { storage: { subFolders: { '01_ОРИГІНАЛИ': 'folder_orig' } } };
+    const file = new File([new Uint8Array([1, 2, 3])], 'doc.pdf', { type: 'application/pdf' });
+    const arrSpy = vi.spyOn(file, 'arrayBuffer');
+
+    const id = await uploadFileToCaseFolder(file, caseData);
+
+    expect(id).toBe('up_1');
+    expect(arrSpy).toHaveBeenCalled();                  // байти прочитано перед upload
+    expect(mockDriveRequest).toHaveBeenCalledTimes(1);  // лише upload (subFolder є — без findOrCreate)
+  });
+
+  it('використовує file._bytes якщо вже в пам\'яті (без повторного читання)', async () => {
+    mockDriveRequest.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'up_b' }) });
+    const caseData = { storage: { subFolders: { '01_ОРИГІНАЛИ': 'folder_orig' } } };
+    const file = { name: 'x.pdf', type: 'application/pdf', _bytes: new Uint8Array([5, 6]) };
+    const id = await uploadFileToCaseFolder(file, caseData);
+    expect(id).toBe('up_b');
+  });
+
+  it('створює 01_ОРИГІНАЛИ якщо subFolder відсутній (legacy справа)', async () => {
+    mockDriveRequest
+      .mockResolvedValueOnce({ json: async () => ({ files: [] }) })             // search folder
+      .mockResolvedValueOnce({ json: async () => ({ id: 'new_orig' }) })        // create folder
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'up_2' }) }); // upload
+    const caseData = { storage: { driveFolderId: 'case_root' } };
+    const file = new File([new Uint8Array([9])], 'лист.doc', { type: 'application/msword' });
+    const id = await uploadFileToCaseFolder(file, caseData);
+    expect(id).toBe('up_2');
+    expect(mockDriveRequest).toHaveBeenCalledTimes(3);
   });
 });

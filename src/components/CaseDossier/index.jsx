@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { createCaseStructure, getDriveFiles, readDriveFile, readDriveFileBytes, createDriveFile, updateDriveFile } from "../../services/driveService.js";
+import { createCaseStructure, getDriveFiles, readDriveFile, readDriveFileBytes, createDriveFile, updateDriveFile, uploadFileToCaseFolder } from "../../services/driveService.js";
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
@@ -2798,9 +2798,13 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               if (compressToastId != null) { toast.dismiss(compressToastId); compressToastId = null; }
             }
           };
+          // Завантаження — через СПІЛЬНУ точку driveService.uploadFileToCaseFolder
+          // (та сама, що DP; читає байти ПЕРЕД заливкою → Drive-backed файли з
+          // системного пікера більше не падають «Failed to fetch»). Модалка НЕ
+          // залежить від DP — обидва тягнуть один сервіс.
           const uploadFileWithProgress = async (f, cd) => {
             const tId = toast.info('Завантаження на Drive…', { persistent: true });
-            try { return await uploadFileLocal(f, cd); }
+            try { return await uploadFileToCaseFolder(f, cd); }
             finally { toast.dismiss(tId); }
           };
 

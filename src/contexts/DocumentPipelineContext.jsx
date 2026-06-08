@@ -51,7 +51,7 @@ import { createDocumentPipeline as createAddAsIsPipeline } from '../services/doc
 import { inferNatureFromFile, defaultNatureForUI } from '../services/detectDocumentNature.js';
 import * as ocrService from '../services/ocrService.js';
 import { enrichDocumentWithVisionMetadata } from '../services/documentMetadata.js';
-import { findOrCreateFolder, uploadBytesToDrive } from '../services/driveService.js';
+import { uploadFileToCaseFolder } from '../services/driveService.js';
 import { callAPIWithRetry } from '../services/toolUseRunner.js';
 import { resolveModel } from '../services/modelResolver.js';
 import {
@@ -123,21 +123,12 @@ async function ocrChunkBytes({ bytes }) {
   return { text: res?.text || '', layout: res?.pageStructure || null };
 }
 
-// Завантажити фінальний документ у 01_ОРИГІНАЛИ справи. Той самий seam що
-// DP-1 persist.uploadFile (file, caseData) → driveId.
+// uploadToOriginals — DP-аліас СПІЛЬНОЇ точки завантаження
+// (driveService.uploadFileToCaseFolder). Та сама функція, що й модалка — ОДИН
+// шлях заливки на всю систему (читає байти ПЕРЕД upload). Тонкий аліас для
+// наявних call-sites (persist / buildPipelineDeps / addFilesRun).
 async function uploadToOriginals(file, caseData) {
-  let folderId = caseData?.storage?.subFolders?.['01_ОРИГІНАЛИ'] || null;
-  if (!folderId) {
-    const root = caseData?.storage?.driveFolderId || null;
-    const f = await findOrCreateFolder('01_ОРИГІНАЛИ', root, null);
-    folderId = f?.id;
-  }
-  if (!folderId) throw new Error('Не знайдено папку 01_ОРИГІНАЛИ справи');
-  const bytes = file._bytes
-    ? (file._bytes instanceof Uint8Array ? file._bytes : new Uint8Array(file._bytes))
-    : new Uint8Array(await file.arrayBuffer());
-  const up = await uploadBytesToDrive(folderId, file.name, bytes, 'application/pdf');
-  return up.id;
+  return uploadFileToCaseFolder(file, caseData);
 }
 
 // defaultAddAsIsMetadata — дефолтний білдер канонічних метаданих для

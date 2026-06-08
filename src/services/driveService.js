@@ -715,6 +715,39 @@ export async function readDriveFileBytes(fileId) {
   return res.arrayBuffer();
 }
 
+// ── СПІЛЬНА ТОЧКА ЗАВАНТАЖЕННЯ ФАЙЛУ В ПАПКУ СПРАВИ ─────────────────────────
+// ОДИН шлях заливки файлу у папку справи на Drive для ВСІХ модулів: модалка
+// «+ Додати документ», Document Processor, і майбутні (Canvas, Telegram,
+// «Інструменти»). Кожен модуль ТЯГНЕ звідси — не дублює і НЕ лізе в чужий
+// модуль. Якщо якийсь модуль падає — цей сервіс і решта функціоналу живі.
+//
+// 🔑 Читаємо БАЙТИ файлу в пам'ять (file._bytes або arrayBuffer) ПЕРЕД
+// заливкою. Це критично: Drive-backed файл із системного пікера Android —
+// «хмарне посилання»; сам File у multipart-форму НЕ стрімиться → «Failed to
+// fetch». arrayBuffer() матеріалізує байти і заливка проходить (так робив DP,
+// тому в DP працювало, а модалка зі старим FormData-завантаженням падала).
+//
+//   file       — File | Blob (опц. file._bytes — вже-в-памʼяті Uint8Array)
+//   caseData   — справа (storage.subFolders / storage.driveFolderId)
+//   folderName — цільова підпапка справи (дефолт 01_ОРИГІНАЛИ)
+//   → driveId завантаженого файлу
+export async function uploadFileToCaseFolder(file, caseData, folderName = '01_ОРИГІНАЛИ') {
+  let folderId = caseData?.storage?.subFolders?.[folderName] || null;
+  if (!folderId) {
+    const root = caseData?.storage?.driveFolderId || caseData?.driveFolderId || null;
+    const f = await findOrCreateFolder(folderName, root, null);
+    folderId = f?.id || root;
+  }
+  if (!folderId) throw new Error(`Не знайдено папку ${folderName} справи`);
+  const bytes = file._bytes
+    ? (file._bytes instanceof Uint8Array ? file._bytes : new Uint8Array(file._bytes))
+    : new Uint8Array(await file.arrayBuffer());
+  // MIME — реальний тип файлу (НЕ хардкод 'application/pdf'): щоб Drive коректно
+  // показував прев'ю (.doc як Word, не як зламаний PDF).
+  const up = await uploadBytesToDrive(folderId, file.name, bytes, file.type || 'application/octet-stream');
+  return up.id;
+}
+
 export async function listFolderWithModified(folderId) {
   const q = `'${folderId}' in parents and trashed=false`;
   const res = await driveRequest(
