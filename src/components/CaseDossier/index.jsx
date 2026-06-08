@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { createCaseStructure, getDriveFiles, readDriveFile, createDriveFile, updateDriveFile } from "../../services/driveService.js";
+import { createCaseStructure, getDriveFiles, readDriveFile, readDriveFileBytes, createDriveFile, updateDriveFile } from "../../services/driveService.js";
 import { createDocument } from "../../services/documentFactory.js";
 import { driveRequest, forceConsentRefresh } from "../../services/driveAuth.js";
 import * as ocrService from "../../services/ocrService.js";
@@ -2753,7 +2753,24 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           // взагалі не розпізнає). Модаль-специфіку (uploadFileLocal з verify,
           // dossier_agent/add_document + updateCase-fallback, форма-метадані)
           // інʼєктуємо як deps.
-          const rawForAdd = (!isDriveSource && file && driveConnected) ? file : null;
+          // Drive-pick → ЗАВАНТАЖУЄМО байти і далі трактуємо як звичайний файл
+          // (конвертація docx/html/image→PDF, стиснення, КОПІЯ в 01_ОРИГІНАЛИ) —
+          // узгоджено з додаванням з пристрою (рішення власника). Раніше
+          // Drive-файл лишався посиланням на місці (не в 01, без конвертації).
+          // Помилка завантаження → toast + стоп (документ не створюємо).
+          let rawForAdd = (!isDriveSource && file && driveConnected) ? file : null;
+          if (isDriveSource) {
+            const dlId = toast.info('Завантаження з Drive…', { persistent: true });
+            try {
+              const ab = await readDriveFileBytes(file._driveId);
+              rawForAdd = new File([ab], file.name || 'document', { type: file.type || 'application/octet-stream' });
+            } catch (e) {
+              toast.dismiss(dlId);
+              toast.error('Не вдалось завантажити файл з Drive', { description: e?.message || String(e) });
+              throw e;
+            }
+            toast.dismiss(dlId);
+          }
 
           // Прогрес довгих фаз для великих томів (без нього модалка виглядає як
           // «висить»). Toast без update-API → throttled dismiss+add (раз на ~1.2с).
@@ -2821,13 +2838,15 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               },
               files: [{
                 fileId: 'doc',
+                // Drive-pick уже завантажено у rawForAdd → завжди звичайний файл
+                // (конвертація/стиснення/копія в 01), не Drive-референс.
                 raw: rawForAdd,
-                isDriveSource,
-                driveId: isDriveSource ? file._driveId : null,
+                isDriveSource: false,
+                driveId: null,
                 name: file?.name || null,
-                size: file?.size || 0,
-                type: file?.type || null,
-                originalMime: isDriveSource ? (file?.type || null) : null,
+                size: rawForAdd?.size || file?.size || 0,
+                type: rawForAdd?.type || file?.type || null,
+                originalMime: null,
                 mergeArtifacts: mergeArtifacts || null,
               }],
             },
