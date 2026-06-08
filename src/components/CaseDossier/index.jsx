@@ -2690,7 +2690,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         onClose={() => setDocModalOpen(false)}
         caseData={{ ...caseData, proceedings }}
         driveConnected={driveConnected}
-        onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts, ocrMode = 'full' }) => {
+        onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts, ocrMode = 'full', compress = false }) => {
           // ── Інтеграція на documentPipeline (тонкий диригент DP-1) ──────────
           // Детермінований core (convert → upload → createDocument →
           // add_document → emit) проходить через диригент. Post-persist OCR-
@@ -2780,6 +2780,9 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
               // «без OCR» (етап D) → ocrMode 'none'. deferOcr=true: пост-крок
               // (повний OCR АБО Vision-метадані) робить модалка нижче за ocrMode.
               ocrMode,
+              // «стиснути» (етап E) → compress true. runAddAsIs обгортає
+              // uploadFile рушієм (scanned-guard: текстові PDF проходять як є).
+              compress,
               deferOcr: true,
               buildDocumentMetadata,
               uploadFile: uploadFileLocal,

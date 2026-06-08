@@ -63,6 +63,10 @@ function freeSpaceVerdict(quota, estimatedBytes) {
 //   getActor?()                     — {userId,tenantId} для подій/квоти
 //   onProgress?(snapshot)           — додатковий підписник (крім progressStore)
 //   isCancelled?()→boolean          — кооперативне скасування
+//   compressBuffer?(ab)→{bytes,compressed,skipped,reason,inBytes,outBytes}
+//                                     — TASK 4 E: стиснути scanned PDF ПЕРЕД
+//                                       нарізкою (фіксований Середній, pdf-lib).
+//   shouldCompress?()→boolean       — читати прапор compress прогону (runOptions)
 export function createStreamingExecutor(deps = {}) {
   const { drivePort } = deps;
   if (!drivePort) throw new Error('createStreamingExecutor: drivePort обовʼязковий');
@@ -270,6 +274,29 @@ export function createStreamingExecutor(deps = {}) {
         // 1. оригінал → _temp, RAM звільнено.
         let ab = f.arrayBuffer || (f.raw?.arrayBuffer ? await f.raw.arrayBuffer() : (f.raw?._bytes?.buffer || f.raw?._bytes || null));
         if (!ab) { fe.status = 'done'; continue; }
+        let sizeBytes = f.size || ab.byteLength || 0;
+
+        // TASK 4 E — стиснення ПЕРЕД нарізкою (фіксований Середній, опція з
+        // тумблера DP). КРИТИЧНО: рушій будує PDF через pdf-lib (кожна сторінка —
+        // власні ресурси) → copyPages у chunkManager ріже ПРОПОРЦІЙНО (доктрина
+        // §3.2); без цього чанк ≈ весь файл → Document AI «>40 МБ». scanned-guard
+        // у рушії: searchable PDF проходить як є (skipped). Best-effort: збій
+        // стиснення НЕ валить обробку — продовжуємо на оригіналі (resilience).
+        if (typeof deps.compressBuffer === 'function' && typeof deps.shouldCompress === 'function' && deps.shouldCompress()) {
+          try {
+            const c = await deps.compressBuffer(ab);
+            if (c && c.bytes && c.compressed) {
+              ab = c.bytes;                                  // Uint8Array; downstream toArrayBuffer-aware
+              sizeBytes = c.outBytes || ab.byteLength || sizeBytes;
+              diag.log('compressed', { fileId: f.fileId, inMB: mb(c.inBytes), outMB: mb(c.outBytes) });
+            } else if (c && c.skipped) {
+              diag.log('compress_skipped', { fileId: f.fileId, reason: c.reason || null });
+            }
+          } catch (err) {
+            diag.log('compress_error', { fileId: f.fileId, message: err?.message || String(err) });
+          }
+        }
+
         const tempFolderId = await jobStore._jobFolderId(caseId, jobId);
         let tempOriginal;
         try {
@@ -280,7 +307,7 @@ export function createStreamingExecutor(deps = {}) {
           return { ok: false, jobId, resumable: true, error: state.error };
         }
         fe.originalDriveId = tempOriginal.id;
-        fe.sizeBytes = f.size || ab.byteLength || 0;
+        fe.sizeBytes = sizeBytes;
         fe.status = 'processing';
         await jobStore.saveState(state);
 

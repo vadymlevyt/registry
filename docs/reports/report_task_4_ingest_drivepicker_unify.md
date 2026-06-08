@@ -12,8 +12,8 @@
 - [x] **B — винос DrivePicker** з `AddDocumentModal.jsx` → `components/DrivePicker/` (behavior-preserving). _(зведено в main)_
 - [x] **B2 — злиття пікерів** (`DocumentProcessorV2/DrivePicker.jsx` → спільний; старий файл видалено). 🔹
 - [x] **C — DP «просто додати» на всі типи + комбо; усунення дубль-шляху CaseDossier; Vision-фолбек збережено.** 🔹
-- [x] **D — `ocrMode` + «без OCR»** (Vision 2 стор. → метадані). 🔹 _(ця сесія — чекає на ревʼю)_
-- [ ] **E — тумблер «стиснути перед обробкою».** 🔹
+- [x] **D — `ocrMode` + «без OCR»** (Vision 2 стор. → метадані). 🔹
+- [x] **E — стиснення: реальний downscale-рушій зі стенда + дротування + тумблери + прогноз.** 🔹 _(ця сесія — чекає на ревʼю)_
 
 ---
 
@@ -322,6 +322,80 @@ D завів у трубу Vision **як окремий продукт** (мет
 для #54:** `renderFileToImages` тепер спільний → майбутній уніфікований Vision-
 шлях має готову render-цеглину. Поточний паритет прийнятний; запис #54 уточнено
 (не закрито).
+
+## Етап E — стиснення (реальний downscale-рушій)
+
+**🚨 Головний ризик уникнено:** прикручено **реальний рушій зі стенда**
+(`processFile`: render→JPEG→pdf-lib-перебудова), **НЕ** `compressionService.compressPdf`
+(слабкий re-save 1-2%). Останній лишився недоторканим (legacy worker-op
+`pipelineWorker.OPS.compressPdf` ніким не кликаний — орфан, занотовано як борг),
+але **жодна функція стиснення для адвоката через нього більше не йде**.
+
+**Зроблено (5 кроків спеки):**
+
+1. **Рушій → спільний параметричний сервіс.** Новий
+   `src/services/compression/imageCompressor.js` — `processFile` перенесено
+   **байт-у-байт** (рендер кожної стор. через pdf.js → canvas нормалізовано по
+   стелі пікселів довгої сторони → JPEG `toBlob` → pdf-lib `embedJpg`+`addPage`+
+   `drawImage` → `save({useObjectStreams})`). Єдина адаптація: CDN-бібліотеки
+   стенда → npm `pdfjs-dist`+`pdf-lib` (pdfjs **lazy-import** — top-level тягне
+   DOMMatrix, недоступний у Node-тестах; той самий module-singleton, що App.jsx,
+   worker уже налаштований). Константа `COMPRESSION_PRESETS` = Слабкий 2200/0.8 ·
+   **Середній 1800/0.7 (стандарт, дефолт)** · Сильний 1600/0.65. `standaloneCompressor`
+   і `CompressFilesModal` переведено на цей рушій (через DI `compressEngine` —
+   тестованість у Node; дефолт = реальний `compressPdfBuffer`); слабкий
+   `compressPdf` як «стиснення» прибрано.
+2. **scanned-guard + pass-through (одна детекція).** `isCompressibleNature()` —
+   file-level guard (детермінований, дзеркало `documentNature`/`detectDocumentNature`);
+   `compressPdfBuffer` має вшитий deep-guard по 1-й стор. (текст <50 симв. →
+   scanned; той самий поріг що `detectNatureFromPdf`). Searchable PDF / не-PDF →
+   **pass-through** (`skipped:true`, bytes = вхід незмінним). Пайплайн НЕ падає.
+   Чесні тости/підписи: `CompressFilesModal` («стискаються лише скановані PDF…»,
+   рядок звіту «текстовий — не стиснуто»), описи тумблерів DP і модалки.
+3. **Дротування `compress` у трубі (фіксований Середній).**
+   - **Streaming (slice):** `streamingExecutor.run` стискає `ab` **ПЕРЕД** uploadу
+     в `_temp`/нарізкою — інжекти `compressBuffer`/`shouldCompress` з Context.
+     **pdf-lib-перебудова критична (§3.2):** кожна стор. дістає власні ресурси →
+     `copyPages` ріже пропорційно; без цього чанк ≈ весь файл → Document AI >40 МБ.
+     Стиснення на вході існує і ДЛЯ ТОГО, щоб потім нарізалось. Best-effort: збій
+     рушія НЕ валить обробку (оригінал іде далі), діаг-логи `compressed`/
+     `compress_skipped`/`compress_error`.
+   - **add_as_is:** `runAddAsIs` обгортає `uploadFile` хелпером `maybeCompressFile`
+     (ЄДИНА точка — стискаємо файл перед завантаженням; DOCX-оригінал поряд і
+     текстові PDF проходять як є через guard). Best-effort.
+4. **Тумблери «стиснути».** DP `settings.compressAll` (~54/909) під'єднано →
+   `compress: settings.compressAll === true` у опціях `ingestFiles`. Модалка
+   single-add — новий тумблер «Стиснути перед додаванням» (state `compress`) →
+   `compress` у payload → CaseDossier прокидає в `ingestFiles`. Обидва лише
+   виставляють `compress:true` (труба спільна). Батч-рівень.
+5. **Прогноз розміру.** `estimateCompressedSize()` стискає **семпл перших 1-2
+   стор.** → екстраполяція × `pageCount` (×1.02 структурний оверхед). У DP-списку
+   коли тумблер УВІМК: «→ ~X МБ» поряд з поточним розміром (device-PDF; Drive-source
+   нема блоба → борг #40) + сума пакета «Орієнтовно після стиснення: ~X (зараз Y)».
+   Оцінка з «~». Browser-only (canvas) — best-effort, у тесті без canvas тихо без
+   естимату.
+
+**Білінг:** стиснення — CPU-операція в браузері, без Anthropic/Document AI → НЕ
+білиться (`ai_usage` не пишемо). Білиться вже сам OCR-крок (як і раніше).
+
+**Дані/архітектура:** документи лише через `createDocument`; дані через
+`executeAction`; pdf-lib (НЕ jsPDF); `.txt` НЕ відроджено. Рушій ОДИН (Rule of
+Three): standalone + DP-slice + DP/модалка-add_as_is тягнуть з
+`compression/imageCompressor.js`, без дублів.
+
+**Тести (зелені):** `tests/unit/imageCompressor.test.js` (пресети/resolvePreset/
+scanned-guard — 12), `standaloneCompressor.test.js` оновлено (DI-стаб рушія, +
+searchable pass-through), `streamingExecutor.test.js` (+3: compress кличеться/НЕ
+кличеться/збій best-effort), `ingest.test.js` (compress прокидання — без змін, уже
+покривало). Повний прогон **1985 passed**; `npm run build` — success. Реальний
+обсяг стиснення тести не ловлять (canvas браузерний) — фінальна перевірка адвоката
+на пристрої.
+
+**Межі E (НЕ зроблено, занотовано):** вкладка «Інструменти» з UI-пікером 3
+пресетів (§7.4 — лише UI поверх готового параметричного рушія); одиночне
+зображення→PDF (`converter/imageToPdf` 0.92, без downscale — прогалина);
+per-файл вибір стискати/ні (#56); склейка (#40, downscale уже є); орфан
+worker-op `compressPdf` (re-save) — кандидат на прибирання окремо.
 
 ## ROADMAP — позначки
 

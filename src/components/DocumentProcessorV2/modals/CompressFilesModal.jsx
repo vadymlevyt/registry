@@ -73,6 +73,13 @@ export function CompressFilesModal({ isOpen, onClose, caseData }) {
         <div className="dpv2-counter">Обрано: {files.length} файл(ів)</div>
       )}
 
+      {/* Чесний UX (доктрина §4.1): стискаються лише скановані PDF (на основі
+          зображень). Текстові PDF проходять як є — це не баг, а дизайн. */}
+      <div className="dpv2-muted" style={{ marginTop: 'var(--space-2)' }}>
+        Стискаються лише скановані PDF (на основі зображень). Текстові PDF
+        стискати нічим — вони проходять без змін.
+      </div>
+
       <div className="dpv2-section-label">Куди зберегти результат</div>
       <div className="dpv2-modal-stack">
         <Button variant="primary" disabled={files.length === 0 || busy} icon={<Save size={ICON_SIZE.sm} />} onClick={() => run('drive')}>
@@ -96,9 +103,11 @@ export function CompressFilesModal({ isOpen, onClose, caseData }) {
             <div key={i} className="dpv2-list-row">
               <span className="dpv2-grow">{r.name}</span>
               <span className="dpv2-list-meta">
-                {r.saved
-                  ? `${Math.round((r.before || 0) / 1024)}КБ → ${Math.round((r.after || 0) / 1024)}КБ`
-                  : (r.reason === 'not_implemented' ? 'заглушка' : (r.error || 'не збережено'))}
+                {r.skipped
+                  ? 'текстовий — не стиснуто'
+                  : r.saved
+                    ? `${Math.round((r.before || 0) / 1024)}КБ → ${Math.round((r.after || 0) / 1024)}КБ`
+                    : (r.reason === 'not_implemented' ? 'заглушка' : (r.error || 'не збережено'))}
               </span>
             </div>
           ))}
