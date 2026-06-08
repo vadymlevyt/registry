@@ -43,6 +43,7 @@ import * as jobProgressStore from '../services/documentPipeline/jobProgressStore
 
 import { createDocument } from '../services/documentFactory.js';
 import { convertToPdf } from '../services/converter/converterService.js';
+import { compressPdfBuffer, DEFAULT_COMPRESSION_PRESET } from '../services/compression/imageCompressor.js';
 import { createDocumentPipeline as createAddAsIsPipeline } from '../services/documentPipeline.js';
 import { inferNatureFromFile, defaultNatureForUI } from '../services/detectDocumentNature.js';
 import * as ocrService from '../services/ocrService.js';
@@ -298,6 +299,12 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       // кожен run(). Пише числа/мітки/коди помилок (НЕ текст документів) —
       // щоб діагностувати збій нарізки/OCR без devtools на планшеті.
       makeDiag: () => createDiagLogger({ drivePort }),
+      // TASK 4 E — стиснення scanned PDF ПЕРЕД нарізкою (фіксований Середній).
+      // Рушій РЕАЛЬНИЙ downscale (render→JPEG→pdf-lib-перебудова), НЕ слабкий
+      // re-save. scanned-guard вшито (searchable → pass-through). shouldCompress
+      // читає прапор compress прогону (runOptionsRef, виставляє тумблер DP).
+      compressBuffer: async (arrayBuffer) => compressPdfBuffer(arrayBuffer, { preset: DEFAULT_COMPRESSION_PRESET }),
+      shouldCompress: () => runOptionsRef.current?.compress === true,
       isCancelled: () => cancelledRef.current === true,
       deleteDocument: async ({ caseId, documentId }) => {
         try { await executeAction('dossier_agent', 'delete_document', { caseId, documentId }); }
@@ -399,6 +406,26 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     });
   }, [executeAction]);
 
+  // TASK 4 · етап E — maybeCompressFile: стиснути ОДИН файл перед додаванням
+  // (add_as_is). Стискаємо лише PDF (рушій сам має scanned-guard: searchable →
+  // pass-through); не-PDF (DOCX-оригінал, інше) повертаємо як є. Best-effort:
+  // будь-який збій → оригінал (документ усе одно має додатись, правило resilience).
+  const maybeCompressFile = useCallback(async (file) => {
+    try {
+      const isPdf = file?.type === 'application/pdf' || /\.pdf$/i.test(file?.name || '');
+      if (!isPdf || typeof file?.arrayBuffer !== 'function') return file;
+      const ab = await file.arrayBuffer();
+      const c = await compressPdfBuffer(ab, { preset: DEFAULT_COMPRESSION_PRESET });
+      if (c && c.bytes && c.compressed) {
+        return new File([c.bytes], file.name, { type: 'application/pdf' });
+      }
+      return file;
+    } catch (e) {
+      console.warn('[maybeCompressFile] best-effort failed:', e?.message || e);
+      return file;
+    }
+  }, []);
+
   // TASK 4 · етап C — runAddAsIs: non-streaming труба «просто додати». Кожен
   // файл = один документ, БЕЗ нарізки; усі типи + будь-яка комбінація через
   // спільний диригент createDocumentPipeline (convert→persist→emit). Споживачі:
@@ -430,7 +457,16 @@ export function DocumentPipelineProvider({ executeAction, children }) {
 
     // uploadFile — модалка передає власний uploadFileLocal (verify/ensure
     // subFolders, behavior-preserve); DP лишає дефолт uploadToOriginals.
-    const uploadFile = typeof opt.uploadFile === 'function' ? opt.uploadFile : uploadToOriginals;
+    const baseUploadFile = typeof opt.uploadFile === 'function' ? opt.uploadFile : uploadToOriginals;
+
+    // TASK 4 E — стиснення ПЕРЕД додаванням (опція з тумблера, фіксований
+    // Середній). Обгортка над uploadFile — ЄДИНА точка: стискаємо сам файл
+    // перед завантаженням на Drive. Рушій має scanned-guard (searchable PDF /
+    // не-PDF → pass-through), тож DOCX-оригінал поряд і текстові PDF проходять
+    // як є. Best-effort: збій → оригінал (resilience, документ усе одно додається).
+    const uploadFile = opt.compress === true
+      ? async (file, caseData) => baseUploadFile(await maybeCompressFile(file), caseData)
+      : baseUploadFile;
 
     const pipeline = createAddAsIsPipeline({
       convertToPdf,
@@ -467,7 +503,7 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       }
     }
     return result;
-  }, [executeAction, getActor, ocrEnrichAddAsIs, metadataEnrichAddAsIs]);
+  }, [executeAction, getActor, ocrEnrichAddAsIs, metadataEnrichAddAsIs, maybeCompressFile]);
 
   // TASK 4 · етап A/C — єдина труба додавання. ingest.js — тонкий фасад поверх
   // `run` (streaming, mode 'slice') і `runAddAsIs` (non-streaming, mode

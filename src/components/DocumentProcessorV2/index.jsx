@@ -37,6 +37,7 @@ import { MODULES } from '../../services/moduleNames.js';
 import { createDocument } from '../../services/documentFactory.js';
 import { ensureUniqueName } from '../../services/sortation/imageSortingAgent.js';
 import * as ocrService from '../../services/ocrService.js';
+import { estimateCompressedSize, DEFAULT_COMPRESSION_PRESET } from '../../services/compression/imageCompressor.js';
 import './styles.css';
 
 function getApiKey() {
@@ -111,6 +112,13 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   const [inboxConflict, setInboxConflict] = useState(null); // {newCount} | null
   const [cancelInfo, setCancelInfo] = useState(null);        // {jobId,readyCount} | null
 
+  // TASK 4 E крок 5 — прогноз розміру після стиснення. Map key→{applicable,
+  // estimatedBytes}. Рахуємо ЛИШЕ коли тумблер УВІМК: стискаємо СЕМПЛ перших
+  // 1-2 стор. → екстраполяція × pageCount (естимат з «~»). Тільки device-PDF
+  // (Drive-source блоба не має — борг #40). Browser-only (canvas): у тесті/без
+  // canvas тихо лишається без естимату (best-effort).
+  const [sizeEstimates, setSizeEstimates] = useState({});
+
   // ── 1B image_merge_unify: окремий під-флоу для all-image вхідного набору ──
   // Коли всі обрані файли — image/*, DP перехоплює запуск ДО pipeline.run і
   // веде у власний редактор (prepareImagesForMerge + imageDocumentGrouper +
@@ -144,6 +152,29 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   }, [caseData, driveConnected]);
 
   useEffect(() => { loadInbox(); }, [loadInbox]);
+
+  // TASK 4 E крок 5 — фоновий розрахунок прогнозу розміру для device-PDF, коли
+  // тумблер «Стиснути» УВІМК. Семпл перших 1-2 стор. → екстраполяція. Скип:
+  // вже пораховане (guard по key), Drive-source (нема блоба), не-PDF (рушій
+  // однаково пропустить). cancelled-прапор гасить race при швидкій зміні набору.
+  useEffect(() => {
+    if (!settings.compressAll) return undefined;
+    let cancelled = false;
+    (async () => {
+      for (const s of selected) {
+        if (cancelled) return;
+        if (sizeEstimates[s.key]) continue;
+        const isPdf = s.mime === 'application/pdf' || /\.pdf$/i.test(s.name || '');
+        if (s.origin !== 'device' || !s.file || !isPdf) continue;
+        try {
+          const ab = await s.file.arrayBuffer();
+          const est = await estimateCompressedSize(ab, { preset: DEFAULT_COMPRESSION_PRESET });
+          if (!cancelled) setSizeEstimates((prev) => ({ ...prev, [s.key]: est }));
+        } catch { /* best-effort: без естимату */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [settings.compressAll, selected, sizeEstimates]);
 
   // ── Зона 1 · додавання файлів ─────────────────────────────────────────────
   const addDeviceFiles = (fileList) => {
@@ -203,6 +234,28 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     const cost = (totalCount * 0.05).toFixed(2);
     return { minMin, maxMin, cost };
   }, [totalCount]);
+
+  // TASK 4 E крок 5 — підсумок прогнозу стиснення для пакета (сума по selected).
+  // applicable естимат → estimatedBytes; інакше (текстовий/Drive/ще не пораховано)
+  // → поточний розмір. Показуємо лише коли тумблер УВІМК і є хоч один естимат.
+  const compressionForecast = useMemo(() => {
+    if (!settings.compressAll || selected.length === 0) return null;
+    let current = 0;
+    let projected = 0;
+    let hasEstimate = false;
+    for (const s of selected) {
+      const sz = Number(s.size) || 0;
+      current += sz;
+      const est = sizeEstimates[s.key];
+      if (est && est.applicable && Number.isFinite(est.estimatedBytes)) {
+        projected += est.estimatedBytes;
+        hasEstimate = true;
+      } else {
+        projected += sz;
+      }
+    }
+    return hasEstimate ? { current, projected } : null;
+  }, [settings.compressAll, selected, sizeEstimates]);
 
   const setToggle = (k) => (v) => setSettings((s) => ({ ...s, [k]: v }));
 
@@ -681,6 +734,10 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
         ...(useAddAsIs ? { mode: 'add_as_is' } : {}),
         // D — «без OCR» дійсний ЛИШЕ у add_as_is (нарізка завжди з повним OCR).
         ...(useAddAsIs && settings.skipOcr ? { ocrMode: 'none' } : {}),
+        // E — стиснути перед обробкою (тумблер compressAll → compress:true).
+        // Труба спільна: рушій стискає лише scanned PDF (guard), фіксований
+        // Середній. Перед нарізкою (slice) це КРИТИЧНО для §3.2 (slice-able).
+        compress: settings.compressAll === true,
       };
       // TASK 4 · етап A/C — єдина труба додавання (ingest.js). mode маршрутизує
       // slice↔add_as_is; решта опцій ті самі. DP не кличе pipeline.run напряму.
@@ -848,13 +905,25 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
                   <div key={s.key} className="dpv2-list-row">
                     <FileText size={ICON_SIZE.sm} />
                     <span className="dpv2-grow">{s.name}</span>
-                    <span className="dpv2-list-meta">{humanSize(s.size)}</span>
+                    <span className="dpv2-list-meta">
+                      {humanSize(s.size)}
+                      {settings.compressAll && sizeEstimates[s.key]?.applicable
+                        && Number.isFinite(sizeEstimates[s.key]?.estimatedBytes) && (
+                        <> {'→'} ~{humanSize(sizeEstimates[s.key].estimatedBytes)}</>
+                      )}
+                    </span>
                     <button className="dpv2-iconbtn" onClick={() => removeSelected(s.key)} aria-label="Прибрати">
                       <Trash2 size={ICON_SIZE.sm} />
                     </button>
                   </div>
                 ))}
               </div>
+              {compressionForecast && (
+                <div className="dpv2-muted">
+                  Орієнтовно після стиснення: ~{humanSize(compressionForecast.projected)}
+                  {' '}(зараз {humanSize(compressionForecast.current)})
+                </div>
+              )}
             </>
           )}
 
@@ -906,7 +975,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           </div>
           <div className="dpv2-settings-group">
             <div className="dpv2-section-label">ДОДАТКОВІ ДІЇ</div>
-            <Toggle label="Стиснути всі файли пакета" checked={settings.compressAll} onChange={setToggle('compressAll')} />
+            <Toggle
+              label="Стиснути всі файли пакета"
+              description="лише скановані PDF (на основі зображень); текстові PDF проходять як є"
+              checked={settings.compressAll}
+              onChange={setToggle('compressAll')}
+            />
             <Toggle label="Запропонувати дедлайни з документів" checked={settings.suggestDeadlines} onChange={setToggle('suggestDeadlines')} />
             <Toggle label="Оновити case_context.md" checked={settings.updateCaseContext} onChange={setToggle('updateCaseContext')} />
             <Toggle label="Заповнити картку справи з документів" checked={settings.fillCaseCard} onChange={setToggle('fillCaseCard')} />

@@ -153,6 +153,35 @@ describe('streamingExecutor', () => {
     expect(res.error).toBeUndefined();
   });
 
+  // TASK 4 E — стиснення ПЕРЕД нарізкою: compressBuffer кличеться коли
+  // shouldCompress()=true; результат (менший PDF) іде у нарізку. Рушій стабнуто
+  // (реальний downscale браузерний). Доктрина §3.2: стиснення на вході існує
+  // і для того, щоб потім нарізалось (pdf-lib-перебудова).
+  it('compress: compressBuffer кличеться перед нарізкою коли shouldCompress=true', async () => {
+    const smaller = toArrayBuffer(await makePdfBytes(4));
+    const compressBuffer = vi.fn(async () => ({ bytes: new Uint8Array(smaller), compressed: true, inBytes: 99999, outBytes: smaller.byteLength }));
+    const { exec } = makeExec({ execOver: { compressBuffer, shouldCompress: () => true } });
+    const res = await exec.run({ caseId: 'c1', caseData: { id: 'c1' }, files: [await fileInput(10)] });
+    expect(res.ok).toBe(true);
+    expect(compressBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it('compress: shouldCompress=false → compressBuffer НЕ кличеться (дефолт)', async () => {
+    const compressBuffer = vi.fn(async () => ({ bytes: new Uint8Array(8), compressed: true }));
+    const { exec } = makeExec({ execOver: { compressBuffer, shouldCompress: () => false } });
+    const res = await exec.run({ caseId: 'c1', caseData: { id: 'c1' }, files: [await fileInput(4)] });
+    expect(res.ok).toBe(true);
+    expect(compressBuffer).not.toHaveBeenCalled();
+  });
+
+  it('compress: збій рушія НЕ валить обробку (best-effort, оригінал іде далі)', async () => {
+    const compressBuffer = vi.fn(async () => { throw new Error('canvas недоступний'); });
+    const { exec } = makeExec({ execOver: { compressBuffer, shouldCompress: () => true } });
+    const res = await exec.run({ caseId: 'c1', caseData: { id: 'c1' }, files: [await fileInput(6)] });
+    expect(res.ok).toBe(true);
+    expect(compressBuffer).toHaveBeenCalledTimes(1);
+  });
+
   // §4.3 regression — штатний pipeline-stoppage (fatal/skip з диригента)
   // лишає `errors: result.errors` як було.
   it('catch-return: pipeline-stoppage shape не зачеплено (regression)', async () => {

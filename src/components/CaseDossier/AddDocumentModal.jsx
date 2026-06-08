@@ -57,6 +57,9 @@ const initialState = (caseData) => ({
   // TASK 4 етап D — «без OCR»: Claude Vision читає 1-2 стор. → пропонує
   // метадані, файл лише в 01_ОРИГІНАЛИ (без повного OCR/артефактів у 02).
   noOcr: false,
+  // TASK 4 етап E — «стиснути»: scanned PDF стискається перед додаванням
+  // (фіксований Середній). Рушій сам пропускає текстові PDF (scanned-guard).
+  compress: false,
 });
 
 /**
@@ -181,6 +184,8 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
         file: state.file,
         // «без OCR» (етап D) → ocrMode 'none'; інакше 'full' (повний OCR).
         ocrMode: state.noOcr ? 'none' : 'full',
+        // «стиснути» (етап E) → compress true (рушій стискає лише scanned PDF).
+        compress: state.compress === true,
       });
       onClose();
     } catch (err) {
@@ -364,6 +369,13 @@ export function AddDocumentModal({ isOpen, onClose, caseData, onSubmit, driveCon
           description="Швидко: AI прочитає перші сторінки і запропонує дані. Повне розпізнавання — пізніше у переглядачі."
           checked={state.noOcr}
           onChange={(v) => setState((s) => ({ ...s, noOcr: v }))}
+        />
+
+        <Toggle
+          label="Стиснути перед додаванням"
+          description="Лише скановані PDF (на основі зображень). Текстові PDF проходять як є."
+          checked={state.compress}
+          onChange={(v) => setState((s) => ({ ...s, compress: v }))}
         />
 
         <FileUploadZone
