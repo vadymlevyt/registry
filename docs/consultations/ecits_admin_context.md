@@ -199,21 +199,37 @@ TASK на промпт Track A.
 | UI-обсяг | UI вибору обсягу на полігоні (одна/кілька/всі + період: рік/6м/12м/усе) | не написаний | — |
 | DEBT-1 | scenarioProcessor не кличе `mark_synced_from_ecits` → `syncMetrics` мертвий | у tracking_debt | — |
 | Track B | каркас розширення Етап 0 | окремий чат/репо | координація |
-| CONTRACT-v12 | розширення контракту envelope (ролі[]/категорії/likelyNotMine/дати, schema 12) | ✅ спека написана, очікує затвердження → виконавець | — |
+| CONTRACT-v12 | розширення контракту envelope (ролі[]/категорії/likelyNotMine/дати, schema 12) | ✅ done — реалізовано, у main `898abda`, звірено адмін-сесією | — |
+| VERIFY-L1 | приймальна звірка реального 50-справ envelope через golden-fixture (харнес) | очікує файл від розширення | реальний envelope |
+| STAND-relay | ізольований dev/staging для наскрізного реле `submitScenarioResult` | не піднято | рішення про тестовий Drive/акаунт |
 
 **CONTRACT-v12 (2026-06-09):** запит сесії розширення після прогону на 50 справах.
-Спека: `docs/tasks/TASK_ecits_contract_extension_v12.md`. Адитивно: `advocateRoles[]`
-top-level (+`advocateRole` головна, словник 11); category +`commercial`/
-`administrative_offense`/null з мапою envelope→case (`administrative`→`admin`,
-правило #11); `likelyNotMine` envelope-only + опт-ін пікер у ImportTab
-(`pendingReview`+`processDeferredCases`, один прохід); `ecitsState.first/
-lastDocumentDate` (сигнал активності). Schema 11→12 `migrateToVersion12`. Блокує
-вихід розширення з DRY-RUN. Heads-up: `window.LegalBMS.getCasesList()` — лише
-закладка в extensionBridge, не реалізовувати.
+Спека: `docs/tasks/TASK_ecits_contract_extension_v12.md`. Реалізовано виконавцем,
+у main `898abda` (2092 тести зелені), **звірено адмін-сесією по 4 ризикових місцях**
+(бекап→міграція, ідемпотентність v12, мапа `administrative→admin`, `likelyNotMine`≠
+`skipped`) — зауважень нема. Адитивно: `advocateRoles[]` top-level (+`advocateRole`,
+словник 11); category +`commercial`/`administrative_offense`/null з мапою envelope→
+case; `likelyNotMine` envelope-only + опт-ін пікер (`pendingReview`+
+`processDeferredCases`); `ecitsState.first/lastDocumentDate`. Schema 11→12
+`migrateToVersion12` (ідемпотентна, бекап `_backups/registry_data_pre_v12...`).
+Міграція **суто адитивна** (лише додає поля). Розширення виходить з DRY-RUN.
 
-**Невідкладні пріоритети адмін-сесії:** (1) затвердження + виконавець CONTRACT-v12
-(розблоковує сабміт розширення); (2) отримати відповіді П-1/П-2/П-3 → спека FIX-1;
-(3) TASK 0.4.5; (4) TASK UI вибору обсягу. Паралельно — координувати Track B.
+**ПЛАН ПЕРЕВІРКИ (два рівні, по черзі — тестові справи НЕ в бойову систему):**
+- **Рівень 1 (безпечний, зараз):** реальний 50-справ envelope → golden-fixture
+  `tests/fixtures/ecits_envelope_2026-06-09.json` → `npm test`. Усе в пам'яті, без
+  Drive, нуль персисту. Доводить: контракт приймає реальні дані, без втрат і ручного
+  перепакування. Перша приймальна перевірка.
+- **Рівень 2 (реле, потребує стенда):** ізольований dev/staging Legal BMS (окремий
+  тестовий Google Drive/акаунт АБО локальний `npm run dev`) → розширення в Chrome
+  dev mode → реально кличе `window.LegalBMS.submitScenarioResult` → справи заводяться
+  **у стенді, не в бойову**. Перевіряємо дати/ролі/категорії + пікер.
+- **Тільки після обох** — реальний імпорт у Legal BMS адвоката, через алгоритм
+  відбору (не всі 50 підряд).
+
+**Невідкладні пріоритети адмін-сесії:** (1) VERIFY-L1 щойно надійде реальний envelope;
+(2) рішення як піднімати STAND-relay (тестовий Google-акаунт — найпростіше); (3)
+відповіді П-1/П-2/П-3 → спека FIX-1; (4) TASK 0.4.5; (5) UI вибору обсягу. Паралельно —
+координувати Track B. Heads-up: `window.LegalBMS.getCasesList()` — лише закладка.
 
 ---
 
