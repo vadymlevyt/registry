@@ -199,11 +199,21 @@ TASK на промпт Track A.
 | UI-обсяг | UI вибору обсягу на полігоні (одна/кілька/всі + період: рік/6м/12м/усе) | не написаний | — |
 | DEBT-1 | scenarioProcessor не кличе `mark_synced_from_ecits` → `syncMetrics` мертвий | у tracking_debt | — |
 | Track B | каркас розширення Етап 0 | окремий чат/репо | координація |
+| CONTRACT-v12 | розширення контракту envelope (ролі[]/категорії/likelyNotMine/дати, schema 12) | ✅ спека написана, очікує затвердження → виконавець | — |
 
-**Невідкладні пріоритети адмін-сесії:** (1) отримати відповіді П-1/П-2/П-3 →
-спека FIX-1; (2) написати TASK 0.4.5; (3) TASK UI вибору обсягу. Паралельно —
-координувати старт Track B (окремий чат на `legal-bms-extension`, перший TASK =
-Етап 0 за SPEC).
+**CONTRACT-v12 (2026-06-09):** запит сесії розширення після прогону на 50 справах.
+Спека: `docs/tasks/TASK_ecits_contract_extension_v12.md`. Адитивно: `advocateRoles[]`
+top-level (+`advocateRole` головна, словник 11); category +`commercial`/
+`administrative_offense`/null з мапою envelope→case (`administrative`→`admin`,
+правило #11); `likelyNotMine` envelope-only + опт-ін пікер у ImportTab
+(`pendingReview`+`processDeferredCases`, один прохід); `ecitsState.first/
+lastDocumentDate` (сигнал активності). Schema 11→12 `migrateToVersion12`. Блокує
+вихід розширення з DRY-RUN. Heads-up: `window.LegalBMS.getCasesList()` — лише
+закладка в extensionBridge, не реалізовувати.
+
+**Невідкладні пріоритети адмін-сесії:** (1) затвердження + виконавець CONTRACT-v12
+(розблоковує сабміт розширення); (2) отримати відповіді П-1/П-2/П-3 → спека FIX-1;
+(3) TASK 0.4.5; (4) TASK UI вибору обсягу. Паралельно — координувати Track B.
 
 ---
 
