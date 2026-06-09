@@ -138,12 +138,17 @@ ImportTab (опт-ін, нічого не обрано за замовчуван
 
 ## 4. Зміна 4 — Дати справи зі списку
 
-**Envelope (per-case):** опційні
+**Envelope (per-case):** опційні **top-level** (пласко, поряд з `case_no`/
+`ecitsCaseId`, НЕ вкладено):
 - `firstDocumentDate: string | null` — дата першого документа (довідково);
 - `lastDocumentDate: string | null` — **дата останнього документа = сигнал
   активності** (ISO `yyyy-mm-dd`).
 
-**Зберігання:** у `ecitsState`:
+Екстрактор віддає їх **пласко**; ecitsState у envelope не конструює — це робить
+Legal BMS (так само, як мапить `ecitsCaseId`→`ecitsState.caseId`,
+`court`→`ecitsState.court`).
+
+**Зберігання:** Legal BMS кладе у `ecitsState`:
 - `ecitsState.firstDocumentDate: string | null`
 - `ecitsState.lastDocumentDate: string | null`
 
@@ -170,6 +175,12 @@ envelope у `ecitsState` (`?? null`).
 - Старі envelope: `advocateRole` без `advocateRoles` → `advocateRoles=[role]`;
   3 категорії → мапляться; без дат/`likelyNotMine` → дефолти. Усе валідне.
 - Нові поля справи nullable/default → існуючі справи мігрують у дефолти.
+- **Версії envelope:** `envelopeVersion=1` і `scenarioVersion=1` — **НЕ бампимо**.
+  Зміни адитивні (не breaking), тож версія лишається 1. Сигнал нових полів — їх
+  наявність, не версія. Додатково: `validateEnvelope` пінить `envelopeVersion===1`
+  (кидає на інше) — бамп без зміни валідатора зламав би імпорт. Бамп робимо лише
+  при справді breaking-зміні (видалення/перейменування обов'язкового поля), тоді
+  ж розширюємо валідатор на діапазон.
 
 ---
 
