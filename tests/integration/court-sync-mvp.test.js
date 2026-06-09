@@ -106,7 +106,10 @@ describe('Court Sync MVP — повний flow', () => {
     const cases = h.getCases();
     expect(cases).toHaveLength(2);
     expect(cases.every(c => c.origin === 'ecits_import')).toBe(true);
-    expect(cases.every(c => c.ecitsState?.caseId)).toBe(true);
+    // ecitsState — контейнер sync-метаданих. caseId прибрано з активного коду
+    // (TASK ecits_identity_by_caseno).
+    expect(cases.every(c => c.ecitsState)).toBe(true);
+    expect(cases.every(c => c.ecitsState.syncStatus === 'synced')).toBe(true);
     expect(cases.every(c => c.hearings.length === 1)).toBe(true);
     expect(cases.every(c => c.hearings[0].source === 'court_sync')).toBe(true);
   });
@@ -196,24 +199,22 @@ describe('Court Sync MVP — повний flow', () => {
   it('court_sync_agent МОЖЕ create_case (TASK 0.4)', async () => {
     const h = makeHarness();
     const result = await h.executeAction('court_sync_agent', 'create_case', {
-      name: 'Test', origin: 'ecits_import',
-      ecitsState: { caseId: 'unique_test_hex' },
+      name: 'Test', case_no: 'UNIQ/1/26', origin: 'ecits_import',
     });
     expect(result.success).toBe(true);
   });
 
-  it('create_case з ecitsState.caseId що вже існує повертає duplicate_ecits_case', async () => {
+  it('create_case з case_no що вже існує повертає duplicate_case_no (нормалізований ключ)', async () => {
     const h = makeHarness();
     await h.executeAction('court_sync_agent', 'create_case', {
-      name: 'First', origin: 'ecits_import',
-      ecitsState: { caseId: 'dup_hex' },
+      name: 'First', case_no: '450/2275/25-Ц', origin: 'ecits_import',
     });
+    // Та сама справа — інший регістр суфікса + без суфікса. Нормалізація має звести.
     const second = await h.executeAction('court_sync_agent', 'create_case', {
-      name: 'Second', origin: 'ecits_import',
-      ecitsState: { caseId: 'dup_hex' },
+      name: 'Second', case_no: '450/2275/25', origin: 'ecits_import',
     });
     expect(second.success).toBe(false);
-    expect(second.error).toBe('duplicate_ecits_case');
+    expect(second.error).toBe('duplicate_case_no');
     expect(second.existingCaseId).toBeTruthy();
   });
 });
@@ -369,6 +370,128 @@ describe('TASK v12 — Court Sync MVP з розширеним контракто
     const cases = h.getCases();
     expect(cases.every((c) => c.advocateRoles)).toBe(true);
     expect(cases.every((c) => c.advocateRoles.length === 1)).toBe(true);
+  });
+
+  it('TASK ecits_identity_by_caseno: envelope з ecitsCaseId=null заводить справи (50-справ реальний кейс)', async () => {
+    const h = makeHarness();
+    const env = makeV12Envelope();
+    // Реальний 2026-06-09: екстрактор не зчитує ecitsCaseId зі списку кабінету,
+    // усі справи приходять з null. Старий процесор скіпав усі — мав 0 створено.
+    env.data.cases.forEach((c) => { c.ecitsCaseId = null; });
+    const res = await submitScenarioResult(env, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    expect(res.casesCreated).toBe(3); // 3 auto, 1 deferred
+    expect(res.skipped).toBe(0);
+    expect(res.errors).toEqual([]);
+  });
+
+  it('TASK ecits_identity_by_caseno: повторний імпорт того ж envelope (ecitsCaseId=null) → 0 нових', async () => {
+    const h = makeHarness();
+    const env = makeV12Envelope();
+    env.data.cases.forEach((c) => { c.ecitsCaseId = null; });
+    await submitScenarioResult(env, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    const res2 = await submitScenarioResult(env, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    expect(res2.casesCreated).toBe(0);
+    expect(res2.casesUpdated).toBe(3);
+    expect(res2.hearingsAdded).toBe(0);
+  });
+
+  it('TASK ecits_identity_by_caseno: матч існуючої manual-справи з тим самим case_no', async () => {
+    // Адвокат раніше створив справу вручну. Імпорт з ЄСІТС з тим самим
+    // номером не має дублювати — лише освіжити sync-метадані.
+    const h = makeHarness({ initialCases: [{
+      id: 'case_manual_1',
+      tenantId: 'ab_levytskyi',
+      ownerId: 'vadym',
+      name: 'Ручна справа',
+      case_no: '450/2275/25',
+      origin: 'manual',
+      hearings: [],
+    }] });
+    const env = makeEnvelope();
+    env.data.cases[0].ecitsCaseId = null;
+    env.data.cases.length = 1; // лише перший кейс з case_no 450/2275/25
+    const res = await submitScenarioResult(env, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    expect(res.casesCreated).toBe(0);
+    expect(res.casesUpdated).toBe(1);
+    // Назва і origin адвоката НЕ перезаписані.
+    const c = h.getCases().find((c) => c.id === 'case_manual_1');
+    expect(c.name).toBe('Ручна справа');
+    expect(c.origin).toBe('manual');
+    // ecitsState освіжено.
+    expect(c.ecitsState?.syncStatus).toBe('synced');
+  });
+
+  it('TASK ecits_identity_by_caseno: read-after-write з immutable снапшотом (прод-семантика)', async () => {
+    // Цей тест відтворює саме прод-семантику React: getCases повертає
+    // immutable снапшот, який НЕ оновлюється під час прогону setCases-апдейтів.
+    // До фіксу C тут setCases (immutable) → друга ітерація create_case
+    // не бачила першу і створювала дубль.
+    //
+    // ВАЖЛИВО: harness повинен симулювати справжній React-патерн: setCases
+    // не мутує prev, а замінює референс. Якщо тест звичайно ганяє з mutable
+    // масивом — він маскує баг (як показала діагностика 2026-05-27).
+    let cases = [];
+    const auditLog = [];
+    const trackerCalls = [];
+    const tracker = {
+      report: (action, payload) => trackerCalls.push({ action, payload }),
+      startSession: () => null, endSession: () => null,
+      startSubtimer: () => null, endSubtimer: () => null,
+      updateSubtimer: () => false, assignOfflinePeriod: () => null,
+    };
+
+    const { executeAction } = createActions({
+      // Живий read через casesRef-аналог: ref оновлюється у самому setCases-апдейтері.
+      // Це дзеркало App.jsx setCasesWithRef (TASK ecits_identity_by_caseno).
+      getCases: () => cases,
+      setCases: (u) => {
+        const next = typeof u === 'function' ? u(cases) : u;
+        cases = next; // оновлюємо референс СИНХРОННО (як React commit + ref)
+      },
+      setNotes: () => {},
+      setTimeEntries: () => {},
+      saveNotesToLS: () => {},
+      writeAudit: (p) => { auditLog.push(p); return { id: 'a' }; },
+      checkTenantAccess: () => true,
+      checkRolePermission: () => true,
+      checkCaseAccess: () => true,
+      activityTracker: tracker,
+      eventBus: { publish: () => {} },
+      deleteDriveFile: async () => {},
+      deleteOcrCacheForDocument: async () => {},
+      deleteExtendedForDocument: async () => {},
+    });
+
+    // Два кейси з тим самим case_no і ecitsCaseId=null.
+    const env = makeEnvelope();
+    env.data.cases.forEach((c) => { c.ecitsCaseId = null; });
+    env.data.cases.push({
+      ...env.data.cases[0],
+      hearings: [{ date: '2026-09-01', time: '11:00' }],
+    });
+
+    const res = await submitScenarioResult(env, { executeAction, getCases: () => cases });
+
+    // Послідовність: create 450/2275/25 → create 367/4744/26 → match 450 (dup).
+    // Без живого ref третя ітерація бачила б порожній (або один-кейсний)
+    // снапшот і створювала б другу 450/2275/25 (дубль).
+    expect(res.casesCreated).toBe(2);
+    expect(res.casesUpdated).toBe(1);
+    expect(cases).toHaveLength(2);
+    expect(cases.filter((c) => c.case_no === '450/2275/25')).toHaveLength(1);
+    expect(cases.filter((c) => c.case_no === '367/4744/26')).toHaveLength(1);
   });
 
   it('NEW: golden fixture (representative) проходить наскрізь без втрат і ручних правок', async () => {

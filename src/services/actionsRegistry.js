@@ -28,6 +28,7 @@ import { canOverwrite, buildAlternativeSourceRecord } from './sourcePolicy';
 import { validateDocument } from './documentFactory';
 import { getTimeStandard, getCategoryDefaults, getVariantDefault } from './timeStandards';
 import { MODULES, categoryForCase } from './moduleNames';
+import { normalizeCaseNoKey } from './ecits/caseNoKey';
 // TASK 3.2 — ACTION clean_document_text тягне готове ядро очистки (3.1).
 // Імпорт ядра/адаптера ЛІНИВИЙ (dynamic import у handler'і): cleanTextDriveAdapter
 // тягне ocrService → pdfjs-dist (DOMMatrix недоступний у Node-тест-середовищі);
@@ -147,11 +148,13 @@ export function createActions(deps) {
     //      processParticipants } — Court Sync scenarioProcessor пише плоско.
     // Якщо передано обидва — плоскі ключі мають пріоритет над fields.
     //
-    // Дедуплікація (R1 fix): якщо params.ecitsState.caseId передано і вже
-    // існує справа з таким ecitsState.caseId — повертаємо
-    // { success: false, error: 'duplicate_ecits_case', existingCaseId }.
-    // Це дозволяє scenarioProcessor викликати update_case_ecits_state замість
-    // дубліката.
+    // Дедуплікація (TASK ecits_identity_by_caseno): якщо params.case_no
+    // передано і вже існує справа з тим самим нормалізованим case_no —
+    // повертаємо { success: false, error: 'duplicate_case_no', existingCaseId }.
+    // Це дозволяє scenarioProcessor прив'язатись до існуючої справи замість
+    // створення дубліката. Раніше ключем був ecitsState.caseId (per-proceeding
+    // 32-hex з URL кабінету) — це перерізало одну справу на кілька карток,
+    // адвокат уточнив 2026-05-27.
     //
     // ensureCaseSaasAndEcitsFields (а не ensureCaseSaasFields) — додає v7
     // канонічний дефолт (ecitsState/parties/processParticipants) і v9 поле
@@ -163,13 +166,15 @@ export function createActions(deps) {
       const { fields: _omit, ...flat } = incoming;
       const merged = { ...base, ...flat };
 
-      const incomingEcitsCaseId = merged?.ecitsState?.caseId;
-      if (incomingEcitsCaseId) {
-        const existing = getCases().find(c => c?.ecitsState?.caseId === incomingEcitsCaseId);
+      const incomingCaseNoKey = normalizeCaseNoKey(merged?.case_no);
+      if (incomingCaseNoKey) {
+        const existing = getCases().find(
+          c => normalizeCaseNoKey(c?.case_no) === incomingCaseNoKey,
+        );
         if (existing) {
           return {
             success: false,
-            error: 'duplicate_ecits_case',
+            error: 'duplicate_case_no',
             existingCaseId: existing.id,
           };
         }

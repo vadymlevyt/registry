@@ -18,6 +18,7 @@ import {
   SCENARIO_ID,
   SCENARIO_VERSION,
 } from '../../src/services/ecits/scenarioProcessor.js';
+import { normalizeCaseNoKey } from '../../src/services/ecits/caseNoKey.js';
 
 function makeEnvelope(overrides = {}) {
   return {
@@ -82,21 +83,62 @@ describe('validateEnvelope', () => {
 });
 
 describe('buildCreateCaseParams', () => {
-  it('виставляє origin=ecits_import і ecitsState.caseId', () => {
+  it('виставляє origin=ecits_import; ecitsCaseId з envelope ігнорується (правило #11)', () => {
     const { params: p, warnings } = buildCreateCaseParams({
-      ecitsCaseId: 'hex',
+      ecitsCaseId: 'hex_ignored',
       case_no: '450/2275/25',
       court: 'Київський суд',
       category: 'civil',
       primaryParty: 'Бабенко О.І.',
     });
     expect(p.origin).toBe('ecits_import');
-    expect(p.ecitsState.caseId).toBe('hex');
+    // ecitsState — контейнер sync-метаданих; per-proceeding ecitsCaseId
+    // прибрано з активного коду (TASK ecits_identity_by_caseno).
+    expect(p.ecitsState).toBeDefined();
+    expect('caseId' in p.ecitsState).toBe(false);
     expect(p.ecitsState._lastSource).toBe('court_sync');
     expect(p.ecitsState.syncStatus).toBe('synced');
     expect(p.name).toContain('[ЄСІТС]');
     expect(p.client).toBe('Бабенко О.І.');
     expect(warnings).toEqual([]);
+  });
+  it('відсутній ecitsCaseId в envelope — не валить імпорт', () => {
+    const { params: p, warnings } = buildCreateCaseParams({
+      ecitsCaseId: null,
+      case_no: '450/2275/25',
+      primaryParty: 'X',
+    });
+    expect(p.case_no).toBe('450/2275/25');
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('normalizeCaseNoKey — спільний хелпер дедупу', () => {
+  it('повний номер з суфіксом-літерою → ключ без суфікса (адвокат: усі провадження живуть під одним case_no)', () => {
+    expect(normalizeCaseNoKey('761/15469/20-Ц')).toBe('761/15469/20');
+    expect(normalizeCaseNoKey('761/15469/20-ц')).toBe('761/15469/20');
+    expect(normalizeCaseNoKey('761/15469/20')).toBe('761/15469/20');
+  });
+  it('кириличний і латинський суфікс зливаються', () => {
+    expect(normalizeCaseNoKey('500/55/26-A')).toBe('500/55/26');
+    expect(normalizeCaseNoKey('500/55/26-а')).toBe('500/55/26');
+  });
+  it('внутрішні і оточуючі пробіли прибирає', () => {
+    expect(normalizeCaseNoKey('  450 / 2275 / 25  ')).toBe('450/2275/25');
+  });
+  it('lower-case однаково трактує регістр', () => {
+    expect(normalizeCaseNoKey('761/15469/20-Ц'))
+      .toBe(normalizeCaseNoKey('761/15469/20-ц'));
+  });
+  it('null/undefined/порожній рядок → null', () => {
+    expect(normalizeCaseNoKey(null)).toBeNull();
+    expect(normalizeCaseNoKey(undefined)).toBeNull();
+    expect(normalizeCaseNoKey('')).toBeNull();
+    expect(normalizeCaseNoKey('   ')).toBeNull();
+  });
+  it('нерядок → null (не кидає)', () => {
+    expect(normalizeCaseNoKey(123)).toBeNull();
+    expect(normalizeCaseNoKey({})).toBeNull();
   });
 });
 
@@ -123,6 +165,7 @@ describe('submitScenarioResult — інтеграція через mock executeA
       if (action === 'create_case') {
         const newCase = {
           id: `case_${cases.length + 1}`,
+          case_no: params.case_no, // потрібно для case_no-дедупу (TASK ecits_identity_by_caseno)
           origin: params.origin,
           ecitsState: params.ecitsState,
           hearings: [],
@@ -165,11 +208,11 @@ describe('submitScenarioResult — інтеграція через mock executeA
     expect(addCall.params.source).toBe('court_sync');
   });
 
-  it('використовує update_case_ecits_state якщо справа з тим самим ecitsCaseId уже є', async () => {
+  it('використовує update_case_ecits_state якщо справа з тим самим case_no уже є', async () => {
     const { executeAction, calls } = makeDeps();
     const existing = [{
       id: 'case_existing',
-      ecitsState: { caseId: 'abc123def456abc123def456abc123de' },
+      case_no: '450/2275/25',
       hearings: [],
     }];
     const res = await submitScenarioResult(makeEnvelope(), {
@@ -182,11 +225,29 @@ describe('submitScenarioResult — інтеграція через mock executeA
     expect(calls.find(c => c.action === 'update_case_ecits_state')).toBeTruthy();
   });
 
+  it('матч існуючої справи з кінцевим суфіксом-літерою — нормалізація case_no', async () => {
+    const { executeAction, calls } = makeDeps();
+    // У registry лежить версія з суфіксом (введена адвокатом вручну).
+    const existing = [{
+      id: 'case_with_suffix',
+      case_no: '450/2275/25-Ц',
+      hearings: [],
+    }];
+    // Envelope приходить без суфікса. normalizeCaseNoKey має звести.
+    const res = await submitScenarioResult(makeEnvelope(), {
+      executeAction,
+      getCases: () => existing,
+    });
+    expect(res.casesCreated).toBe(0);
+    expect(res.casesUpdated).toBe(1);
+    expect(calls.find(c => c.action === 'create_case')).toBeUndefined();
+  });
+
   it('пропускає дублі засідань (за датою+часом)', async () => {
     const { executeAction } = makeDeps();
     const existing = [{
       id: 'case_existing',
-      ecitsState: { caseId: 'abc123def456abc123def456abc123de' },
+      case_no: '450/2275/25',
       hearings: [{ id: 'h1', date: '2026-05-25', time: '08:50' }],
     }];
     const res = await submitScenarioResult(makeEnvelope(), {
@@ -210,14 +271,43 @@ describe('submitScenarioResult — інтеграція через mock executeA
     expect(history[0].transport).toBe('manual_paste');
   });
 
-  it('пропускає кейс без ecitsCaseId і фіксує помилку', async () => {
+  it('ecitsCaseId=null БІЛЬШЕ НЕ блокує — справа заводиться за case_no', async () => {
     const { executeAction, getCases } = makeDeps();
     const env = makeEnvelope();
+    env.data.cases[0].ecitsCaseId = null; // реальний сценарій 2026-06-09
+    const res = await submitScenarioResult(env, { executeAction, getCases });
+    expect(res.skipped).toBe(0);
+    expect(res.casesCreated).toBe(1);
+    expect(res.errors).toHaveLength(0);
+  });
+
+  it('відсутній case_no → skip з ясною помилкою', async () => {
+    const { executeAction, getCases } = makeDeps();
+    const env = makeEnvelope();
+    env.data.cases[0].case_no = null;
     env.data.cases[0].ecitsCaseId = null;
     const res = await submitScenarioResult(env, { executeAction, getCases });
     expect(res.skipped).toBe(1);
     expect(res.errors).toHaveLength(1);
-    expect(res.errors[0].message).toMatch(/ecitsCaseId/);
+    expect(res.errors[0].message).toMatch(/case_no/);
+  });
+
+  it('within-run dedup: два envelope-кейси з тим самим case_no → одна справа (потрібен живий getCases)', async () => {
+    const { executeAction, calls, getCases } = makeDeps();
+    const env = makeEnvelope();
+    // Додаємо другий кейс з тим самим case_no (інша назва провадження,
+    // інший hearing). Зміна C: scenarioProcessor під час другої ітерації
+    // має бачити щойно створену справу.
+    env.data.cases.push({
+      ...env.data.cases[0],
+      ecitsCaseId: null,                       // реальний 2026-06-09 кейс
+      hearings: [{ date: '2026-07-10', time: '10:00' }],
+    });
+    const res = await submitScenarioResult(env, { executeAction, getCases });
+    expect(res.casesCreated).toBe(1);
+    expect(res.casesUpdated).toBe(1);
+    expect(res.hearingsAdded).toBe(2);
+    expect(calls.filter(c => c.action === 'create_case')).toHaveLength(1);
   });
 
   it('викликає onProgress для кожної справи', async () => {
@@ -414,7 +504,8 @@ describe('TASK v12 §3 — likelyNotMine партиціонування', () => 
 
     const createCalls = calls.filter((c) => c.action === 'create_case');
     expect(createCalls).toHaveLength(1);
-    expect(createCalls[0].params.ecitsState.caseId).not.toBe('deferred_hex');
+    // Створена тільки авто-справа, deferred-кейс лишається у pendingReview.
+    expect(createCalls[0].params.case_no).toBe('450/2275/25');
   });
 
   it('skipped НЕ збільшується для likelyNotMine (окрема корзина)', async () => {

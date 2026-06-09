@@ -18,9 +18,12 @@
 //   2. validateEnvelope() — строга валідація форми, чіткі повідомлення
 //   3. Партиціонування cases на auto / deferred (likelyNotMine===true) (§3)
 //   4. Для кожної auto-ecitsCase:
-//      a) Пошук існуючої справи за ecitsState.caseId
-//      b) Якщо існує → update_case_ecits_state + add_hearing для нових засідань
-//      c) Якщо нова → create_case з origin='ecits_import', потім add_hearing'и
+//      a) Пошук існуючої справи за нормалізованим case_no (caseNoKey.js).
+//         НЕ за ecitsCaseId (per-proceeding ідентифікатор кабінету не годиться
+//         як ключ справи — адвокат, діагностика 2026-05-27).
+//      b) Якщо існує → update_case_ecits_state + add_hearing для нових засідань.
+//         Жодного перезапису name/client/category — це поля адвоката.
+//      c) Якщо нова → create_case з origin='ecits_import', потім add_hearing'и.
 //   5. Запис у tenant.ecits_scenario_history (через appendScenarioHistoryEntry deps)
 //   6. Повертаємо { casesCreated, casesUpdated, hearingsAdded, skipped, errors,
 //                  warnings, pendingReview, scenarioRunId }
@@ -32,6 +35,7 @@
 // теж не нараховується (R5 fix). Тут не потрібна додаткова логіка.
 
 import { canOverwrite } from '../sourcePolicy.js';
+import { normalizeCaseNoKey } from './caseNoKey.js';
 
 // ── Контракт-константи (експортуються для тестів і extension-розширення) ────
 export const ENVELOPE_VERSION = 1;
@@ -324,8 +328,11 @@ export function buildCreateCaseParams(ecitsCase) {
   const { category, warning: categoryWarning } = resolveCaseCategory(ecitsCase);
   if (categoryWarning) warnings.push(categoryWarning);
 
+  // ecitsState — контейнер sync-метаданих і провенансу. `caseId` (32-hex
+  // per-proceeding) НЕ зберігаємо: він не годиться як ключ справи, і
+  // зчитувачів не має (правило #11 — не вводити поле без сенсу). Envelope-
+  // поле ecitsCase.ecitsCaseId приймається-але-ігнорується.
   const ecitsState = {
-    caseId: ecitsCase.ecitsCaseId,
     filedAt: null,
     court: ecitsCase.court || null,
     lastSyncedAt: nowIso,
@@ -416,18 +423,26 @@ async function processCase(ecitsCase, deps) {
     warnings: [],
   };
 
-  if (!ecitsCase?.ecitsCaseId) {
+  // Зміна B: гейт посилається на case_no (ключ дедупу), а не на ecitsCaseId.
+  // Екстрактор не завжди має ecitsCaseId зі списку кабінету — це штатна
+  // ситуація, не помилка; skipping за відсутністю ecitsCaseId блокував
+  // реальний імпорт (звіт R 2026-06-09: 50 справ → 0 створено).
+  const incomingKey = normalizeCaseNoKey(ecitsCase?.case_no);
+  if (!incomingKey) {
     inc.skipped++;
-    inc.errors.push({ case_no: ecitsCase?.case_no, message: 'missing ecitsCaseId' });
+    inc.errors.push({ case_no: ecitsCase?.case_no, message: 'missing case_no' });
     return inc;
   }
 
-  // 1. Пошук існуючої справи за ecitsCaseId
-  const existing = getCases().find((c) => c?.ecitsState?.caseId === ecitsCase.ecitsCaseId);
+  // 1. Пошук існуючої справи за нормалізованим case_no (Зміна A).
+  // Якщо знайдена — лише оновлюємо ecitsState (sync-метадані), name/client/
+  // category НЕ перезаписуємо: це поля адвоката.
+  const existing = getCases().find(
+    (c) => normalizeCaseNoKey(c?.case_no) === incomingKey,
+  );
 
   let caseId;
   if (existing) {
-    // Update existing — оновити ecitsState (інкрементує syncMetrics)
     caseId = existing.id;
     const patchResult = await executeAction(agentId, 'update_case_ecits_state', {
       caseId,
@@ -454,10 +469,27 @@ async function processCase(ecitsCase, deps) {
     if (createResult?.success) {
       caseId = createResult.caseId;
       inc.casesCreated++;
-    } else if (createResult?.error === 'duplicate_ecits_case' && createResult.existingCaseId) {
-      // Гонка: справа з'явилась між пошуком і create_case. Прив'язуємось до неї.
+    } else if (createResult?.error === 'duplicate_case_no' && createResult.existingCaseId) {
+      // Гонка: справа з тим самим case_no з'явилась між нашим пошуком і
+      // create_case. Прив'язуємось до неї і освіжаємо ecitsState.
       caseId = createResult.existingCaseId;
-      inc.casesUpdated++;
+      const patchResult = await executeAction(agentId, 'update_case_ecits_state', {
+        caseId,
+        patch: {
+          lastSyncedAt: new Date().toISOString(),
+          syncStatus: 'synced',
+          failureReason: null,
+        },
+        source: 'court_sync',
+      });
+      if (patchResult?.success) {
+        inc.casesUpdated++;
+      } else {
+        inc.errors.push({
+          case_no: ecitsCase.case_no,
+          message: `update_case_ecits_state failed: ${patchResult?.error || 'unknown'}`,
+        });
+      }
     } else {
       inc.skipped++;
       inc.errors.push({

@@ -655,9 +655,16 @@ function migrateDocumentSource(oldSource, stats) {
   return 'unknown';
 }
 
+// TASK ecits_identity_by_caseno: поле `caseId` (per-proceeding 32-hex з URL
+// кабінету) прибрано з активного коду — дедуплікація справ перейшла на
+// нормалізований case_no (`caseNoKey.js`). Залишковий caseId у старих
+// записах на Drive не читаємо; міграція-зачистка не потрібна (ecitsState —
+// shallow merge у `update_case_ecits_state`, тож legacy-поле тихо лежить
+// поряд без шкоди). ecitsState-контейнер лишається — це провенанс і
+// sync-метадані (lastSyncedAt/syncStatus/syncMetrics/firstDocumentDate/
+// lastDocumentDate).
 function buildDefaultEcitsState() {
   return {
-    caseId: null,
     filedAt: null,
     court: null,
     lastSyncedAt: null,

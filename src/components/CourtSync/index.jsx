@@ -80,6 +80,7 @@ function SubtabButton({ active, onClick, icon: Icon, children }) {
 export default function CourtSync({
   executeAction,
   cases,
+  getCases,
   tenant,
   onScenarioHistoryAppend,
 }) {
@@ -194,6 +195,7 @@ export default function CourtSync({
             <ImportTab
               executeAction={executeAction}
               cases={cases}
+              getCases={getCases}
               tenant={tenant}
               onScenarioHistoryAppend={onScenarioHistoryAppend}
             />

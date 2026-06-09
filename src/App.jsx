@@ -3560,6 +3560,23 @@ function App() {
     }
     return [];
   });
+
+  // TASK ecits_identity_by_caseno (Зміна C): живий read-канал.
+  // getCases:()=>cases замикав immutable снапшот рендеру → setCases(prev=>…)
+  // у межах одного await-циклу читач НЕ бачив. casesRef оновлюється
+  // СИНХРОННО при кожному коміті (через useEffect) і — критично — всередині
+  // updater'а `setCasesWithRef` ще до повернення з updater'а. Завдяки цьому
+  // дедуплікація create_case і lookup існуючої справи у scenarioProcessor
+  // бачать щойно створену справу в межах одного прогону.
+  const casesRef = useRef(cases);
+  useEffect(() => { casesRef.current = cases; }, [cases]);
+  const setCasesWithRef = React.useCallback((updater) => {
+    setCases((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      casesRef.current = next;
+      return next;
+    });
+  }, []);
   const sanitizeNote = (n) => n && typeof n === 'object' ? ({
     ...n,
     text: toSafeStr(n.text),
@@ -4914,8 +4931,11 @@ function App() {
   // сінглтон. Викликається кожен render (як і раніше inline `const ACTIONS`):
   // getCases:()=>cases замикає поточний render-снапшот.
   const { executeAction } = createActions({
-    getCases: () => cases,
-    setCases,
+    // TASK ecits_identity_by_caseno (Зміна C): живе джерело правди для всіх
+    // ACTIONS — casesRef.current оновлюється і в updater'і `setCasesWithRef`,
+    // і у пост-render useEffect (див. вище). НЕ замикання рендеру.
+    getCases: () => casesRef.current,
+    setCases: setCasesWithRef,
     setNotes,
     setTimeEntries,
     saveNotesToLS,
@@ -4946,7 +4966,8 @@ function App() {
         executeAction,
         agentId: 'court_sync_agent',
         transport: options?.transport || 'extension',
-        getCases: () => cases,
+        // Зміна C — живий ref, не closure-снапшот рендеру.
+        getCases: () => casesRef.current,
         getTenant: () => (tenants && tenants[0]) || null,
         appendScenarioHistoryEntry: (entry) => {
           setTenants(prev => {
@@ -5350,6 +5371,7 @@ function App() {
                 <CourtSync
                   executeAction={executeAction}
                   cases={cases}
+                  getCases={() => casesRef.current}
                   tenant={(tenants && tenants[0]) || null}
                   onScenarioHistoryAppend={(entry) => {
                     setTenants(prev => {

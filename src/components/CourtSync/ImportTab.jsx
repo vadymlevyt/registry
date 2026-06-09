@@ -43,7 +43,11 @@ function coerceToString(value) {
   return String(value);
 }
 
-export default function ImportTab({ executeAction, cases, tenant, onScenarioHistoryAppend }) {
+export default function ImportTab({ executeAction, cases, getCases, tenant, onScenarioHistoryAppend }) {
+  // TASK ecits_identity_by_caseno (Зміна C): живий read-канал. Якщо App
+  // прокинув getCases (живий ref) — використовуємо його; інакше fallback
+  // на immutable cases prop (тести з memory-snapshot, legacy callers).
+  const readCases = typeof getCases === 'function' ? getCases : (() => cases || []);
   const prompt = useMemo(() => buildEcitsImportPrompt(), []);
   const [copyState, setCopyState] = useState('idle'); // idle | copied | error
   const [jsonText, setJsonText] = useState('');
@@ -96,7 +100,7 @@ export default function ImportTab({ executeAction, cases, tenant, onScenarioHist
         executeAction,
         agentId: 'court_sync_agent',
         transport: 'manual_paste',
-        getCases: () => cases || [],
+        getCases: readCases,
         getTenant: () => tenant,
         appendScenarioHistoryEntry: onScenarioHistoryAppend,
         onProgress: (msg) => setProgressMsg(msg),
@@ -130,7 +134,7 @@ export default function ImportTab({ executeAction, cases, tenant, onScenarioHist
       const inc = await processDeferredCases(chosen, {
         executeAction,
         agentId: 'court_sync_agent',
-        getCases: () => cases || [],
+        getCases: readCases,
         onProgress: (msg) => setProgressMsg(msg),
       });
 
