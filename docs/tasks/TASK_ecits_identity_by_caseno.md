@@ -1,0 +1,132 @@
+# TASK — ЄСІТС: ідентичність справи по `case_no` (+ живий стан)
+
+**Тип:** спека для сесії-виконавця. Адмін-сесія НЕ реалізує сама.
+**Статус:** очікує затвердження адвоката → виконавець.
+**Дата:** 2026-06-09
+**Пріоритет:** БЛОКЕР реальних імпортів (без цього імпорт заводить 0 справ).
+**Підстава:** Рівень-1 звірка реального 50-справ envelope від сесії розширення.
+
+---
+
+## 0. Проблема (емпірично, Рівень 1)
+
+Реальний envelope (50 справ, schema-12) прогнано через справжній
+`normalizeEnvelope → validateEnvelope → scenarioProcessor` на тест-харнесі
+(без Drive). Результат **as-is**: `casesCreated=0`, `skipped=36`
+(усі — `missing ecitsCaseId`), `pendingReview=14`.
+
+Причина: **у всіх справах `ecitsCaseId: null`** — екстрактор зчитує дані зі
+**списку** кабінету (де є `case_no`, категорія, ролі, дати-колонки), а 32-hex
+код лежить усередині картки (URL) і при списковому проході не береться.
+Розширення це знає (82 warnings «ecitsCaseId не знайдено в рядку списку»).
+А `scenarioProcessor` (`processCase`, ~рядок 419 у v12) **жорстко вимагає**
+`ecitsCaseId` і дедупить по `ecitsState.caseId`.
+
+**v12-контракт при цьому коректний** — повторний прогін з підставленим кодом
+дав `casesCreated=36`, 0 помилок, ролі-масив/мапа категорій (`administrative→
+admin` ×5, `administrative_offense` ×3, `commercial` ×3, `null` ×2)/дати в
+`ecitsState`/`pendingReview=14` — усе лягло. Тобто лагодити треба **тільки
+ідентичність**, не v12-мапу.
+
+**Рішення адвоката по доменних питаннях (2026-06-09):**
+- П-1: одна справа = одна картка (per-case). Але код не зчитується → ідентичність по `case_no`.
+- П-2: суфікс-літеру (`-ц`/`-к`/`-а`) при порівнянні **відкидати** — це одна справа.
+- П-3: засідання без часу — не зберігати мовчки, позначати «уточнити» (тут другорядне — у наборі 6 засідань, усі з часом).
+
+---
+
+## 1. Зміна A — ідентичність/дедуп по нормалізованому `case_no`
+
+**Новий хелпер** `normalizeCaseNoKey(caseNo)` у `scenarioProcessor.js`
+(експортувати для тестів). Один сенс: «ключ порівняння номера справи».
+```
+key = String(caseNo).trim().toLowerCase()
+        .replace(/\s+/g, '')           // прибрати пробіли/NBSP
+        .replace(/-[а-яіїєґa-z]+$/i, '') // відкинути кінцевий суфікс-літеру (П-2)
+```
+Приклад: `757/52300/25-ц` → `757/52300/25`; `701/1413/25` → `701/1413/25`.
+Застосовується **тільки** для порівняння. Оригінальний `case_no` зберігається
+на справі без змін (для показу).
+
+**`scenarioProcessor` — заміна ключа пошуку існуючої справи:**
+- БУЛО: `getCases().find(c => c?.ecitsState?.caseId === ecitsCase.ecitsCaseId)`
+- СТАЛО: `getCases().find(c => normalizeCaseNoKey(c.case_no) === normalizeCaseNoKey(ecitsCase.case_no))`
+  (порожній/невалідний ключ не матчить нічого).
+
+**`create_case` (actionsRegistry.js) — дзеркальний дедуп:** перевірку
+`duplicate_ecits_case` перевести з `ecitsState.caseId` на `normalizeCaseNoKey(
+case_no)`. Експортувати/розділити хелпер так, щоб і scenarioProcessor, і
+actionsRegistry використовували ОДНУ функцію (DRY, правило #11) — винести
+`normalizeCaseNoKey` у спільний модуль (напр. `src/services/ecits/caseNoKey.js`)
+і імпортувати в обох.
+
+**Наслідок (зафіксувати у звіті):** імпорт тепер впізнає і **вручну заведену**
+справу з тим самим номером — не створює `[ЄСІТС]`-дубль. Якщо існуюча справа
+знайдена — оновлюємо її `ecitsState` (як зараз існуючу гілку), НЕ перезаписуючи
+її `name`/`client`/інші поля.
+
+## 2. Зміна B — послабити вимогу `ecitsCaseId`
+
+- Прибрати жорсткий `if (!ecitsCase.ecitsCaseId) { skipped; error 'missing ecitsCaseId' }`.
+- Новий guard: ідентифікувати можна якщо є **`case_no`**. Якщо немає НІ `case_no`,
+  НІ `ecitsCaseId` → лише тоді skip з ясною помилкою `missing case identity (no case_no/ecitsCaseId)`.
+- `ecitsState.caseId` лишається = `ecitsCase.ecitsCaseId ?? null` (вже так у
+  `buildCreateCaseParams`). Жодних змін у збереженні коду — він просто може бути null.
+
+## 3. Зміна C — живий стан (FIX-1a, read-after-write)
+
+Зчеплено з case_no-дедупом: щоб дедуп був надійним і в **межах одного прогону**
+(дві однакові `case_no` поспіль не створили дубль), read-канал має бачити живі
+записи. Деталі й корінь — `docs/diagnostics/report_diagnostic_ecits_state.md`.
+
+- Зробити `getCases`, який бачить живий стан: у `App.jsx` тримати `casesRef`
+  (`useRef`), синхронізований з `cases` (оновлювати в тому ж місці, де `setCases`,
+  або через `useEffect`), і подавати `getCases: () => casesRef.current` у
+  `createActions` і в `extensionBridge.configure`/`ImportTab`.
+- Це лагодить і косметичні `update_case_ecits_state failed: Справу не знайдено`,
+  і within-run дедуп (`create_case`/`hearingExists`).
+- **Без** змін семантики ACTIONS — лише джерело читання.
+
+## 4. Зворотна сумісність
+
+- Якщо `ecitsCaseId` присутній (майбутній drill-in екстрактора) — НЕ ламати:
+  ідентичність усе одно по `case_no`; `ecitsState.caseId` просто збережеться
+  непорожнім. Старі справи з заповненим `ecitsState.caseId` матчаться по своєму
+  `case_no` як завжди.
+- Існуючі envelope і тести лишаються валідними. Schema bump НЕ потрібен (поведінка
+  обробки, не структура даних).
+
+## 5. Тести (обов'язково, `npm test` зелений)
+
+- `tests/unit/scenarioProcessor.test.js`: `normalizeCaseNoKey` (суфікс/пробіли/
+  регістр); дедуп по `case_no` (нова справа vs існуюча з тим самим номером з/без
+  суфікса); `ecitsCaseId=null` більше НЕ skip; пара однакових `case_no` в одному
+  envelope → одна справа (не дубль); відсутність `case_no` І коду → skip з ясною помилкою.
+- `tests/integration/court-sync-mvp.test.js`: наскрізний імпорт envelope з
+  `ecitsCaseId=null` (як реальний) → справи створюються; повторний імпорт → 0 нових
+  (дедуп по case_no); матч існуючої manual-справи з тим самим номером.
+- Read-after-write: тест, що відтворює прод-семантику (immutable снапшот) і доводить,
+  що після фіксу within-run lookup бачить щойно створену справу.
+- Приймальний прогін реального 50-справ envelope (поза репо, з upload) має дати
+  `casesCreated=36, pendingReview=14, skipped=0, errors=0`.
+
+## 6. SEMANTIC CLARITY / SAAS / BILLING
+
+- **#11:** `normalizeCaseNoKey` — один сенс «ключ порівняння номера»; повний
+  `case_no` лишається для показу (не плутати). `ecitsState.caseId` тепер чесно
+  nullable (код — опційне посилання на провадження, не ідентифікатор справи).
+- **SAAS:** без нових полів; дедуп у межах tenant (getCases уже tenant-scoped через App).
+- **BILLING:** без змін — `create_case origin='ecits_import'` лишається поза білінгом.
+
+## 7. Межі
+
+- НЕ чіпати v12-контракт (він коректний). НЕ бампити envelopeVersion/schema.
+- НЕ реалізовувати `getCasesList()`. НЕ міняти семантику `case.team[]`.
+- П-3 (засідання без часу) — окремо, не в цьому TASK (тут немає таких у даних).
+
+## 8. Готовність
+
+`casesCreated=36 / pendingReview=14 / skipped=0 / errors=0` на реальному envelope;
+повторний імпорт без дублів; manual-справа з тим самим номером матчиться;
+within-run lookup бачить живі записи; `npm test` зелений. Після цього — реальні
+імпорти розблоковано.
