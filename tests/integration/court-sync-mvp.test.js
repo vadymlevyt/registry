@@ -4,7 +4,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { createActions } from '../../src/services/actionsRegistry.js';
-import { submitScenarioResult } from '../../src/services/ecits/scenarioProcessor.js';
+import { submitScenarioResult, processDeferredCases } from '../../src/services/ecits/scenarioProcessor.js';
+import goldenFixture from '../fixtures/ecits_envelope_2026-06-09.json';
 
 function makeEnvelope() {
   return {
@@ -214,5 +215,178 @@ describe('Court Sync MVP — повний flow', () => {
     expect(second.success).toBe(false);
     expect(second.error).toBe('duplicate_ecits_case');
     expect(second.existingCaseId).toBeTruthy();
+  });
+});
+
+// ── TASK v12 — наскрізний імпорт нового envelope ───────────────────────────
+describe('TASK v12 — Court Sync MVP з розширеним контрактом', () => {
+  function makeV12Envelope() {
+    return {
+      envelopeVersion: 1,
+      scenarioId: 'ecits_import_cases_and_hearings',
+      scenarioVersion: 1,
+      producedAt: '2026-06-09T10:00:00.000Z',
+      producedBy: { provider: 'claude_for_chrome', providerVersion: 'sonnet-4.7' },
+      data: {
+        ecitsAdvocate: { fullName: 'Левицький В.А.', cabinetIdentifier: null },
+        stats: { totalCasesInCabinet: 4, filtered: 4, withHearings2026: 3 },
+        cases: [
+          // 1. multi-role + dates + new category
+          {
+            ecitsCaseId: 'v12a000000000000000000000000000a',
+            case_no: '450/2275/25',
+            court: 'Київський суд',
+            category: 'commercial',
+            advocateRole: 'advocate',
+            advocateRoles: ['advocate', 'plaintiff_rep'],
+            primaryParty: 'ТОВ "Альфа"',
+            firstDocumentDate: '2025-03-01',
+            lastDocumentDate: '2026-05-30',
+            cabinetUrl: 'https://cabinet.court.gov.ua/cases/case=v12a',
+            hearings: [
+              { date: '2026-06-15', time: '10:00', noticeType: 'Повістка', cabinetUrl: '...' },
+            ],
+          },
+          // 2. administrative → admin map
+          {
+            ecitsCaseId: 'v12b000000000000000000000000000b',
+            case_no: '901/100/26',
+            court: 'Окружний адмінсуд',
+            category: 'administrative',
+            advocateRole: 'plaintiff_rep',
+            primaryParty: 'Петров П.П.',
+            firstDocumentDate: null,
+            lastDocumentDate: null,
+            cabinetUrl: 'https://...',
+            hearings: [],
+          },
+          // 3. administrative_offense ≠ admin
+          {
+            ecitsCaseId: 'v12c000000000000000000000000000c',
+            case_no: '500/500/26',
+            court: 'Місцевий суд',
+            category: 'administrative_offense',
+            advocateRole: 'advocate',
+            primaryParty: 'Іванов І.І.',
+            cabinetUrl: 'https://...',
+            hearings: [{ date: '2026-07-01', time: '14:00' }],
+          },
+          // 4. likelyNotMine — пропустити у pendingReview
+          {
+            ecitsCaseId: 'v12d000000000000000000000000000d',
+            case_no: '700/700/26',
+            court: 'X',
+            category: 'civil',
+            advocateRole: 'representative_unspecified',
+            advocateRoles: ['representative_unspecified'],
+            likelyNotMine: true,
+            primaryParty: null,
+            primaryPartyFullName: null,
+            firstDocumentDate: null,
+            lastDocumentDate: null,
+            cabinetUrl: 'https://...',
+            hearings: [],
+          },
+        ],
+        warnings: [],
+        skipped: [],
+      },
+    };
+  }
+
+  it('новий envelope наскрізь: 3 auto-кейси заводяться, likelyNotMine у pendingReview', async () => {
+    const h = makeHarness();
+    const res = await submitScenarioResult(makeV12Envelope(), {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    expect(res.casesCreated).toBe(3);
+    expect(res.pendingReview).toHaveLength(1);
+    expect(res.pendingReview[0].ecitsCaseId).toBe('v12d000000000000000000000000000d');
+    expect(res.errors).toEqual([]);
+    expect(res.hearingsAdded).toBe(2); // 1 + 0 + 1
+  });
+
+  it('категорії: administrative→admin, commercial→commercial, administrative_offense незмінне', async () => {
+    const h = makeHarness();
+    await submitScenarioResult(makeV12Envelope(), {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    const cases = h.getCases();
+    expect(cases.find((c) => c.case_no === '450/2275/25').category).toBe('commercial');
+    expect(cases.find((c) => c.case_no === '901/100/26').category).toBe('admin');
+    expect(cases.find((c) => c.case_no === '500/500/26').category).toBe('administrative_offense');
+  });
+
+  it('ролі: advocateRole і advocateRoles[] зберігаються top-level', async () => {
+    const h = makeHarness();
+    await submitScenarioResult(makeV12Envelope(), {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    const multiRole = h.getCases().find((c) => c.case_no === '450/2275/25');
+    expect(multiRole.advocateRole).toBe('advocate');
+    expect(multiRole.advocateRoles).toEqual(['advocate', 'plaintiff_rep']);
+  });
+
+  it('дати: firstDocumentDate/lastDocumentDate пишуться у ecitsState', async () => {
+    const h = makeHarness();
+    await submitScenarioResult(makeV12Envelope(), {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    const c = h.getCases().find((x) => x.case_no === '450/2275/25');
+    expect(c.ecitsState.firstDocumentDate).toBe('2025-03-01');
+    expect(c.ecitsState.lastDocumentDate).toBe('2026-05-30');
+  });
+
+  it('processDeferredCases створює обрану raніше відкладену справу', async () => {
+    const h = makeHarness();
+    const res = await submitScenarioResult(makeV12Envelope(), {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    const inc = await processDeferredCases(res.pendingReview, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    expect(inc.casesCreated).toBe(1);
+    const created = h.getCases().find((c) => c.case_no === '700/700/26');
+    expect(created).toBeTruthy();
+    expect(created.advocateRole).toBe('representative_unspecified');
+  });
+
+  it('зворотна сумісність: старий envelope без нових полів проходить як раніше', async () => {
+    const oldEnvelope = makeEnvelope(); // легасі-форма
+    const h = makeHarness();
+    const res = await submitScenarioResult(oldEnvelope, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    expect(res.casesCreated).toBe(2);
+    expect(res.pendingReview).toEqual([]);
+    const cases = h.getCases();
+    expect(cases.every((c) => c.advocateRoles)).toBe(true);
+    expect(cases.every((c) => c.advocateRoles.length === 1)).toBe(true);
+  });
+
+  it('NEW: golden fixture (representative) проходить наскрізь без втрат і ручних правок', async () => {
+    // Представницький fixture у tests/fixtures/ecits_envelope_2026-06-09.json
+    // вкриває УСІ нові поля v12. Реальний 50-справ envelope замінить його
+    // тут, коли надійде від екстрактора — той самий тест.
+    const h = makeHarness();
+    const res = await submitScenarioResult(goldenFixture, {
+      executeAction: h.executeAction,
+      getCases: h.getCases,
+    });
+    const expectedDeferred = goldenFixture.data.cases.filter((c) => c.likelyNotMine === true).length;
+    const expectedAuto = goldenFixture.data.cases.length - expectedDeferred;
+    expect(res.casesCreated).toBe(expectedAuto);
+    expect(res.pendingReview).toHaveLength(expectedDeferred);
+    expect(res.errors).toEqual([]);
+    // Нічого не перепаковано вручну: нормалізаційних warnings бути не має для
+    // golden envelope (він уже в канонічній формі).
+    expect(res.warnings.filter((w) => /дефолт|обгортки|об'єкти/.test(w))).toEqual([]);
   });
 });

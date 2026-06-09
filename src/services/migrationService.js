@@ -71,6 +71,19 @@
 //                   наявний textFormat==='md' (3.1-дайджест) → variants.digest =
 //                   cleanedAt; інакше обидва null. НЕ плутати з textFormat/cleanedAt.
 //                   Окремий крок — migrateToVersion11 нижче.
+// schemaVersion 12  — ECITS contract extension (TASK v12). Зміни АДИТИВНІ:
+//                   • case.advocateRole (string|null) — головна процесуальна роль
+//                   • case.advocateRoles[] — повний набір ролей (перший === advocateRole)
+//                   • ecitsState.firstDocumentDate (ISO|null) — дата першого
+//                     документа зі списку кабінету ЄСІТС
+//                   • ecitsState.lastDocumentDate (ISO|null) — дата останнього
+//                     документа (сигнал активності)
+//                   Категорії і likelyNotMine — НЕ потребують міграції:
+//                   category nullable за схемою (без enforced enum на запис),
+//                   likelyNotMine — envelope-only прапор (на справу не зберігається).
+//                   Версії envelope (envelopeVersion=1, scenarioVersion=1)
+//                   НЕ бампимо (зміни адитивні, не breaking).
+//                   Окремий крок — migrateToVersion12 нижче.
 //
 // migrateRegistry піднімає до BASE_CHAIN_VERSION=4. Подальші кроки — окремі
 // функції/файли. Експорт CURRENT_SCHEMA_VERSION/MIGRATION_VERSION відображає
@@ -96,10 +109,11 @@ import { ensureEntitlements } from './entitlementsService.js';
 // Найвища досяжна версія після повного ланцюга міграцій (migrateRegistry →
 // migrateRegistryV4toV5 → migrateToVersion6 → migrateToVersion6_5 →
 // migrateToVersion7 → migrateToVersion8 → migrateToVersion9 →
-// migrateToVersion10 → migrateToVersion11). Використовується App.jsx для запису
-// нової версії registry і тестами як "це остаточний таргет системи".
-export const CURRENT_SCHEMA_VERSION = 11;
-export const MIGRATION_VERSION = '11.0_text_variants';
+// migrateToVersion10 → migrateToVersion11 → migrateToVersion12).
+// Використовується App.jsx для запису нової версії registry і тестами як
+// "це остаточний таргет системи".
+export const CURRENT_SCHEMA_VERSION = 12;
+export const MIGRATION_VERSION = '12.0_ecits_roles_dates';
 
 // Таргет, який встановлює саме migrateRegistry (базовий ланцюг v1→v4).
 // Документи з v4 на v5 переводяться окремим файлом migrations/v4ToV5.js,
@@ -263,6 +277,8 @@ function ensureModuleIntegration(existing) {
 // Повертає settingsVersion-label який відповідає переданій version. Для рідкісного
 // випадку коли registry на Drive має schemaVersion але втратив settingsVersion.
 function labelForVersion(version) {
+  if (version >= 12) return '12.0_ecits_roles_dates';
+  if (version >= 11) return '11.0_text_variants';
   if (version >= 10) return '10.0_text_format';
   if (version >= 9) return '9.0_case_origin';
   if (version >= 8) return '8.0_time_entry_capture_method';
@@ -656,6 +672,9 @@ function buildDefaultEcitsState() {
       hearingsExtracted: 0,
       lastDurationMs: null,
     },
+    // v12 (TASK v12 §4) — знімок дат документів зі списку кабінету ЄСІТС.
+    firstDocumentDate: null,
+    lastDocumentDate: null,
   };
 }
 
@@ -1060,6 +1079,113 @@ export function migrateToVersion11(registry) {
   };
 }
 
+// ── v11 → v12: ECITS contract extension (TASK v12) ──────────────────────────
+// Адитивна міграція під розширений контракт envelope ЄСІТС:
+//   • case.advocateRole: string|null (default null)
+//   • case.advocateRoles: string[] (default [] або [advocateRole] якщо було)
+//   • ecitsState.firstDocumentDate: ISO date|null (default null)
+//   • ecitsState.lastDocumentDate: ISO date|null (default null)
+//
+// Категорії / likelyNotMine bump'а НЕ потребують:
+//   • category — nullable у схемі (на запис enum НЕ enforced), нові значення
+//     (commercial, administrative_offense, null) приймаються одразу;
+//   • likelyNotMine — envelope-only прапор, на справу не зберігається.
+//
+// Ідемпотентна: повторний запуск з v12+ повертає didMigrate=false. Якщо у
+// справі вже є advocateRoles[] / firstDocumentDate / lastDocumentDate —
+// лишається як є. Якщо є тільки advocateRole без advocateRoles[] — масив
+// будується з нього.
+// Викликається з App.jsx EFFECT-A послідовно після migrateToVersion11.
+export function migrateToVersion12(registry) {
+  const fromVersion = registry?.schemaVersion || 1;
+
+  if (fromVersion >= 12) {
+    return { registry, didMigrate: false, fromVersion, toVersion: fromVersion, stats: null };
+  }
+
+  const stats = {
+    totalCases: 0,
+    advocateRoleAdded: 0,
+    advocateRolesAdded: 0,
+    advocateRolesBackfilledFromSingle: 0,
+    ecitsStateExtended: 0,
+    ecitsStateAlreadyHasDates: 0,
+  };
+
+  const cases = Array.isArray(registry?.cases) ? registry.cases : [];
+
+  const migratedCases = cases.map((c) => {
+    if (!c || typeof c !== 'object') return c;
+    stats.totalCases++;
+
+    let next = c;
+
+    // advocateRole: додати тільки якщо ВЗАГАЛІ не виставлено.
+    if (!('advocateRole' in next)) {
+      next = { ...next, advocateRole: null };
+      stats.advocateRoleAdded++;
+    }
+
+    // advocateRoles: якщо не масив — побудувати з advocateRole (якщо є рядком).
+    if (!Array.isArray(next.advocateRoles)) {
+      const fromSingle = typeof next.advocateRole === 'string' && next.advocateRole.length > 0
+        ? [next.advocateRole]
+        : [];
+      next = { ...next, advocateRoles: fromSingle };
+      if (fromSingle.length) stats.advocateRolesBackfilledFromSingle++;
+      else stats.advocateRolesAdded++;
+    }
+
+    // ecitsState: додати дві дати якщо їх немає. ecitsState уже існує з v7
+    // (migrateToVersion7 створює default через buildDefaultEcitsState).
+    if (next.ecitsState && typeof next.ecitsState === 'object') {
+      const hasFirst = 'firstDocumentDate' in next.ecitsState;
+      const hasLast = 'lastDocumentDate' in next.ecitsState;
+      if (hasFirst && hasLast) {
+        stats.ecitsStateAlreadyHasDates++;
+      } else {
+        next = {
+          ...next,
+          ecitsState: {
+            ...next.ecitsState,
+            firstDocumentDate: hasFirst ? next.ecitsState.firstDocumentDate : null,
+            lastDocumentDate: hasLast ? next.ecitsState.lastDocumentDate : null,
+          },
+        };
+        stats.ecitsStateExtended++;
+      }
+    }
+
+    return next;
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `[TASK v12] Migration v${fromVersion} → v12 (ECITS contract extension):\n` +
+    `  total cases: ${stats.totalCases}\n` +
+    `  advocateRole added (null): ${stats.advocateRoleAdded}\n` +
+    `  advocateRoles added ([]): ${stats.advocateRolesAdded}\n` +
+    `  advocateRoles backfilled from single: ${stats.advocateRolesBackfilledFromSingle}\n` +
+    `  ecitsState extended with dates: ${stats.ecitsStateExtended}\n` +
+    `  ecitsState already had dates (idempotent): ${stats.ecitsStateAlreadyHasDates}\n` +
+    `[TASK v12] Migration v${fromVersion} → v12 done.`
+  );
+
+  return {
+    registry: {
+      ...registry,
+      schemaVersion: 12,
+      settingsVersion: '12.0_ecits_roles_dates',
+      cases: migratedCases,
+      lastMigration: { from: fromVersion, to: 12, at: new Date().toISOString() },
+    },
+    didMigrate: true,
+    fromVersion,
+    toVersion: 12,
+    stats,
+  };
+}
+
 // ── Імпорт legacy levytskyi_timelog → time_entries[] ────────────────────────
 // Викликається з App.jsx один раз при першому запуску v4 (з прапором).
 // Поля legacy запису:
@@ -1140,16 +1266,37 @@ export function ensureCaseSaasFields(c) {
 export function ensureCaseSaasAndEcitsFields(c) {
   const saas = migrateCase(c);
   if (!saas) return saas;
+
+  // v7 поле — ecitsState. Якщо вже є — дотягнути нові v12 дати (адитивно,
+  // не затирати наявні значення).
+  let ecitsState = saas.ecitsState;
+  if (!ecitsState || typeof ecitsState !== 'object') {
+    ecitsState = buildDefaultEcitsState();
+  } else if (!('firstDocumentDate' in ecitsState) || !('lastDocumentDate' in ecitsState)) {
+    ecitsState = {
+      ...ecitsState,
+      firstDocumentDate: 'firstDocumentDate' in ecitsState ? ecitsState.firstDocumentDate : null,
+      lastDocumentDate: 'lastDocumentDate' in ecitsState ? ecitsState.lastDocumentDate : null,
+    };
+  }
+
   return {
     ...saas,
     // v7 поля
-    ecitsState: saas.ecitsState ?? buildDefaultEcitsState(),
+    ecitsState,
     parties: Array.isArray(saas.parties) ? saas.parties : [],
     processParticipants: Array.isArray(saas.processParticipants) ? saas.processParticipants : [],
     // v9 поле
     origin: (typeof saas.origin === 'string' && CASE_ORIGIN_VALUES.includes(saas.origin))
       ? saas.origin
       : 'manual',
+    // v12 поля — стабільний атрибут справи (top-level, не в ecitsState).
+    advocateRole: typeof saas.advocateRole === 'string' ? saas.advocateRole : (saas.advocateRole ?? null),
+    advocateRoles: Array.isArray(saas.advocateRoles)
+      ? saas.advocateRoles
+      : (typeof saas.advocateRole === 'string' && saas.advocateRole.length > 0
+        ? [saas.advocateRole]
+        : []),
   };
 }
 

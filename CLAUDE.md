@@ -1,9 +1,9 @@
 # CLAUDE.md — Legal BMS АБ Левицького
 
-**Версія:** 5.8
-**Останнє оновлення:** 02.06.2026
-**Поточний schemaVersion:** 11
-**Поточний settingsVersion:** "11.0_text_variants"
+**Версія:** 5.9
+**Останнє оновлення:** 09.06.2026
+**Поточний schemaVersion:** 12
+**Поточний settingsVersion:** "12.0_ecits_roles_dates"
 
 ---
 
@@ -166,7 +166,7 @@ Blank page = JS помилка яка не перехоплена.
 - Додати міграцію в `migrationService.js` (для базових структур) або окремий файл у `src/services/migrations/` (для специфічної логіки — як `v4ToV5.js`)
 - Міграція має бути **ідемпотентною** (повторні запуски не ламають дані)
 - Перед першою міграцією — обов'язковий бекап `registry_data_backup_pre_<name>_<ts>.json` у `_backups/` поза ротацією
-- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 11` і `MIGRATION_VERSION = '11.0_text_variants'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — `migrateToVersion6`. addedBy cleanup v6.5 — `migrateToVersion6_5`. ECITS canonical v7 — `migrateToVersion7`. time_entry.source→captureMethod v8 — `migrateToVersion8`. case.origin enum v9 (TASK 0.4) — `migrateToVersion9`. document.textFormat/cleanedAt v10 (TASK 3.1) — `migrateToVersion10`. document.variants v11 (TASK V2-A2) — `migrateToVersion11`. Усі дев'ять послідовно викликаються в `App.jsx` EFFECT-A (з власними бекапами і прапорами).
+- `migrationService.js` тримає `BASE_CHAIN_VERSION = 4` для `migrateRegistry` (базовий ланцюг v1→v4). Експортовані `CURRENT_SCHEMA_VERSION = 12` і `MIGRATION_VERSION = '12.0_ecits_roles_dates'` — це таргет повного ланцюга. Документна схема v5 — окремий крок через `migrateRegistryV4toV5`. Founder flag v6 — `migrateToVersion6`. addedBy cleanup v6.5 — `migrateToVersion6_5`. ECITS canonical v7 — `migrateToVersion7`. time_entry.source→captureMethod v8 — `migrateToVersion8`. case.origin enum v9 (TASK 0.4) — `migrateToVersion9`. document.textFormat/cleanedAt v10 (TASK 3.1) — `migrateToVersion10`. document.variants v11 (TASK V2-A2) — `migrateToVersion11`. ECITS contract extension v12 (TASK v12 — case.advocateRole, case.advocateRoles[], ecitsState.firstDocumentDate/lastDocumentDate; адитивно, envelopeVersion лишається 1) — `migrateToVersion12`. Усі десять послідовно викликаються в `App.jsx` EFFECT-A (з власними бекапами і прапорами).
 
 ### №7 — executeAction async
 `executeAction` — **async функція**. Усі callers що читають `.success`/`.error` — мусять `await`.

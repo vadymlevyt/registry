@@ -191,14 +191,23 @@ export function buildEcitsImportPrompt(options = {}) {
 - Будь-яке ПОЄДНАННЯ ролей ("Адвокат, Представник позивача",
   "Захисник, Скаржник", "Представник позивача, Представник...")
 
-ПРОПУСКАЙ справу якщо роль — РІВНО ОДНЕ СЛОВО "Представник"
-без уточнення кого саме.
+ПОЗНАЧ "likelyNotMine":true справу
+якщо роль — РІВНО ОДНЕ СЛОВО "Представник" без уточнення кого саме.
 Це справи підтягнуті через довіреність на клієнта-сторону —
-адвокат там фактично не бере участі, у "Інформація про справу"
-його немає. НЕ заходь у них (економія кроків).
-Додай у skipped: { case_no, reason: "Роль 'Представник' без
-уточнення — справа підтягнута через довіреність, адвокат не
-учасник" }
+адвокат часто фактично не бере участі, але МОЖЛИВО і його справа.
+Не заходь у них глибоко (економія кроків) — швидко зніми тільки
+обов'язкові поля (ecitsCaseId, case_no, court, cabinetUrl) і
+постав:
+  - "advocateRole": "representative_unspecified"
+  - "advocateRoles": ["representative_unspecified"]
+  - "likelyNotMine": true
+  - "category" — як вдалось визначити з case_no (або null)
+  - "primaryParty"/"primaryPartyFullName" — null (не вгадуй)
+  - "hearings": [] (засідання не збирай — буде окремий прохід
+     якщо адвокат підтвердить що справа його)
+Це справа потрапить у pendingReview (Legal BMS НЕ заведе її
+автоматично — адвокат опт-ін вибере в UI). НЕ додавай таку справу
+у skipped — вона у cases[] з прапором likelyNotMine.
 
 ВАЖЛИВО: різниця тільки між голим "Представник" (одне слово —
 пропуск) і всім іншим (конкретна роль — береш). "Адвокат" і
@@ -242,19 +251,46 @@ export function buildEcitsImportPrompt(options = {}) {
 - \`ecitsCaseId\` — 32-символьний hex з URL виду \`/cases/case=<hex>\`
 - \`case_no\` — повний номер справи з заголовка
 - \`court\` — повна назва суду
-- \`category\` — за літерою після слешу в case_no або за типом провадження:
-  - "ц" → "civil"
-  - "к" → "criminal"
-  - "а" → "administrative"
-  - "г" або "м" → "civil"
-  - якщо літери немає — спробуй визначити з типу провадження
-- \`advocateRole\` — роль Левицького Вадима у справі:
-  - "plaintiff_rep" (представник позивача)
-  - "defendant_rep" (представник відповідача)
-  - "third_party_rep" (представник третьої особи)
-  - "defender" (захисник у кримінальній)
+- \`category\` — за літерою після слешу в case_no або за типом провадження.
+  Дозволені значення (envelope-словник, TASK v12 §2):
+  - "civil"                  ("ц", цивільні)
+  - "criminal"               ("к", кримінальні)
+  - "administrative"         ("а", адмінсуд; БЕЗ "_offense")
+  - "commercial"             ("г", господарські)
+  - "administrative_offense" (адмінправопорушення — це ІНША юрисдикція,
+                              не плутати з "administrative")
+  - null                     (категорія не визначена)
+  Якщо літери у case_no немає і тип провадження неоднозначний — постав null,
+  не вгадуй (краще null ніж не та категорія).
+- \`advocateRole\` — ГОЛОВНА процесуальна роль Левицького Вадима у справі
+  (рядок, обов'язкове поле для активних справ).
+- \`advocateRoles\` — масив УСІХ ролей адвоката у цій справі. Якщо роль одна —
+  масив з одного значення (можна не передавати — Legal BMS збере з advocateRole).
+  Дозволені значення (TASK v12 §1, ADVOCATE_ROLE_VALUES, 11 значень):
+  - "plaintiff_rep"             (представник позивача)
+  - "defendant_rep"             (представник відповідача)
+  - "third_party_rep"           (представник третьої особи)
+  - "applicant_rep"             (представник заявника)
+  - "victim_rep"                (представник потерпілого)
+  - "appellant_rep"             (представник скаржника)
+  - "interested_party_rep"      (представник зацікавленої особи)
+  - "defender"                  (захисник у кримінальній)
+  - "appellant"                 (скаржник — сам адвокат як сторона)
+  - "advocate"                  (загальна роль "Адвокат" без уточнення)
+  - "representative_unspecified" (тільки коли likelyNotMine=true,
+                                  голий "Представник" без уточнення)
+- \`likelyNotMine\` — boolean, ОПЦІЙНО (TASK v12 §3). true ТІЛЬКИ для справ де
+  роль адвоката — голе слово "Представник" без уточнення кого (підтягнута
+  через довіреність, адвокат фактично не учасник). Legal BMS НЕ заводить
+  такі справи автоматично — кладе у pendingReview, адвокат вирішує опт-ін.
+  За замовчуванням НЕ передавай (вважається false).
 - \`primaryParty\` — основна сторона за роллю адвоката (див. блок нижче)
 - \`primaryPartyFullName\` — повне ім'я тієї ж сторони (для довідки)
+- \`firstDocumentDate\` — дата ПЕРШОГО документа у списку справи з кабінету
+  ЄСІТС (ISO "YYYY-MM-DD"), top-level поле справи (НЕ всередині hearings).
+  null якщо нема списку документів або не вдалось витягнути.
+- \`lastDocumentDate\` — дата ОСТАННЬОГО документа у списку (сигнал
+  активності справи), ISO "YYYY-MM-DD", top-level, null якщо нема.
 - \`cabinetUrl\` — пряме посилання на справу в кабінеті
 
 ═══════════════════════════════════════════════════════════════
@@ -502,10 +538,14 @@ export function buildEcitsImportPrompt(options = {}) {
         "ecitsCaseId": "<32-hex>",
         "case_no": "<NNN/NNNNN/NN>",
         "court": "...",
-        "category": "civil|criminal|administrative",
-        "advocateRole": "plaintiff_rep|defendant_rep|third_party_rep|defender",
+        "category": "civil|criminal|administrative|commercial|administrative_offense|null",
+        "advocateRole": "plaintiff_rep|defendant_rep|third_party_rep|applicant_rep|victim_rep|appellant_rep|interested_party_rep|defender|appellant|advocate|representative_unspecified",
+        "advocateRoles": ["<role1>", "<role2 якщо є>"],
+        "likelyNotMine": false,
         "primaryParty": "Прізвище І.П.",
         "primaryPartyFullName": "Прізвище Імʼя По-батькові",
+        "firstDocumentDate": "YYYY-MM-DD або null",
+        "lastDocumentDate": "YYYY-MM-DD або null",
         "cabinetUrl": "https://cabinet.court.gov.ua/...",
         "hearings": [
           {

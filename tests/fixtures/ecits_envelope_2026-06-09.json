@@ -1,0 +1,225 @@
+{
+  "envelopeVersion": 1,
+  "scenarioId": "ecits_import_cases_and_hearings",
+  "scenarioVersion": 1,
+  "producedAt": "2026-06-09T12:00:00.000Z",
+  "producedBy": {
+    "provider": "claude_for_chrome",
+    "providerVersion": "sonnet-4.7"
+  },
+  "data": {
+    "ecitsAdvocate": {
+      "fullName": "Левицький Вадим Андрійович",
+      "cabinetIdentifier": null
+    },
+    "stats": {
+      "totalCasesInCabinet": 12,
+      "filtered": 9,
+      "withHearings2026": 7
+    },
+    "cases": [
+      {
+        "ecitsCaseId": "fix01a000000000000000000000000001",
+        "case_no": "450/2275/25",
+        "court": "Київський апеляційний суд",
+        "category": "civil",
+        "advocateRole": "plaintiff_rep",
+        "advocateRoles": ["plaintiff_rep"],
+        "primaryParty": "Бабенко О.І.",
+        "primaryPartyFullName": "Бабенко Олена Іванівна",
+        "firstDocumentDate": "2025-02-10",
+        "lastDocumentDate": "2026-05-30",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix01a",
+        "hearings": [
+          {
+            "date": "2026-06-15",
+            "time": "10:00",
+            "court": "Київський апеляційний суд",
+            "hearingRoom": "336",
+            "proceedingNumber": "6-392/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Судова повістка про виклик в суд"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix02b000000000000000000000000002",
+        "case_no": "367/4744/26",
+        "court": "Подільський районний суд м. Києва",
+        "category": "civil",
+        "advocateRole": "defendant_rep",
+        "advocateRoles": ["defendant_rep"],
+        "primaryParty": "ТОВ \"Альфа\"",
+        "primaryPartyFullName": "Товариство з обмеженою відповідальністю \"Альфа\"",
+        "firstDocumentDate": "2026-04-01",
+        "lastDocumentDate": "2026-04-01",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix02b",
+        "hearings": [
+          {
+            "date": "2026-07-20",
+            "time": "14:30",
+            "court": "Подільський районний суд м. Києва",
+            "hearingRoom": "202",
+            "proceedingNumber": "6-500/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Ухвала про відкриття провадження"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix03c000000000000000000000000003",
+        "case_no": "910/100/26",
+        "court": "Господарський суд м. Києва",
+        "category": "commercial",
+        "advocateRole": "applicant_rep",
+        "advocateRoles": ["applicant_rep"],
+        "primaryParty": "ФОП Сидоренко В.М.",
+        "primaryPartyFullName": "Сидоренко Володимир Михайлович",
+        "firstDocumentDate": "2026-01-15",
+        "lastDocumentDate": "2026-05-12",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix03c",
+        "hearings": [
+          {
+            "date": "2026-06-25",
+            "time": "11:00",
+            "court": "Господарський суд м. Києва",
+            "hearingRoom": "12",
+            "proceedingNumber": "910/100/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Судова повістка"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix04d000000000000000000000000004",
+        "case_no": "752/500/26",
+        "court": "Окружний адмінсуд м. Києва",
+        "category": "administrative",
+        "advocateRole": "plaintiff_rep",
+        "advocateRoles": ["plaintiff_rep"],
+        "primaryParty": "Петренко І.І.",
+        "primaryPartyFullName": "Петренко Іван Іванович",
+        "firstDocumentDate": "2026-03-01",
+        "lastDocumentDate": "2026-03-15",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix04d",
+        "hearings": [
+          {
+            "date": "2026-06-30",
+            "time": "09:30",
+            "court": "Окружний адмінсуд м. Києва",
+            "hearingRoom": "5",
+            "proceedingNumber": "752/500/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Повістка"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix05e000000000000000000000000005",
+        "case_no": "500/55/26",
+        "court": "Шевченківський районний суд м. Києва",
+        "category": "administrative_offense",
+        "advocateRole": "advocate",
+        "advocateRoles": ["advocate"],
+        "primaryParty": "Коваль О.С.",
+        "primaryPartyFullName": "Коваль Олег Сергійович",
+        "firstDocumentDate": "2026-04-20",
+        "lastDocumentDate": "2026-05-25",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix05e",
+        "hearings": [
+          {
+            "date": "2026-06-10",
+            "time": "13:00",
+            "court": "Шевченківський районний суд м. Києва",
+            "hearingRoom": "8",
+            "proceedingNumber": "500/55/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Судова повістка"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix06f000000000000000000000000006",
+        "case_no": "127/800/25",
+        "court": "Печерський районний суд м. Києва",
+        "category": "criminal",
+        "advocateRole": "defender",
+        "advocateRoles": ["defender"],
+        "primaryParty": "Гончар М.П.",
+        "primaryPartyFullName": "Гончар Микола Петрович",
+        "firstDocumentDate": "2025-06-10",
+        "lastDocumentDate": "2026-05-20",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix06f",
+        "hearings": [
+          {
+            "date": "2026-06-18",
+            "time": "10:30",
+            "court": "Печерський районний суд м. Києва",
+            "hearingRoom": "14",
+            "proceedingNumber": "1-кп/757/15/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Судова повістка про виклик в суд"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix07g000000000000000000000000007",
+        "case_no": "639/22/26",
+        "court": "Голосіївський районний суд м. Києва",
+        "category": "civil",
+        "advocateRole": "advocate",
+        "advocateRoles": ["advocate", "third_party_rep"],
+        "primaryParty": "Лисенко К.А.",
+        "primaryPartyFullName": "Лисенко Катерина Андріївна",
+        "firstDocumentDate": "2026-02-15",
+        "lastDocumentDate": "2026-05-29",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix07g",
+        "hearings": [
+          {
+            "date": "2026-07-05",
+            "time": "15:00",
+            "court": "Голосіївський районний суд м. Києва",
+            "hearingRoom": "21",
+            "proceedingNumber": "2/639/22/26",
+            "cabinetUrl": "https://cabinet.court.gov.ua/...",
+            "noticeType": "Ухвала про виклик"
+          }
+        ]
+      },
+      {
+        "ecitsCaseId": "fix08h000000000000000000000000008",
+        "case_no": "200/100/26",
+        "court": "Касаційний цивільний суд у складі ВС",
+        "category": null,
+        "advocateRole": "appellant_rep",
+        "advocateRoles": ["appellant_rep"],
+        "primaryParty": "ПрАТ \"Бета\"",
+        "primaryPartyFullName": "Приватне акціонерне товариство \"Бета\"",
+        "firstDocumentDate": "2026-05-01",
+        "lastDocumentDate": "2026-05-25",
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix08h",
+        "hearings": []
+      },
+      {
+        "ecitsCaseId": "fix09i000000000000000000000000009",
+        "case_no": "999/99/26",
+        "court": "Невідомий суд",
+        "category": "civil",
+        "advocateRole": "representative_unspecified",
+        "advocateRoles": ["representative_unspecified"],
+        "likelyNotMine": true,
+        "primaryParty": null,
+        "primaryPartyFullName": null,
+        "firstDocumentDate": null,
+        "lastDocumentDate": null,
+        "cabinetUrl": "https://cabinet.court.gov.ua/cases/case=fix09i",
+        "hearings": []
+      }
+    ],
+    "warnings": [],
+    "skipped": [
+      { "case_no": "528/1522/24", "reason": "year_filter" },
+      { "case_no": "761/15469/20-ц", "reason": "year_filter" }
+    ]
+  }
+}

@@ -122,13 +122,13 @@ describe('migrateToVersion6 (v5 → v6 founder flag)', () => {
 
 describe('CURRENT_SCHEMA_VERSION і MIGRATION_VERSION', () => {
   // Найвища досяжна версія після повного ланцюга міграцій
-  // (v1→v4→v5→v6→v6.5→v7→v8→v9→v10→v11). TASK V2-A2 підняв таргет до v11
-  // (document.variants).
-  it('CURRENT_SCHEMA_VERSION = 11 (повний ланцюг після TASK V2-A2)', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(11);
+  // (v1→v4→v5→v6→v6.5→v7→v8→v9→v10→v11→v12). TASK v12 підняв таргет до v12
+  // (ECITS contract extension — ролі, advocateRoles[], дати в ecitsState).
+  it('CURRENT_SCHEMA_VERSION = 12 (повний ланцюг після TASK v12)', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(12);
   });
 
-  it("MIGRATION_VERSION = '11.0_text_variants'", () => {
-    expect(MIGRATION_VERSION).toBe('11.0_text_variants');
+  it("MIGRATION_VERSION = '12.0_ecits_roles_dates'", () => {
+    expect(MIGRATION_VERSION).toBe('12.0_ecits_roles_dates');
   });
 });

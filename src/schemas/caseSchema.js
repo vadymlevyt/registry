@@ -27,8 +27,37 @@ export const CANONICAL_CASE_FIELDS = {
     deprecated: true,
     description: 'DEPRECATED denormalized summary. Real source: parties[]. Залишається для UI рендерингу до окремого backfill TASK. UI продовжує читати c.client.'
   },
-  category: { type: 'string', enum: ['civil', 'criminal', 'military', 'admin'], required: true },
+  category: {
+    type: 'string',
+    enum: ['civil', 'criminal', 'military', 'admin', 'commercial', 'administrative_offense', null],
+    required: false,
+    nullable: true,
+    description: "null = категорія не визначена (потребує уточнення). " +
+      "'admin' (legacy ім'я для адмінсуду) = envelope 'administrative'. " +
+      "'administrative_offense' (адмінправопорушення) ≠ 'admin' — інша юрисдикція (правило #11). " +
+      "'military' лишається як legacy, у ЄСІТС envelope не приходить.",
+  },
   status: { type: 'string', enum: ['active', 'paused', 'closed'], required: true },
+
+  // ── NEW v12 — Процесуальна роль адвоката у справі (TASK v12 §1) ──────────
+  // Top-level (а не в ecitsState) бо стабільний атрибут справи, застосовний
+  // і до ручних справ. ecitsState — для transient sync-стану (правило #11).
+  advocateRole: {
+    type: 'string',
+    required: false,
+    nullable: true,
+    description: 'Головна процесуальна роль адвоката у справі. ' +
+      "Дозволені значення: ADVOCATE_ROLE_VALUES у scenarioProcessor.js. " +
+      'Може бути null коли не визначено (нова справа без імпорту).',
+  },
+  advocateRoles: {
+    type: 'array',
+    required: false,
+    default: [],
+    description: 'Повний набір ролей адвоката у справі (може мати кілька). ' +
+      'Перший елемент === advocateRole. ' +
+      'Для legacy-справ і коли advocateRole=null — порожній масив.',
+  },
   court: { type: 'string', required: false },
   case_no: { type: 'string', required: false },
   judge: {
@@ -100,6 +129,12 @@ export const CANONICAL_CASE_FIELDS = {
         hearingsExtracted: 'number',
         lastDurationMs: 'number | null',
       },
+      // NEW v12 (TASK v12 §4) — знімок дат документів зі списку кабінету ЄСІТС.
+      // Провенанс: це показ кабінету, НЕ власні case.documents[] Legal BMS.
+      // lastDocumentDate — сигнал активності. Top-level імена у самій справі
+      // дублювали б сенс із case.documents[] (правило #11) — тому тримаємо тут.
+      firstDocumentDate: 'ISO date (yyyy-mm-dd) | null',
+      lastDocumentDate: 'ISO date (yyyy-mm-dd) | null',
       _lastSource: 'string (internal: source останнього оновлення для canOverwrite logic)',
     },
   },
@@ -177,8 +212,9 @@ export const CANONICAL_PROCEEDING_FIELDS = {
   },
 };
 
-// Поточна версія схеми case (узгоджена з registry-схемою v7).
-export const CURRENT_CASE_SCHEMA_VERSION = 7;
+// Поточна версія схеми case (узгоджена з registry-схемою v12 —
+// розширення ролей/категорій/дат для контракту ЄСІТС-envelope, TASK v12).
+export const CURRENT_CASE_SCHEMA_VERSION = 12;
 
 // Перелік deprecated полів — для майбутнього backfill TASK
 export const DEPRECATED_CASE_FIELDS = ['client', 'judge', 'timeLog'];

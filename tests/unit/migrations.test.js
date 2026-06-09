@@ -4,7 +4,7 @@ import {
   migrateRegistryV4toV5,
   splitDocumentV4toV5,
 } from '../../src/services/migrations/v4ToV5.js';
-import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, migrateToVersion10, migrateToVersion11, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
+import { migrateToVersion6_5, migrateToVersion8, migrateToVersion9, migrateToVersion10, migrateToVersion11, migrateToVersion12, ensureCaseSaasAndEcitsFields, buildDefaultEcitsState, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION } from '../../src/services/migrationService.js';
 import { validateDocument } from '../../src/services/documentFactory.js';
 
 describe('v4ToV5 migration', () => {
@@ -362,11 +362,11 @@ describe('migrateToVersion8 (v7 → v8 time_entry.source → captureMethod)', ()
 });
 
 describe('migrateToVersion9 — case.origin enum (TASK 0.4)', () => {
-  it('таргет повного ланцюга піднято до v11 (TASK V2-A2) — v9 проміжний', () => {
-    // Глобальний таргет тепер v11 (variants). v9 (case.origin) — проміжний
-    // крок ланцюга; його власні інваріанти перевіряються нижче.
-    expect(CURRENT_SCHEMA_VERSION).toBe(11);
-    expect(MIGRATION_VERSION).toBe('11.0_text_variants');
+  it('таргет повного ланцюга піднято до v12 (TASK v12) — v9 проміжний', () => {
+    // Глобальний таргет тепер v12 (ECITS contract extension). v9 (case.origin)
+    // — проміжний крок ланцюга; його власні інваріанти перевіряються нижче.
+    expect(CURRENT_SCHEMA_VERSION).toBe(12);
+    expect(MIGRATION_VERSION).toBe('12.0_ecits_roles_dates');
   });
 
   it('існуючі справи (v8) отримують origin: "manual"', () => {
@@ -441,8 +441,23 @@ describe('ensureCaseSaasAndEcitsFields — R1 fix (TASK 0.4)', () => {
     expect(c.origin).toBe('manual');
   });
 
-  it('зберігає передане ecitsState', () => {
+  it('зберігає передане ecitsState (доповнюючи v12 датами, якщо їх немає)', () => {
     const ec = { caseId: 'hex', syncStatus: 'synced' };
+    const c = ensureCaseSaasAndEcitsFields({ id: 'c', ecitsState: ec });
+    // TASK v12: коли вхідний ecitsState не має нових дат, ensureCaseSaasAndEcitsFields
+    // повертає новий об'єкт із null-дефолтами поверх переданих полів.
+    expect(c.ecitsState).toMatchObject({ caseId: 'hex', syncStatus: 'synced' });
+    expect(c.ecitsState.firstDocumentDate).toBeNull();
+    expect(c.ecitsState.lastDocumentDate).toBeNull();
+  });
+
+  it('не перетирає вже виставлені v12 дати у переданому ecitsState', () => {
+    const ec = {
+      caseId: 'hex',
+      syncStatus: 'synced',
+      firstDocumentDate: '2025-01-15',
+      lastDocumentDate: '2026-05-30',
+    };
     const c = ensureCaseSaasAndEcitsFields({ id: 'c', ecitsState: ec });
     expect(c.ecitsState).toBe(ec);
   });
@@ -576,5 +591,142 @@ describe('migrateToVersion11 — document.variants (TASK V2-A2)', () => {
     const { registry, didMigrate } = migrateToVersion11({ schemaVersion: 10, cases: [{ id: 'c', name: 'no docs' }] });
     expect(didMigrate).toBe(true);
     expect(registry.cases[0].name).toBe('no docs');
+  });
+});
+
+describe('migrateToVersion12 — ECITS contract extension (TASK v12)', () => {
+  it('CURRENT_SCHEMA_VERSION/MIGRATION_VERSION оновлено до v12', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(12);
+    expect(MIGRATION_VERSION).toBe('12.0_ecits_roles_dates');
+  });
+
+  it('усі справи отримують advocateRole=null і advocateRoles=[]', () => {
+    const reg = {
+      schemaVersion: 11,
+      cases: [
+        { id: 'c1', name: 'A', ecitsState: buildDefaultEcitsState() },
+        { id: 'c2', name: 'B', ecitsState: buildDefaultEcitsState() },
+      ],
+    };
+    const { registry, didMigrate, toVersion } = migrateToVersion12(reg);
+    expect(didMigrate).toBe(true);
+    expect(toVersion).toBe(12);
+    expect(registry.schemaVersion).toBe(12);
+    expect(registry.settingsVersion).toBe('12.0_ecits_roles_dates');
+    expect(registry.cases[0].advocateRole).toBeNull();
+    expect(registry.cases[0].advocateRoles).toEqual([]);
+    expect(registry.cases[1].advocateRole).toBeNull();
+    expect(registry.cases[1].advocateRoles).toEqual([]);
+  });
+
+  it('одиночний advocateRole → backfill у advocateRoles=[role]', () => {
+    const reg = {
+      schemaVersion: 11,
+      cases: [{
+        id: 'c', name: 'X',
+        ecitsState: buildDefaultEcitsState(),
+        advocateRole: 'defender',
+      }],
+    };
+    const { registry, stats } = migrateToVersion12(reg);
+    expect(registry.cases[0].advocateRole).toBe('defender');
+    expect(registry.cases[0].advocateRoles).toEqual(['defender']);
+    expect(stats.advocateRolesBackfilledFromSingle).toBe(1);
+  });
+
+  it('існуючі advocateRoles[] не перетираються', () => {
+    const reg = {
+      schemaVersion: 11,
+      cases: [{
+        id: 'c', name: 'X',
+        ecitsState: buildDefaultEcitsState(),
+        advocateRole: 'plaintiff_rep',
+        advocateRoles: ['plaintiff_rep', 'advocate'],
+      }],
+    };
+    const { registry } = migrateToVersion12(reg);
+    expect(registry.cases[0].advocateRoles).toEqual(['plaintiff_rep', 'advocate']);
+  });
+
+  it('ecitsState отримує firstDocumentDate і lastDocumentDate як null', () => {
+    const stateNoDates = { ...buildDefaultEcitsState() };
+    delete stateNoDates.firstDocumentDate;
+    delete stateNoDates.lastDocumentDate;
+    const reg = {
+      schemaVersion: 11,
+      cases: [{ id: 'c', name: 'X', ecitsState: stateNoDates }],
+    };
+    const { registry, stats } = migrateToVersion12(reg);
+    expect(registry.cases[0].ecitsState.firstDocumentDate).toBeNull();
+    expect(registry.cases[0].ecitsState.lastDocumentDate).toBeNull();
+    expect(stats.ecitsStateExtended).toBe(1);
+  });
+
+  it('існуючі ecitsState-дати не перетираються', () => {
+    const reg = {
+      schemaVersion: 11,
+      cases: [{
+        id: 'c', name: 'X',
+        ecitsState: {
+          ...buildDefaultEcitsState(),
+          firstDocumentDate: '2025-01-15',
+          lastDocumentDate: '2026-05-30',
+        },
+      }],
+    };
+    const { registry, stats } = migrateToVersion12(reg);
+    expect(registry.cases[0].ecitsState.firstDocumentDate).toBe('2025-01-15');
+    expect(registry.cases[0].ecitsState.lastDocumentDate).toBe('2026-05-30');
+    expect(stats.ecitsStateAlreadyHasDates).toBe(1);
+  });
+
+  it('ідемпотентна: повторний запуск з v12 → didMigrate=false', () => {
+    const reg = {
+      schemaVersion: 12,
+      cases: [{
+        id: 'c', name: 'X',
+        advocateRole: null,
+        advocateRoles: [],
+        ecitsState: buildDefaultEcitsState(),
+      }],
+    };
+    const { didMigrate, registry } = migrateToVersion12(reg);
+    expect(didMigrate).toBe(false);
+    expect(registry).toBe(reg);
+  });
+
+  it('справа без ecitsState не падає (можлива у старих legacy snapshot)', () => {
+    const reg = { schemaVersion: 11, cases: [{ id: 'c', name: 'no ecitsState' }] };
+    const { registry, didMigrate } = migrateToVersion12(reg);
+    expect(didMigrate).toBe(true);
+    expect(registry.cases[0].advocateRole).toBeNull();
+    expect(registry.cases[0].advocateRoles).toEqual([]);
+  });
+
+  it('lastMigration.to === 12', () => {
+    const { registry } = migrateToVersion12({ schemaVersion: 11, cases: [] });
+    expect(registry.lastMigration.to).toBe(12);
+  });
+
+  it('ensureCaseSaasAndEcitsFields дає v12-дефолти новій справі', () => {
+    const c = { id: 'new', name: 'New' };
+    const out = ensureCaseSaasAndEcitsFields(c);
+    expect(out.advocateRole).toBeNull();
+    expect(out.advocateRoles).toEqual([]);
+    expect(out.ecitsState.firstDocumentDate).toBeNull();
+    expect(out.ecitsState.lastDocumentDate).toBeNull();
+  });
+
+  it('ensureCaseSaasAndEcitsFields не перетирає виставлений advocateRoles[]', () => {
+    const c = { id: 'new', name: 'New', advocateRoles: ['defender'] };
+    const out = ensureCaseSaasAndEcitsFields(c);
+    expect(out.advocateRoles).toEqual(['defender']);
+  });
+
+  it('ensureCaseSaasAndEcitsFields робить fallback advocateRoles=[advocateRole]', () => {
+    const c = { id: 'new', name: 'New', advocateRole: 'plaintiff_rep' };
+    const out = ensureCaseSaasAndEcitsFields(c);
+    expect(out.advocateRole).toBe('plaintiff_rep');
+    expect(out.advocateRoles).toEqual(['plaintiff_rep']);
   });
 });

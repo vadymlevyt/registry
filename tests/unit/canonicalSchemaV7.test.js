@@ -58,19 +58,19 @@ import { DEFAULT_USER } from '../../src/services/tenantService.js';
 
 // Найвища досяжна версія після повного ланцюга. TASK 0.4 підняв таргет 8 → 9
 // (case.origin enum). v7-крок далі тестується нижче окремо.
-describe('Schema version і label (повний ланцюг, таргет після TASK 0.4)', () => {
-  it('CURRENT_SCHEMA_VERSION === 11', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(11);
+describe('Schema version і label (повний ланцюг, таргет після TASK v12)', () => {
+  it('CURRENT_SCHEMA_VERSION === 12', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(12);
   });
 
-  it("MIGRATION_VERSION === '11.0_text_variants'", () => {
-    expect(MIGRATION_VERSION).toBe('11.0_text_variants');
+  it("MIGRATION_VERSION === '12.0_ecits_roles_dates'", () => {
+    expect(MIGRATION_VERSION).toBe('12.0_ecits_roles_dates');
   });
 
-  it('buildEmptyRegistry створює одразу v11', () => {
+  it('buildEmptyRegistry створює одразу v12', () => {
     const reg = buildEmptyRegistry();
-    expect(reg.schemaVersion).toBe(11);
-    expect(reg.settingsVersion).toBe('11.0_text_variants');
+    expect(reg.schemaVersion).toBe(12);
+    expect(reg.settingsVersion).toBe('12.0_ecits_roles_dates');
   });
 });
 
@@ -369,8 +369,8 @@ describe('caseSchema (TASK 0.3.5 v7)', () => {
     expect(CANONICAL_PROCEEDING_FIELDS.composition).toBeDefined();
   });
 
-  it('CURRENT_CASE_SCHEMA_VERSION === 7', () => {
-    expect(CURRENT_CASE_SCHEMA_VERSION).toBe(7);
+  it('CURRENT_CASE_SCHEMA_VERSION === 12 (TASK v12 — ECITS contract extension)', () => {
+    expect(CURRENT_CASE_SCHEMA_VERSION).toBe(12);
   });
 
   it('DEPRECATED_CASE_FIELDS перелічує deprecated denormalized fields', () => {

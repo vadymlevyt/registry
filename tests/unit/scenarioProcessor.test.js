@@ -1,4 +1,4 @@
-// scenarioProcessor.test.js — TASK 0.4
+// scenarioProcessor.test.js — TASK 0.4 + TASK v12 (contract extension)
 
 import { describe, it, expect, vi } from 'vitest';
 import {
@@ -6,6 +6,17 @@ import {
   validateEnvelope,
   buildCreateCaseParams,
   buildAddHearingParams,
+  normalizeEnvelope,
+  processDeferredCases,
+  resolveAdvocateRoles,
+  resolveCaseCategory,
+  buildEnvelopeSkeleton,
+  ADVOCATE_ROLE_VALUES,
+  ENVELOPE_CATEGORY_VALUES,
+  ENVELOPE_TO_CASE_CATEGORY,
+  ENVELOPE_VERSION,
+  SCENARIO_ID,
+  SCENARIO_VERSION,
 } from '../../src/services/ecits/scenarioProcessor.js';
 
 function makeEnvelope(overrides = {}) {
@@ -64,11 +75,15 @@ describe('validateEnvelope', () => {
     expect(() => validateEnvelope({ envelopeVersion: 1, scenarioId: 'ecits_import_cases_and_hearings', data: {} }))
       .toThrow(/cases/);
   });
+  it('повідомлення про відсутній data містить підказку про форму', () => {
+    expect(() => validateEnvelope({ envelopeVersion: 1, scenarioId: 'ecits_import_cases_and_hearings' }))
+      .toThrow(/envelopeVersion.*scenarioId.*data.*cases/);
+  });
 });
 
 describe('buildCreateCaseParams', () => {
   it('виставляє origin=ecits_import і ecitsState.caseId', () => {
-    const p = buildCreateCaseParams({
+    const { params: p, warnings } = buildCreateCaseParams({
       ecitsCaseId: 'hex',
       case_no: '450/2275/25',
       court: 'Київський суд',
@@ -81,6 +96,7 @@ describe('buildCreateCaseParams', () => {
     expect(p.ecitsState.syncStatus).toBe('synced');
     expect(p.name).toContain('[ЄСІТС]');
     expect(p.client).toBe('Бабенко О.І.');
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -213,5 +229,294 @@ describe('submitScenarioResult — інтеграція через mock executeA
     });
     expect(progress.length).toBeGreaterThanOrEqual(1);
     expect(progress[0]).toMatch(/Обробка 1/);
+  });
+});
+
+// ── TASK v12 — Контракт-константи і скелет envelope ────────────────────────
+describe('TASK v12 — експорт контракту', () => {
+  it('ENVELOPE_VERSION/SCENARIO_ID/SCENARIO_VERSION незмінні (адитивні зміни)', () => {
+    expect(ENVELOPE_VERSION).toBe(1);
+    expect(SCENARIO_VERSION).toBe(1);
+    expect(SCENARIO_ID).toBe('ecits_import_cases_and_hearings');
+  });
+  it('ADVOCATE_ROLE_VALUES містить рівно 11 канонічних значень', () => {
+    expect(ADVOCATE_ROLE_VALUES).toHaveLength(11);
+    expect(ADVOCATE_ROLE_VALUES).toContain('plaintiff_rep');
+    expect(ADVOCATE_ROLE_VALUES).toContain('defender');
+    expect(ADVOCATE_ROLE_VALUES).toContain('representative_unspecified');
+  });
+  it('ENVELOPE_CATEGORY_VALUES містить 5 значень + null (6 елементів)', () => {
+    expect(ENVELOPE_CATEGORY_VALUES).toHaveLength(6);
+    expect(ENVELOPE_CATEGORY_VALUES).toContain('civil');
+    expect(ENVELOPE_CATEGORY_VALUES).toContain('commercial');
+    expect(ENVELOPE_CATEGORY_VALUES).toContain('administrative_offense');
+    expect(ENVELOPE_CATEGORY_VALUES).toContain(null);
+  });
+  it('ENVELOPE_TO_CASE_CATEGORY: administrative→admin, administrative_offense незмінне', () => {
+    expect(ENVELOPE_TO_CASE_CATEGORY.administrative).toBe('admin');
+    expect(ENVELOPE_TO_CASE_CATEGORY.administrative_offense).toBe('administrative_offense');
+    expect(ENVELOPE_TO_CASE_CATEGORY.civil).toBe('civil');
+    expect(ENVELOPE_TO_CASE_CATEGORY.commercial).toBe('commercial');
+  });
+  it('buildEnvelopeSkeleton повертає валідний каркас', () => {
+    const sk = buildEnvelopeSkeleton();
+    expect(() => validateEnvelope(sk)).not.toThrow();
+    expect(sk.envelopeVersion).toBe(ENVELOPE_VERSION);
+    expect(sk.scenarioId).toBe(SCENARIO_ID);
+    expect(Array.isArray(sk.data.cases)).toBe(true);
+  });
+});
+
+// ── TASK v12 §1 — Ролі: множинність + fallback ─────────────────────────────
+describe('TASK v12 §1 — resolveAdvocateRoles', () => {
+  it('масив advocateRoles[] лишається як є', () => {
+    const r = resolveAdvocateRoles({ advocateRoles: ['advocate', 'plaintiff_rep'] });
+    expect(r.advocateRoles).toEqual(['advocate', 'plaintiff_rep']);
+    expect(r.advocateRole).toBe('advocate');
+  });
+  it('fallback з одного advocateRole у advocateRoles=[role]', () => {
+    const r = resolveAdvocateRoles({ advocateRole: 'defender' });
+    expect(r.advocateRoles).toEqual(['defender']);
+    expect(r.advocateRole).toBe('defender');
+  });
+  it('нічого немає → пусто', () => {
+    const r = resolveAdvocateRoles({});
+    expect(r.advocateRoles).toEqual([]);
+    expect(r.advocateRole).toBeNull();
+  });
+  it('невідомі ролі повертаються у unknownRoles, але не валять імпорт', () => {
+    const r = resolveAdvocateRoles({ advocateRoles: ['plaintiff_rep', 'nonsense_role'] });
+    expect(r.unknownRoles).toEqual(['nonsense_role']);
+    expect(r.advocateRoles).toEqual(['plaintiff_rep', 'nonsense_role']);
+  });
+  it('buildCreateCaseParams виставляє advocateRole і advocateRoles top-level', () => {
+    const { params, warnings } = buildCreateCaseParams({
+      ecitsCaseId: 'h',
+      case_no: '450/2275/25',
+      advocateRoles: ['plaintiff_rep'],
+    });
+    expect(params.advocateRole).toBe('plaintiff_rep');
+    expect(params.advocateRoles).toEqual(['plaintiff_rep']);
+    expect(warnings).toEqual([]);
+  });
+  it('buildCreateCaseParams додає warning при невідомій ролі', () => {
+    const { params, warnings } = buildCreateCaseParams({
+      ecitsCaseId: 'h',
+      case_no: '450/2275/25',
+      advocateRole: 'ghost_role',
+    });
+    expect(params.advocateRole).toBe('ghost_role');
+    expect(warnings.some((w) => /ghost_role/.test(w))).toBe(true);
+  });
+});
+
+// ── TASK v12 §2 — Мапа категорій ────────────────────────────────────────────
+describe('TASK v12 §2 — resolveCaseCategory + ENVELOPE_TO_CASE_CATEGORY', () => {
+  it('administrative → admin (звести один сенс)', () => {
+    expect(resolveCaseCategory({ category: 'administrative', case_no: 'x' }).category).toBe('admin');
+  });
+  it('administrative_offense лишається administrative_offense (≠ admin)', () => {
+    expect(resolveCaseCategory({ category: 'administrative_offense', case_no: 'x' }).category)
+      .toBe('administrative_offense');
+  });
+  it('commercial → commercial', () => {
+    expect(resolveCaseCategory({ category: 'commercial', case_no: 'x' }).category).toBe('commercial');
+  });
+  it('null → null без warning', () => {
+    const r = resolveCaseCategory({ category: null, case_no: 'x' });
+    expect(r.category).toBeNull();
+    expect(r.warning).toBeNull();
+  });
+  it('відсутнє → null без warning', () => {
+    const r = resolveCaseCategory({ case_no: 'x' });
+    expect(r.category).toBeNull();
+    expect(r.warning).toBeNull();
+  });
+  it('невідоме непорожнє → null + warning', () => {
+    const r = resolveCaseCategory({ category: 'mystery', case_no: '450/2275/25' });
+    expect(r.category).toBeNull();
+    expect(r.warning).toMatch(/mystery/);
+    expect(r.warning).toMatch(/450\/2275\/25/);
+  });
+});
+
+// ── TASK v12 §4 — Дати пласко з envelope → ecitsState ──────────────────────
+describe('TASK v12 §4 — firstDocumentDate/lastDocumentDate', () => {
+  it('пласко з envelope потрапляють у ecitsState', () => {
+    const { params } = buildCreateCaseParams({
+      ecitsCaseId: 'h',
+      case_no: '450/2275/25',
+      firstDocumentDate: '2025-01-15',
+      lastDocumentDate: '2026-05-30',
+    });
+    expect(params.ecitsState.firstDocumentDate).toBe('2025-01-15');
+    expect(params.ecitsState.lastDocumentDate).toBe('2026-05-30');
+  });
+  it('відсутні дати → null у ecitsState', () => {
+    const { params } = buildCreateCaseParams({
+      ecitsCaseId: 'h',
+      case_no: '450/2275/25',
+    });
+    expect(params.ecitsState.firstDocumentDate).toBeNull();
+    expect(params.ecitsState.lastDocumentDate).toBeNull();
+  });
+});
+
+// ── TASK v12 §3 — likelyNotMine: партиціонування + processDeferredCases ────
+describe('TASK v12 §3 — likelyNotMine партиціонування', () => {
+  function makeDepsLocal() {
+    const cases = [];
+    const calls = [];
+    const executeAction = vi.fn(async (agentId, action, params) => {
+      calls.push({ agentId, action, params });
+      if (action === 'create_case') {
+        const newCase = {
+          id: `case_${cases.length + 1}`,
+          ecitsState: params.ecitsState,
+          advocateRole: params.advocateRole,
+          advocateRoles: params.advocateRoles,
+          origin: params.origin,
+          hearings: [],
+        };
+        cases.push(newCase);
+        return { success: true, caseId: newCase.id };
+      }
+      if (action === 'add_hearing') {
+        const c = cases.find((x) => x.id === params.caseId);
+        if (c) c.hearings.push({ id: `h_${c.hearings.length + 1}`, date: params.date, time: params.time });
+        return { success: true };
+      }
+      if (action === 'update_case_ecits_state') return { success: true };
+      return { success: false, error: 'unknown' };
+    });
+    return { executeAction, calls, cases, getCases: () => cases };
+  }
+
+  it('likelyNotMine=true → справа НЕ створюється, потрапляє у pendingReview', async () => {
+    const env = makeEnvelope();
+    env.data.cases.push({
+      ecitsCaseId: 'deferred_hex',
+      case_no: '999/9/26',
+      court: 'X',
+      category: 'civil',
+      advocateRole: 'representative_unspecified',
+      advocateRoles: ['representative_unspecified'],
+      likelyNotMine: true,
+      hearings: [],
+    });
+    const { executeAction, calls, getCases } = makeDepsLocal();
+    const res = await submitScenarioResult(env, { executeAction, getCases });
+
+    // Авто-кейс (перший) створений; deferred — НЕ створений.
+    expect(res.casesCreated).toBe(1);
+    expect(res.pendingReview).toHaveLength(1);
+    expect(res.pendingReview[0].ecitsCaseId).toBe('deferred_hex');
+
+    const createCalls = calls.filter((c) => c.action === 'create_case');
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0].params.ecitsState.caseId).not.toBe('deferred_hex');
+  });
+
+  it('skipped НЕ збільшується для likelyNotMine (окрема корзина)', async () => {
+    const env = makeEnvelope();
+    env.data.cases[0].likelyNotMine = true; // зробимо єдиний кейс deferred
+    const { executeAction, getCases } = makeDepsLocal();
+    const res = await submitScenarioResult(env, { executeAction, getCases });
+    expect(res.casesCreated).toBe(0);
+    expect(res.skipped).toBe(0);
+    expect(res.pendingReview).toHaveLength(1);
+  });
+
+  it('processDeferredCases створює обрані кейси (без повторного скрейпінгу)', async () => {
+    const env = makeEnvelope();
+    env.data.cases[0].likelyNotMine = true;
+    const { executeAction, getCases } = makeDepsLocal();
+    const res = await submitScenarioResult(env, { executeAction, getCases });
+    expect(res.pendingReview).toHaveLength(1);
+
+    const inc = await processDeferredCases(res.pendingReview, { executeAction, getCases });
+    expect(inc.casesCreated).toBe(1);
+    expect(inc.hearingsAdded).toBe(1); // у makeEnvelope єдиному кейсу — 1 hearing
+  });
+
+  it('processDeferredCases на порожньому масиві повертає нульовий результат', async () => {
+    const { executeAction, getCases } = makeDepsLocal();
+    const inc = await processDeferredCases([], { executeAction, getCases });
+    expect(inc.casesCreated).toBe(0);
+    expect(inc.hearingsAdded).toBe(0);
+  });
+
+  it('processDeferredCases без executeAction кидає', async () => {
+    await expect(processDeferredCases([], {})).rejects.toThrow(/executeAction/);
+  });
+});
+
+// ── TASK v12 §11 — Робастність normalizeEnvelope ───────────────────────────
+describe('TASK v12 §11 — normalizeEnvelope', () => {
+  it('обгортає top-level cases[] у data', () => {
+    const raw = {
+      envelopeVersion: 1,
+      scenarioId: SCENARIO_ID,
+      cases: [{ ecitsCaseId: 'h', case_no: 'x', hearings: [] }],
+    };
+    const { envelope, normalizationWarnings } = normalizeEnvelope(raw);
+    expect(envelope.data).toBeDefined();
+    expect(envelope.data.cases).toHaveLength(1);
+    expect(normalizationWarnings.some((w) => /data-обгортки/.test(w))).toBe(true);
+    expect(() => validateEnvelope(envelope)).not.toThrow();
+  });
+
+  it('warnings-об\'єкти → рядки (усуває React #31)', () => {
+    const raw = {
+      envelopeVersion: 1,
+      scenarioId: SCENARIO_ID,
+      data: {
+        cases: [],
+        warnings: [{ case_no: '1/2/26', message: 'щось дивне' }, 'нормальний рядок'],
+      },
+    };
+    const { envelope, normalizationWarnings } = normalizeEnvelope(raw);
+    expect(envelope.data.warnings.every((w) => typeof w === 'string')).toBe(true);
+    expect(envelope.data.warnings[0]).toBe('1/2/26: щось дивне');
+    expect(envelope.data.warnings[1]).toBe('нормальний рядок');
+    expect(normalizationWarnings.some((w) => /об'єкти/.test(w))).toBe(true);
+  });
+
+  it('відсутні версії/scenarioId → канонічні дефолти + warnings', () => {
+    const raw = { data: { cases: [] } };
+    const { envelope, normalizationWarnings } = normalizeEnvelope(raw);
+    expect(envelope.envelopeVersion).toBe(ENVELOPE_VERSION);
+    expect(envelope.scenarioId).toBe(SCENARIO_ID);
+    expect(envelope.scenarioVersion).toBe(SCENARIO_VERSION);
+    expect(normalizationWarnings.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('повністю битий envelope (null) — не падає, validateEnvelope кине', () => {
+    const { envelope } = normalizeEnvelope(null);
+    expect(envelope).toBeNull();
+    expect(() => validateEnvelope(envelope)).toThrow();
+  });
+
+  it('submitScenarioResult приймає envelope без data-обгортки і нормалізує', async () => {
+    const raw = {
+      envelopeVersion: 1,
+      scenarioId: SCENARIO_ID,
+      cases: [{
+        ecitsCaseId: 'hex_x',
+        case_no: '450/2275/25',
+        court: 'Київський суд',
+        category: 'civil',
+        advocateRole: 'plaintiff_rep',
+        primaryParty: 'X',
+        hearings: [],
+      }],
+    };
+    const executeAction = vi.fn(async (aid, act, p) => {
+      if (act === 'create_case') return { success: true, caseId: 'case_1' };
+      return { success: true };
+    });
+    const res = await submitScenarioResult(raw, { executeAction, getCases: () => [] });
+    expect(res.casesCreated).toBe(1);
+    expect(res.warnings.some((w) => /data-обгортки/.test(w))).toBe(true);
   });
 });
