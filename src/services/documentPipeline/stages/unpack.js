@@ -76,7 +76,10 @@ const EXT_MIME = {
   heic: 'image/heic', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff',
 };
 
-function guessMime(name) {
+// Один сенс: вгадати MIME за розширенням файлу всередині архіву (fflate
+// віддає лише імена і байти, без MIME). Експортовано — переюзовує також
+// фронт-крок розпакування `unpackArchivesFrontStep` (single source).
+export function guessMime(name) {
   const ext = basename(name).split('.').pop()?.toLowerCase();
   return EXT_MIME[ext] || 'application/octet-stream';
 }
@@ -95,8 +98,10 @@ async function readBytes(raw) {
 
 // Зібрати file-like об'єкт із розпакованого запису. Браузер — справжній File
 // (converterService очікує File/Blob); поза браузером — легкий сумісний шим
-// (._bytes + .arrayBuffer), якого досить downstream-стадіям/тестам.
-function entryToFile(name, data, makeFile) {
+// (._bytes + .arrayBuffer), якого досить downstream-стадіям/тестам. Експортовано —
+// переюзовує `unpackArchivesFrontStep` (single source — і дрімаючий DP-2 stage,
+// і фронт-крок addFiles тягнуть з одного місця, без дублювання класифікації).
+export function entryToFile(name, data, makeFile) {
   const type = guessMime(name);
   if (typeof makeFile === 'function') return makeFile({ name, data, type });
   if (typeof File !== 'undefined') {
@@ -113,8 +118,9 @@ function entryToFile(name, data, makeFile) {
 
 // Дефолтний розпакувальник ZIP — lazy-import fflate (як html2pdf/jspdf/heic2any
 // у converterService: важка залежність не в основному бандлі). Повертає
-// [{ name, data:Uint8Array }] без директорій.
-async function defaultUnzipArchive(uint8) {
+// [{ name, data:Uint8Array }] без директорій. Експортовано — переюзовує
+// `unpackArchivesFrontStep` (single source для ZIP-розпаковки).
+export async function defaultUnzipArchive(uint8) {
   const { unzip } = await import('fflate');
   const map = await new Promise((resolve, reject) => {
     unzip(uint8, (err, unzipped) => (err ? reject(err) : resolve(unzipped)));

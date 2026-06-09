@@ -8,6 +8,7 @@ import { DOCUMENT_BATCH_PROCESSED, DOCUMENT_INGESTED } from "../../services/even
 import { createAddFiles } from "../../services/addFiles/addFilesService.js";
 import { convertToPdf } from "../../services/converter/converterService.js";
 import { maybeCompressFileForAdd } from "../../services/compression/compressFrontStep.js";
+import { isArchive } from "../../services/addFiles/unpackArchivesFrontStep.js";
 import { getCurrentUserId, getCurrentTenantId } from "../../services/tenantService.js";
 import { inferNatureFromFile, defaultNatureForUI } from "../../services/detectDocumentNature.js";
 import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
@@ -2692,6 +2693,16 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
         caseData={{ ...caseData, proceedings }}
         driveConnected={driveConnected}
         onSubmit={async ({ name, category, author, procId, date, isKey, file, mergeArtifacts, ocrMode = 'full', compress = false }) => {
+          // ── ZIP-інгест ЄСІТС · модалка архіви НЕ приймає ───────────────────
+          // Рішення власника: модалка одно-файлова (форма на ОДИН документ),
+          // ZIP вибухає у багато — не її UX. Архіви — ТІЛЬКИ через Document
+          // Processor (там батч + плоский список після `unpackArchivesFrontStep`).
+          // Тут — підказка і ранній вихід (документ НЕ створюємо, на Drive
+          // нічого; модалка лишається відкритою — адвокат вибере інший файл).
+          if (file && isArchive(file.name, file.type)) {
+            toast.warning('Архіви додавайте через Document Processor');
+            return;
+          }
           // ── Інтеграція на documentPipeline (тонкий диригент DP-1) ──────────
           // Детермінований core (convert → upload → createDocument →
           // add_document → emit) проходить через диригент. Post-persist OCR-

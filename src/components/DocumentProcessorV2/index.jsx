@@ -34,6 +34,7 @@ import { groupImagesIntoDocuments } from '../../services/sortation/imageDocument
 import { sortImageDocument } from '../../services/imageDocument/sortImageDocument.js';
 import { rebuildFromOcrResults } from '../../services/imageDocument/pdfRebuild.js';
 import { MODULES } from '../../services/moduleNames.js';
+import { unpackArchivesFrontStep } from '../../services/addFiles/unpackArchivesFrontStep.js';
 import { createDocument } from '../../services/documentFactory.js';
 import { ensureUniqueName } from '../../services/sortation/imageSortingAgent.js';
 import * as ocrService from '../../services/ocrService.js';
@@ -736,6 +737,41 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     pipeline.expandProgress?.();        // новий run → повноекранний прогрес (не топбар)
     try {
       const input = useAddAsIs ? await buildAddAsIsInput() : await buildRunInput();
+      // ── ZIP-інгест ЄСІТС · фронт-крок ПЕРЕД addFiles ────────────────────
+      // Тільки add_as_is гілка: розпакувати ZIP у складові, відкинути КЕП-
+      // підписи (.p7s/.sig), RAR/7z лишити як є. Порядок:
+      //   unpack → (compress всередині addFiles) → addFiles → (OCR пост-крок).
+      // Нарізку (slice-шлях) НЕ чіпаємо — там ZIP не очікується (нарізка-мікс
+      // поза скоупом за §6 спеки і поточним guard'ом hasAnyImage/hasAnyNonImage).
+      if (useAddAsIs) {
+        const rawFiles = input.files.map((f) => f.raw).filter(Boolean);
+        const { files: expanded, report } = await unpackArchivesFrontStep(rawFiles);
+        const didUnpack = report.unpacked.length > 0 || report.signaturesDropped > 0;
+        if (didUnpack) {
+          const totalEntries = report.unpacked.reduce((s, u) => s + u.entryCount, 0);
+          toast.success(
+            `Розпаковано ${totalEntries} файлів з архіву; ${report.signaturesDropped} підписів відкинуто`,
+          );
+          // Перебудовуємо input.files з розгорнутого списку. mergeArtifacts тут
+          // не буває: модалка (де лежать merge-артефакти зі склейки зображень)
+          // архіви не приймає (guard вище); DP-merge йде окремою віткою через
+          // startImageMergeProcessing. Якщо didUnpack=false (немає ZIP) — input
+          // НЕ чіпаємо, щоб не втратити поля з buildAddAsIsInput.
+          input.files = expanded.map((f, i) => ({
+            fileId: `unpack_${i}`,
+            name: f.name,
+            size: f.size,
+            originalMime: f.type || null,
+            raw: f,
+          }));
+        }
+        for (const kept of report.archivesKept) {
+          toast.warning(
+            `Архів ${String(kept.kind || '').toUpperCase() || '?'} не розпаковується — додано як є`,
+            { description: kept.name },
+          );
+        }
+      }
       if (input.files.length === 0) { toast.warning('Немає файлів для обробки'); setRunning(false); return; }
       // TASK 4 (rework) · Стадія D — маршрут: add_as_is → ОКРЕМИЙ сервіс
       // addFiles (нуль звʼязку з нарізкою; стиснення/OCR-пост-крок усередині);
