@@ -128,35 +128,54 @@
 ## 4. ГРАФ ЗВ'ЯЗКІВ (поточний стан)
 
 ```mermaid
-graph TD
+flowchart TD
   Tenant -->|owns| Case
-  User -->|owns ownerId| Case
-  User -->|member team[]| Case
-  User -.->|external access| Case
-  Case -->|has proceedings| Proceeding
-  Case -->|has documents| Document
-  Document -->|belongs procId| Proceeding
-  Case -->|has hearings| Hearing
-  Case -->|has deadlines| Deadline
-  Case -->|has notes| Note
-  Hearing -->|assignedTo/attendedBy| User
-  Document -->|authored-by role| AuthorRole["author роль: ours/opponent/court/3rd"]
-  Document -->|came-from| Source["канал: manual/court_sync/..."]
+  User -->|owner| Case
+  User -->|team| Case
+  User -.->|external| Case
+  Case -->|has| Proceeding
+  Case -->|has| Document
+  Document -->|procId| Proceeding
+  Case -->|has| Hearing
+  Case -->|has| Deadline
+  Case -->|has| Note
+  Hearing -->|assigned attended| User
+  Document -->|author role| AuthorRole["author роль ours opponent court third"]
+  Document -->|source| Source["канал manual court_sync telegram email"]
   TimeEntry -->|for| Case
   TimeEntry -->|for| Hearing
   TimeEntry -->|for| Document
   TimeEntry -->|by| User
-
-  %% слабкі/відсутні (вільний текст) — пунктиром
-  Case -.->|court рядок| Court["Court ❓ не-вузол"]
-  Case -.->|client рядок| Client["Client ❓ не-вузол"]
-  Case -.->|judge рядок| Judge["Judge ❓ не-вузол"]
-  Case -.->|parties inline| Party["Party ❓ без ID"]
-  Document -.->|movementCard deliveries| Party
+  Case -.->|court text| Court["Court не вузол"]
+  Case -.->|client text| Client["Client не вузол"]
+  Case -.->|judge text| Judge["Judge не вузол"]
+  Case -.->|parties| Party["Party без стабільного ID"]
+  Document -.->|deliveries| Party
 ```
 
 Суцільні стрілки — **готові ребра** (🟢 ID). Пунктир — **слабкі/відсутні** (🟡 вільний
 текст або inline без ID): Court, Client, Judge, Party.
+
+**ASCII-дублікат** (якщо mermaid не рендериться):
+
+```
+Tenant ──owns──> Case
+User ──owner / team / external──> Case
+Case
+ ├─ has ──> Proceeding
+ ├─ has ──> Document ──(procId)──> Proceeding
+ ├─ has ──> Hearing ──(assigned/attended)──> User
+ ├─ has ──> Deadline
+ ├─ has ──> Note
+ ├─ court / client / judge   (вільний текст — НЕ вузли)
+ └─ parties / processParticipants  (inline, без стабільного ID)
+Document
+ ├─ author ──> роль (наш/опонент/суд/третя сторона)
+ ├─ source ──> канал (manual/court_sync/telegram/email)
+ └─ deliveries ──> учасники (movementCard, без ID)
+TimeEntry ──> { Case, Hearing, Document, User }   (найщільніший на ребра вузол)
+```
+
 
 ---
 
