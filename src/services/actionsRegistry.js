@@ -1315,17 +1315,28 @@ export function createActions(deps) {
       hearingsCount = 0,
     }) => {
       if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      // Існування перевіряємо СИНХРОННО через getCases() ДО setCases, не
+      // через прапор всередині updater'а (React може батчити; updater
+      // спрацьовує асинхронно — found лишався би false на момент return).
+      const targetCase = getCases().find(c => c.id === caseId);
+      if (!targetCase) return { success: false, error: `Справу ${caseId} не знайдено` };
       const userId = getCurrentUser().userId;
       const tenantId = getCurrentUser().tenantId;
       const timestamp = new Date().toISOString();
-      let found = false;
+      const currentMetrics = targetCase.ecitsState?.syncMetrics || {
+        totalSyncs: 0, successfulSyncs: 0, failedSyncs: 0,
+        documentsExtracted: 0, hearingsExtracted: 0, lastDurationMs: null,
+      };
+      const nextMetrics = {
+        totalSyncs: currentMetrics.totalSyncs + 1,
+        successfulSyncs: currentMetrics.successfulSyncs + (status === 'synced' ? 1 : 0),
+        failedSyncs: currentMetrics.failedSyncs + (status === 'failed' ? 1 : 0),
+        documentsExtracted: currentMetrics.documentsExtracted + (Number.isFinite(documentsCount) ? documentsCount : 0),
+        hearingsExtracted: currentMetrics.hearingsExtracted + (Number.isFinite(hearingsCount) ? hearingsCount : 0),
+        lastDurationMs: durationMs ?? null,
+      };
       setCases(prev => prev.map(c => {
         if (c.id !== caseId) return c;
-        found = true;
-        const currentMetrics = c.ecitsState?.syncMetrics || {
-          totalSyncs: 0, successfulSyncs: 0, failedSyncs: 0,
-          documentsExtracted: 0, hearingsExtracted: 0, lastDurationMs: null,
-        };
         return {
           ...c,
           ecitsState: {
@@ -1334,19 +1345,11 @@ export function createActions(deps) {
             lastSyncedBy: userId,
             syncStatus: status,
             failureReason,
-            syncMetrics: {
-              totalSyncs: currentMetrics.totalSyncs + 1,
-              successfulSyncs: currentMetrics.successfulSyncs + (status === 'synced' ? 1 : 0),
-              failedSyncs: currentMetrics.failedSyncs + (status === 'failed' ? 1 : 0),
-              documentsExtracted: currentMetrics.documentsExtracted + (Number.isFinite(documentsCount) ? documentsCount : 0),
-              hearingsExtracted: currentMetrics.hearingsExtracted + (Number.isFinite(hearingsCount) ? hearingsCount : 0),
-              lastDurationMs: durationMs ?? null,
-            },
+            syncMetrics: nextMetrics,
           },
           updatedAt: timestamp,
         };
       }));
-      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
       try {
         eventBus.publish(ECITS_SYNC_COMPLETED, {
           caseId, tenantId, userId, timestamp, status, documentsCount, hearingsCount,
@@ -1365,33 +1368,34 @@ export function createActions(deps) {
       if (!caseId) return { success: false, error: "caseId обов'язковий" };
       if (!patch || typeof patch !== 'object') return { success: false, error: "patch обов'язковий (object)" };
       if (!source) return { success: false, error: "source обов'язковий" };
+      // Існування перевіряємо СИНХРОННО через getCases() ДО setCases, не
+      // через прапор всередині updater'а (React може батчити; updater
+      // спрацьовує асинхронно — found лишався би false на момент return).
+      const targetCase = getCases().find(c => c.id === caseId);
+      if (!targetCase) return { success: false, error: `Справу ${caseId} не знайдено` };
       const userId = getCurrentUser().userId;
       const tenantId = getCurrentUser().tenantId;
       const timestamp = new Date().toISOString();
-      let found = false;
-      let overwriteSkipped = false;
-      setCases(prev => prev.map(c => {
-        if (c.id !== caseId) return c;
-        found = true;
-        const existingState = c.ecitsState || {};
-        const existingSource = existingState._lastSource;
-        if (existingSource && !canOverwrite(existingSource, source)) {
-          // eslint-disable-next-line no-console
-          console.log(`[ACTION update_case_ecits_state] source '${source}' has lower priority than '${existingSource}', skipping overwrite for case ${caseId}`);
-          overwriteSkipped = true;
-          return c;
-        }
-        return {
-          ...c,
-          ecitsState: {
-            ...existingState,
-            ...patch,
-            _lastSource: source,
-          },
-          updatedAt: timestamp,
-        };
-      }));
-      if (!found) return { success: false, error: `Справу ${caseId} не знайдено` };
+      const existingState = targetCase.ecitsState || {};
+      const existingSource = existingState._lastSource;
+      const overwriteSkipped = !!(existingSource && !canOverwrite(existingSource, source));
+      if (overwriteSkipped) {
+        // eslint-disable-next-line no-console
+        console.log(`[ACTION update_case_ecits_state] source '${source}' has lower priority than '${existingSource}', skipping overwrite for case ${caseId}`);
+      } else {
+        setCases(prev => prev.map(c => {
+          if (c.id !== caseId) return c;
+          return {
+            ...c,
+            ecitsState: {
+              ...(c.ecitsState || {}),
+              ...patch,
+              _lastSource: source,
+            },
+            updatedAt: timestamp,
+          };
+        }));
+      }
       try {
         eventBus.publish(ECITS_CASE_STATE_UPDATED, {
           caseId, tenantId, userId, fieldsChanged: Object.keys(patch),
