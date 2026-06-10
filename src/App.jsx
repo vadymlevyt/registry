@@ -33,7 +33,7 @@ import { getForExtension as getEntitlementsForExtension } from './services/entit
 import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/documentSchema';
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
-import { evaluateRegistryWriteGuard, arrLen } from './services/registryWriteGuard';
+import { evaluateRegistryWriteGuard, arrLen, expectIntentionalCasesShrink } from './services/registryWriteGuard';
 import { resolveModel } from './services/modelResolver';
 import * as activityTracker from './services/activityTracker';
 import * as masterTimer from './services/masterTimer';
@@ -1072,7 +1072,7 @@ function buildSystemContext(cases) {
   return ctx;
 }
 
-function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction, setAiUsage }) {
+function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction, setAiUsage, onDeleteCasePermanently }) {
   const [text, setText]                   = useState('');
   const [loading, setLoading]             = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -2018,8 +2018,20 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
                   setChatLoading(false);
                   return;
                 }
-                // destroy_case — тільки через UI, не через агента
-                setCases(prev => prev.filter(c => c.id !== matched.id));
+                // TASK case_delete_persist — раніше тут був сирий
+                // setCases(prev => filter), що ОБХОДИВ каскадне прибирання
+                // (нотатки/agent_history/Drive-папку/caseAccess), tombstone у
+                // deletedCases[] і сигнал shrink-guard'у. Чат-команда «видалити
+                // закриту справу» — той самий намір, що кнопка UI у CaseModal,
+                // тому йдемо тим самим шляхом: deleteCasePermanently.
+                if (typeof onDeleteCasePermanently === 'function') {
+                  await onDeleteCasePermanently(matched);
+                } else {
+                  // Fallback тільки на випадок, якщо prop не пробросили
+                  // (теоретично неможливо у поточному App.jsx). Краще обрізане
+                  // видалення ніж нічого.
+                  setCases(prev => prev.filter(c => c.id !== matched.id));
+                }
                 setConversationHistory(prev => [...prev, {
                   role: 'assistant',
                   content: `✅ Справу "${matched.name}" видалено з реєстру назавжди.`
@@ -3723,6 +3735,27 @@ function App() {
     return [];
   });
 
+  // TASK case_delete_persist — deletedCases[] індекс «надгробків» свідомо
+  // видалених справ. Адитивний (тільки росте → guard не зачіпає), потрапляє
+  // у save-об'єкт registry разом з іншими полями. Запис — у
+  // deleteCasePermanently ПЕРЕД фактичним видаленням з cases[].
+  // Структура: { caseId, case_no, name, deletedAt, deletedBy }.
+  // Єдиний сенс (правило #11): «надгробок» — справа була і її видалили.
+  // НЕ плутати з caseAccess/team (доступ) і case.status='closed' (lifecycle).
+  // Споживачі білінгу/звітів/timeEntriesQuery виключають caseId ∈ deletedCases[]
+  // з активних, щоб не падати на відсутній live-case (time_entries/ai_usage/
+  // auditLog лишаються — це інертні сироти, видалені у dataset з огляду «активних»).
+  const [deletedCases, setDeletedCases] = useState(() => {
+    try {
+      const saved = localStorage.getItem('levytskyi_deleted_cases');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
   // ── v4 Billing Foundation ───────────────────────────────────────────────────
   // time_entries[] — поточний місяць, in-state. Місячна ротація виносить
   // попередній місяць в _archives/time_entries_YYYY-MM.json на Drive.
@@ -4375,6 +4408,10 @@ function App() {
         if (Array.isArray(registry.caseAccess)) {
           setCaseAccess(registry.caseAccess);
         }
+        // TASK case_delete_persist — гідрація надгробків з Drive (default []).
+        if (Array.isArray(registry.deletedCases)) {
+          setDeletedCases(registry.deletedCases);
+        }
         // v4 Billing Foundation
         if (Array.isArray(registry.time_entries)) {
           setTimeEntries(registry.time_entries);
@@ -4506,6 +4543,8 @@ function App() {
       localStorage.setItem('levytskyi_structural_units', JSON.stringify(structuralUnits));
       localStorage.setItem('levytskyi_ai_usage', JSON.stringify(aiUsage));
       localStorage.setItem('levytskyi_case_access', JSON.stringify(caseAccess));
+      // TASK case_delete_persist — надгробки в localStorage (default []).
+      localStorage.setItem('levytskyi_deleted_cases', JSON.stringify(deletedCases));
       // v4 Billing Foundation
       localStorage.setItem('levytskyi_time_entries', JSON.stringify(timeEntries));
       localStorage.setItem('levytskyi_master_timer_state', JSON.stringify(masterTimerState));
@@ -4528,6 +4567,8 @@ function App() {
           structuralUnits,
           ai_usage: aiUsage,
           caseAccess,
+          // TASK case_delete_persist — індекс надгробків подорожує разом з реєстром.
+          deletedCases,
           cases,
           // v4 Billing Foundation
           time_entries: timeEntries,
@@ -4565,7 +4606,7 @@ function App() {
           .catch(() => setDriveSyncStatus('error'));
       }
     }
-  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, timeEntries, masterTimerState, billingMeta, driveConnected, driveHydrated]);
+  }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, deletedCases, timeEntries, masterTimerState, billingMeta, driveConnected, driveHydrated]);
 
   // ── timeLog persistence — DEPRECATED у v4. Старий ключ видаляється під час
   // одноразового імпорту в time_entries[] (див. flag levytskyi_timelog_imported_v4).
@@ -4877,12 +4918,29 @@ function App() {
   };
 
   const deleteCasePermanently = async (caseItem) => {
-    // Audit ДО видалення (status: pending). Після успіху → done.
-    // Якщо мережа впала і запис лишився pending — буде видно в auditLog.
+    // TASK case_delete_persist — повне видалення з персистом:
+    // 1. Аудит pending → done/failed (історія дії лишається у auditLog).
+    // 2. Сигнал write-guard'у про свідомий shrink cases[] (one-shot, споживається
+    //    наступним записом на Drive). Без цього guard блокував би запис при
+    //    видаленні кількох справ підряд (cases<prev-1 → 'cases_count_decreased').
+    // 3. Tombstone у deletedCases[] ПЕРЕД фактичним видаленням — щоб споживачі
+    //    ledger'ів (time_entries/ai_usage/auditLog) могли виключити caseId
+    //    з огляду «активних» без падіння на відсутній live-case.
+    // 4. Каскадне ПРИБИРАННЯ: нотатки справи у standalone bucket'ах
+    //    (levytskyi_notes), agent_history_<caseId> у localStorage, дзеркало
+    //    cases у localStorage оновиться через save-effect, Drive-папка справи
+    //    (разом з .metadata/documents_extended.json і agent_history.json
+    //    на Drive — все в папці).
+    // 5. ЗБЕРЕГТИ: time_entries (білінг), ai_usage (телеметрія), auditLog
+    //    (історія) — це інертні сироти; deletedCases[] виключає їх з активних.
+    // 6. casesRef оновлюється СИНХРОННО через setCasesWithRef → негайний
+    //    повторний імпорт (без F5) бачить, що справи нема → create_case
+    //    створить наново.
+    const caseId = caseItem.id;
     const auditEntry = writeAudit({
       action: 'destroy_case',
       targetType: 'case',
-      targetId: caseItem.id,
+      targetId: caseId,
       status: 'pending',
       details: {
         caseName: caseItem.name,
@@ -4897,8 +4955,61 @@ function App() {
       } else if (!caseItem.driveFolderId) {
         console.log("driveFolderId not found, skipping Drive deletion");
       }
-      setCases(prev => prev.filter(c => c.id !== caseItem.id));
-      if (dossierCase?.id === caseItem.id) {
+
+      // (3) Tombstone — пушимо ПЕРЕД зняттям справи.
+      const tombstone = {
+        caseId,
+        case_no: caseItem.case_no || null,
+        name: caseItem.name || null,
+        deletedAt: new Date().toISOString(),
+        deletedBy: getCurrentUserId(),
+      };
+      setDeletedCases(prev => {
+        const next = Array.isArray(prev) ? [...prev, tombstone] : [tombstone];
+        try { localStorage.setItem('levytskyi_deleted_cases', JSON.stringify(next)); } catch {}
+        return next;
+      });
+
+      // (2) Сигнал guard'у — спрацює на наступному writeRegistry-виклику.
+      expectIntentionalCasesShrink(1);
+
+      // (4) Каскадне прибирання stand-alone нотаток зі справою у caseId.
+      // case.notes[] (inline) видалиться разом зі справою у cases.filter нижче.
+      setNotes(prev => {
+        const updated = {};
+        let changed = false;
+        for (const cat of Object.keys(prev || {})) {
+          const arr = Array.isArray(prev[cat]) ? prev[cat] : [];
+          const filtered = arr.filter(n => String(n?.caseId || '') !== String(caseId));
+          if (filtered.length !== arr.length) changed = true;
+          updated[cat] = filtered;
+        }
+        if (!changed) return prev;
+        saveNotesToLS(updated);
+        return updated;
+      });
+
+      // agent_history_<caseId> у localStorage (3-tier cache швидкий шар).
+      // Drive-копія agent_history.json лежить у самій папці справи — її забере
+      // deleteDriveFolder вище.
+      try { localStorage.removeItem(`agent_history_${caseId}`); } catch {}
+
+      // caseAccess[] індекс — прибрати записи видаленої справи.
+      setCaseAccess(prev => {
+        const arr = Array.isArray(prev) ? prev : [];
+        const filtered = arr.filter(a => String(a?.caseId || '') !== String(caseId));
+        if (filtered.length === arr.length) return prev;
+        try { localStorage.setItem('levytskyi_case_access', JSON.stringify(filtered)); } catch {}
+        return filtered;
+      });
+
+      // (6) КРИТИЧНО: setCasesWithRef — casesRef оновлюється СИНХРОННО, щоб
+      // повторний імпорт у тій же сесії бачив відсутність справи.
+      // Не setCases (raw) — це і був корінь #59: casesRef лагав, scenarioProcessor
+      // через getCases:()=>casesRef.current ще бачив справу і робив update замість create.
+      setCasesWithRef(prev => prev.filter(c => c.id !== caseId));
+
+      if (dossierCase?.id === caseId) {
         setDossierCase(null);
       }
       setSelected(null);
@@ -5083,6 +5194,8 @@ function App() {
       if (Array.isArray(registry.structuralUnits)) setStructuralUnits(registry.structuralUnits);
       if (Array.isArray(registry.ai_usage)) setAiUsage(registry.ai_usage);
       if (Array.isArray(registry.caseAccess)) setCaseAccess(registry.caseAccess);
+      // TASK case_delete_persist — надгробки з бекапу (default []).
+      if (Array.isArray(registry.deletedCases)) setDeletedCases(registry.deletedCases);
       if (Array.isArray(registry.time_entries)) setTimeEntries(registry.time_entries);
       if (registry.master_timer_state && typeof registry.master_timer_state === 'object') {
         setMasterTimerState(registry.master_timer_state);
@@ -5461,7 +5574,7 @@ function App() {
             {/* Вміст вкладки */}
             <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               {universalTab === 'qi' && (
-                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} onExecuteAction={executeAction} setAiUsage={setAiUsage} />
+                <QuickInput cases={cases} setCases={setCases} onClose={() => setShowUniversalPanel(false)} driveConnected={driveConnected} onExecuteAction={executeAction} setAiUsage={setAiUsage} onDeleteCasePermanently={deleteCasePermanently} />
               )}
               {universalTab === 'agent' && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#5a6080', gap: 12, padding: 20 }}>

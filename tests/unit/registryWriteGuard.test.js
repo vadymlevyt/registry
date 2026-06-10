@@ -3,15 +3,23 @@
 // зберегла порожній in-memory масив поверх повної історії). Guard має ловити
 // саме такий колапс, але НЕ заважати легітимним сценаріям (ріст, ротація
 // time_entries, свіжий старт, закриття справи).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   evaluateRegistryWriteGuard,
   GUARD_MIN_HISTORY,
   arrLen,
+  expectIntentionalCasesShrink,
+  __resetWriteGuardState,
+  __peekExpectedCasesShrink,
 } from '../../src/services/registryWriteGuard.js';
 
 // Хелпер: масив заданої довжини (вміст неважливий — guard рахує лише length).
 const ofLen = (n) => Array.from({ length: n }, (_, i) => ({ i }));
+
+// Сигнал shrink — module-scoped. Скидаємо перед кожним тестом, щоб
+// попередні тести не «протекли» в наступні (one-shot, але якщо тест його
+// поставив і не записав — лишається на модулі до явного скиду).
+beforeEach(() => { __resetWriteGuardState(); });
 
 describe('registryWriteGuard', () => {
   describe('ai_usage shrink (головний кейс)', () => {
@@ -84,6 +92,67 @@ describe('registryWriteGuard', () => {
 
     it('блокує падіння більш ніж на 1 (33 → 30)', () => {
       expect(evaluateRegistryWriteGuard({ cases: ofLen(30) }, { cases: 33 })).toBe('cases_count_decreased');
+    });
+  });
+
+  describe('expectIntentionalCasesShrink — свідоме видалення кількох справ (TASK case_delete_persist)', () => {
+    it('без сигналу блокує −3 (як зараз) і повертає cases_count_decreased', () => {
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(30) }, { cases: 33 }))
+        .toBe('cases_count_decreased');
+    });
+
+    it('із сигналом 2 дозволяє −3 (1 базовий + 2 свідомо)', () => {
+      expectIntentionalCasesShrink(2);
+      expect(__peekExpectedCasesShrink()).toBe(2);
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(30) }, { cases: 33 })).toBeNull();
+    });
+
+    it('сигнал ОДНОРАЗОВИЙ: після першого evaluate скидається, наступний несигналізований запис блокується знов', () => {
+      expectIntentionalCasesShrink(2);
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(30) }, { cases: 33 })).toBeNull();
+      expect(__peekExpectedCasesShrink()).toBe(0);
+      // Наступний несигналізований запис із тим самим shrink — заблокований.
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(30) }, { cases: 33 }))
+        .toBe('cases_count_decreased');
+    });
+
+    it('сигнал НЕ розширює дозвіл понад заявлене n (n=1 не дозволяє −3)', () => {
+      expectIntentionalCasesShrink(1);
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(30) }, { cases: 33 }))
+        .toBe('cases_count_decreased');
+      // І все одно скинувся one-shot після виклику.
+      expect(__peekExpectedCasesShrink()).toBe(0);
+    });
+
+    it('повторний виклик expectIntentionalCasesShrink бере максимум', () => {
+      expectIntentionalCasesShrink(1);
+      expectIntentionalCasesShrink(3);
+      // Дозвіл prev-(1+3) = prev-4 → 33 → 29 проходить.
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(29) }, { cases: 33 })).toBeNull();
+    });
+
+    it('порожній/нульовий/негативний n не вмикає сигнал (захист #11 — один сенс)', () => {
+      expectIntentionalCasesShrink(0);
+      expectIntentionalCasesShrink(-5);
+      expectIntentionalCasesShrink(undefined);
+      expectIntentionalCasesShrink(NaN);
+      expect(__peekExpectedCasesShrink()).toBe(0);
+      // Без сигналу −2 блокується як завжди.
+      expect(evaluateRegistryWriteGuard({ cases: ofLen(31) }, { cases: 33 }))
+        .toBe('cases_count_decreased');
+    });
+
+    it('порожній масив cases без сигналу — блок (захист від випадкового затирання)', () => {
+      expect(evaluateRegistryWriteGuard({ cases: [] }, { cases: 33 }))
+        .toBe('cases_count_decreased');
+    });
+
+    it('сигнал НЕ зачіпає інші поля (ai_usage/auditLog/users/tenants лишаються guard\'женими)', () => {
+      expectIntentionalCasesShrink(10);
+      // cases дозволено, але ai_usage все одно блокується окремою політикою.
+      const registry = { cases: ofLen(33), ai_usage: ofLen(1) };
+      const reason = evaluateRegistryWriteGuard(registry, { cases: 33, ai_usage: 6000 });
+      expect(reason).toBe('ai_usage_collapsed');
     });
   });
 

@@ -44,6 +44,10 @@ function applyFilters(entries, query) {
     dateFrom, dateTo, caseId, userId, tenantId,
     category, billable, parentEventId, parentEventType,
     status, type,
+    // TASK case_delete_persist — споживачі активних ledger'ів виключають
+    // caseId'и видалених справ (надгробки deletedCases[]). time_entries
+    // лишаються «інертними сиротами» у даних, але у «активному» зрізі їх нема.
+    excludeCaseIds,
   } = query || {};
   if (dateFrom) {
     const f = new Date(dateFrom);
@@ -62,6 +66,10 @@ function applyFilters(entries, query) {
   if (parentEventType) out = out.filter(e => e?.parentEventType === parentEventType);
   if (status) out = out.filter(e => e?.status === status);
   if (type) out = out.filter(e => e?.type === type);
+  if (Array.isArray(excludeCaseIds) && excludeCaseIds.length > 0) {
+    const skip = new Set(excludeCaseIds.map(String));
+    out = out.filter(e => !skip.has(String(e?.caseId || '')));
+  }
   return out;
 }
 
