@@ -42,6 +42,11 @@ export const ENVELOPE_VERSION = 1;
 export const SCENARIO_ID = 'ecits_import_cases_and_hearings';
 export const SCENARIO_VERSION = 1;
 
+// TASK submit_persist_ack — скільки чекати підтвердження запису на Drive,
+// перш ніж чесно повернути persisted:false ('persist_timeout'). Страхує від
+// вічного зависання, коли save-цикл не дав ack (Drive не підключено тощо).
+export const PERSIST_ACK_TIMEOUT_MS = 20000;
+
 /**
  * Канонічний словник процесуальних ролей адвоката (TASK v12 §1).
  * Зберігається у case.advocateRole / case.advocateRoles (top-level).
@@ -669,9 +674,15 @@ async function runCases(ecitsCases, deps, result, onProgress, labelOffset = 0) {
  *   - getTenant?: () => object                          — для history append; може бути null
  *   - appendScenarioHistoryEntry?: (entry) => void      — записує у tenant.ecits_scenario_history
  *   - onProgress?: (msg) => void                        — UI progress callback
+ *   - awaitPersistAck?: () => Promise<{ok,status?,reason?}> — підтвердження
+ *     НАСТУПНОГО writeRegistry (TASK submit_persist_ack). Якщо передано —
+ *     Result чекає на нього (з таймаутом) і несе persisted/persistError.
+ *     Без нього (старі/тестові callers) — persisted:true (backward).
+ *   - persistAckTimeoutMs?: number                      — override таймауту
+ *     очікування ack (default PERSIST_ACK_TIMEOUT_MS; тести ставлять малий)
  * @returns {Promise<{
  *   scenarioRunId, casesCreated, casesUpdated, hearingsAdded, skipped,
- *   errors, warnings, pendingReview
+ *   errors, warnings, pendingReview, persisted, persistError
  * }>}
  */
 export async function submitScenarioResult(envelope, deps) {
@@ -691,6 +702,8 @@ export async function submitScenarioResult(envelope, deps) {
     getTenant = () => null,
     appendScenarioHistoryEntry,
     onProgress,
+    awaitPersistAck,
+    persistAckTimeoutMs,
   } = deps;
 
   const scenarioRunId = `scn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -759,6 +772,40 @@ export async function submitScenarioResult(envelope, deps) {
       console.warn('[scenarioProcessor] appendScenarioHistoryEntry failed:', e);
     }
   }
+
+  // TASK submit_persist_ack — durability: «успіх» лише після ПІДТВЕРДЖЕНОГО
+  // запису на Drive. `persisted` — один сенс (правило #11): «дані ЦЬОГО
+  // сабміту підтверджено збереженими на Drive». Очікування реєструється ПІСЛЯ
+  // history-append (append завжди змінює tenants → save-useEffect гарантовано
+  // спрацює і settle'не ack); сам await нічого не пише — подвійного запису
+  // немає. Без awaitPersistAck (старі/тестові callers) — persisted:true, як
+  // поведінка до цього TASK.
+  let persisted = true;
+  let persistError = null;
+  if (typeof awaitPersistAck === 'function') {
+    const timeoutMs = Number.isFinite(persistAckTimeoutMs)
+      ? persistAckTimeoutMs
+      : PERSIST_ACK_TIMEOUT_MS;
+    let timeoutTimer = null;
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutTimer = setTimeout(
+        () => resolve({ ok: false, reason: 'persist_timeout' }),
+        timeoutMs,
+      );
+    });
+    let ack;
+    try {
+      ack = await Promise.race([awaitPersistAck(), timeoutPromise]);
+    } catch (e) {
+      ack = { ok: false, reason: e?.message || 'persist_error' };
+    } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+    }
+    persisted = !!ack?.ok;
+    persistError = persisted ? null : (ack?.reason || 'persist_timeout');
+  }
+  result.persisted = persisted;
+  result.persistError = persistError;
 
   // Silence unused import warning — canOverwrite зарезервовано для майбутньої
   // логіки конфлікту source-priority при оновленні existing case.

@@ -64,6 +64,9 @@ export function enable() {
       isReady: true,
       whenReady: () => _readyPromise,
 
+      // TASK submit_persist_ack: Result містить persisted/persistError —
+      // розширення показує «успіх» ЛИШЕ при persisted:true; інакше
+      // «не збережено, повторіть» (дедуп ідемпотентний → повтор безпечний).
       submitScenarioResult: async (envelope) => {
         if (!_deps?.submitScenarioResult) {
           throw new Error('LegalBMS bridge not configured: submitScenarioResult unavailable');

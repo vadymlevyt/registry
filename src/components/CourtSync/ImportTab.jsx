@@ -43,7 +43,7 @@ function coerceToString(value) {
   return String(value);
 }
 
-export default function ImportTab({ executeAction, cases, getCases, tenant, onScenarioHistoryAppend }) {
+export default function ImportTab({ executeAction, cases, getCases, awaitPersistAck, tenant, onScenarioHistoryAppend }) {
   // TASK ecits_identity_by_caseno (Зміна C): живий read-канал. Якщо App
   // прокинув getCases (живий ref) — використовуємо його; інакше fallback
   // на immutable cases prop (тести з memory-snapshot, legacy callers).
@@ -104,6 +104,9 @@ export default function ImportTab({ executeAction, cases, getCases, tenant, onSc
         getTenant: () => tenant,
         appendScenarioHistoryEntry: onScenarioHistoryAppend,
         onProgress: (msg) => setProgressMsg(msg),
+        // TASK submit_persist_ack — Result повернеться лише ПІСЛЯ підтвердженого
+        // запису на Drive (persisted/persistError у ResultCard).
+        awaitPersistAck,
       });
       setResult(res);
     } catch (e) {
@@ -306,24 +309,46 @@ function ResultCard({ result }) {
   const errors = Array.isArray(result.errors) ? result.errors : [];
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   const hasErrors = errors.length > 0;
+  // TASK submit_persist_ack — зелений «успіх»-вигляд ЛИШЕ при підтвердженому
+  // персисті. persisted === false — запис на Drive НЕ підтверджено (чесний
+  // провал, не «успіх»). undefined (legacy result без поля) — як true (backward).
+  const persistFailed = result.persisted === false;
+  const isSuccessLook = !hasErrors && !persistFailed;
   return (
     <section style={{
       padding: 16,
-      background: hasErrors
-        ? 'var(--color-bg-warning, rgba(241,196,15,0.08))'
-        : 'var(--color-bg-success, rgba(46,204,113,0.08))',
-      border: `1px solid ${hasErrors ? 'var(--color-border-warning, #f1c40f)' : 'var(--color-border-success, #2ecc71)'}`,
+      background: isSuccessLook
+        ? 'var(--color-bg-success, rgba(46,204,113,0.08))'
+        : 'var(--color-bg-warning, rgba(241,196,15,0.08))',
+      border: `1px solid ${isSuccessLook ? 'var(--color-border-success, #2ecc71)' : 'var(--color-border-warning, #f1c40f)'}`,
       borderRadius: 4,
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
         fontWeight: 'var(--weight-bold)',
       }}>
-        {hasErrors
-          ? <AlertTriangle size={ICON_SIZE.md} />
-          : <CheckCircle2 size={ICON_SIZE.md} />}
+        {isSuccessLook
+          ? <CheckCircle2 size={ICON_SIZE.md} />
+          : <AlertTriangle size={ICON_SIZE.md} />}
         Готово
       </div>
+      {persistFailed ? (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12,
+          fontSize: 13, color: 'var(--color-text-error, #e74c3c)', fontWeight: 600,
+        }}>
+          <AlertTriangle size={ICON_SIZE.sm} />
+          <span>{`НЕ збережено: ${coerceToString(result.persistError) || 'невідома причина'} — повторіть`}</span>
+        </div>
+      ) : (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+          fontSize: 13, color: 'var(--color-text-success, #2ecc71)',
+        }}>
+          <CheckCircle2 size={ICON_SIZE.sm} />
+          <span>Збережено на Drive</span>
+        </div>
+      )}
       <Metric label="Створено справ" value={result.casesCreated} />
       <Metric label="Оновлено справ" value={result.casesUpdated} />
       <Metric label="Додано засідань" value={result.hearingsAdded} />

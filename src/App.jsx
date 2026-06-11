@@ -4542,6 +4542,25 @@ function App() {
     })();
   }, [driveConnected, hydrationTrigger]); // eslint-disable-line
 
+  // TASK submit_persist_ack — підтвердження персисту для durability-сабмітів.
+  // pendingPersistAcksRef — резолвери, що чекають завершення НАСТУПНОГО
+  // writeRegistry. awaitPersistAck() реєструє очікувача і повертає проміс
+  // {ok, status?, reason?}; settlePersistAcks(ack) резолвить УСІХ очікувачів
+  // результатом записувального циклу і скидає список. Сам механізм НІЧОГО не
+  // пише — переюзовує наявний save-useEffect (нуль подвійних записів).
+  const pendingPersistAcksRef = useRef([]);
+  const awaitPersistAck = () => new Promise((resolve) => {
+    pendingPersistAcksRef.current.push(resolve);
+  });
+  const settlePersistAcks = (ack) => {
+    const waiters = pendingPersistAcksRef.current;
+    if (!waiters.length) return;
+    pendingPersistAcksRef.current = [];
+    for (const resolve of waiters) {
+      try { resolve(ack); } catch { /* resolver не кидає */ }
+    }
+  };
+
   // Auto-save to localStorage (always) and Drive (if connected AND hydrated).
   // Тригер: будь-яка зміна cases/tenants/users/auditLog/structuralUnits/ai_usage/caseAccess.
   // Захист від race condition: якщо driveConnected=true але !driveHydrated — НЕ ПИШЕМО,
@@ -4614,8 +4633,15 @@ function App() {
                 driveService.findBackups().then(setDriveBackups);
               }
             }
+            // TASK submit_persist_ack — підтверджуємо очікувачам результат
+            // записувального циклу (успіх І провал — обидва чесно).
+            settlePersistAcks({ ok: !!res?.ok, status: res?.status, reason: res?.reason });
           })
-          .catch(() => setDriveSyncStatus('error'));
+          .catch((e) => {
+            setDriveSyncStatus('error');
+            // TASK submit_persist_ack — мережевий збій теж settle'имо чесно.
+            settlePersistAcks({ ok: false, reason: e?.message || 'network' });
+          });
       }
     }
   }, [cases, tenants, users, auditLog, structuralUnits, aiUsage, caseAccess, deletedCases, timeEntries, masterTimerState, billingMeta, driveConnected, driveHydrated]);
@@ -5109,6 +5135,9 @@ function App() {
             return [{ ...first, ecits_scenario_history: next }, ...rest];
           });
         },
+        // TASK submit_persist_ack — Result реле несе persisted/persistError;
+        // розширення показує «успіх» лише при persisted:true.
+        awaitPersistAck,
       }),
     eventBus,
     getEntitlementsForExtension: () => getEntitlementsForExtension((tenants && tenants[0]) || null),
@@ -5505,6 +5534,7 @@ function App() {
                   executeAction={executeAction}
                   cases={cases}
                   getCases={() => casesRef.current}
+                  awaitPersistAck={awaitPersistAck}
                   tenant={(tenants && tenants[0]) || null}
                   onScenarioHistoryAppend={(entry) => {
                     setTenants(prev => {

@@ -81,6 +81,8 @@ export default function CourtSync({
   executeAction,
   cases,
   getCases,
+  // TASK submit_persist_ack — підтвердження запису на Drive для ImportTab.
+  awaitPersistAck,
   tenant,
   onScenarioHistoryAppend,
 }) {
@@ -196,6 +198,7 @@ export default function CourtSync({
               executeAction={executeAction}
               cases={cases}
               getCases={getCases}
+              awaitPersistAck={awaitPersistAck}
               tenant={tenant}
               onScenarioHistoryAppend={onScenarioHistoryAppend}
             />

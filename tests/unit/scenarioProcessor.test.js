@@ -521,6 +521,83 @@ describe('TASK represented_parties — UPDATE існуючої через update
   });
 });
 
+// ── TASK submit_persist_ack — durability: persisted/persistError у Result ──
+describe('TASK submit_persist_ack — persisted/persistError', () => {
+  function makePersistDeps() {
+    const cases = [];
+    const executeAction = vi.fn(async (agentId, action, params) => {
+      if (action === 'create_case') {
+        const newCase = { id: `case_${cases.length + 1}`, case_no: params.case_no, hearings: [] };
+        cases.push(newCase);
+        return { success: true, caseId: newCase.id };
+      }
+      return { success: true };
+    });
+    return { executeAction, getCases: () => cases };
+  }
+
+  it('awaitPersistAck → {ok:true} ⇒ persisted:true, persistError:null', async () => {
+    const deps = makePersistDeps();
+    const res = await submitScenarioResult(makeEnvelope(), {
+      ...deps,
+      awaitPersistAck: () => Promise.resolve({ ok: true, status: 'patched' }),
+    });
+    expect(res.persisted).toBe(true);
+    expect(res.persistError).toBeNull();
+  });
+
+  it('awaitPersistAck → {ok:false, reason:guard_blocked} ⇒ persisted:false, persistError=guard_blocked', async () => {
+    const deps = makePersistDeps();
+    const res = await submitScenarioResult(makeEnvelope(), {
+      ...deps,
+      awaitPersistAck: () => Promise.resolve({ ok: false, status: 'guard_blocked', reason: 'guard_blocked' }),
+    });
+    expect(res.persisted).toBe(false);
+    expect(res.persistError).toBe('guard_blocked');
+  });
+
+  it('без awaitPersistAck (старі/тестові callers) ⇒ persisted:true (backward)', async () => {
+    const deps = makePersistDeps();
+    const res = await submitScenarioResult(makeEnvelope(), deps);
+    expect(res.persisted).toBe(true);
+    expect(res.persistError).toBeNull();
+  });
+
+  it('ack не приходить ⇒ таймаут страхує: persisted:false, persist_timeout', async () => {
+    const deps = makePersistDeps();
+    const res = await submitScenarioResult(makeEnvelope(), {
+      ...deps,
+      awaitPersistAck: () => new Promise(() => {}),  // ніколи не резолвиться
+      persistAckTimeoutMs: 50,
+    });
+    expect(res.persisted).toBe(false);
+    expect(res.persistError).toBe('persist_timeout');
+  });
+
+  it('awaitPersistAck кинув ⇒ persisted:false з причиною (не падає сабміт)', async () => {
+    const deps = makePersistDeps();
+    const res = await submitScenarioResult(makeEnvelope(), {
+      ...deps,
+      awaitPersistAck: () => Promise.reject(new Error('boom')),
+    });
+    expect(res.persisted).toBe(false);
+    expect(res.persistError).toBe('boom');
+    expect(res.casesCreated).toBe(1); // обробка завершилась, лише персист чесно failed
+  });
+
+  it('ack чекається ПІСЛЯ history-append (резолвер реєструється до settle)', async () => {
+    const deps = makePersistDeps();
+    const order = [];
+    const res = await submitScenarioResult(makeEnvelope(), {
+      ...deps,
+      appendScenarioHistoryEntry: () => order.push('history'),
+      awaitPersistAck: () => { order.push('ack_requested'); return Promise.resolve({ ok: true }); },
+    });
+    expect(order).toEqual(['history', 'ack_requested']);
+    expect(res.persisted).toBe(true);
+  });
+});
+
 // ── TASK v12 — Контракт-константи і скелет envelope ────────────────────────
 describe('TASK v12 — експорт контракту', () => {
   it('ENVELOPE_VERSION/SCENARIO_ID/SCENARIO_VERSION незмінні (адитивні зміни)', () => {
