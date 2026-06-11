@@ -45,6 +45,11 @@ multi-user / SaaS, що накопичуються ДО того, як ця ро
 - **`ecitsCabinetIdentifier`** (user) — multi-user dedupe для ЄСІТС (хто синхронізує).
 - **Білінг UI** (CLAUDE.md «через 6+ міс») — окремо.
 - **AI Provider Abstraction** (CLAUDE.md «6-12 міс при SaaS-комерціалізації») — окремо.
+- **Handshake/entitlements → tenant/user-мітка** (питання розширення 2026-06-11):
+  щоб у вікні підтвердження розширення показувати ЦІЛЬОВИЙ акаунт/тенант, майбутній
+  `getEntitlements()`/handshake `window.LegalBMS` має віддавати `{ tenantId,
+  tenantName, userId, userName }` (зараз `getForExtension` віддає лише entitlements,
+  без ідентичності). Parked — закласти в думку при активації.
 
 ## 3. Принцип
 
