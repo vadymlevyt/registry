@@ -310,6 +310,48 @@ export function resolveCaseCategory(ecitsCase) {
 }
 
 /**
+ * Список представлених сторін з envelope-кейса (TASK represented_parties).
+ * Один сенс: «кого з учасників представляє адвокат у цій справі».
+ * Нове адитивне поле `representedParties[]` має пріоритет; fallback —
+ * `primaryParty` (старі envelope, один елемент); без обох — порожній масив.
+ */
+export function resolveRepresentedParties(ecitsCase) {
+  const arr = Array.isArray(ecitsCase?.representedParties)
+    ? ecitsCase.representedParties.filter((p) => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  if (arr.length) return arr;
+  return ecitsCase?.primaryParty ? [ecitsCase.primaryParty] : [];
+}
+
+/**
+ * Канонічний шаблон name/client справи з ЄСІТС:
+ * `[ЄСІТС] <сторона1, сторона2> (<case_no>)`; без сторін — `[ЄСІТС] <case_no>`.
+ * Одна точка побудови для CREATE і UPDATE (нуль розбіжностей шаблону).
+ */
+export function buildCaseIdentity(ecitsCase) {
+  const displayParties = resolveRepresentedParties(ecitsCase).join(', ');
+  return {
+    name: displayParties
+      ? `[ЄСІТС] ${displayParties} (${ecitsCase.case_no})`
+      : `[ЄСІТС] ${ecitsCase.case_no}`,
+    client: displayParties || null,
+  };
+}
+
+/**
+ * Чинне значення case.nameSource — «хто востаннє визначив name/client:
+ * система ('auto') чи людина руками ('manual')». Лінивий дефолт для справ
+ * створених до появи поля: автогенерований префікс "[ЄСІТС] " → 'auto',
+ * інакше 'manual' (консервативно — все не явно автогенероване вважаємо
+ * ручним, щоб нічого не перезаписати помилково).
+ */
+export function effectiveNameSource(existingCase) {
+  const v = existingCase?.nameSource;
+  if (v === 'auto' || v === 'manual') return v;
+  return String(existingCase?.name || '').startsWith('[ЄСІТС] ') ? 'auto' : 'manual';
+}
+
+/**
  * Будує object для виклику create_case з ecits-кейса.
  * Внутрішня — експортується для тестів. Повертає `{ params, warnings }`,
  * бо мапи можуть породити попередження (невідома роль/категорія).
@@ -353,21 +395,30 @@ export function buildCreateCaseParams(ecitsCase) {
     _lastSource: 'court_sync',
   };
 
-  // primaryParty — для денормалізованого client field (UI legacy). Backfill
-  // структурованих parties[] — у tracking_debt і наступному TASK.
+  // name/client — зі СПИСКУ представлених сторін (TASK represented_parties);
+  // денормалізований client (UI legacy) — той самий список через кому.
+  // Backfill структурованих parties[] — у tracking_debt і наступному TASK.
+  const { name, client } = buildCaseIdentity(ecitsCase);
+  // representedPartiesFullNames[] — повні ПІБ для майбутнього backfill
+  // canonical parties[] (зберігаємо top-level як прийшло, canonical не чіпаємо).
+  const fullNames = Array.isArray(ecitsCase.representedPartiesFullNames)
+    ? ecitsCase.representedPartiesFullNames.filter((p) => typeof p === 'string' && p.trim().length > 0)
+    : [];
   const params = {
-    name: ecitsCase.primaryParty
-      ? `[ЄСІТС] ${ecitsCase.primaryParty} (${ecitsCase.case_no})`
-      : `[ЄСІТС] ${ecitsCase.case_no}`,
-    client: ecitsCase.primaryParty || null,
+    name,
+    client,
     case_no: ecitsCase.case_no || null,
     court: ecitsCase.court || null,
     category,
     status: 'active',
     origin: 'ecits_import',
+    // nameSource:'auto' — name/client автогенеровані імпортом; ручна правка
+    // адвоката переведе у 'manual' і захистить від авто-перезапису.
+    nameSource: 'auto',
     advocateRole,
     advocateRoles,
     ecitsState,
+    ...(fullNames.length ? { representedPartiesFullNames: fullNames } : {}),
   };
   return { params, warnings };
 }
@@ -404,6 +455,41 @@ function hearingExists(existingCase, hearing) {
   return existingCase.hearings.some(
     (h) => h && h.date === hearing.date && h.time === hearing.time,
   );
+}
+
+/**
+ * Оновлення name/client ІСНУЮЧОЇ справи новим списком представлених сторін
+ * (TASK represented_parties, Зміна B). Спрацьовує ТІЛЬКИ коли:
+ *   1) envelope-кейс приніс непорожній representedParties[] (старі envelope
+ *      без поля — поведінка незмінна, name/client не чіпаємо);
+ *   2) effectiveNameSource(existing) === 'auto' — назва автогенерована.
+ *      'manual' (правлена руками) — НЕ чіпаємо ЗА ЖОДНИХ умов.
+ * Іде через executeAction update_case_identity з nameSource:'auto'
+ * (court_sync-оновлення НЕ перемикає nameSource на manual).
+ */
+async function maybeUpdateAutoIdentity(ecitsCase, existingCase, deps, inc) {
+  const { executeAction, agentId } = deps;
+  const incomingParties = Array.isArray(ecitsCase?.representedParties)
+    ? ecitsCase.representedParties.filter((p) => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  if (!incomingParties.length) return;
+  if (!existingCase) return;
+  if (effectiveNameSource(existingCase) !== 'auto') return; // ручне святе
+  const { name, client } = buildCaseIdentity(ecitsCase);
+  if (existingCase.name === name && existingCase.client === client) return; // вже актуально
+  const r = await executeAction(agentId, 'update_case_identity', {
+    caseId: existingCase.id,
+    name,
+    client,
+    nameSource: 'auto',
+    source: 'court_sync',
+  });
+  if (!r?.success) {
+    inc.errors.push({
+      case_no: ecitsCase.case_no,
+      message: `update_case_identity failed: ${r?.error || 'unknown'}`,
+    });
+  }
 }
 
 /**
@@ -461,6 +547,9 @@ async function processCase(ecitsCase, deps) {
         message: `update_case_ecits_state failed: ${patchResult?.error || 'unknown'}`,
       });
     }
+    // Зміна B (TASK represented_parties): автогенеровані name/client
+    // освіжаються новим списком сторін; ручні — недоторкані.
+    await maybeUpdateAutoIdentity(ecitsCase, existing, deps, inc);
   } else {
     // Create new — через спільний buildCreateCaseParams (ролі, категорія, дати)
     const { params: createParams, warnings: buildWarnings } = buildCreateCaseParams(ecitsCase);
@@ -490,6 +579,9 @@ async function processCase(ecitsCase, deps) {
           message: `update_case_ecits_state failed: ${patchResult?.error || 'unknown'}`,
         });
       }
+      // Зміна B і у гілці гонки: справа знайдена через duplicate_case_no.
+      const raceExisting = getCases().find((c) => c.id === caseId);
+      await maybeUpdateAutoIdentity(ecitsCase, raceExisting, deps, inc);
     } else {
       inc.skipped++;
       inc.errors.push({

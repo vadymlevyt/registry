@@ -43,7 +43,7 @@ import { handleReturn as smartHandleReturn } from './services/smartReturnHandler
 import { MODULES, categoryForCase } from './services/moduleNames';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import { ToastContainer } from './components/UI/ToastContainer.jsx';
-import { DatePicker, TimePicker } from './components/UI';
+import { DatePicker, TimePicker, InlineEditableText } from './components/UI';
 import { Scale } from 'lucide-react';
 import { ICON_SIZE } from './components/UI/icons.js';
 import './App.css';
@@ -302,12 +302,19 @@ function CaseCard({ c, onClick }) {
   );
 }
 
-function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
+function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore, onExecuteAction }) {
   const hDate = getHearingDate(c);
   const hTime = getHearingTime(c);
   const hearingDays = daysUntil(hDate);
   const deadlineDays = daysUntil(getDeadlineDate(c));
   const nextDl = getNextDeadline(c);
+  // Inline-правка name/client (TASK represented_parties): через executeAction
+  // update_case_field — дія сама ставить nameSource:'manual', тож імпорт з
+  // ЄСІТС це поле більше не перезапише.
+  const saveIdentityField = (field) => (value) => {
+    if (!onExecuteAction) return;
+    onExecuteAction('qi_agent', 'update_case_field', { caseId: c.id, field, value });
+  };
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-panel" onClick={e => e.stopPropagation()}>
@@ -316,8 +323,13 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore }) {
           <span className={`badge badge-${c.category}`}>{CAT_LABELS[c.category]}</span>
           <span className={`badge badge-${c.status}`}>{STATUS_LABELS[c.status]}</span>
         </div>
-        <div className="modal-title">{c.name}</div>
-        <div className="modal-sub">{c.client} · {c.case_no}</div>
+        <div className="modal-title">
+          <InlineEditableText value={c.name} onSave={saveIdentityField('name')} allowEmpty={false} ariaLabel="Назва справи" />
+        </div>
+        <div className="modal-sub">
+          <InlineEditableText value={c.client} onSave={saveIdentityField('client')} placeholder="клієнт не вказаний" ariaLabel="Клієнт" />
+          {' · '}{c.case_no}
+        </div>
 
         <div className="modal-section">
           <div className="modal-section-title">Реквізити справи</div>
@@ -4724,7 +4736,15 @@ function App() {
   };
 
   const saveCaseEdit = (form) => {
-    setCases(prev => prev.map(c => c.id === form.id ? ensureCaseSaasFields({ ...form }) : c));
+    setCases(prev => prev.map(c => {
+      if (c.id !== form.id) return c;
+      // name/client, змінені руками через форму редагування — людська правка:
+      // nameSource:'manual' захищає від авто-перезапису імпортом з ЄСІТС.
+      // Незмінені — зберігаємо попередній nameSource (form його не містить).
+      const identityEdited = form.name !== c.name || form.client !== c.client;
+      const nameSource = identityEdited ? 'manual' : c.nameSource;
+      return ensureCaseSaasFields({ ...form, ...(nameSource !== undefined ? { nameSource } : {}) });
+    }));
     setEditingCase(null);
     setSelected({ ...form });
     setTab('cases');
@@ -5589,7 +5609,9 @@ function App() {
       </div>
 
       {/* MODALS */}
-      {selected && <CaseModal c={selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} onRestore={restoreCase} />}
+      {/* c — живий об'єкт з cases[] (не снапшот selected): inline-правка
+          name/client через executeAction має одразу відобразитись у модалці. */}
+      {selected && <CaseModal c={cases.find(x => String(x.id) === String(selected.id)) || selected} onClose={() => setSelected(null)} onEdit={handleEdit} onDelete={handleDeleteCase} onCloseCase={closeCase} onRestore={restoreCase} onExecuteAction={executeAction} />}
 
       {/* FAB — toggle Universal Panel, draggable */}
       {!showUniversalPanel && <button

@@ -10,6 +10,9 @@ import {
   processDeferredCases,
   resolveAdvocateRoles,
   resolveCaseCategory,
+  resolveRepresentedParties,
+  buildCaseIdentity,
+  effectiveNameSource,
   buildEnvelopeSkeleton,
   ADVOCATE_ROLE_VALUES,
   ENVELOPE_CATEGORY_VALUES,
@@ -319,6 +322,202 @@ describe('submitScenarioResult — інтеграція через mock executeA
     });
     expect(progress.length).toBeGreaterThanOrEqual(1);
     expect(progress[0]).toMatch(/Обробка 1/);
+  });
+});
+
+// ── TASK represented_parties — CREATE зі списком сторін + nameSource ───────
+describe('TASK represented_parties — resolveRepresentedParties / buildCaseIdentity', () => {
+  it('representedParties[] має пріоритет над primaryParty', () => {
+    expect(resolveRepresentedParties({
+      representedParties: ['Іваненко І.І.', 'Петренко П.П.'],
+      primaryParty: 'Іваненко І.І.',
+    })).toEqual(['Іваненко І.І.', 'Петренко П.П.']);
+  });
+  it('fallback на primaryParty коли representedParties відсутній (старі envelope)', () => {
+    expect(resolveRepresentedParties({ primaryParty: 'Бабенко О.І.' })).toEqual(['Бабенко О.І.']);
+  });
+  it('без сторін → порожній масив', () => {
+    expect(resolveRepresentedParties({})).toEqual([]);
+    expect(resolveRepresentedParties({ representedParties: [] })).toEqual([]);
+  });
+  it('фільтрує сміття (нерядки, порожні)', () => {
+    expect(resolveRepresentedParties({ representedParties: ['А', '', null, '  ', 42, 'Б'] }))
+      .toEqual(['А', 'Б']);
+  });
+  it('buildCaseIdentity: список → "[ЄСІТС] А, Б (no)" + client join', () => {
+    const id = buildCaseIdentity({
+      case_no: '757/9362/25',
+      representedParties: ['Бабенко О.І.', 'Бабенко П.П.'],
+    });
+    expect(id.name).toBe('[ЄСІТС] Бабенко О.І., Бабенко П.П. (757/9362/25)');
+    expect(id.client).toBe('Бабенко О.І., Бабенко П.П.');
+  });
+  it('buildCaseIdentity: без сторін → fallback "[ЄСІТС] case_no", client null', () => {
+    const id = buildCaseIdentity({ case_no: '450/2275/25' });
+    expect(id.name).toBe('[ЄСІТС] 450/2275/25');
+    expect(id.client).toBeNull();
+  });
+});
+
+describe('TASK represented_parties — effectiveNameSource', () => {
+  it('явне auto/manual повертається як є', () => {
+    expect(effectiveNameSource({ nameSource: 'auto', name: 'X' })).toBe('auto');
+    expect(effectiveNameSource({ nameSource: 'manual', name: '[ЄСІТС] X' })).toBe('manual');
+  });
+  it('без nameSource → виводиться за префіксом "[ЄСІТС] "', () => {
+    expect(effectiveNameSource({ name: '[ЄСІТС] Пироженко Є.В. (363/4635/25)' })).toBe('auto');
+    expect(effectiveNameSource({ name: 'Іваненко проти ТОВ' })).toBe('manual');
+  });
+  it('невалідне значення nameSource → лінивий дефолт (консервативно)', () => {
+    expect(effectiveNameSource({ nameSource: 'garbage', name: 'X' })).toBe('manual');
+    expect(effectiveNameSource(null)).toBe('manual');
+  });
+});
+
+describe('TASK represented_parties — buildCreateCaseParams зі списком', () => {
+  it('список → назва зі всіма сторонами, client join, nameSource auto', () => {
+    const { params } = buildCreateCaseParams({
+      case_no: '757/9362/25',
+      representedParties: ['Бабенко О.І.', 'Бабенко П.П.'],
+    });
+    expect(params.name).toBe('[ЄСІТС] Бабенко О.І., Бабенко П.П. (757/9362/25)');
+    expect(params.client).toBe('Бабенко О.І., Бабенко П.П.');
+    expect(params.nameSource).toBe('auto');
+  });
+  it('один елемент → як раніше з primaryParty', () => {
+    const { params } = buildCreateCaseParams({
+      case_no: '450/2275/25',
+      representedParties: ['Бабенко О.І.'],
+    });
+    expect(params.name).toBe('[ЄСІТС] Бабенко О.І. (450/2275/25)');
+    expect(params.client).toBe('Бабенко О.І.');
+  });
+  it('старий envelope (тільки primaryParty) → ідентичний попередній шаблон', () => {
+    const { params } = buildCreateCaseParams({
+      case_no: '450/2275/25',
+      primaryParty: 'Бабенко О.І.',
+    });
+    expect(params.name).toBe('[ЄСІТС] Бабенко О.І. (450/2275/25)');
+    expect(params.client).toBe('Бабенко О.І.');
+    expect(params.nameSource).toBe('auto');
+  });
+  it('без сторін → fallback case_no (як зараз)', () => {
+    const { params } = buildCreateCaseParams({ case_no: '450/2275/25' });
+    expect(params.name).toBe('[ЄСІТС] 450/2275/25');
+    expect(params.client).toBeNull();
+  });
+  it('representedPartiesFullNames зберігається top-level для майбутнього backfill', () => {
+    const { params } = buildCreateCaseParams({
+      case_no: '757/9362/25',
+      representedParties: ['Бабенко О.І.'],
+      representedPartiesFullNames: ['Бабенко Олена Іванівна'],
+    });
+    expect(params.representedPartiesFullNames).toEqual(['Бабенко Олена Іванівна']);
+  });
+  it('без representedPartiesFullNames поле НЕ додається (старі envelope без змін)', () => {
+    const { params } = buildCreateCaseParams({ case_no: '450/2275/25', primaryParty: 'X' });
+    expect('representedPartiesFullNames' in params).toBe(false);
+  });
+});
+
+describe('TASK represented_parties — UPDATE існуючої через update_case_identity', () => {
+  function makeUpdateDeps(existingCases) {
+    const calls = [];
+    const cases = existingCases;
+    const executeAction = vi.fn(async (agentId, action, params) => {
+      calls.push({ agentId, action, params });
+      if (action === 'update_case_identity') {
+        const c = cases.find(x => x.id === params.caseId);
+        if (!c) return { success: false, error: 'not found' };
+        if (params.name !== undefined) c.name = params.name;
+        if (params.client !== undefined) c.client = params.client;
+        if (params.nameSource !== undefined) c.nameSource = params.nameSource;
+        return { success: true };
+      }
+      if (action === 'update_case_ecits_state') return { success: true };
+      if (action === 'add_hearing') return { success: true };
+      return { success: false, error: `unknown ${action}` };
+    });
+    return { executeAction, calls, getCases: () => cases };
+  }
+
+  function envelopeWithParties(case_no, representedParties) {
+    const env = makeEnvelope();
+    env.data.cases = [{
+      case_no,
+      court: 'Суд',
+      category: 'civil',
+      representedParties,
+      hearings: [],
+    }];
+    return env;
+  }
+
+  it('existing auto (за префіксом, без імені) + representedParties → name/client оновлені (кейс Бабенків)', async () => {
+    const existing = [{ id: 'c1', name: '[ЄСІТС] 757/9362/25-ц', case_no: '757/9362/25-ц', client: null, hearings: [] }];
+    const { executeAction, calls, getCases } = makeUpdateDeps(existing);
+    const res = await submitScenarioResult(
+      envelopeWithParties('757/9362/25', ['Бабенко О.І.', 'Бабенко П.П.']),
+      { executeAction, getCases },
+    );
+    expect(res.errors).toHaveLength(0);
+    const idCall = calls.find(c => c.action === 'update_case_identity');
+    expect(idCall).toBeTruthy();
+    expect(idCall.params.name).toBe('[ЄСІТС] Бабенко О.І., Бабенко П.П. (757/9362/25)');
+    expect(idCall.params.client).toBe('Бабенко О.І., Бабенко П.П.');
+    expect(idCall.params.nameSource).toBe('auto');   // court_sync НЕ ставить manual
+    expect(idCall.params.source).toBe('court_sync');
+    expect(existing[0].name).toBe('[ЄСІТС] Бабенко О.І., Бабенко П.П. (757/9362/25)');
+  });
+
+  it('кейс Махді: "[ЄСІТС] Пироженко Є.В. (363/4635/25)" → Махді А.С.', async () => {
+    const existing = [{ id: 'c2', name: '[ЄСІТС] Пироженко Є.В. (363/4635/25)', case_no: '363/4635/25', client: 'Пироженко Є.В.', hearings: [] }];
+    const { executeAction, getCases } = makeUpdateDeps(existing);
+    await submitScenarioResult(
+      envelopeWithParties('363/4635/25', ['Махді А.С.']),
+      { executeAction, getCases },
+    );
+    expect(existing[0].name).toBe('[ЄСІТС] Махді А.С. (363/4635/25)');
+    expect(existing[0].client).toBe('Махді А.С.');
+    expect(existing[0].nameSource).toBe('auto');
+  });
+
+  it('existing manual → name/client НЕ чіпаються', async () => {
+    const existing = [{ id: 'c3', name: '[ЄСІТС] Стара назва (1/1/25)', nameSource: 'manual', case_no: '1/1/25', client: 'Стара', hearings: [] }];
+    const { executeAction, calls, getCases } = makeUpdateDeps(existing);
+    await submitScenarioResult(envelopeWithParties('1/1/25', ['Нова Н.Н.']), { executeAction, getCases });
+    expect(calls.find(c => c.action === 'update_case_identity')).toBeUndefined();
+    expect(existing[0].name).toBe('[ЄСІТС] Стара назва (1/1/25)');
+  });
+
+  it('existing без nameSource і без префікса (ручна назва) → НЕ чіпається', async () => {
+    const existing = [{ id: 'c4', name: 'Іваненко проти ТОВ', case_no: '2/2/25', client: 'Іваненко', hearings: [] }];
+    const { executeAction, calls, getCases } = makeUpdateDeps(existing);
+    await submitScenarioResult(envelopeWithParties('2/2/25', ['Хтось Х.Х.']), { executeAction, getCases });
+    expect(calls.find(c => c.action === 'update_case_identity')).toBeUndefined();
+    expect(existing[0].name).toBe('Іваненко проти ТОВ');
+  });
+
+  it('старий envelope БЕЗ representedParties → identity не викликається (поведінка незмінна)', async () => {
+    const existing = [{ id: 'c5', name: '[ЄСІТС] 450/2275/25', case_no: '450/2275/25', client: null, hearings: [] }];
+    const { executeAction, calls, getCases } = makeUpdateDeps(existing);
+    await submitScenarioResult(makeEnvelope(), { executeAction, getCases }); // makeEnvelope має лише primaryParty
+    expect(calls.find(c => c.action === 'update_case_identity')).toBeUndefined();
+    expect(existing[0].name).toBe('[ЄСІТС] 450/2275/25');
+  });
+
+  it('identity вже актуальна → зайвого виклику немає (ідемпотентність)', async () => {
+    const existing = [{
+      id: 'c6',
+      name: '[ЄСІТС] Махді А.С. (363/4635/25)',
+      client: 'Махді А.С.',
+      nameSource: 'auto',
+      case_no: '363/4635/25',
+      hearings: [],
+    }];
+    const { executeAction, calls, getCases } = makeUpdateDeps(existing);
+    await submitScenarioResult(envelopeWithParties('363/4635/25', ['Махді А.С.']), { executeAction, getCases });
+    expect(calls.find(c => c.action === 'update_case_identity')).toBeUndefined();
   });
 });
 

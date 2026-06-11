@@ -2,6 +2,7 @@
 // Імпорт: `import { Button, Modal, Chip } from '@/components/UI';`
 export { Button } from './Button.jsx';
 export { Input } from './Input.jsx';
+export { InlineEditableText } from './InlineEditableText.jsx';
 export { Select } from './Select.jsx';
 export { Modal } from './Modal.jsx';
 export { Card } from './Card.jsx';

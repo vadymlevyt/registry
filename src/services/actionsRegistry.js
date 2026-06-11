@@ -86,6 +86,9 @@ export const EDIT_ACTIONS_SOURCE_AWARE = new Set([
   // TASK 0.4 R5
   'add_hearing',
   'update_hearing',
+  // TASK represented_parties: court_sync освіжає автогенеровані name/client —
+  // автосинхронізація, не робота адвоката (source='court_sync' не нараховується).
+  'update_case_identity',
 ]);
 
 // Чи candidateId є нащадком ancestorId у дереві проваджень.
@@ -225,9 +228,53 @@ export function createActions(deps) {
       if (!allowedFields.includes(field)) {
         return { error: `Поле "${field}" не дозволено змінювати через агента` };
       }
+      // name/client через цю дію — завжди людська правка (UI або агент від
+      // імені адвоката; court_sync_agent цієї дії не має — його шлях
+      // update_case_identity), тому фіксуємо nameSource:'manual' — авто-
+      // оновлення з ЄСІТС це поле більше НІКОЛИ не перезапише (TASK
+      // represented_parties).
+      const identityTouch = (field === 'name' || field === 'client')
+        ? { nameSource: 'manual' }
+        : {};
       setCases(prev => prev.map(c =>
         c.id === caseId
-          ? { ...c, [field]: value, updatedAt: new Date().toISOString() }
+          ? { ...c, [field]: value, ...identityTouch, updatedAt: new Date().toISOString() }
+          : c
+      ));
+      return { success: true };
+    },
+
+    // update_case_identity — компактне оновлення name+client ОДНІЄЮ дією
+    // (TASK represented_parties). Єдиний сенс: «виставити назву/клієнта справи
+    // разом із тим, хто є власником цієї назви (nameSource)». Відрізняється
+    // від update_case_field тим, що nameSource передається ЯВНО: court_sync
+    // передає 'auto' (авто-оновлення НЕ перемикає на manual), людська правка —
+    // 'manual'. source — канал виклику (білінг: EDIT_ACTIONS_SOURCE_AWARE,
+    // 'court_sync' не нараховується).
+    update_case_identity: ({ caseId, name, client, nameSource, source }) => {
+      if (!caseId) return { success: false, error: "caseId обов'язковий" };
+      if (!source) return { success: false, error: "source обов'язковий" };
+      if (name === undefined && client === undefined) {
+        return { success: false, error: 'потрібно передати name та/або client' };
+      }
+      if (typeof name === 'string' && !name.trim()) {
+        return { success: false, error: 'name не може бути порожнім' };
+      }
+      if (nameSource !== undefined && nameSource !== 'auto' && nameSource !== 'manual') {
+        return { success: false, error: "nameSource має бути 'auto' або 'manual'" };
+      }
+      const targetCase = getCases().find(c => c.id === caseId);
+      if (!targetCase) return { success: false, error: `Справу ${caseId} не знайдено` };
+      const timestamp = new Date().toISOString();
+      setCases(prev => prev.map(c =>
+        c.id === caseId
+          ? {
+              ...c,
+              ...(name !== undefined ? { name } : {}),
+              ...(client !== undefined ? { client } : {}),
+              ...(nameSource !== undefined ? { nameSource } : {}),
+              updatedAt: timestamp,
+            }
           : c
       ));
       return { success: true };
@@ -1838,6 +1885,11 @@ export function createActions(deps) {
     court_sync_agent: [
       'create_case',                         // TASK 0.4: новий імпорт з ЄСІТС
       'add_hearing', 'update_hearing',
+      // TASK represented_parties: освіження автогенерованих name/client списком
+      // представлених сторін. НЕ update_case_field (та дія лишається людською
+      // правкою і ставить nameSource:'manual') — компактна identity-дія з
+      // явним nameSource.
+      'update_case_identity',
       'mark_synced_from_ecits', 'update_case_ecits_state',
       'update_parties', 'update_team', 'update_process_participants',
       'update_proceeding_composition',

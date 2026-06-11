@@ -1,0 +1,53 @@
+/* InlineEditableText — редагування тексту на місці.
+   Типографіку (розмір/вага/колір) успадковує від контейнера, токени — лише
+   для станів редагування. */
+
+.ui-inline-edit {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  cursor: text;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  padding: 0 var(--space-1);
+  margin: 0 calc(-1 * var(--space-1));
+  transition: border-color var(--transition-fast);
+  max-width: 100%;
+}
+
+.ui-inline-edit:hover,
+.ui-inline-edit:focus-visible {
+  border-color: var(--color-border);
+  outline: none;
+}
+
+.ui-inline-edit__placeholder {
+  color: var(--color-text-3);
+}
+
+.ui-inline-edit__pen {
+  font-size: 0.75em;
+  color: var(--color-text-3);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.ui-inline-edit:hover .ui-inline-edit__pen,
+.ui-inline-edit:focus-visible .ui-inline-edit__pen {
+  opacity: 1;
+}
+
+.ui-inline-edit__input {
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-xs);
+  padding: 0 var(--space-1);
+  margin: 0 calc(-1 * var(--space-1));
+  outline: none;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}

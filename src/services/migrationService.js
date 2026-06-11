@@ -1297,6 +1297,14 @@ export function ensureCaseSaasAndEcitsFields(c) {
     origin: (typeof saas.origin === 'string' && CASE_ORIGIN_VALUES.includes(saas.origin))
       ? saas.origin
       : 'manual',
+    // nameSource — хто востаннє визначив name/client: система ('auto') чи
+    // людина руками ('manual'). Адитивне поле БЕЗ schema bump (TASK
+    // represented_parties): явне значення зберігається, інакше лінивий дефолт
+    // за префіксом "[ЄСІТС] " (консервативно: все не явно автогенероване —
+    // ручне, щоб імпорт нічого не перезаписав помилково).
+    nameSource: (saas.nameSource === 'auto' || saas.nameSource === 'manual')
+      ? saas.nameSource
+      : (String(saas.name || '').startsWith('[ЄСІТС] ') ? 'auto' : 'manual'),
     // v12 поля — стабільний атрибут справи (top-level, не в ecitsState).
     advocateRole: typeof saas.advocateRole === 'string' ? saas.advocateRole : (saas.advocateRole ?? null),
     advocateRoles: Array.isArray(saas.advocateRoles)
