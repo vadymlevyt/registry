@@ -117,7 +117,8 @@ callAgent({
 
 ## 8. AI USAGE IMPLICATIONS
 - **agentType:** приймається параметром; для proof-споживача — `qiParserDocument` (як зараз Triage; `document_parser` у логах).
-- **resolveModel:** через нього, не hardcoded.
+- **resolveModel:** через нього, не hardcoded. Ієрархія user→tenant→system уже працює (`modelResolver.SYSTEM_DEFAULTS` + `user/tenant.modelPreferences`). `callAgent` лише викликає `resolveModel(agentType)` — НЕ змінює механізм.
+- **Екран вибору моделі адвокатом (як у застосунку Claude) — борг #51, НЕ входить у B1.** Механізм перевизначення (`user.preferences.modelPreferences[agentType]`) уже готовий; бракує лише UI, що його запише. `callAgent` повністю сумісний: щойно з'явиться екран, його вибір підхопиться автоматично, без зміни парасолі.
 - **logAiUsage context:** `{ caseId, module, operation }` — той самий формат, що наявні точки.
 - **Tool Use чи текст:** `callAgent` підтримує обидва через `mode`; чат-агенти не мігруємо.
 
