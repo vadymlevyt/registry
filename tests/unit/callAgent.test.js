@@ -64,6 +64,35 @@ describe('callAgent', () => {
     expect(runMultiTurnConversation).not.toHaveBeenCalled();
   });
 
+  // P2-фікс (#55): Anthropic може віддати 200 з error-тілом. Транспорт кидає лише
+  // на non-2xx, тож цей м'який кейс ловиться централізовано в callAgent ДО обліку.
+  it('mode:text → 200 з error-тілом кидає Error(message) і НЕ пише облік', async () => {
+    callAPIWithRetry.mockResolvedValue({ error: { message: 'overloaded' } });
+    const sink = vi.fn();
+    await expect(callAgent({
+      agentType: 'qiParserDocument',
+      mode: 'text',
+      messages: [{ role: 'user', content: 'q' }],
+      apiKey: 'k',
+      aiUsageSink: sink,
+    })).rejects.toThrow('overloaded');
+    // кидок ДО кроку обліку → ні ai_usage, ні activityTracker
+    expect(sink).not.toHaveBeenCalled();
+    expect(activityTracker.report).not.toHaveBeenCalled();
+  });
+
+  // та сама централізована перевірка діє і для mode:stream
+  it('mode:stream → 200 з error-тілом кидає Error(message)', async () => {
+    callAPIStreaming.mockResolvedValue({ error: { message: 'rate_limited' } });
+    await expect(callAgent({
+      agentType: 'qiParserDocument',
+      mode: 'stream',
+      messages: [{ role: 'user', content: 'q' }],
+      apiKey: 'k',
+      aiUsageSink: vi.fn(),
+    })).rejects.toThrow('rate_limited');
+  });
+
   // §9.2
   it('mode:toolUse → tool-use транспорт; повертає toolResult', async () => {
     runMultiTurnConversation.mockResolvedValue({

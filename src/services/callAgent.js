@@ -115,6 +115,7 @@ export async function callAgent({
       { model, max_tokens, system, messages, tools },
       { apiKey }
     );
+    throwIfApiError(data);
     text = extractText(data);
     // Сирий usage транспорту (може бути undefined якщо API не повернув usage) —
     // forward без примусового 0, щоб діагностика caller'ів бачила точно те, що
@@ -127,6 +128,7 @@ export async function callAgent({
       { model, max_tokens, system, messages },
       { apiKey, onDelta: onStreamDelta }
     );
+    throwIfApiError(data);
     text = extractText(data);
     inputTokens = data?.usage?.input_tokens;
     outputTokens = data?.usage?.output_tokens;
@@ -200,6 +202,17 @@ export async function callAgent({
     model,
     stop_reason,
   };
+}
+
+// Anthropic може повернути 200 з error-тілом (рідко). Транспорт кидає лише на
+// non-2xx, тож цей М'ЯКИЙ кейс ловимо ТУТ — централізовано для всіх text/stream
+// споживачів парасолі. Раніше брати-аналізатори дублювали це вручну
+// (analyzeViaToolUse.js:55-56); мігрований Triage чек загубив (B1 P2). Тепер
+// один шлях: будь-який споживач callAgent захищений без ручного коду.
+function throwIfApiError(data) {
+  if (data && data.error) {
+    throw new Error(data.error.message || "AI повернув помилку у відповіді");
+  }
 }
 
 // Склеїти text-блоки з нативної Anthropic-відповіді (content[].type==='text').
