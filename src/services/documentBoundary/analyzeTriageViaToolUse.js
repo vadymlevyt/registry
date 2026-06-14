@@ -1,25 +1,24 @@
 // ── DOCUMENT BOUNDARY · TRIAGE TRANSPORT (Ф2 Smart Triage) ──────────────────
-// AI-хід Triage поверх toolUseRunner.callAPIWithRetry (єдиний транспорт з
-// retry/timeout/friendly-errors — Ф1). Структура дзеркалить
-// analyzeViaToolUse.js (інституційний патерн), АЛЕ:
+// AI-хід Triage поверх парасолі callAgent (TASK B1 · борг #55 Частина А).
+// Структура дзеркалить analyzeViaToolUse.js (інституційний патерн), АЛЕ:
 //   • вхід — text-блок структурного паспорта (Ф0), НЕ Document Block:
 //     нуль image-токенів (вартісна модель §6);
-//   • модель — Haiku через resolveModel('qiParserDocument') (структурна
-//     задача, ~1/3 ціни Sonnet; R8-фікс — 'document_parser' тихо тягнув
-//     Sonnet бо ключа нема в SYSTEM_DEFAULTS);
-//   • білінг §12: logAiUsageViaSink (ai_usage[], оператор SaaS) +
-//     activityTracker.report('agent_call', operation:'triage') (time_entries[],
-//     час адвоката) — НЕ дублювати поля; усе в try/catch (не валити job).
+//   • модель і облік — тепер через callAgent (НЕ вручну тут):
+//       – callAgent сам резолвить модель через resolveModel('qiParserDocument')
+//         (Haiku, ~1/3 ціни Sonnet; R8-фікс — snake_case 'document_parser' нема
+//         в SYSTEM_DEFAULTS → тихо тягнув би Sonnet);
+//       – callAgent сам пише ai_usage (мітка 'document_parser' через
+//         AGENT_USAGE_LABELS) + activityTracker('agent_call', operation:'triage')
+//         РІВНО ОДИН раз, у try/catch (§3 Варіант А — без подвоєння).
+//     Ручний logAiUsageViaSink/activityTracker.report звідси ПРИБРАНО — тепер це
+//     робить парасоля. Результат нарізки і лічильники токенів — НЕЗМІННІ.
 //
 // Чистий модуль: без Drive/React. Транспорт мокається через global fetch
 // (як toolUseRunner/analyzeViaToolUse тести) — Provider-integration тест
 // ганяє цей РЕАЛЬНИЙ модуль через стадію (обмеження §2.1).
 
-import { resolveModel } from '../modelResolver.js';
-import { logAiUsageViaSink } from '../aiUsageService.js';
-import * as activityTracker from '../activityTracker.js';
-import { MODULES, categoryForCase } from '../moduleNames.js';
-import { callAPIWithRetry } from '../toolUseRunner.js';
+import { MODULES } from '../moduleNames.js';
+import { callAgent } from '../callAgent.js';
 import { buildTriagePrompt } from './triagePrompt.js';
 
 function extractJson(text) {
@@ -50,29 +49,30 @@ function extractJson(text) {
 export async function analyzeTriageViaToolUse({ artifacts = [], userHint = '', caseId = null, apiKey, aiUsageSink } = {}) {
   if (!apiKey) throw new Error('Немає API ключа для Triage');
 
-  // Haiku — структурна задача (вартісна модель §6). Ієрархія user→tenant→
-  // system збережена (resolveModel), не hardcoded.
-  const model = resolveModel('qiParserDocument');
   const prompt = buildTriagePrompt({ artifacts, userHint });
 
-  const data = await callAPIWithRetry({
-    model,
+  // Парасоля callAgent: резолв моделі + облік усередині (див. шапку файлу).
+  // mode:'text' — Triage це одно-турновий text-complete (НЕ tool-use попри
+  // історичну назву файлу); поведінка ідентична попередньому callAPIWithRetry.
+  const { text, usage, model } = await callAgent({
+    agentType: 'qiParserDocument',
+    mode: 'text',
     // Підвищено з 4000 — для тома з 50-74 документами план у JSON ≈ 60-90
-    // токенів на документ × 74 ≈ 5900 токенів. Старий ліміт 4000 потенційно
-    // змушував Haiku видавати «здавальницький» план бо знав що не вкладеться.
-    // Узгоджено з CaseDossier context-generator (16000). Haiku 4.5 підтримує
-    // до ~16K output tokens. Anthropic тарифікує тільки використані токени,
-    // не ліміт — це дозвіл, не вимога видавати більше.
+    // токенів на документ × 74 ≈ 5900 токенів. Anthropic тарифікує тільки
+    // використані токени, не ліміт — це дозвіл, не вимога видавати більше.
     max_tokens: 16000,
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-  }, { apiKey });
+    context: { caseId: caseId || null, module: MODULES.DOCUMENT_PROCESSOR, operation: 'triage' },
+    apiKey,
+    aiUsageSink,
+  });
 
   // Діагностика великих томів — реальні токени input/output. Без цього
   // неможливо розрізнити «AI обрізаний max_tokens» від «AI здається сам»
   // на томах 200+ стор. Видно у DevTools Console на планшеті адвоката.
   try {
-    const inT = data?.usage?.input_tokens;
-    const outT = data?.usage?.output_tokens;
+    const inT = usage?.inputTokens;
+    const outT = usage?.outputTokens;
     const artifactsCount = artifacts.length;
     const totalPages = artifacts.reduce((s, a) => s + (a.pageCount || 0), 0);
     // eslint-disable-next-line no-console
@@ -82,28 +82,9 @@ export async function analyzeTriageViaToolUse({ artifacts = [], userHint = '', c
     );
   } catch { /* лог ізольований — не валить pipeline */ }
 
-  if (data?.error) throw new Error(data.error.message);
-
-  try {
-    logAiUsageViaSink({
-      agentType: 'document_parser',
-      model,
-      inputTokens: data?.usage?.input_tokens,
-      outputTokens: data?.usage?.output_tokens,
-      context: { caseId: caseId || null, module: MODULES.DOCUMENT_PROCESSOR, operation: 'triage' },
-    }, aiUsageSink);
-    activityTracker.report('agent_call', {
-      caseId: caseId || null,
-      module: MODULES.DOCUMENT_PROCESSOR,
-      category: categoryForCase(caseId),
-      metadata: { agentType: 'document_parser', operation: 'triage' },
-    });
-  } catch { /* білінг не валить job (§12) */ }
-
-  const out = data?.content?.[0]?.text;
-  const parsed = extractJson(typeof out === 'string' ? out : '');
+  const parsed = extractJson(typeof text === 'string' ? text : '');
   if (!parsed) {
-    throw new Error('Triage повернув не-JSON: ' + String(out || '').slice(0, 200));
+    throw new Error('Triage повернув не-JSON: ' + String(text || '').slice(0, 200));
   }
   return { documents: parsed.documents || [], unusedPages: parsed.unusedPages || [] };
 }

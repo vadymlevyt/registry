@@ -40,7 +40,8 @@
 
 ```
 callAgent({
-  agentType,            // обов'язково — ключ для resolveModel + agentType у логах
+  agentType,            // обов'язково — resolve-ключ моделі, camelCase (SYSTEM_DEFAULTS)
+  usageAgentType,       // мітка ai_usage[].agentType, snake_case (default — мапінг від agentType)
   mode,                 // 'text' | 'stream' | 'toolUse'  (default 'text')
   system,               // системний промпт (опційно)
   messages,             // масив повідомлень (формат Anthropic)
@@ -49,6 +50,8 @@ callAgent({
   context,              // { caseId, module, operation } — для логів
   apiKey,               // ключ (як зараз передається транспортам)
   onStreamDelta,        // для mode:'stream' — колбек дельт (опційно)
+  executeAction,        // для mode:'toolUse' — виконавець дій
+  maxTurns,             // для mode:'toolUse' — захист циклу (опційно)
   // службові ін'єкції для тестів/білінгу:
   aiUsageSink,          // куди писати ai_usage (як logAiUsageViaSink)
   billAsUserAction,     // bool: чи писати activityTracker (default true)
@@ -56,6 +59,8 @@ callAgent({
 ```
 
 **Один сенс на параметр (правило #11):** `mode` — лише транспорт (як кликати), `billAsUserAction` — лише «чи це робота адвоката для білінгу» (автопродовження DP → false, кнопка/ACTION → true). Не змішувати.
+
+**ДВА СЛОВНИКИ АГЕНТІВ (правило #11 — це КОРЕКТНІСТЬ, не напруга):** `agentType` — resolve-ключ моделі (camelCase простір імен `SYSTEM_DEFAULTS`: `qiParserDocument`, `textCleaner`, …); `usageAgentType` — мітка обліку (snake_case enum логів: `document_parser`, `text_cleaner`, …). Це **різні сутності з різними просторами імен** — зливати їх в один ключ ламає snake_case-enum логів і історичну агрегацію. Default `usageAgentType` береться з `AGENT_USAGE_LABELS` (мапінг camelCase→snake_case у `callAgent.js`); невідомий ключ → fallback на сам `agentType`, тоді caller передає `usageAgentType` явно. Прецедент — `cleanTextService` (`textCleaner` resolve vs `'text_cleaner'` лог-мітка).
 
 ### Внутрішня логіка (3 кроки)
 1. `model = resolveModel(agentType)` — резолв тут, не в caller'а.
@@ -116,7 +121,7 @@ callAgent({
 - **Без подвоєння:** §3 — критично; тест доводить однократність.
 
 ## 8. AI USAGE IMPLICATIONS
-- **agentType:** приймається параметром; для proof-споживача — `qiParserDocument` (як зараз Triage; `document_parser` у логах).
+- **agentType / usageAgentType:** ДВА окремі параметри (§2). `agentType` (resolve-ключ моделі) для proof-споживача — `qiParserDocument` (Haiku); `usageAgentType` (мітка ai_usage) — `document_parser`, береться **за замовчуванням** з `AGENT_USAGE_LABELS` (мапінг `qiParserDocument → document_parser`), тож Triage передає лише `agentType`, а лог-мітка лишається **незмінною** (`document_parser`). Це навмисні два словники, не дубль (правило #11 — корекність).
 - **resolveModel:** через нього, не hardcoded. Ієрархія user→tenant→system уже працює (`modelResolver.SYSTEM_DEFAULTS` + `user/tenant.modelPreferences`). `callAgent` лише викликає `resolveModel(agentType)` — НЕ змінює механізм.
 - **Екран вибору моделі адвокатом (як у застосунку Claude) — борг #51, НЕ входить у B1.** Механізм перевизначення (`user.preferences.modelPreferences[agentType]`) уже готовий; бракує лише UI, що його запише. `callAgent` повністю сумісний: щойно з'явиться екран, його вибір підхопиться автоматично, без зміни парасолі.
 - **logAiUsage context:** `{ caseId, module, operation }` — той самий формат, що наявні точки.
