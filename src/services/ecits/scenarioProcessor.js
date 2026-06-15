@@ -494,6 +494,8 @@ async function maybeUpdateAutoIdentity(ecitsCase, existingCase, deps, inc) {
       case_no: ecitsCase.case_no,
       message: `update_case_identity failed: ${r?.error || 'unknown'}`,
     });
+  } else if (inc.detail) {
+    inc.detail.changed.push(`нова назва: ${name}`);
   }
 }
 
@@ -512,6 +514,11 @@ async function processCase(ecitsCase, deps) {
     skipped: 0,
     errors: [],
     warnings: [],
+    // TASK case_ui_and_result_polish §4 — людиночитна деталь по справі для
+    // result.details[]. action: 'created'|'updated'|'skipped'; changed[] —
+    // що саме сталося («нова назва: …», «+N засідань», «оновлено ecitsState»,
+    // «пропущено: <причина>»).
+    detail: { case_no: ecitsCase?.case_no || null, action: null, changed: [] },
   };
 
   // Зміна B: гейт посилається на case_no (ключ дедупу), а не на ecitsCaseId.
@@ -522,6 +529,8 @@ async function processCase(ecitsCase, deps) {
   if (!incomingKey) {
     inc.skipped++;
     inc.errors.push({ case_no: ecitsCase?.case_no, message: 'missing case_no' });
+    inc.detail.action = 'skipped';
+    inc.detail.changed.push('пропущено: відсутній номер справи');
     return inc;
   }
 
@@ -535,6 +544,7 @@ async function processCase(ecitsCase, deps) {
   let caseId;
   if (existing) {
     caseId = existing.id;
+    inc.detail.action = 'updated';
     const patchResult = await executeAction(agentId, 'update_case_ecits_state', {
       caseId,
       patch: {
@@ -546,6 +556,7 @@ async function processCase(ecitsCase, deps) {
     });
     if (patchResult?.success) {
       inc.casesUpdated++;
+      inc.detail.changed.push('оновлено ecitsState');
     } else {
       inc.errors.push({
         case_no: ecitsCase.case_no,
@@ -563,10 +574,13 @@ async function processCase(ecitsCase, deps) {
     if (createResult?.success) {
       caseId = createResult.caseId;
       inc.casesCreated++;
+      inc.detail.action = 'created';
+      inc.detail.changed.push(`нова назва: ${createParams.name}`);
     } else if (createResult?.error === 'duplicate_case_no' && createResult.existingCaseId) {
       // Гонка: справа з тим самим case_no з'явилась між нашим пошуком і
       // create_case. Прив'язуємось до неї і освіжаємо ecitsState.
       caseId = createResult.existingCaseId;
+      inc.detail.action = 'updated';
       const patchResult = await executeAction(agentId, 'update_case_ecits_state', {
         caseId,
         patch: {
@@ -578,6 +592,7 @@ async function processCase(ecitsCase, deps) {
       });
       if (patchResult?.success) {
         inc.casesUpdated++;
+        inc.detail.changed.push('оновлено ecitsState');
       } else {
         inc.errors.push({
           case_no: ecitsCase.case_no,
@@ -593,6 +608,8 @@ async function processCase(ecitsCase, deps) {
         case_no: ecitsCase.case_no,
         message: `create_case failed: ${createResult?.error || 'unknown'}`,
       });
+      inc.detail.action = 'skipped';
+      inc.detail.changed.push(`пропущено: create_case failed: ${createResult?.error || 'unknown'}`);
       return inc;
     }
   }
@@ -626,6 +643,10 @@ async function processCase(ecitsCase, deps) {
     }
   }
 
+  if (inc.hearingsAdded > 0) {
+    inc.detail.changed.push(`+${inc.hearingsAdded} засідань`);
+  }
+
   return inc;
 }
 
@@ -651,8 +672,19 @@ async function runCases(ecitsCases, deps, result, onProgress, labelOffset = 0) {
       result.skipped += inc.skipped;
       if (inc.errors.length) result.errors.push(...inc.errors);
       if (inc.warnings.length) result.warnings.push(...inc.warnings);
+      // §4 — агрегуємо деталь по справі (cap 200, як history).
+      if (inc.detail && Array.isArray(result.details) && result.details.length < 200) {
+        result.details.push(inc.detail);
+      }
     } catch (e) {
       result.errors.push({ case_no: ecitsCase?.case_no, message: e.message });
+      if (Array.isArray(result.details) && result.details.length < 200) {
+        result.details.push({
+          case_no: ecitsCase?.case_no || null,
+          action: 'skipped',
+          changed: [`пропущено: ${e.message}`],
+        });
+      }
     }
   }
 }
@@ -682,8 +714,10 @@ async function runCases(ecitsCases, deps, result, onProgress, labelOffset = 0) {
  *     очікування ack (default PERSIST_ACK_TIMEOUT_MS; тести ставлять малий)
  * @returns {Promise<{
  *   scenarioRunId, casesCreated, casesUpdated, hearingsAdded, skipped,
- *   errors, warnings, pendingReview, persisted, persistError
+ *   errors, warnings, pendingReview, details, persisted, persistError
  * }>}
+ *   details — per-case [{ case_no, action:'created'|'updated'|'skipped',
+ *   changed: string[] }] (cap 200) для розгорнутого підсумку в ResultCard.
  */
 export async function submitScenarioResult(envelope, deps) {
   if (!deps || typeof deps.executeAction !== 'function') {
@@ -724,6 +758,8 @@ export async function submitScenarioResult(envelope, deps) {
     errors: [],
     warnings: [...normalizationWarnings, ...envelopeWarnings],
     pendingReview: [],
+    // §4 — per-case деталі (case_no → дія + людиночитні зміни). Адитивне поле.
+    details: [],
   };
 
   // TASK v12 §3 — партиціонування likelyNotMine.
@@ -842,6 +878,7 @@ export async function processDeferredCases(ecitsCases, deps) {
     skipped: 0,
     errors: [],
     warnings: [],
+    details: [],
   };
 
   if (!Array.isArray(ecitsCases) || ecitsCases.length === 0) {

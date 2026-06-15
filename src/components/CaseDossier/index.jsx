@@ -26,7 +26,8 @@ import {
   ArrowLeft, AlertTriangle, ChevronLeft, ChevronRight, Maximize2, Minimize2, Wrench,
 } from "lucide-react";
 import { ICON_SIZE } from "../UI/icons.js";
-import { DatePicker, DateTimePicker, Input, Modal, Button, Checkbox, BulkActionBar, useSelection } from "../UI";
+import { DatePicker, DateTimePicker, Input, Modal, Button, Checkbox, BulkActionBar, useSelection, InlineEditableText } from "../UI";
+import { categoryLabel as getCategoryLabel } from "../../services/caseCategories.js";
 import { DocumentViewer } from "../DocumentViewer";
 import { AddDocumentModal } from "./AddDocumentModal.jsx";
 import DocumentProcessorV2 from "../DocumentProcessorV2";
@@ -1064,13 +1065,19 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
   // автоматично виходить із вибору (логіка хука).
   const registrySel = useSelection(filteredDocs.map(d => d.id));
 
-  const categoryLabel = {
-    civil: "Цивільна", criminal: "Кримінальна",
-    military: "Військова", administrative: "Адміністративна"
-  }[caseData.category] || caseData.category;
+  const categoryLabel = getCategoryLabel(caseData.category);
 
   const statusLabel = { active: "Активна", paused: "Призупинена", closed: "Закрита" }[caseData.status] || caseData.status;
   const statusColor = { active: "var(--color-success)", paused: "var(--color-warning)", closed: "var(--color-text-3)" }[caseData.status] || "var(--color-text-3)";
+
+  // Inline-правка name/client (TASK case_ui_and_result_polish §1): через
+  // executeAction update_case_field — дія сама ставить nameSource:'manual',
+  // тож авто-оновлення з ЄСІТС цю ручну правку більше не перезапише. Працює
+  // для БУДЬ-ЯКОЇ справи (і [ЄСІТС]-автоназв, і заведених вручну).
+  const saveIdentityField = (field) => (value) => {
+    if (!onExecuteAction) return;
+    onExecuteAction("qi_agent", "update_case_field", { caseId: caseData.id, field, value });
+  };
 
   function saveIdea() {
     if (!ideaText.trim()) return;
@@ -1610,8 +1617,10 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                   const CATEGORY_MAP = {
                     "Цивільна": "civil",
                     "Кримінальна": "criminal",
-                    "Адміністративна": "administrative",
-                    "Військова": "military",
+                    "Адміністративна": "admin",
+                    "Господарська": "commercial",
+                    "Справа про адміністративне правопорушення": "administrative_offense",
+                    "Адмінправопорушення": "administrative_offense",
                   };
                   const value = row.field === "category" ? (CATEGORY_MAP[raw] || raw) : raw;
                   updateCase(caseData.id, row.field, value);
@@ -2365,7 +2374,23 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           <span>Реєстр</span>
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{caseData.name}</div>
+          <div style={{ fontSize: 15, fontWeight: 700, minWidth: 0 }}>
+            <InlineEditableText
+              value={caseData.name}
+              onSave={saveIdentityField("name")}
+              allowEmpty={false}
+              ariaLabel={"\u041d\u0430\u0437\u0432\u0430 \u0441\u043f\u0440\u0430\u0432\u0438"}
+            />
+          </div>
+          <div style={{ fontSize: 11, color: "var(--color-text-3)", marginTop: 2 }}>
+            {"\u041a\u043b\u0456\u0454\u043d\u0442: "}
+            <InlineEditableText
+              value={caseData.client}
+              onSave={saveIdentityField("client")}
+              placeholder={"\u043d\u0435 \u0432\u043a\u0430\u0437\u0430\u043d\u0438\u0439"}
+              ariaLabel={"\u041a\u043b\u0456\u0454\u043d\u0442 \u0441\u043f\u0440\u0430\u0432\u0438"}
+            />
+          </div>
           <div style={{ fontSize: 11, color: "var(--color-text-3)", marginTop: 2 }}>
             {categoryLabel}{caseData.court ? ` \u00b7 ${caseData.court}` : ""}{caseData.case_no ? ` \u00b7 \u2116${caseData.case_no}` : ""}
           </div>

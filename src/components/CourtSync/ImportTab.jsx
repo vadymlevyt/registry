@@ -153,6 +153,7 @@ export default function ImportTab({ executeAction, cases, getCases, awaitPersist
           skipped: prev.skipped + inc.skipped,
           errors: [...prev.errors, ...inc.errors],
           warnings: [...prev.warnings, ...inc.warnings],
+          details: [...(prev.details || []), ...(inc.details || [])],
           pendingReview: remaining,
         };
       });
@@ -305,9 +306,17 @@ function Step({ number, title, children }) {
   );
 }
 
+// §4 — людиночитна мітка дії по справі для розгорнутого підсумку.
+const ACTION_LABELS = {
+  created: 'створено',
+  updated: 'оновлено',
+  skipped: 'пропущено',
+};
+
 function ResultCard({ result }) {
   const errors = Array.isArray(result.errors) ? result.errors : [];
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const details = Array.isArray(result.details) ? result.details : [];
   const hasErrors = errors.length > 0;
   // TASK submit_persist_ack — зелений «успіх»-вигляд ЛИШЕ при підтвердженому
   // персисті. persisted === false — запис на Drive НЕ підтверджено (чесний
@@ -375,6 +384,32 @@ function ResultCard({ result }) {
           </summary>
           <ul style={{ marginTop: 8, paddingLeft: 20, fontSize: 12 }}>
             {warnings.map((w, i) => (<li key={i}>{coerceToString(w)}</li>))}
+          </ul>
+        </details>
+      )}
+      {details.length > 0 && (
+        <details style={{ marginTop: 12 }} data-testid="result-details">
+          <summary style={{ cursor: 'pointer', color: 'var(--color-text-2)' }}>
+            Деталі по справах ({details.length})
+          </summary>
+          <ul style={{ marginTop: 8, paddingLeft: 20, fontSize: 12 }}>
+            {details.map((d, i) => {
+              const actionLabel = ACTION_LABELS[d?.action] || coerceToString(d?.action);
+              const changed = Array.isArray(d?.changed) ? d.changed : [];
+              return (
+                <li key={i} style={{ marginBottom: 4 }}>
+                  <span style={{ fontWeight: 'var(--weight-bold)' }}>
+                    {coerceToString(d?.case_no) || '—'}
+                  </span>
+                  {` — ${actionLabel}`}
+                  {changed.length > 0 && (
+                    <span style={{ color: 'var(--color-text-2)' }}>
+                      {`: ${changed.map(coerceToString).join('; ')}`}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </details>
       )}

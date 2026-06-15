@@ -29,13 +29,14 @@ export const CANONICAL_CASE_FIELDS = {
   },
   category: {
     type: 'string',
-    enum: ['civil', 'criminal', 'military', 'admin', 'commercial', 'administrative_offense', null],
+    enum: ['civil', 'criminal', 'admin', 'commercial', 'administrative_offense', null],
     required: false,
     nullable: true,
     description: "null = категорія не визначена (потребує уточнення). " +
       "'admin' (legacy ім'я для адмінсуду) = envelope 'administrative'. " +
       "'administrative_offense' (адмінправопорушення) ≠ 'admin' — інша юрисдикція (правило #11). " +
-      "'military' лишається як legacy, у ЄСІТС envelope не приходить.",
+      "'military' прибрано (TASK case_ui_and_result_polish §3): військові справи " +
+      "юридично адміністративні — мігруються military→admin у normalizeCases.",
   },
   status: { type: 'string', enum: ['active', 'paused', 'closed'], required: true },
 

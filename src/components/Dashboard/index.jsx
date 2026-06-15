@@ -1136,7 +1136,6 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
     closed: cases.filter(c => c.status === "closed").length,
     civil: cases.filter(c => c.category === "civil").length,
     criminal: cases.filter(c => c.category === "criminal").length,
-    military: cases.filter(c => c.category === "military").length,
     admin: cases.filter(c => c.category === "admin" || c.category === "administrative").length,
   };
 
@@ -2045,7 +2044,6 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
             const catSegs = [
               { label: "Цивільні", val: stats.civil, color: "#4f7cff" },
               { label: "Кримінальні", val: stats.criminal, color: "#e74c3c" },
-              { label: "Військові", val: stats.military, color: "#f39c12" },
               { label: "Адміністративні", val: stats.admin, color: "#2ecc71" },
             ];
             const total = catSegs.reduce((a, s) => a + s.val, 0) || 1;

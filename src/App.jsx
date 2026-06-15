@@ -41,6 +41,7 @@ import { getTimeStandard, getCategoryDefaults, getVariantDefault } from './servi
 import { checkAndArchive as checkAndArchiveTimeEntries } from './services/timeEntriesArchiver';
 import { handleReturn as smartHandleReturn } from './services/smartReturnHandler';
 import { MODULES, categoryForCase } from './services/moduleNames';
+import { categoryLabel, CATEGORY_SELECT_OPTIONS, CATEGORY_FILTER_VALUES, normalizeCategoryValue } from './services/caseCategories';
 import { SystemModalRoot, systemAlert, systemConfirm } from './components/SystemModal';
 import { ToastContainer } from './components/UI/ToastContainer.jsx';
 import { DatePicker, TimePicker, InlineEditableText } from './components/UI';
@@ -118,7 +119,7 @@ const mkHearing = (daysFromNow, court, status = 'scheduled') => daysFromNow != n
 
 const INITIAL_CASES = [
   { id:'case_1',  name:'Салун',            client:'Салун Ж./Салун І.',  category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/2241/24', hearings:mkHearing(2,'Рівненський райсуд'),  deadline:d(1),  deadline_type:'Заява про витрати (ст.141)',  next_action:'Подати заяву про судові витрати', notes:'', pinnedNoteIds:[] },
-  { id:'case_2',  name:'Корева',           client:'Корева М.В.',        category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearings:mkHearing(5,'Костопільський райсуд'),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'', pinnedNoteIds:[] },
+  { id:'case_2',  name:'Корева',           client:'Корева М.В.',        category:'admin', status:'active',  court:'Костопільський райсуд',      case_no:'560/1891/25', hearings:mkHearing(5,'Костопільський райсуд'),  deadline:d(3),  deadline_type:'Адвокатський запит до в/ч',   next_action:'Надіслати запит до МОУ',          notes:'', pinnedNoteIds:[] },
   { id:'case_3',  name:'Рубан',            client:'Рубан О.П.',         category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/3312/23', hearings:mkHearing(8,'Печерський райсуд м.Київ'),  deadline:d(6),  deadline_type:'Відповідь на позов',          next_action:'Підготувати заперечення',         notes:'', pinnedNoteIds:[] },
   { id:'case_4',  name:'Брановський',      client:'Брановський В.І.',   category:'civil',    status:'active',  court:'Господарський суд Київ',     case_no:'910/4521/24', hearings:mkHearing(12,'Господарський суд Київ'), deadline:d(10), deadline_type:'Апеляційна скарга',           next_action:'Подати апеляцію',                 notes:'', pinnedNoteIds:[],
     proceedings: [
@@ -156,7 +157,7 @@ const INITIAL_CASES = [
   { id:'case_12', name:'Липовцев',         client:'Липовцев І.О.',      category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/1122/24', hearings:[],  deadline:d(7),  deadline_type:'Позовна заява',               next_action:'Подати позов',                   notes:'', pinnedNoteIds:[] },
   { id:'case_13', name:'Цзян',             client:'Цзян Хуей',          category:'admin',    status:'active',  court:'Київський окружний адмінсуд',case_no:'640/8821/25', hearings:mkHearing(35,'Київський окружний адмінсуд'), deadline:null,  deadline_type:null,                          next_action:'Очікуємо відповідь',             notes:'', pinnedNoteIds:[] },
   { id:'case_14', name:'Бабенко',          client:'Бабенко О.В.',       category:'civil',    status:'active',  court:'Печерський райсуд м.Київ',   case_no:'757/9012/24', hearings:mkHearing(40,'Печерський райсуд м.Київ'), deadline:null,  deadline_type:null,                          next_action:'Підготовка документів',          notes:'', pinnedNoteIds:[] },
-  { id:'case_15', name:'Конах',            client:'Конах В.П.',         category:'military', status:'active',  court:'Костопільський райсуд',      case_no:'560/4453/25', hearings:mkHearing(14,'Костопільський райсуд'), deadline:d(12), deadline_type:'Запит до ТЦК',               next_action:'Надіслати запит',                notes:'', pinnedNoteIds:[] },
+  { id:'case_15', name:'Конах',            client:'Конах В.П.',         category:'admin', status:'active',  court:'Костопільський райсуд',      case_no:'560/4453/25', hearings:mkHearing(14,'Костопільський райсуд'), deadline:d(12), deadline_type:'Запит до ТЦК',               next_action:'Надіслати запит',                notes:'', pinnedNoteIds:[] },
   { id:'case_16', name:'Сипко',            client:'Сипко Р.Д.',         category:'criminal', status:'paused',  court:'Рівненський суд',            case_no:'190/5544/23', hearings:[],  deadline:null,  deadline_type:null,                          next_action:'Очікуємо процесуального рішення',notes:'', pinnedNoteIds:[] },
   { id:'case_17', name:'Квант',            client:'ТОВ «Квант»',        category:'admin',    status:'active',  court:'Господарський суд Рівне',    case_no:'918/2211/25', hearings:mkHearing(45,'Господарський суд Рівне'), deadline:null,  deadline_type:null,                          next_action:'Підготовка позиції',             notes:'', pinnedNoteIds:[] },
   { id:'case_18', name:'Янченко',          client:'Янченко Л.С.',       category:'civil',    status:'active',  court:'Рівненський райсуд',        case_no:'363/7734/24', hearings:mkHearing(50,'Рівненський райсуд'), deadline:null,  deadline_type:null,                          next_action:'Збираємо докази',                notes:'', pinnedNoteIds:[] },
@@ -165,7 +166,7 @@ const INITIAL_CASES = [
 ];
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-const CAT_LABELS = { civil:'Цивільна', criminal:'Кримінальна', military:'Військова', admin:'Адміністративна' };
+// Назви категорій — централізовано у services/caseCategories.js (правило #11).
 const STATUS_LABELS = { active:'Активна', paused:'Призупинена', closed:'Закрита' };
 
 function daysUntil(dateStr) {
@@ -254,7 +255,7 @@ function CaseCard({ c, onClick }) {
       <div className="case-card-top">
         <div className="case-card-name">{c.name}</div>
         <div className="case-card-badges">
-          <span className={`badge badge-${c.category}`}>{CAT_LABELS[c.category]}</span>
+          <span className={`badge badge-${c.category}`}>{categoryLabel(c.category, { short: true })}</span>
           <span className={`badge badge-${c.status}`}>{STATUS_LABELS[c.status]}</span>
         </div>
       </div>
@@ -320,7 +321,7 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore, onExe
       <div className="modal-panel" onClick={e => e.stopPropagation()}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
-          <span className={`badge badge-${c.category}`}>{CAT_LABELS[c.category]}</span>
+          <span className={`badge badge-${c.category}`}>{categoryLabel(c.category, { short: true })}</span>
           <span className={`badge badge-${c.status}`}>{STATUS_LABELS[c.status]}</span>
         </div>
         <div className="modal-title">
@@ -335,7 +336,7 @@ function CaseModal({ c, onClose, onEdit, onDelete, onCloseCase, onRestore, onExe
           <div className="modal-section-title">Реквізити справи</div>
           <div className="modal-field"><span className="modal-field-label">Суд</span><span className="modal-field-val">{c.court}</span></div>
           <div className="modal-field"><span className="modal-field-label">Номер справи</span><span className="modal-field-val">{c.case_no}</span></div>
-          <div className="modal-field"><span className="modal-field-label">Категорія</span><span className="modal-field-val">{CAT_LABELS[c.category]}</span></div>
+          <div className="modal-field"><span className="modal-field-label">Категорія</span><span className="modal-field-val">{categoryLabel(c.category)}</span></div>
         </div>
 
         <div className="modal-section">
@@ -602,7 +603,7 @@ When the user gives you a command:
 
   Available fields and values:
   - status: "active" | "paused" | "closed"
-  - category: "civil" | "criminal" | "military" | "administrative"
+  - category: "civil" | "criminal" | "admin" | "commercial" | "administrative_offense"
   - court: string
   - case_no: string
   - next_action: string
@@ -976,8 +977,6 @@ function buildSystemContext(cases) {
     return `${day} ${m}${timeStr ? ' о ' + timeStr : ''}${suffix}`;
   }
 
-  const catMap = { civil: 'Цивільна', criminal: 'Кримінальна', military: 'Військова', administrative: 'Адміністративна' };
-
   const active = cases.filter(c => c.status === 'active' || !c.status);
   const paused = cases.filter(c => c.status === 'paused');
   const closed = cases.filter(c => c.status === 'closed');
@@ -1036,7 +1035,7 @@ function buildSystemContext(cases) {
     if (detail === 'full') {
       ctx += `• ${c.name} [id:${c.id}]`;
       if (c.case_no) ctx += ` [${c.case_no}]`;
-      ctx += ` | ${catMap[c.category] || c.category || '—'}`;
+      ctx += ` | ${categoryLabel(c.category)}`;
       if (c.court) ctx += ` | ${c.court}`;
       if (c.client) ctx += ` | Клієнт: ${c.client}`;
       if (hearingsStr) ctx += ` | Засідання: ${hearingsStr}`;
@@ -2795,10 +2794,9 @@ function AddCaseForm({ onSave, onCancel, initialData }) {
         <div className="form-group">
           <label className="form-label">Категорія</label>
           <select className="form-select" value={form.category} onChange={e=>set('category',e.target.value)}>
-            <option value="civil">Цивільна</option>
-            <option value="criminal">Кримінальна</option>
-            <option value="military">Військова</option>
-            <option value="admin">Адміністративна</option>
+            {CATEGORY_SELECT_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
         </div>
         <div className="form-group">
@@ -3461,6 +3459,11 @@ function normalizeCases(cases) {
         updated[k] = toSafeStr(updated[k]);
       }
     });
+
+    // category 'military' → 'admin' — військові справи юридично адміністративні,
+    // окрема категорія лише плутала (TASK case_ui_and_result_polish §3). Лінива
+    // нормалізація даних, не bump схеми. Ідемпотентна (повторний запуск no-op).
+    if (updated.category != null) updated.category = normalizeCategoryValue(updated.category);
 
     // notes: рядок → масив
     if (typeof updated.notes === 'string' && updated.notes.trim()) {
@@ -5481,8 +5484,8 @@ function App() {
               </div>
               <div className="cases-toolbar">
                 <div className="search-box"><span style={{color:'var(--text3)'}}>🔍</span><input placeholder="Пошук за назвою, клієнтом, судом..." value={search} onChange={e=>setSearch(e.target.value)} /></div>
-                {['all','civil','criminal','military','admin'].map(cat => (
-                  <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>{cat==='all'?'Всі':CAT_LABELS[cat]}</button>
+                {['all', ...CATEGORY_FILTER_VALUES].map(cat => (
+                  <button key={cat} className={`filter-btn${filterCat===cat?' active':''}`} onClick={()=>setFilterCat(cat)}>{cat==='all'?'Всі':categoryLabel(cat, { short: true })}</button>
                 ))}
               </div>
               <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
