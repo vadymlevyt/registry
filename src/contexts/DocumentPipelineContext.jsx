@@ -48,8 +48,6 @@ import { maybeCompressFileForAdd } from '../services/compression/compressFrontSt
 import { toast } from '../services/toast.js';
 import * as ocrService from '../services/ocrService.js';
 import { uploadFileToCaseFolder } from '../services/driveService.js';
-import { callAPIWithRetry } from '../services/toolUseRunner.js';
-import { resolveModel } from '../services/modelResolver.js';
 import {
   getCurrentUserId, getCurrentTenantId, getEcitsAutoProcess, getSplitterDatasetEnabled,
 } from '../services/tenantService.js';
@@ -60,40 +58,11 @@ import {
 } from '../services/eventBusTopics.js';
 
 // ── AI helpers (graceful degradation) ───────────────────────────────────────
-// analyzeFile / cleanText кидають якщо нема ключа або мережі — V3-стадії
-// трактують це НЕ фатально (detectBoundariesV3: passthrough → fallback persist;
-// extractV3: лишає сирий OCR-текст). Ingest не блокується.
+// aiTriage кидає якщо нема ключа або мережі — createTriageStage трактує це НЕ
+// фатально (passthrough), extractV3 лишає сирий OCR-текст. Ingest не блокується.
 
 function getApiKey() {
   try { return localStorage.getItem('claude_api_key'); } catch { return null; }
-}
-
-function extractJson(text) {
-  if (!text) return null;
-  const s = text.indexOf('{');
-  if (s < 0) return null;
-  let depth = 0;
-  for (let i = s; i < text.length; i++) {
-    if (text[i] === '{') depth++;
-    else if (text[i] === '}') { depth--; if (depth === 0) { try { return JSON.parse(text.slice(s, i + 1)); } catch { return null; } } }
-  }
-  return null;
-}
-
-async function aiReconstructFile({ fileName, text, openTails, userHint }) {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error('Немає API ключа для реконструкції');
-  const { buildReconstructionPrompt } = await import('../services/documentBoundary/multiFileReconstructor.js');
-  const prompt = buildReconstructionPrompt({ fileName, text, openTails, userHint });
-  const res = await callAPIWithRetry({
-    model: resolveModel('document_parser') || 'claude-haiku-4-5-20251001',
-    max_tokens: 2000,
-    messages: [{ role: 'user', content: prompt }],
-  }, { apiKey });
-  const out = res?.content?.[0]?.text || res?.content || '';
-  const parsed = extractJson(typeof out === 'string' ? out : '');
-  if (!parsed) throw new Error('Реконструкція повернула не-JSON');
-  return { documents: parsed.documents || [], unusedPages: parsed.unusedPages || [] };
 }
 
 // Ф2 Triage-транспорт. Тонка обгортка над analyzeTriageViaToolUse (Haiku,
@@ -167,11 +136,12 @@ export function DocumentPipelineProvider({ executeAction, children }) {
       const opt = runOptionsRef.current || {};
       return {
         stageOverrides: {
-          // Ф2 Smart Triage — НОВЕ ЯДРО у слоті DETECT_BOUNDARIES (диригент
+          // Ф2 Smart Triage — ЄДИНЕ ЯДРО у слоті DETECT_BOUNDARIES (диригент
           // незмінний). Один AI-диспетч (Haiku, паспорт-вхід) → ЄДИНИЙ план
-          // з .route. detectBoundariesV3 / reconstructAcrossFiles НЕ видалені
-          // — стануть виконавцями маршрутів у PERSIST (Ф3). Текст-аксесори ті
-          // самі що раніше (потоковий OCR + per-page layout для паспорта).
+          // з .route; виконання маршрутів — у PERSIST (splitDocumentsV3).
+          // Мертві покоління меж (detectBoundariesV2/V3, multiFileReconstructor)
+          // знесено в A1-B. Текст-аксесори ті самі (потоковий OCR + per-page
+          // layout для паспорта).
           detectBoundaries: createTriageStage({
             triage: aiTriage,
             getStreamedText,

@@ -1,13 +1,17 @@
 // DP-3 інтеграція — streamingExecutor драйвить СПРАВЖНІЙ диригент DP-1
-// (незмінений) + V3 стадії через stageOverrides + СПРАВЖНІЙ createActions
-// (через _actionsTestSetup, нуль дублювання). Доводить: великий PDF і пакет
-// файлів streaming-обробляються, документи лягають у cases[].documents через
-// реальний add_documents, фрагменти зберігаються, _temp чиститься, resume
+// (незмінений) + V3 виконавчі стадії (extract/confirm/persist) через
+// stageOverrides + СПРАВЖНІЙ createActions (через _actionsTestSetup, нуль
+// дублювання). Доводить: великий PDF streaming-обробляється, документ лягає у
+// cases[].documents через реальний add_documents, _temp чиститься, resume
 // продовжує з місця, single-file НЕ регресує.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+//
+// A1-B: мертвий детектор меж createDetectBoundariesV3 знесено; DETECT_BOUNDARIES
+// тут — дефолтний passthrough (план не будується → fallback persist). Живий
+// шлях меж (Smart Triage) + мультифайлову реконструкцію покривають triage-тести
+// (dp-triage.test.js, triage_degenerate_plan.test.js, dp-persist-routes.test.js).
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createDocumentPipeline } from '../../src/services/documentPipeline.js';
 import { createDocument } from '../../src/services/documentFactory.js';
-import { createDetectBoundariesV3 } from '../../src/services/documentPipeline/stages/detectBoundariesV3.js';
 import { createConfirmBoundaries } from '../../src/services/documentPipeline/stages/confirmBoundaries.js';
 import { createExtractV3 } from '../../src/services/documentPipeline/stages/extractV3.js';
 import { createSplitDocumentsV3 } from '../../src/services/documentPipeline/stages/splitDocumentsV3.js';
@@ -26,7 +30,7 @@ const CASE = {
   storage: { subFolders: {} },
 };
 
-function buildExecutor(port, h, { analyzeFile, published, isCancelled, processChunk } = {}) {
+function buildExecutor(port, h, { published, isCancelled, processChunk } = {}) {
   return createStreamingExecutor({
     drivePort: port,
     workerClient: wc,
@@ -34,10 +38,10 @@ function buildExecutor(port, h, { analyzeFile, published, isCancelled, processCh
     processChunk: processChunk || (async ({ startPage }) => ({ text: `текст стор ${startPage}` })),
     perf: {},
     isCancelled,
-    // buildPipelineDeps(accessors) — V3 стадії з потоковим текстом (DI-seam).
+    // buildPipelineDeps(accessors) — V3 виконавчі стадії з потоковим текстом
+    // (DI-seam). DETECT_BOUNDARIES не оверрайдимо → дефолтний passthrough.
     buildPipelineDeps: ({ getStreamedText, getStreamedLayout }) => ({
       stageOverrides: {
-        detectBoundaries: createDetectBoundariesV3({ analyzeFile, getStreamedText }),
         extract: createExtractV3({ getStreamedText, getStreamedLayout }),
         confirm: createConfirmBoundaries({}),         // autoConfirm true (DP-3)
         persist: createSplitDocumentsV3({
@@ -85,9 +89,8 @@ describe('DP-3 інтеграція — streaming через справжній 
   });
 
   it('великий PDF (60 стор) → streaming chunk-loop → 1 документ у справі, _temp чисто', async () => {
-    // один файл, detect ≤1 → план не будується → fallback persist (1 документ)
-    const analyzeFile = vi.fn(async () => ({ documents: [], unusedPages: [] }));
-    const exec = buildExecutor(port, h, { analyzeFile });
+    // один файл, detect passthrough → план не будується → fallback persist (1 документ)
+    const exec = buildExecutor(port, h, {});
     const res = await exec.run({
       caseId: 'case_dp3', caseData: structuredClone(CASE),
       agentId: 'document_processor_agent', source: 'manual', addedBy: 'user',
@@ -101,46 +104,15 @@ describe('DP-3 інтеграція — streaming через справжній 
     expect(port._allNames().some((n) => /^chunk_|^orig_/.test(n))).toBe(false);
   });
 
-  it('пакет 3 файлів → multi-file реконструкція → N логічних документів через add_documents', async () => {
-    // Документ "Позов" розкиданий по f1+f2; f3 — окремий акт; 1 порожня сторінка.
-    const analyzeFile = vi.fn(async ({ fileId }) => {
-      if (fileId === 'f1') return { documents: [{ documentId: 'pozov', name: 'Позовна заява', type: 'pleading', startPage: 1, endPage: 3, open: true }], unusedPages: [] };
-      if (fileId === 'f2') return { documents: [{ documentId: 'x', continuesFromTail: 'pozov', startPage: 1, endPage: 2, open: false }], unusedPages: [{ startPage: 3, endPage: 3, reason: 'порожня сторінка' }] };
-      return { documents: [{ documentId: 'uhvala', name: 'Ухвала суду', type: 'court_act', startPage: 1, endPage: 2, open: false }], unusedPages: [] };
-    });
-    const published = [];
-    const exec = buildExecutor(port, h, { analyzeFile, published });
-    const fragFolder = await port.getOrCreateFolder('03_ФРАГМЕНТИ', null);
-    const caseData = structuredClone(CASE);
-    caseData.storage.subFolders['03_ФРАГМЕНТИ'] = fragFolder.id;
-    const res = await exec.run({
-      caseId: 'case_dp3', caseData,
-      agentId: 'document_processor_agent', source: 'manual', addedBy: 'user',
-      files: [await pdfFile(4, 'f1'), await pdfFile(4, 'f2'), await pdfFile(2, 'f3')],
-    });
-    expect(res.ok).toBe(true);
-    const stored = h.getCases().find((c) => c.id === 'case_dp3').documents;
-    // 2 логічні документи (Позов мультифайловий + Ухвала)
-    expect(stored).toHaveLength(2);
-    expect(stored.map((d) => d.name).sort()).toEqual(['Ухвала суду.pdf', 'Позовна заява.pdf'].sort());
-    // фрагмент (порожня сторінка) збережено + подія
-    expect(port._allNames().some((n) => /^fragment_001\.pdf$/.test(n))).toBe(true);
-    expect(published.some((e) => e.t === DOCUMENT_FRAGMENT_SAVED)).toBe(true);
-    // _temp прибрано після успіху
-    expect(port._countFilesNamed('job_state.json')).toBe(0);
-  });
-
   it('resume: pipeline впав fatal → стан resumable → 2-й прогон не передруковує chunk', async () => {
     const calls = [];
     const processChunk = async ({ startPage }) => { calls.push(startPage); return { text: `s${startPage}` }; };
-    const analyzeFile = async () => ({ documents: [], unusedPages: [] });
 
     // 1-й прогон: персист «падає» (add_documents у неіснуючу справу → fatal)
     const failing = createStreamingExecutor({
       drivePort: port, workerClient: wc, createPipeline: createDocumentPipeline, processChunk, perf: {},
       buildPipelineDeps: ({ getStreamedText }) => ({
         stageOverrides: {
-          detectBoundaries: createDetectBoundariesV3({ analyzeFile, getStreamedText }),
           extract: createExtractV3({ getStreamedText }),
           confirm: createConfirmBoundaries({}),
           persist: createSplitDocumentsV3({
@@ -163,7 +135,7 @@ describe('DP-3 інтеграція — streaming через справжній 
     expect(firstCount).toBeGreaterThan(0);
 
     // 2-й прогон resume з OK персистом — chunks done → нуль повторних OCR
-    const ok = buildExecutor(port, h, { analyzeFile });
+    const ok = buildExecutor(port, h, {});
     const i2 = inp(); i2.files[0].arrayBuffer = toArrayBuffer(await makePdfBytes(40));
     const r2 = await ok.resume(i2);
     expect(r2.ok).toBe(true);

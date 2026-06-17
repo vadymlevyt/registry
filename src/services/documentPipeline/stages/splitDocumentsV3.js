@@ -19,7 +19,7 @@
 //      шлях для не-склейки; той самий контракт що дефолтний persistStage).
 //   Потім завжди: saveFragments(unusedPages) + datasetCollector(gated).
 
-import { categoryFromBoundaryType } from './classifyV2.js';
+import { categoryFromBoundaryType } from './boundaryCategory.js';
 import { isPagedLayout } from '../pageMarkers.js';
 
 // G4 — маршрути що НЕ йдуть через buildDocumentPdf (обробляються окремими
@@ -49,7 +49,7 @@ function sumFragmentPages(doc) {
 // нарізки від AI); `category` лишається null доки немає окремої класифікації.
 // Раніше splitDocumentsV3 читав ЛИШЕ doc.category → усі нарізані документи
 // зберігались з category=null (маркер ⚠). Виводимо канонічну category з type
-// (та сама мапа що classifyV2) — класифікація реконструкції не губиться (#11).
+// (мапа boundaryCategory.js) — класифікація реконструкції не губиться (#11).
 function resolveCategory(doc) {
   if (doc?.category) return doc.category;
   if (doc?.type) return categoryFromBoundaryType(doc.type);
