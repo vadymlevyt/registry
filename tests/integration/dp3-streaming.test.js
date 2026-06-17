@@ -21,6 +21,7 @@ import * as progressStore from '../../src/services/documentPipeline/jobProgressS
 import { DOCUMENT_FRAGMENT_SAVED } from '../../src/services/eventBusTopics.js';
 import { createHarness } from './_actionsTestSetup.js';
 import { createMemDrivePort } from '../_memDrivePort.js';
+import { makePersistStub } from '../_persistStub.js';
 import { makePdfBytes, toArrayBuffer } from '../_pdfFixture.js';
 
 const wc = createWorkerClient({ forceInProcess: true });
@@ -142,10 +143,12 @@ describe('DP-3 інтеграція — streaming через справжній 
     expect(calls.length).toBe(firstCount);              // нуль повторних processChunk
   });
 
-  it('AddDocumentModal НЕ регресує: диригент без V3 і без executor = DP-1 поведінка', async () => {
-    // Прямий pipeline (як AddDocumentModal) — V3 стадій НЕ підключаємо.
+  it('диригент без V3-стадій нарізки + тонкий persist = один документ у справі', async () => {
+    // Прямий pipeline без живих V3-стадій (detect/extract/confirm не задані →
+    // skip). A1-D: persist — обов'язковий override; тут тонкий стаб, що
+    // відтворює контракт upload→createDocument→add_document.
     const pipe = createDocumentPipeline({
-      convertToPdf: async () => ({ pdfBlob: { size: 5 }, originalBlob: null, pdfName: 'd', originalName: 'd.pdf', originalMime: 'application/pdf', extractedText: null, warnings: [], converter: 'passthrough', durationMs: 1 }),
+      stageOverrides: { persist: makePersistStub() },
       uploadFile: async () => 'drive_single',
       createDocument,
       buildDocumentMetadata: ({ item, driveId }) => ({ procId: 'proc_main', name: item.name, documentNature: 'searchable', folder: '01_ОРИГІНАЛИ', addedBy: 'user', source: 'manual', driveId, size: item.size || 0, ...(item.metadataTemplate || {}) }),

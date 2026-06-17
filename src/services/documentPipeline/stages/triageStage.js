@@ -1,11 +1,12 @@
 // ── Ф2 STAGE · SMART TRIAGE (override DETECT_BOUNDARIES) ────────────────────
 // Нове ЯДРО: один AI-диспетчер дивиться на ВЕСЬ змішаний вхід і будує ЄДИНИЙ
 // план з .route на кожен документ. Підключається через
-// deps.stageOverrides[STAGE.DETECT_BOUNDARIES] у Provider (заміна
-// detectBoundariesV3 у цьому слоті). Диригент documentPipeline.js НЕ
-// змінюється. detectBoundariesV3 / reconstructAcrossFiles /
-// documentBoundary.detectBoundaries НЕ видаляються — стають виконавцями
-// маршрутів у PERSIST (Ф3).
+// deps.stageOverrides[STAGE.DETECT_BOUNDARIES] у Provider — ЄДИНЕ ядро меж.
+// Диригент documentPipeline.js НЕ змінюється. Старі покоління пошуку меж
+// (detectBoundariesV2/V3, multiFileReconstructor.reconstructAcrossFiles,
+// documentBoundary.detectBoundaries) знесено в A1-B як мертвий код —
+// виконання маршрутів плану (.route) живе INLINE у splitDocumentsV3 (PERSIST),
+// окремих стадій-виконавців немає.
 //
 // КОНТРАКТ propose→confirm: лише ПРОПОНУЄ (ctx.reconstructionPlan + .route +
 // ctx.unusedPages + decisions[]). Нічого не ріже/не пише. Реальний диспетч —
@@ -17,7 +18,7 @@
 // ZIP уже оброблені stage unpack (INTAKE) — Triage їх не торкає.
 //
 // Чистий модуль: AI-транспорт (triage) ін'єктується. AI-помилка / нема
-// ключа → НЕ фатально: passthrough (ingest не блокуємо, як detectBoundariesV3).
+// ключа → НЕ фатально: passthrough (ingest не блокуємо).
 
 import { resolveBoundaryText } from '../pageMarkers.js';
 
@@ -38,9 +39,8 @@ function originOf(item) {
   return 'pdf';
 }
 
-// Контекст від court_sync (як detectBoundariesV3.buildUserHint — той самий
-// сенс «підказка з ЄСІТС-метаданих»; локально щоб Triage не залежав від
-// старої стадії).
+// Контекст від court_sync — «підказка з ЄСІТС-метаданих» для промпта Triage
+// (локальний хелпер; жодної залежності від знесених стадій меж).
 function buildUserHint(ctx) {
   if (ctx.metadataSidecar?.source !== 'court_sync') return '';
   const ec = ctx.metadataSidecar?.ecitsContext || {};
@@ -233,7 +233,7 @@ function normalizePlan(raw) {
 //   triage({artifacts,userHint,caseId}) → {documents,unusedPages} — AI-хід
 //     Triage (Haiku, поверх toolUseRunner; ін'єкт). Обов'язковий для актив.
 //   getStreamedText(fileId) / getStreamedLayout(fileId) — потоковий OCR
-//     текст / per-page layout (executor-accessor; як detectBoundariesV3).
+//     текст / per-page layout (executor-accessor, потоковий OCR).
 //   skipPdfSlicing? boolean — DP-4 тумблер «Просто додати файли»: ON →
 //     детермінований план add_as_is per file для не-image наборів (1C.2).
 export function createTriageStage(stageDeps = {}) {

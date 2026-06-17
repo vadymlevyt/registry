@@ -29,15 +29,19 @@ function buildExecutor(port) {
     perf: {},
     buildPipelineDeps: () => ({
       // Provider-shape: persist створює документ (диригент вважає прогін
-      // успішним лише за ctx.documents.length>0); решта стадій — дефолтні
-      // заглушки. Усі стадії все одно проходять через onStage у диригенті.
+      // успішним лише за ctx.documents.length>0).
+      // A1-D: диригент нарізки не має дефолтів для стадій нарізки — Provider
+      // інжектить triageStage/extractV3/confirmBoundaries/splitDocumentsV3. Тут
+      // тонкі стаби тих самих слотів, щоб onStage/onStageEnd зміряли кожну.
       stageOverrides: {
+        detectBoundaries: async () => ({ ok: true }),
+        extract: async () => ({ ok: true }),
+        confirm: async () => ({ ok: true }),
         persist: async (ctx) => ({
           ok: true,
           ctx: { ...ctx, documents: [...ctx.documents, createDocument({ name: 'd', driveId: 'x', size: 1, addedBy: 'system', namingStatus: 'auto' })] },
         }),
       },
-      convertToPdf: async () => ({ pdfBlob: { size: 1 }, originalBlob: null, pdfName: 'd', originalName: 'd.pdf', originalMime: 'application/pdf', extractedText: null, warnings: [], converter: 'passthrough', durationMs: 1 }),
       uploadFile: async () => 'unused',
       createDocument,
       eventBus: { publish: () => {} },

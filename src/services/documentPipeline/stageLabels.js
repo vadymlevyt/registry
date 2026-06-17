@@ -15,11 +15,8 @@
 export const STAGE_LABELS = Object.freeze({
   ocr: 'Розпізнавання тексту',
   intake: 'Підготовка файлів',
-  convert: 'Конвертація у PDF',
   detectBoundaries: 'Аналіз структури документів',
-  classify: 'Класифікація документів',
   extract: 'Підготовка тексту',
-  proposeMetadata: 'Формування плану обробки',
   confirm: 'Підтвердження плану',
   persist: 'Розкладання документів',
   emit: 'Завершення',

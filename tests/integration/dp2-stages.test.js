@@ -6,12 +6,15 @@
 // не-архівний файл з людськими метаданими проходить як у DP-1.
 //
 // A1-B: мертві стадії DP-2 (createDetectBoundariesV2 / createClassifyV2)
-// знесено; цей тест тепер ганяє INTAKE(unpack) → дефолтні passthrough-стадії →
-// PERSIST. Класифікаційні стадії покриває живий шлях Triage (dp-triage.test.js).
+// знесено. A1-D: диригент спеціалізовано під нарізку — CONVERT/CLASSIFY/
+// PROPOSE_METADATA-заглушки прибрано, persist став ОБОВ'ЯЗКОВИМ override.
+// Цей тест ганяє INTAKE(unpack) → (detect/extract/confirm не задані → skip) →
+// PERSIST (тонкий стаб). Класифікацію покриває живий Triage (dp-triage.test.js).
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createDocumentPipeline, STAGE } from '../../src/services/documentPipeline.js';
 import { createDocument } from '../../src/services/documentFactory.js';
 import { createIntakeWithUnpack } from '../../src/services/documentPipeline/stages/unpack.js';
+import { makePersistStub } from '../_persistStub.js';
 import { createHarness } from './_actionsTestSetup.js';
 
 const CASE = {
@@ -27,12 +30,10 @@ function build({ unzipArchive }) {
   return {
     stageOverrides: {
       [STAGE.INTAKE]: createIntakeWithUnpack({ unzipArchive, makeFile }),
+      // A1-D: persist — обов'язковий override (дефолтного persistStage немає).
+      // Тонкий стаб: upload→buildDocumentMetadata→createDocument→persistDocument.
+      [STAGE.PERSIST]: makePersistStub(),
     },
-    convertToPdf: async () => ({
-      pdfBlob: { size: 42 }, originalBlob: null, pdfName: 'd', originalName: 'd.pdf',
-      originalMime: 'application/pdf', extractedText: null, warnings: [],
-      converter: 'passthrough', durationMs: 1,
-    }),
     uploadFile: async () => 'drive_dp2',
     createDocument,
     buildDocumentMetadata: ({ item, driveId }) => ({

@@ -4,8 +4,9 @@
 // інтеграційні тести). Перевіряє контракт DP-1 ↔ actionsRegistry: документ
 // реально лягає у cases[].documents, дублікат → PERSIST_FAILED fatal.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createDocumentPipeline } from '../../src/services/documentPipeline.js';
+import { createDocumentPipeline, STAGE } from '../../src/services/documentPipeline.js';
 import { createDocument } from '../../src/services/documentFactory.js';
+import { makePersistStub } from '../_persistStub.js';
 import { createHarness } from './_actionsTestSetup.js';
 
 const CASE = {
@@ -19,12 +20,9 @@ const CASE = {
 
 function makePipeline(h) {
   return createDocumentPipeline({
-    // raw-файл: passthrough-конвертер (без реального Drive/мережі)
-    convertToPdf: async () => ({
-      pdfBlob: { size: 42 }, originalBlob: null, pdfName: 'd', originalName: 'd.pdf',
-      originalMime: 'application/pdf', extractedText: null, warnings: [],
-      converter: 'passthrough', durationMs: 1,
-    }),
+    // A1-D: persist — обов'язковий override (дефолтного persistStage немає).
+    // Тонкий стаб відтворює контракт upload→createDocument→persistDocument.
+    stageOverrides: { [STAGE.PERSIST]: makePersistStub() },
     uploadFile: async () => 'drive_dp_1',
     createDocument,                                  // СПРАВЖНЯ канонічна фабрика
     buildDocumentMetadata: ({ driveId }) => ({
@@ -79,11 +77,7 @@ describe('documentPipeline ↔ реальний add_document (інтеграці
     await h.executeAction('dossier_agent', 'add_document', { caseId: 'case_dp', document: dup });
 
     const pipe = createDocumentPipeline({
-      convertToPdf: async () => ({
-        pdfBlob: { size: 1 }, originalBlob: null, pdfName: 'd', originalName: 'd.pdf',
-        originalMime: 'application/pdf', extractedText: null, warnings: [],
-        converter: 'passthrough', durationMs: 1,
-      }),
+      stageOverrides: { [STAGE.PERSIST]: makePersistStub() },
       uploadFile: async () => 'drive_dp_2',
       createDocument: () => dup,                      // повертаємо той самий id
       persistDocument: ({ caseId, document }) =>

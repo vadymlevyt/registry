@@ -12,11 +12,17 @@
 //     як createActions(deps) у TASK 5. Жодних прямих імпортів стану/Drive у
 //     цьому файлі — диригент чистий.
 //
-// DP-1 закладає КАРКАС + КОНТРАКТ + ПРОВОДКУ AddDocumentModal. Доменна логіка
-// стадій boundary/classify (DP-2), OCR/extract-семантики (DP-3), реальних
-// propose-метаданих/UI підтвердження (DP-4) НЕ реалізована — це стабільні
-// passthrough-заглушки з незмінним контрактом. Наступні TASK додають
-// реалізацію стадії через deps.stageOverrides[ім'я] БЕЗ зміни диригента (OCP).
+// A1-D (2026-06): диригент СПЕЦІАЛІЗОВАНО під ЧИСТУ НАРІЗКУ сканованого PDF —
+// єдину живу дорогу, що його використовує (DocumentPipelineContext → нарізка).
+// Прибрано «універсальні» муляжі: стадії-заглушки CONVERT/CLASSIFY/
+// PROPOSE_METADATA, дефолтний persistStage і hook-слоти metadataExtractor/
+// metadataSidecar — на нарізці вони були no-op або мертвою тінню (audit_dp).
+// Інші дороги (склейка фото / просто додати / розпак ZIP) — окремі сервіси,
+// диригент їх НЕ обслуговує. Конкретні стадії нарізки (Smart Triage у
+// DETECT_BOUNDARIES, extractV3 у EXTRACT, confirmBoundaries у CONFIRM,
+// splitDocumentsV3 у PERSIST) ін'єктуються через deps.stageOverrides[ім'я]
+// БЕЗ зміни диригента (OCP). PERSIST — ОБОВ'ЯЗКОВИЙ override (диригент без
+// виконавця нарізки не існує).
 //
 // ── КОНТРАКТ СТАДІЇ ─────────────────────────────────────────────────────────
 // Стадія — async-функція  run(ctx, deps) → StageResult.
@@ -58,16 +64,6 @@
 // форма ok:false трактується як fatal (юрсистема: краще зупинитись ніж тихо
 // створити неповний документ). Це ЄДИНА політика — у classifyDisposition.
 //
-// ── ХУКИ ────────────────────────────────────────────────────────────────────
-//   • metadataSidecar — точка запису розширених метаданих через
-//     documentsExtended.js (.metadata/documents_extended.json). DP-1: named
-//     no-op слот (AddDocumentModal сьогодні extended-полів не пише —
-//     behavior-preserving). Активується коли стадія почне пропонувати
-//     tags/annotations/processingHistory.
-//   • metadataExtractor — точка входу каналу metadataExtractor/. DP-1:
-//     DISABLED слот, диригент його НЕ викликає (канал лишається вимкненим;
-//     metadata_extractor_agent має порожній allowlist). Лише інтерфейс.
-//
 // ── SAAS / MULTI-USER / BILLING ─────────────────────────────────────────────
 // Диригент tenant-agnostic: tenantId/userId беруться з deps.getActor() і
 // кладуться у payload подій (SaaS-готовність — підписники фільтрують без
@@ -76,55 +72,36 @@
 // actionsRegistry, де висить audit+billing+permissions). Конвертація
 // інструментується в converterService (одна точка), не дублюється тут.
 
-// ── Назви стадій — іменовані точки розширення DP-2..6 ────────────────────────
+// ── Назви стадій КОНВЕЄРА НАРІЗКИ — іменовані точки розширення ───────────────
 // Кожна — один сенс (правило #11). Зміна порядку/набору = зміна цього масиву,
-// НЕ диригента.
+// НЕ диригента. A1-D: лишились РІВНО стадії нарізки; універсальні муляжі
+// CONVERT/CLASSIFY/PROPOSE_METADATA прибрано.
 export const STAGE = Object.freeze({
   INTAKE: 'intake',                       // нормалізація вводу job+files
-  CONVERT: 'convert',                     // файл → PDF (converterService); passthrough якщо вже на Drive
-  DETECT_BOUNDARIES: 'detectBoundaries',  // DP-2: розріз склеєного багатодок-PDF (DP-1 заглушка)
-  CLASSIFY: 'classify',                   // DP-2: класифікація category/author/nature (DP-1 заглушка)
-  EXTRACT: 'extract',                     // DP-3: OCR/семантичний витяг тексту (DP-1 заглушка)
-  PROPOSE_METADATA: 'proposeMetadata',    // propose→confirm: стадія пропонує метадані/decisions (DP-1 заглушка)
-  CONFIRM: 'confirm',                     // propose→confirm-гейт: підтвердження адвокатом (DP-1 авто-pass)
-  PERSIST: 'persist',                     // upload + createDocument + executeAction add_document
+  DETECT_BOUNDARIES: 'detectBoundaries',  // Smart Triage: межі склеєного багатодок-скану (override)
+  EXTRACT: 'extract',                     // OCR/семантичний витяг тексту нарізки (override extractV3)
+  CONFIRM: 'confirm',                     // підтвердження плану нарізки (override confirmBoundaries)
+  PERSIST: 'persist',                     // нарізка+upload+createDocument+add_document (override splitDocumentsV3 — ОБОВ'ЯЗКОВИЙ)
   EMIT: 'emit',                           // eventBus DOCUMENT_INGESTED / DOCUMENT_BATCH_PROCESSED
 });
 
-// Канонічний порядок. DP-2..6 додають реалізацію існуючого імені (override),
-// не вставляють нові вузли в диригент.
+// Канонічний порядок конвеєра нарізки. Стадії нарізки підставляють реалізацію
+// існуючого імені (override), не вставляють нові вузли в диригент.
 export const DEFAULT_STAGE_ORDER = Object.freeze([
   STAGE.INTAKE,
-  STAGE.CONVERT,
   STAGE.DETECT_BOUNDARIES,
-  STAGE.CLASSIFY,
   STAGE.EXTRACT,
-  STAGE.PROPOSE_METADATA,
   STAGE.CONFIRM,
   STAGE.PERSIST,
   STAGE.EMIT,
 ]);
 
-// ── Іменовані хук-точки ─────────────────────────────────────────────────────
-// metadataSidecar — активовний слот: запис extended-метаданих через
-//   documentsExtended.js. DP-1: викликається лише якщо caller дав
-//   deps.writeMetadataSidecar І стадія поклала item.extendedMetadata.
-// metadataExtractor — DISABLED слот каналу metadataExtractor/. Диригент НЕ
-//   викликає його в DP-1 (gate deps.enableMetadataExtractor !== true завжди;
-//   metadata_extractor_agent має порожній allowlist). Лише точка входу.
-export const HOOK = Object.freeze({
-  METADATA_SIDECAR: 'metadataSidecar',
-  METADATA_EXTRACTOR: 'metadataExtractor',
-});
-
-// ── Заглушка-стадія (passthrough) ───────────────────────────────────────────
-// Стабільний контракт без доменної логіки: повертає ok без зміни ctx. DP-2..6
-// замінюють реальною реалізацією через deps.stageOverrides[ім'я].
-function passthroughStage() {
-  return { ok: true };
-}
-
-// ── Стадії DP-1 ─────────────────────────────────────────────────────────────
+// ── Стадії з дефолтною реалізацією ──────────────────────────────────────────
+// Диригент постачає лише INTAKE (вхідний guard) і EMIT (lifecycle-події).
+// DETECT_BOUNDARIES/EXTRACT/CONFIRM/PERSIST — стадії нарізки, ін'єктуються
+// через deps.stageOverrides[ім'я] (prod завжди їх дає). Без override стадія
+// без дефолту просто пропускається (PERSIST — виняток: ОБОВ'ЯЗКОВИЙ, інакше
+// createDocumentPipeline кидає).
 
 // intake — перевірити job і нормалізувати files[]. Один сенс: вхід у конвеєр.
 async function intakeStage(ctx) {
@@ -135,181 +112,6 @@ async function intakeStage(ctx) {
     return { ok: false, error: { code: 'NO_FILES', message: 'Немає файлів для обробки', fatal: true } };
   }
   return { ok: true };
-}
-
-// convert — привести файл до PDF через converterService. Passthrough коли файл
-// уже на Drive (Drive-picker: driveId відомий, конвертації не робимо) або
-// прийшов готовим зі склейки зображень (mergeArtifacts — OCR вже виконано на
-// кожному оригіналі, повторний на merged PDF заборонено). Помилка convert →
-// file_skipped (документ не створюється; модаль лишається відкритою —
-// контракт TASK A зберігається через мапінг коду в caller'а).
-async function convertStage(ctx, deps) {
-  const files = [];
-  for (const item of ctx.files) {
-    if (item.skipped) { files.push(item); continue; }
-
-    let next = { ...item };
-
-    // Файл уже на Drive (Drive-picker) — конвертації не робимо (passthrough).
-    if (item.isDriveSource && item.driveId) {
-      next.converterType = 'passthrough';
-      next.extractedText = null;
-    } else if (item.raw) {
-      // Реальний файл з пристрою — converterService.convertToPdf.
-      let conversion;
-      try {
-        conversion = await deps.convertToPdf(item.raw, ctx.job.conversionContext || {});
-      } catch (err) {
-        return {
-          ok: false,
-          error: {
-            code: 'CONVERT_FAILED',
-            message: err?.message || 'Помилка конвертації',
-            file_skipped: true,
-            fileId: item.fileId,
-          },
-        };
-      }
-      // converterService повертає завжди PDF при успіху; passthrough може бути
-      // PDF або невідомий тип — лишаємо як є (Drive iframe покаже preview).
-      const isPdfBlob = conversion.converter !== 'passthrough'
-        || conversion.originalMime === 'application/pdf';
-      next.conversion = conversion;
-      next.uploadedFile = isPdfBlob
-        ? new File([conversion.pdfBlob], `${conversion.pdfName}.pdf`, { type: 'application/pdf' })
-        : item.raw;
-      next.originalMime = conversion.originalMime;
-      next.extractedText = conversion.extractedText || null;
-      next.converterType = conversion.converter;
-      next.warnings = [...(item.warnings || []), ...(conversion.warnings || [])];
-    }
-    // else: ні raw, ні driveId — метадані-only документ (нічого не конвертуємо).
-
-    // Готові артефакти зі склейки зображень (TASK B): OCR уже виконано на
-    // КОЖНОМУ оригіналі — текст/layout беремо з merge, повторний OCR на
-    // склеєному PDF заборонено. Сам merged-PDF проходить як звичайний PDF
-    // (passthrough+upload вище).
-    if (item.mergeArtifacts) {
-      next.extractedText = item.mergeArtifacts.extractedText || null;
-      next.mergeLayoutJson = item.mergeArtifacts.layoutJson || null;
-      next.converterType = 'multiImageToPdf';
-    }
-
-    files.push(next);
-  }
-  return { ok: true, ctx: { ...ctx, files } };
-}
-
-// persist — покласти байти на Drive (якщо ще не там), створити канонічний
-// запис через factory і зафіксувати ЛИШЕ через executeAction (audit/billing/
-// permissions висять там). Помилка upload → file_skipped; помилка фіксації →
-// fatal (серйозніше: дані не збереглись). Після успіху — хук metadataSidecar
-// (DP-1 no-op якщо deps.writeMetadataSidecar не передано).
-async function persistStage(ctx, deps) {
-  const files = [];
-  const documents = [];
-  for (const item of ctx.files) {
-    if (item.skipped || item.document) { files.push(item); continue; }
-
-    let driveId = item.driveId || null;
-    let originalDriveId = item.originalDriveId || null;
-    const warnings = [...(item.warnings || [])];
-
-    // Upload основного файлу (конвертований PDF або passthrough). Drive-source
-    // уже має driveId — пропускаємо.
-    if (!driveId && item.uploadedFile) {
-      try {
-        driveId = await deps.uploadFile(item.uploadedFile, ctx.job.caseData);
-      } catch (err) {
-        return {
-          ok: false,
-          error: {
-            code: 'UPLOAD_FAILED',
-            message: err?.message || 'Помилка завантаження на Drive',
-            file_skipped: true,
-            fileId: item.fileId,
-          },
-        };
-      }
-    }
-
-    // Оригінал поряд (DOCX → PDF: зберігаємо .docx як originalDriveId).
-    // Не критично: PDF уже на Drive, документ створиться без originalDriveId.
-    if (!originalDriveId && item.conversion?.originalBlob) {
-      try {
-        const origName = item.name || item.conversion.originalName || 'original';
-        const origFile = new File(
-          [item.conversion.originalBlob],
-          origName,
-          { type: item.originalMime || item.type || 'application/octet-stream' },
-        );
-        originalDriveId = await deps.uploadFile(origFile, ctx.job.caseData);
-      } catch (origErr) {
-        warnings.push('ORIGINAL_UPLOAD_FAILED');
-      }
-    }
-
-    // Метадані документа будує ІН'ЄКТОВАНИЙ deps.buildDocumentMetadata
-    // (доменна евристика nature/icon/source лишається у шарі що її володіє —
-    // диригент і стадія domain-free; DP-2 classify-стадія візьме це на себе).
-    // Fallback — прямий шаблон, коли builder не передано.
-    const metadata = typeof deps.buildDocumentMetadata === 'function'
-      ? deps.buildDocumentMetadata({ item, driveId, originalDriveId, job: ctx.job })
-      : {
-          ...(item.metadataTemplate || {}),
-          driveId: driveId || null,
-          driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
-          originalDriveId,
-          originalMime: item.originalMime ?? item.metadataTemplate?.originalMime ?? null,
-          size: item.uploadedFile?.size || item.size || item.metadataTemplate?.size || 0,
-        };
-    const document = deps.createDocument(metadata);
-
-    const res = await deps.persistDocument({ caseId: ctx.job.caseId, document });
-    if (!res?.success) {
-      return {
-        ok: false,
-        error: {
-          code: 'PERSIST_FAILED',
-          message: res?.error || 'add_document failed',
-          fatal: true,
-          fileId: item.fileId,
-        },
-      };
-    }
-
-    // Хук metadataSidecar — точка запису extended-метаданих. DP-1: викликаємо
-    // тільки якщо caller дав і writeMetadataSidecar, і непорожні extended-поля.
-    if (typeof deps.writeMetadataSidecar === 'function' && item.extendedMetadata) {
-      try {
-        await deps.writeMetadataSidecar({
-          caseId: ctx.job.caseId,
-          caseData: ctx.job.caseData,
-          documentId: document.id,
-          fields: item.extendedMetadata,
-        });
-      } catch (e) {
-        warnings.push('METADATA_SIDECAR_FAILED');
-      }
-    }
-
-    // Хук metadataExtractor — DISABLED слот каналу metadataExtractor/.
-    // Gate завжди закритий у DP-1 (deps.enableMetadataExtractor !== true) —
-    // канал лишається вимкненим (metadata_extractor_agent allowlist порожній).
-    // Це лише іменована точка входу для майбутньої активації окремим TASK.
-    if (deps.enableMetadataExtractor === true && typeof deps.metadataExtractorHook === 'function') {
-      try {
-        await deps.metadataExtractorHook({ caseId: ctx.job.caseId, documentId: document.id, item });
-      } catch (e) {
-        warnings.push('METADATA_EXTRACTOR_FAILED');
-      }
-    }
-
-    const persisted = { ...item, driveId, originalDriveId, document, warnings };
-    files.push(persisted);
-    documents.push(document);
-  }
-  return { ok: true, ctx: { ...ctx, files, documents: [...ctx.documents, ...documents] } };
 }
 
 // emit — опублікувати lifecycle-події (TASK 3 топіки). DP-1 — перший
@@ -354,17 +156,13 @@ async function emitStage(ctx, deps) {
   return { ok: true, ctx: { ...ctx, events } };
 }
 
-// Реалізації стадій DP-1. Заглушки — стабільний passthrough-контракт; DP-2..6
-// підставляють реальні через deps.stageOverrides[ім'я] (OCP, диригент незмінний).
+// Дефолтні реалізації стадій диригента. Лише INTAKE (вхідний guard) і EMIT
+// (lifecycle-події) мають дефолт. Стадії нарізки DETECT_BOUNDARIES/EXTRACT/
+// CONFIRM/PERSIST приходять через deps.stageOverrides[ім'я] (OCP, диригент
+// незмінний). Стадія без дефолту й без override просто пропускається; PERSIST
+// — виняток (createDocumentPipeline вимагає override).
 const DEFAULT_STAGE_IMPL = Object.freeze({
   [STAGE.INTAKE]: intakeStage,
-  [STAGE.CONVERT]: convertStage,
-  [STAGE.DETECT_BOUNDARIES]: passthroughStage,  // DP-2
-  [STAGE.CLASSIFY]: passthroughStage,           // DP-2
-  [STAGE.EXTRACT]: passthroughStage,            // DP-3
-  [STAGE.PROPOSE_METADATA]: passthroughStage,   // DP-4
-  [STAGE.CONFIRM]: passthroughStage,            // DP-4 (auto-confirm поки UI немає)
-  [STAGE.PERSIST]: persistStage,
   [STAGE.EMIT]: emitStage,
 });
 
@@ -443,14 +241,24 @@ function finalizeResult(ctx) {
   };
 }
 
-// ── ФАБРИКА ДИРИГЕНТА (DI, як createActions(deps)) ──────────────────────────
+// ── ФАБРИКА ДИРИГЕНТА НАРІЗКИ (DI, як createActions(deps)) ───────────────────
 // Не глобальний сінглтон — інстанс на виклик з ін'єктованими deps. Стан/Drive
-// не імпортуються; приходять через deps. DP-2..6: передати
+// не імпортуються; приходять через deps. Стадії нарізки передаються через
 // deps.stageOverrides[ім'я] (реальна реалізація стадії) і/або
-// deps.stageFlags[ім'я]=false (вимкнути стадію — sacrificial architecture,
-// дешевий обріз як CONVERT_DOCX_TO_PDF).
+// deps.stageFlags[ім'я]=false (вимкнути стадію — sacrificial architecture).
+//
+// PERSIST — ОБОВ'ЯЗКОВИЙ override: дефолтного persistStage більше немає (єдиний
+// prod-шлях інжектить splitDocumentsV3). Контракт чесний: диригент нарізки без
+// виконавця нарізки не існує — без persist кидаємо одразу при створенні.
 export function createDocumentPipeline(deps = {}) {
-  const stageImpl = { ...DEFAULT_STAGE_IMPL, ...(deps.stageOverrides || {}) };
+  const stageOverrides = deps.stageOverrides || {};
+  if (typeof stageOverrides[STAGE.PERSIST] !== 'function') {
+    throw new Error(
+      "persist override обов'язковий для конвеєра нарізки "
+      + "(deps.stageOverrides.persist; зазвичай createSplitDocumentsV3)",
+    );
+  }
+  const stageImpl = { ...DEFAULT_STAGE_IMPL, ...stageOverrides };
   const flags = deps.stageFlags || {};
 
   async function run(input) {
@@ -533,10 +341,5 @@ export function createDocumentPipeline(deps = {}) {
     run,
     STAGE,
     DEFAULT_STAGE_ORDER,
-    // Статус хук-точок (для діагностики/тестів і майбутніх TASK).
-    hooks: {
-      [HOOK.METADATA_SIDECAR]: { enabled: typeof deps.writeMetadataSidecar === 'function' },
-      [HOOK.METADATA_EXTRACTOR]: { enabled: deps.enableMetadataExtractor === true },
-    },
   };
 }

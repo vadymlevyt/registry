@@ -196,7 +196,10 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             fragmentsMode: opt.fragmentsCombined ? 'combined' : 'separate',
           }),
         },
-        convertToPdf,
+        // A1-D: стадію CONVERT прибрано з диригента нарізки (файли вже PDF у
+        // _temp як isDriveSource; текст тече через getStreamedText). convertToPdf
+        // у слайс-deps більше не потрібен — конвертація живе у дорозі «просто
+        // додати» (addFilesRun → createAddFiles({convertToPdf})).
         uploadFile: uploadToOriginals,
         createDocument,
         eventBus,

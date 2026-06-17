@@ -7,18 +7,16 @@
 // Так гарантуємо: тумблер «Оновити case_context.md» реально керує перегенерацією,
 // а вимкнений / чужий — нарис не чіпає.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createDocumentPipeline } from '../../src/services/documentPipeline.js';
+import { createDocumentPipeline, STAGE } from '../../src/services/documentPipeline.js';
+import { makePersistStub } from '../_persistStub.js';
 import * as eventBus from '../../src/services/eventBus.js';
 
 const TOPICS = { DOCUMENT_INGESTED: 'document.ingested', DOCUMENT_BATCH_PROCESSED: 'document.batch_processed' };
 
 function makePipeline(over = {}) {
   return createDocumentPipeline({
-    convertToPdf: async () => ({
-      pdfBlob: { size: 10 }, originalBlob: null, pdfName: 'd', originalName: 'd.pdf',
-      originalMime: 'application/pdf', extractedText: null, warnings: [],
-      converter: 'passthrough', durationMs: 1,
-    }),
+    // A1-D: persist — обов'язковий override (дефолтного persistStage немає).
+    stageOverrides: { [STAGE.PERSIST]: makePersistStub() },
     uploadFile: async () => 'drive_X',
     createDocument: (m) => ({ id: 'doc_1', name: m.name || 'd', source: m.source || 'manual', ...m }),
     persistDocument: async () => ({ success: true }),
