@@ -1,134 +1,65 @@
 // ── ВОРОТА ВХОДУ НАРІЗКИ (TASK A1 · Частина A) ───────────────────────────────
-// Перевіряємо контракт sliceInputGate: пускати лише сканований PDF (без
-// текстового шару), усе інше — завернути. peekPdf ін'єктується (детермінізм,
-// нуль pdfjs у node-тесті). Доказ «pipeline.run не викликається» — allow:false
-// → startProcessing завертає до pipeline.run (компонентний тест нижче в DP UI).
-import { describe, it, expect, vi } from 'vitest';
+// Перевіряємо контракт sliceInputGate: пускати лише об'ємний сканований PDF,
+// усе інше — завернути. Детекція за РОЗМІРОМ файлу (метадані {name, mime, size}),
+// БЕЗ pdf.js / без async-peek — чиста синхронна функція. Доказ «pipeline.run не
+// викликається» — allow:false → startProcessing завертає (компонентний тест у DP UI).
+import { describe, it, expect } from 'vitest';
 import { sliceInputGate, __test } from '../../src/components/DocumentProcessorV2/sliceInputGate.js';
 
-const rawOf = (bytes = 8) => ({ arrayBuffer: async () => new ArrayBuffer(bytes) });
-const pdf = (name = 'скан.pdf', extra = {}) => ({ name, mime: 'application/pdf', raw: rawOf(), ...extra });
+const BIG = __test.MIN_SLICE_BYTES;            // рівно поріг (1 МБ)
+const pdf = (name = 'скан.pdf', size = BIG, extra = {}) =>
+  ({ name, mime: 'application/pdf', size, ...extra });
 
-describe('sliceInputGate — ворота «лише сканований PDF»', () => {
-  it('lone .docx у нарізці → завернуто (non_pdf), peek не торкається', async () => {
-    const peekPdf = vi.fn();
-    const v = await sliceInputGate(
-      [{ name: 'договір.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', raw: rawOf() }],
-      { peekPdf },
-    );
+describe('sliceInputGate — ворота «лише сканований PDF» (за розміром)', () => {
+  it('lone .docx у нарізці → завернуто (non_pdf)', () => {
+    const v = sliceInputGate([
+      { name: 'договір.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: BIG },
+    ]);
     expect(v.allow).toBe(false);
     expect(v.reason).toBe('non_pdf');
     expect(v.message).toBe(__test.MSG_NON_PDF);
-    expect(peekPdf).not.toHaveBeenCalled();
   });
 
-  it('PDF + DOCX (без фото) → завернуто (non_pdf) на синхронній перевірці', async () => {
-    const peekPdf = vi.fn(async () => ({ avgChars: 5 }));
-    const v = await sliceInputGate(
-      [pdf('том.pdf'), { name: 'додаток.docx', mime: '', raw: rawOf() }],
-      { peekPdf },
-    );
+  it('PDF + DOCX (без фото) → завернуто (non_pdf)', () => {
+    const v = sliceInputGate([pdf('том.pdf'), { name: 'додаток.docx', mime: '', size: BIG }]);
     expect(v.allow).toBe(false);
     expect(v.reason).toBe('non_pdf');
-    // синхронна перевірка типу зрізає ДО будь-якого peek
-    expect(peekPdf).not.toHaveBeenCalled();
   });
 
-  it('цифровий PDF (текстовий шар, avgChars ≥ поріг) → завернуто (digital_pdf)', async () => {
-    const peekPdf = vi.fn(async () => ({ avgChars: 1200, pageCount: 10 }));
-    const v = await sliceInputGate([pdf('цифровий.pdf')], { peekPdf });
+  it('малий PDF (<1МБ) → завернуто (too_small)', () => {
+    const v = sliceInputGate([pdf('малий.pdf', BIG - 1)]);
     expect(v.allow).toBe(false);
-    expect(v.reason).toBe('digital_pdf');
-    expect(v.message).toBe(__test.MSG_DIGITAL_PDF);
-    expect(peekPdf).toHaveBeenCalledTimes(1);
+    expect(v.reason).toBe('too_small');
+    expect(v.message).toBe(__test.MSG_TOO_SMALL);
   });
 
-  it('сканований PDF (avgChars < поріг) → проходить (allow)', async () => {
-    const peekPdf = vi.fn(async () => ({ avgChars: 12, pageCount: 40 }));
-    const v = await sliceInputGate([pdf('скан.pdf'), pdf('скан2.pdf')], { peekPdf });
-    expect(v.allow).toBe(true);
-    expect(v.reason).toBe('ok');
-    expect(peekPdf).toHaveBeenCalledTimes(2);
-  });
-
-  it('avgChars рівно на порозі → цифровий (>=)', async () => {
-    const peekPdf = vi.fn(async () => ({ avgChars: __test.TEXT_LAYER_AVG_CHARS }));
-    const v = await sliceInputGate([pdf()], { peekPdf });
-    expect(v.allow).toBe(false);
-    expect(v.reason).toBe('digital_pdf');
-  });
-
-  it('peek кинув (битий PDF) → FAIL-OPEN, пускаємо', async () => {
-    const peekPdf = vi.fn(async () => { throw new Error('Invalid PDF structure'); });
-    const v = await sliceInputGate([pdf('битий.pdf')], { peekPdf });
+  it('великий PDF (≥1МБ) → проходить (allow)', () => {
+    const v = sliceInputGate([pdf('великий.pdf', BIG), pdf('великий2.pdf', BIG * 5)]);
     expect(v.allow).toBe(true);
     expect(v.reason).toBe('ok');
   });
 
-  it('401 Drive під час підкачки → drive_auth (friendly), НЕ проходить', async () => {
-    const driveRequest = vi.fn(async () => ({ status: 401, ok: false }));
-    const peekPdf = vi.fn();
-    const v = await sliceInputGate(
-      [{ name: 'хмара.pdf', mime: 'application/pdf', raw: null, driveId: 'drv1' }],
-      { driveRequest, peekPdf },
-    );
-    expect(v.allow).toBe(false);
-    expect(v.reason).toBe('drive_auth');
-    expect(v.message).toBe(__test.MSG_DRIVE_AUTH);
-    expect(peekPdf).not.toHaveBeenCalled();
-  });
-
-  it('403 Drive теж → drive_auth', async () => {
-    const driveRequest = vi.fn(async () => ({ status: 403, ok: false }));
-    const v = await sliceInputGate(
-      [{ name: 'хмара.pdf', mime: 'application/pdf', driveId: 'drv1' }],
-      { driveRequest },
-    );
-    expect(v.reason).toBe('drive_auth');
-  });
-
-  it('Drive 500 (не auth) → FAIL-OPEN для файлу, пускаємо', async () => {
-    const driveRequest = vi.fn(async () => ({ status: 500, ok: false }));
-    const peekPdf = vi.fn();
-    const v = await sliceInputGate(
-      [{ name: 'хмара.pdf', mime: 'application/pdf', driveId: 'drv1' }],
-      { driveRequest, peekPdf },
-    );
+  it('розмір невідомий (0) → FAIL-OPEN allow', () => {
+    const v = sliceInputGate([pdf('хмара.pdf', 0)]);
     expect(v.allow).toBe(true);
     expect(v.reason).toBe('ok');
   });
 
-  it('Drive-source: байти беруться через driveRequest(alt=media), потім peek', async () => {
-    const driveRequest = vi.fn(async () => ({ status: 200, ok: true, arrayBuffer: async () => new ArrayBuffer(16) }));
-    const peekPdf = vi.fn(async () => ({ avgChars: 5 }));
-    const v = await sliceInputGate(
-      [{ name: 'хмара.pdf', mime: 'application/pdf', driveId: 'drv1' }],
-      { driveRequest, peekPdf },
-    );
+  it('розмір невідомий (undefined) → FAIL-OPEN allow', () => {
+    const v = sliceInputGate([{ name: 'хмара.pdf', mime: 'application/pdf' }]);
     expect(v.allow).toBe(true);
-    expect(driveRequest).toHaveBeenCalledTimes(1);
-    expect(String(driveRequest.mock.calls[0][0])).toContain('alt=media');
-    expect(peekPdf).toHaveBeenCalledTimes(1);
+    expect(v.reason).toBe('ok');
   });
 
-  it('device-файл: байти з raw, driveRequest не торкається', async () => {
-    const driveRequest = vi.fn();
-    const peekPdf = vi.fn(async () => ({ avgChars: 5 }));
-    const v = await sliceInputGate([pdf('local.pdf')], { driveRequest, peekPdf });
-    expect(v.allow).toBe(true);
-    expect(driveRequest).not.toHaveBeenCalled();
+  it('перший, що не проходить, повертає verdict (малий PDF перед великим)', () => {
+    const v = sliceInputGate([pdf('a.pdf', 10), pdf('b.pdf', BIG * 2)]);
+    expect(v.allow).toBe(false);
+    expect(v.reason).toBe('too_small');
   });
 
-  it('порожній список → проходить (немає чого завертати)', async () => {
-    const v = await sliceInputGate([], { peekPdf: vi.fn() });
+  it('порожній список → проходить (немає чого завертати)', () => {
+    const v = sliceInputGate([]);
     expect(v.allow).toBe(true);
-  });
-
-  it('перший цифровий зупиняє ще до peek наступних', async () => {
-    let calls = 0;
-    const peekPdf = vi.fn(async () => { calls += 1; return { avgChars: 1000 }; });
-    const v = await sliceInputGate([pdf('a.pdf'), pdf('b.pdf')], { peekPdf });
-    expect(v.reason).toBe('digital_pdf');
-    expect(calls).toBe(1);
+    expect(v.reason).toBe('ok');
   });
 });

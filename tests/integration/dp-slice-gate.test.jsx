@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 // TASK A1 · Частина A — ворота входу НАРІЗКИ у DP UI. Доказ закриття діри:
-// у режимі нарізки (skipPdfSlicing OFF) не-PDF (Word, PDF+DOCX) НЕ доходить до
-// pipeline.run — завертається з warning. Сканований PDF проходить як раніше
-// (fail-open peek на фейкових байтах). Інші дороги (склейка/додати/розпак) тут
-// не зачіпаються — наскрізний інваріант A1 §2-bis.
+// у режимі нарізки (skipPdfSlicing OFF) не-PDF (Word, PDF+DOCX) і малий PDF НЕ
+// доходять до pipeline.run — завертаються з warning. Об'ємний сканований PDF
+// (≥1МБ) проходить як раніше. Детекція за РОЗМІРОМ файлу (без pdf.js). Інші
+// дороги (склейка/додати/розпак) тут не зачіпаються — інваріант A1 §2-bis.
+const BIG = 1024 * 1024;
+const bigBytes = (n = BIG) => new Uint8Array(n);
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/services/ocrService.js', () => ({
   extractText: vi.fn(async () => ({ text: '', pageStructure: null })),
@@ -61,11 +63,22 @@ describe('DP-4 ворота нарізки — не-PDF не доходить д
 
   it('PDF + DOCX (без фото) у режимі нарізки → pipeline.run НЕ викликається', async () => {
     const { run, container } = renderWithRun();
-    const pdf = new File([new Uint8Array([1, 2, 3])], 'том.pdf', { type: 'application/pdf' });
+    const pdf = new File([bigBytes()], 'том.pdf', { type: 'application/pdf' });
     const docx = new File([new Uint8Array([4, 5, 6])], 'додаток.docx', {
       type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     });
     await selectAndStart(container, [pdf, docx]);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('малий PDF (<1МБ) у режимі нарізки → pipeline.run НЕ викликається + warning', async () => {
+    const warn = vi.spyOn(toast, 'warning');
+    const { run, container } = renderWithRun();
+    const small = new File([new Uint8Array(1024)], 'малий.pdf', { type: 'application/pdf' });
+    await selectAndStart(container, [small]);
+    expect(run).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls.at(-1)[0])).toContain('Малий PDF');
+    warn.mockRestore();
   });
 });

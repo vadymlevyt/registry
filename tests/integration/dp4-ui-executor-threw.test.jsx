@@ -50,7 +50,8 @@ describe('DP-4 UI — EXECUTOR_THREW у «Помилки» Зони 3 (TASK exec
     );
 
     const fileInput = container.querySelector('input[type="file"]');
-    const file = new File([new Uint8Array([1, 2, 3])], 'tom2.pdf', { type: 'application/pdf' });
+    // ≥1МБ — щоб ворота нарізки (sliceInputGate, за розміром) пускали файл у run.
+    const file = new File([new Uint8Array(1024 * 1024)], 'tom2.pdf', { type: 'application/pdf' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [file] } });
     });

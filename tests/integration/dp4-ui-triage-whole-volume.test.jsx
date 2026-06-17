@@ -46,7 +46,8 @@ describe('DP-4 UI — triage_whole_volume у «Питання» (TASK degenerate
     );
 
     const fileInput = container.querySelector('input[type="file"]');
-    const file = new File([new Uint8Array([1, 2, 3])], 'big.pdf', { type: 'application/pdf' });
+    // ≥1МБ — щоб ворота нарізки (sliceInputGate, за розміром) пускали файл у run.
+    const file = new File([new Uint8Array(1024 * 1024)], 'big.pdf', { type: 'application/pdf' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [file] } });
     });

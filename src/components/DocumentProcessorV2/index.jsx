@@ -735,32 +735,31 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     }
     // ── Ворота входу НАРІЗКИ (TASK A1 · Частина A): лише сканований PDF ──────
     // Нарізка приймає рівно один вид входу — PDF без текстового шару (скан/фото).
-    // Не-PDF (Word) і цифровий PDF із текстовим шаром завертаємо на «Просто
-    // додати», НЕ доводячи до pipeline.run (інакше тихий крах у стрім-моторі /
-    // марний OCR). Логіка воріт — у sliceInputGate.js (sync + дешевий peek).
+    // Не-PDF (Word) і малий PDF (схожий на текстовий/одиночний документ)
+    // завертаємо на «Просто додати», НЕ доводячи до pipeline.run (інакше тихий
+    // крах у стрім-моторі / марний OCR). Логіка воріт — у sliceInputGate.js
+    // (синхронна чиста функція від метаданих {name, mime, size}, БЕЗ pdf.js).
     if (!useAddAsIs) {
       const gateFiles = [
         ...selected.map((s) => ({
           name: s.name,
           mime: s.mime,
-          raw: s.origin === 'device' ? s.file : null,
-          driveId: s.origin === 'device' ? null : (s.driveId || null),
+          size: s.file?.size ?? s.size,
         })),
         ...inboxSelected.map((f) => ({
-          name: f.name, mime: f.mimeType, raw: null, driveId: f.id,
+          name: f.name, mime: f.mimeType, size: f.size,
         })),
       ];
       let verdict;
       try {
-        verdict = await sliceInputGate(gateFiles, { driveRequest });
+        verdict = sliceInputGate(gateFiles);
       } catch (e) {
         // Ворота самі fail-open усередині; цей catch — остання сітка (правило #4).
         console.warn('[startProcessing] sliceInputGate неочікувано впав — пускаємо:', e?.message || e);
         verdict = { allow: true, reason: 'gate_error' };
       }
       if (!verdict.allow) {
-        if (verdict.reason === 'drive_auth') toast.error(verdict.message);
-        else toast.warning(verdict.message);
+        toast.warning(verdict.message);
         return;
       }
     }
