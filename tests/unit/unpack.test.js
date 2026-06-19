@@ -47,6 +47,13 @@ describe('unpack — чисті предикати (один сенс кожен
     expect(isSignatureFile('doc.pdf.p7s')).toBe(true);
     expect(isSignatureFile('x.sig')).toBe(true);
     expect(isSignatureFile('x.pdf')).toBe(false);
+    // Хвіст-лічильник ЄСІТС (.N) для багатопідписних документів — теж підпис.
+    expect(isSignatureFile('X.html.p7s.2')).toBe(true);
+    expect(isSignatureFile('X.sig.1')).toBe(true);
+    expect(isSignatureFile('X.p7s')).toBe(true);
+    // Справжній документ із p7s НЕ в кінці імені — не підпис.
+    expect(isSignatureFile('звіт.p7s.pdf')).toBe(false);
+    expect(isSignatureFile('doc.pdf')).toBe(false);
     expect(isSidecarFile('metadataSidecar.json')).toBe(true);
     expect(isSidecarFile('sub/metadataSidecar.JSON')).toBe(true);
     expect(isSidecarFile('other.json')).toBe(false);

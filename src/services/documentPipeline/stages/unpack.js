@@ -24,7 +24,10 @@
 // підставляли стаб без мережі/файлів).
 
 const ARCHIVE_EXT = /\.(zip|rar|7z)$/i;
-const SIGNATURE_EXT = /\.(p7s|sig)$/i;
+// Один сенс: розширення відокремленого підпису КЕП у кінці імені. Хвіст-лічильник
+// `.N` (напр. `.p7s.2`) — нумерація багатопідписних документів ЄСІТС, теж підпис.
+// Справжній документ типу `звіт.p7s.pdf` НЕ матчиться (p7s не в кінці імені).
+const SIGNATURE_EXT = /\.(p7s|sig)(\.\d+)?$/i;
 const SIDECAR_BASENAME = 'metadatasidecar.json';
 
 const ARCHIVE_MIME = new Set([
