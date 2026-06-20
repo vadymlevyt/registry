@@ -53,7 +53,7 @@ describe('DP-4 UI — triage_whole_volume у «Питання» (TASK degenerate
     });
 
     // A2: нарізка — явний тумблер (дефолт просто-додати); вмикаємо для pipeline.run.
-    await act(async () => { fireEvent.click(screen.getByText('Нарізати том на документи')); });
+    await act(async () => { fireEvent.click(screen.getByText('Нарізати / склеїти')); });
     const startBtn = screen.getByRole('button', { name: /Розпочати обробку 1 документів/ });
     await act(async () => { fireEvent.click(startBtn); });
 

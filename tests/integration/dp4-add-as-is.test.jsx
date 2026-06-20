@@ -171,7 +171,7 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
   });
 
   it('A2 двері нарізки — «Нарізати том» ON + об’ємний скан-PDF → pipeline.run (нарізка)', async () => {
-    // Явний тумблер «Нарізати том на документи» → стрім-шлях нарізки. Об’ємний
+    // Явний тумблер «Нарізати / склеїти» → стрім-шлях нарізки. Об’ємний
     // (≥1МБ) сканований PDF проходить ворота входу → pipeline.run, НЕ addFiles.
     const run = vi.fn().mockResolvedValue({ ok: true, documents: [], decisions: [], errors: [] });
     const addFiles = vi.fn();
@@ -183,7 +183,7 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.change(fileInput, { target: { files: [pdf] } });
     });
     await act(async () => {
-      fireEvent.click(screen.getByText('Нарізати том на документи'));
+      fireEvent.click(screen.getByText('Нарізати / склеїти'));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));

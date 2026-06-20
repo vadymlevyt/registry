@@ -54,7 +54,7 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
 
     // A2: вмикаємо нарізку, щоб дійти до pipeline.run.
     await act(async () => {
-      fireEvent.click(screen.getByText('Нарізати том на документи'));
+      fireEvent.click(screen.getByText('Нарізати / склеїти'));
     });
 
     await act(async () => {

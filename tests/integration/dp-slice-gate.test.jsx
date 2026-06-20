@@ -44,7 +44,7 @@ async function selectAndStart(container, files) {
   await act(async () => { fireEvent.change(fileInput, { target: { files } }); });
   // A2: нарізка тепер явний тумблер (дефолт — просто-додати). Вмикаємо режим
   // нарізки, щоб дійти до воріт входу.
-  await act(async () => { fireEvent.click(screen.getByText('Нарізати том на документи')); });
+  await act(async () => { fireEvent.click(screen.getByText('Нарізати / склеїти')); });
   const startBtn = screen.getByRole('button', { name: /Розпочати обробку/ });
   await act(async () => { fireEvent.click(startBtn); });
 }

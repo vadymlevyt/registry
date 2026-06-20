@@ -84,7 +84,7 @@ describe('DP image-merge — видимий прогрес важкої фото
     // A2: склейка all-image живе в режимі нарізки (дефолт — просто-додати, де
     // all-image йде в addFiles). Вмикаємо «Нарізати том», щоб дійти до склейки.
     await act(async () => {
-      fireEvent.click(screen.getByText('Нарізати том на документи'));
+      fireEvent.click(screen.getByText('Нарізати / склеїти'));
     });
 
     await act(async () => {
