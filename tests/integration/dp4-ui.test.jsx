@@ -60,17 +60,18 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
     expect(input.caseId).toBe('case_dp4');
     expect(input.files).toHaveLength(1);
     expect(input.files[0].name).toBe('позов.pdf');
-    // 7 перемикачів + системні опції прокинуті у run (V2-A2 прибрав cleanForReading)
+    // робочі перемикачі + системні опції прокинуті у run (A2 Частина 1 прибрала
+    // 5 мертвих тумблерів; V2-A2 раніше прибрав cleanForReading)
     expect(options).toMatchObject({
-      organizeByProceedings: true,
-      integrityCheck: true,
-      generateSummary: true,
       compressAll: false,
-      suggestDeadlines: false,
       updateCaseContext: true,
-      fillCaseCard: false,
       autoConfirm: true,
     });
+    expect(options).not.toHaveProperty('organizeByProceedings');
+    expect(options).not.toHaveProperty('integrityCheck');
+    expect(options).not.toHaveProperty('generateSummary');
+    expect(options).not.toHaveProperty('suggestDeadlines');
+    expect(options).not.toHaveProperty('fillCaseCard');
     expect(options).not.toHaveProperty('cleanForReading');
     expect(options).toHaveProperty('collectDataset');
 

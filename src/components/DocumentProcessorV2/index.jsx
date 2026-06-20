@@ -49,15 +49,10 @@ function getApiKey() {
 const INBOX_FOLDER = '00_INBOX_СПРАВИ';
 
 const DEFAULT_SETTINGS = {
-  organizeByProceedings: true,   // 1
-  integrityCheck: true,          // 2
   // V2-A2: «Очистити для читання» прибрано — DP більше не чистить текст
   // (очистка стала справою в'ювера/ACTION на вимогу, parent §DP БІЛЬШЕ НЕ ЧИСТИТЬ).
-  generateSummary: true,         // 3
   compressAll: false,            // 4
-  suggestDeadlines: false,       // 5
   updateCaseContext: true,       // 6
-  fillCaseCard: false,           // 7
   // 1C.2 — skipPdfSlicing: пропустити AI-нарізку (Triage) і per-file
   // маршрутизувати кожен живий файл: фото → image_merge solo, інше →
   // add_as_is solo. Працює і у міксі PDF+фото (інакше AI Triage поріже
@@ -1038,8 +1033,6 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
 
           <div className="dpv2-settings-group">
             <div className="dpv2-section-label">ОРГАНІЗАЦІЯ</div>
-            <Toggle label="Розкласти по провадженнях" checked={settings.organizeByProceedings} onChange={setToggle('organizeByProceedings')} />
-            <Toggle label="Перевірка цілісності перед обробкою" checked={settings.integrityCheck} onChange={setToggle('integrityCheck')} />
             <Toggle
               label="Просто додати файли"
               description="кожен PDF — окремий документ, без AI-нарізки"
@@ -1055,10 +1048,6 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
             />
           </div>
           <div className="dpv2-settings-group">
-            <div className="dpv2-section-label">ЯКІСТЬ ТЕКСТУ</div>
-            <Toggle label="Згенерувати короткий зміст" checked={settings.generateSummary} onChange={setToggle('generateSummary')} />
-          </div>
-          <div className="dpv2-settings-group">
             <div className="dpv2-section-label">ДОДАТКОВІ ДІЇ</div>
             <Toggle
               label="Стиснути всі файли пакета"
@@ -1066,9 +1055,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
               checked={settings.compressAll}
               onChange={setToggle('compressAll')}
             />
-            <Toggle label="Запропонувати дедлайни з документів" checked={settings.suggestDeadlines} onChange={setToggle('suggestDeadlines')} />
             <Toggle label="Оновити case_context.md" checked={settings.updateCaseContext} onChange={setToggle('updateCaseContext')} />
-            <Toggle label="Заповнити картку справи з документів" checked={settings.fillCaseCard} onChange={setToggle('fillCaseCard')} />
           </div>
 
           <div className="dpv2-settings-group">
