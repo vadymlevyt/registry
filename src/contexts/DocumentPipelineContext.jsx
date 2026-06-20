@@ -146,9 +146,11 @@ export function DocumentPipelineProvider({ executeAction, children }) {
             triage: aiTriage,
             getStreamedText,
             getStreamedLayout,
-            // 1C.2 — DP-4 toggle «Просто додати файли»: ON → детермінований
-            // план add_as_is per PDF, AI Triage пропускається.
-            skipPdfSlicing: opt.skipPdfSlicing === true,
+            // A2: передачу прапора «просто додати» прибрано. Після A1 цей режим
+            // перехоплюється у useAddAsIs→addFiles ДО pipeline.run, тож сюди
+            // доходить лише режим нарізки → createTriageStage дефолтить на повну
+            // AI-нарізку. Поведінка живого шляху ІДЕНТИЧНА. Орфан add_as_is-гілка
+            // у triageStage лишається (борг, tracking_debt).
           }),
           extract: createExtractV3({
             // TASK 3.1: extract БІЛЬШЕ не чистить (очистка — пост-крок у persist

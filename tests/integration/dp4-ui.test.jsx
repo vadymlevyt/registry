@@ -23,7 +23,8 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
   beforeEach(() => store._resetForTests());
 
   it('вибраний файл вмикає «Розпочати»; клік викликає run(input,options) і показує документи', async () => {
-    // TASK 4 rework · Стадія D — чистий PDF без тумблерів → slice → pipeline.run.
+    // TASK 4 rework · Стадія D — чистий PDF + «Нарізати том» ON → slice → pipeline.run.
+    // A2: нарізка тепер явний тумблер (дефолт — просто-додати).
     const run = vi.fn().mockResolvedValue({
       ok: true,
       documents: [{ id: 'd1', name: 'Позовна заява.pdf', category: 'pleading', pageCount: 3 }],
@@ -50,6 +51,11 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
 
     const startBtn2 = screen.getByRole('button', { name: /Розпочати обробку 1 документів/ });
     expect(startBtn2).not.toBeDisabled();
+
+    // A2: вмикаємо нарізку, щоб дійти до pipeline.run.
+    await act(async () => {
+      fireEvent.click(screen.getByText('Нарізати том на документи'));
+    });
 
     await act(async () => {
       fireEvent.click(startBtn2);

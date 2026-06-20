@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // TASK A1 · Частина A — ворота входу НАРІЗКИ у DP UI. Доказ закриття діри:
-// у режимі нарізки (skipPdfSlicing OFF) не-PDF (Word, PDF+DOCX) і малий PDF НЕ
+// у режимі нарізки (тумблер «Нарізати том» ON; A2 — дефолт тепер просто-додати,
+// нарізка явна) не-PDF (Word, PDF+DOCX) і малий PDF НЕ
 // доходять до pipeline.run — завертаються з warning. Об'ємний сканований PDF
 // (≥1МБ) проходить як раніше. Детекція за РОЗМІРОМ файлу (без pdf.js). Інші
 // дороги (склейка/додати/розпак) тут не зачіпаються — інваріант A1 §2-bis.
@@ -41,6 +42,9 @@ function renderWithRun() {
 async function selectAndStart(container, files) {
   const fileInput = container.querySelector('input[type="file"]');
   await act(async () => { fireEvent.change(fileInput, { target: { files } }); });
+  // A2: нарізка тепер явний тумблер (дефолт — просто-додати). Вмикаємо режим
+  // нарізки, щоб дійти до воріт входу.
+  await act(async () => { fireEvent.click(screen.getByText('Нарізати том на документи')); });
   const startBtn = screen.getByRole('button', { name: /Розпочати обробку/ });
   await act(async () => { fireEvent.click(startBtn); });
 }

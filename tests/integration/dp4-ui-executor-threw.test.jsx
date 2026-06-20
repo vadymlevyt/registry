@@ -56,6 +56,8 @@ describe('DP-4 UI — EXECUTOR_THREW у «Помилки» Зони 3 (TASK exec
       fireEvent.change(fileInput, { target: { files: [file] } });
     });
 
+    // A2: нарізка — явний тумблер (дефолт просто-додати); вмикаємо для pipeline.run.
+    await act(async () => { fireEvent.click(screen.getByText('Нарізати том на документи')); });
     const startBtn = screen.getByRole('button', { name: /Розпочати обробку 1 документів/ });
     await act(async () => { fireEvent.click(startBtn); });
 

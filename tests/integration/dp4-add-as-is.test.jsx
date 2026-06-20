@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // TASK 4 (rework) · Стадія D — DP «просто додати» на ОКРЕМИЙ сервіс addFiles.
-// Тумблер «Просто додати файли» (skipPdfSlicing) + будь-який НЕ-PDF / комбо
-// (або «без OCR» на чистому PDF) → pipeline.addFiles(input, { ocrMode, compress }).
-// all-PDF + повний OCR лишається на стрім-шляху pipeline.run (нарізка).
+// A2: просто-додати тепер ДЕФОЛТ (тумблер «Нарізати том» OFF) → будь-який
+// НЕ-PDF / комбо / all-PDF → pipeline.addFiles(input, { ocrMode, compress }).
+// Нарізка (pipeline.run) вмикається лише явним тумблером «Нарізати том».
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/services/ocrService.js', () => ({
   extractText: vi.fn(async () => ({ text: '', pageStructure: null })),
@@ -52,11 +52,7 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.change(fileInput, { target: { files: [docx] } });
     });
 
-    // Вмикаємо тумблер «Просто додати файли».
-    await act(async () => {
-      fireEvent.click(screen.getByText('Просто додати файли'));
-    });
-
+    // A2: просто-додати — дефолт, тумблер «Нарізати том» лишаємо OFF.
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
@@ -85,11 +81,8 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [docx] } });
     });
-    // Спочатку «Просто додати», далі «Без розпізнавання тексту» (другий вмикається
-    // лише разом із першим — disabled поки skipPdfSlicing OFF).
-    await act(async () => {
-      fireEvent.click(screen.getByText('Просто додати файли'));
-    });
+    // A2: просто-додати — дефолт; «Без розпізнавання тексту» доступний без нарізки
+    // (disabled лише коли «Нарізати том» ON).
     await act(async () => {
       fireEvent.click(screen.getByText('Без розпізнавання тексту'));
     });
@@ -102,10 +95,10 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(options.ocrMode).toBe('none');
   });
 
-  it('toggle ON + all-PDF + повний OCR → addFiles (НЕ нарізка), ocrMode full', async () => {
-    // Рішення власника: «Просто додати» = ЗАВЖДИ простий додаток без нарізки.
-    // Раніше all-PDF+повний OCR з увімкненим тумблером ішов у стрім-нарізку
-    // («знову полізли в процесор») — тепер addFiles, кожен PDF цілим документом.
+  it('дефолт (просто-додати) + all-PDF + повний OCR → addFiles (НЕ нарізка), ocrMode full', async () => {
+    // A2: просто-додати = ДЕФОЛТ (тумблер «Нарізати том» OFF) → ЗАВЖДИ простий
+    // додаток без нарізки. all-PDF+повний OCR без увімкненої нарізки → addFiles,
+    // кожен PDF цілим документом; pipeline.run НЕ викликається.
     const addFiles = vi.fn().mockResolvedValue({
       ok: true, documents: [{ id: 'd1', name: 'Позов.pdf' }], files: [], errors: [],
     });
@@ -116,9 +109,6 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     const pdf = new File([new Uint8Array([1, 2, 3])], 'позов.pdf', { type: 'application/pdf' });
     await act(async () => {
       fireEvent.change(fileInput, { target: { files: [pdf] } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByText('Просто додати файли'));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
@@ -145,9 +135,6 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.change(fileInput, { target: { files: [pdf] } });
     });
     await act(async () => {
-      fireEvent.click(screen.getByText('Просто додати файли'));
-    });
-    await act(async () => {
       fireEvent.click(screen.getByText('Без розпізнавання тексту'));
     });
     await act(async () => {
@@ -159,5 +146,50 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(options.ocrMode).toBe('none');        // без OCR
     expect(input.files).toHaveLength(1);
     expect(input.files[0].raw).toBeInstanceOf(File);
+  });
+
+  it('A2 ДЕФОЛТ — новий run без жодного тумблера → addFiles (просто-додати), НЕ нарізка', async () => {
+    // Інверсія дефолту: стартовий стан DP = просто-додати. Без жодної взаємодії
+    // з тумблерами один PDF → addFiles, pipeline.run НЕ викликається.
+    const addFiles = vi.fn().mockResolvedValue({
+      ok: true, documents: [{ id: 'd1', name: 'Позов' }], files: [], errors: [],
+    });
+    const run = vi.fn();
+    const { container } = renderDP({ run, addFiles });
+
+    const fileInput = container.querySelector('input[type="file"]');
+    const pdf = new File([new Uint8Array([1, 2, 3])], 'позов.pdf', { type: 'application/pdf' });
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [pdf] } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
+    });
+
+    expect(addFiles).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('A2 двері нарізки — «Нарізати том» ON + об’ємний скан-PDF → pipeline.run (нарізка)', async () => {
+    // Явний тумблер «Нарізати том на документи» → стрім-шлях нарізки. Об’ємний
+    // (≥1МБ) сканований PDF проходить ворота входу → pipeline.run, НЕ addFiles.
+    const run = vi.fn().mockResolvedValue({ ok: true, documents: [], decisions: [], errors: [] });
+    const addFiles = vi.fn();
+    const { container } = renderDP({ run, addFiles });
+
+    const fileInput = container.querySelector('input[type="file"]');
+    const pdf = new File([new Uint8Array(1024 * 1024)], 'том.pdf', { type: 'application/pdf' });
+    await act(async () => {
+      fireEvent.change(fileInput, { target: { files: [pdf] } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Нарізати том на документи'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(addFiles).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // ZIP-інгест ЄСІТС · інтеграція з Document Processor. Перевіряє: коли адвокат
-// кидає ZIP у DP + вмикає «Просто додати», фронт-крок `unpackArchivesFrontStep`
+// кидає ZIP у DP в режимі просто-додати (A2 — дефолт), фронт-крок `unpackArchivesFrontStep`
 // розгортає архів у складові файли, відкидає КЕП-підписи, і `pipeline.addFiles`
 // отримує ПЛОСКИЙ список (а не ZIP як один файл). Сама розпаковка fflate
 // мокається — ми тестуємо ДРОТУВАННЯ, не fflate (це покрите unit-тестами).
@@ -72,7 +72,7 @@ beforeEach(() => {
 });
 
 describe('DP-ZIP · фронт-крок розпакування ПЕРЕД addFiles', () => {
-  it('кинув ZIP + «Просто додати» → addFiles отримав РОЗГОРНУТИЙ список (не ZIP)', async () => {
+  it('кинув ZIP (просто-додати дефолт) → addFiles отримав РОЗГОРНУТИЙ список (не ZIP)', async () => {
     const addFiles = vi.fn().mockResolvedValue({
       ok: true, documents: [{ id: 'd1', name: 'esits_pozov' }, { id: 'd2', name: 'esits_uhvala' }],
       files: [], errors: [],
@@ -82,7 +82,6 @@ describe('DP-ZIP · фронт-крок розпакування ПЕРЕД addF
     const fileInput = container.querySelector('input[type="file"]');
     const zip = new File([new Uint8Array([1, 2, 3, 4])], 'esits_dispatch.zip', { type: 'application/zip' });
     await act(async () => { fireEvent.change(fileInput, { target: { files: [zip] } }); });
-    await act(async () => { fireEvent.click(screen.getByText('Просто додати файли')); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ })); });
 
     // Фронт-крок викликаний ОДИН РАЗ на сирому списку File.
@@ -108,7 +107,6 @@ describe('DP-ZIP · фронт-крок розпакування ПЕРЕД addF
     const zip = new File([new Uint8Array([1])], 'esits.zip', { type: 'application/zip' });
     const pdf = new File([new Uint8Array([2])], 'standalone.pdf', { type: 'application/pdf' });
     await act(async () => { fireEvent.change(fileInput, { target: { files: [zip, pdf] } }); });
-    await act(async () => { fireEvent.click(screen.getByText('Просто додати файли')); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ })); });
 
     expect(addFiles).toHaveBeenCalledTimes(1);
@@ -123,7 +121,6 @@ describe('DP-ZIP · фронт-крок розпакування ПЕРЕД addF
     const fileInput = container.querySelector('input[type="file"]');
     const rar = new File([new Uint8Array([1])], 'esits.rar', { type: 'application/vnd.rar' });
     await act(async () => { fireEvent.change(fileInput, { target: { files: [rar] } }); });
-    await act(async () => { fireEvent.click(screen.getByText('Просто додати файли')); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ })); });
 
     expect(unpackArchivesFrontStep).toHaveBeenCalledTimes(1);
@@ -148,7 +145,6 @@ describe('DP-ZIP · фронт-крок розпакування ПЕРЕД addF
       type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     });
     await act(async () => { fireEvent.change(fileInput, { target: { files: [docx] } }); });
-    await act(async () => { fireEvent.click(screen.getByText('Просто додати файли')); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ })); });
 
     expect(unpackArchivesFrontStep).toHaveBeenCalledTimes(1);

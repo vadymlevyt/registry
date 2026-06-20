@@ -94,11 +94,13 @@ async function enterMergeAndSubmit(onExecuteAction) {
       <DocumentProcessorV2 caseData={CASE} onExecuteAction={onExecuteAction} driveConnected={false} />
     </DocumentPipelineContext.Provider>,
   );
-  // Вибрати 2 фото → all-image вхід → «Розпочати» веде в image-merge editor.
+  // Вибрати 2 фото → all-image вхід. A2: склейка живе в режимі нарізки (дефолт —
+  // просто-додати, де all-image йде в addFiles) → вмикаємо «Нарізати том».
   const fileInput = container.querySelector('input[type="file"]');
   const f1 = new File([new Uint8Array([1])], 'p1.jpg', { type: 'image/jpeg' });
   const f2 = new File([new Uint8Array([2])], 'p2.jpg', { type: 'image/jpeg' });
   await act(async () => { fireEvent.change(fileInput, { target: { files: [f1, f2] } }); });
+  await act(async () => { fireEvent.click(screen.getByText('Нарізати том на документи')); });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ })); });
   // Тепер у image-merge режимі — мок-редактор дав кнопку submit.
   await act(async () => { fireEvent.click(screen.getByTestId('do-submit')); });

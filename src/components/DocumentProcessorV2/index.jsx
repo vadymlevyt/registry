@@ -53,13 +53,13 @@ const DEFAULT_SETTINGS = {
   // (очистка стала справою в'ювера/ACTION на вимогу, parent §DP БІЛЬШЕ НЕ ЧИСТИТЬ).
   compressAll: false,            // 4
   updateCaseContext: true,       // 6
-  // 1C.2 — skipPdfSlicing: пропустити AI-нарізку (Triage) і per-file
-  // маршрутизувати кожен живий файл: фото → image_merge solo, інше →
-  // add_as_is solo. Працює і у міксі PDF+фото (інакше AI Triage поріже
-  // PDF попри toggle). НЕ вимикає OCR, метадані, класифікацію.
-  skipPdfSlicing: false,         // 9
-  // TASK 4 етап D — skipOcr: «без OCR». Дійсний ЛИШЕ разом зі «Просто додати»
-  // (add_as_is) — до НАРІЗКИ не застосовується (там OCR обов'язковий для меж).
+  // A2 — sliceVolume: один сенс — true=«нарізати том на документи» (AI-нарізка
+  // через Triage). Дефолт false = просто-додати (кожен файл окремим документом,
+  // без нарізки): фото → image_merge solo, інше → add_as_is solo. Нарізка —
+  // свідомий явний вибір. НЕ вимикає OCR, метадані, класифікацію.
+  sliceVolume: false,            // 9
+  // TASK 4 етап D — skipOcr: «без OCR». Дійсний ЛИШЕ в режимі просто-додати
+  // (add_as_is, sliceVolume OFF) — до НАРІЗКИ не застосовується (там OCR обов'язковий для меж).
   // Vision читає 1-2 стор. → пропонує метадані; артефактів у 02 не створюється.
   skipOcr: false,                // 10
 };
@@ -703,28 +703,29 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       return;
     }
     // Маршрутизація сценаріїв (детермінований вибір НА ВХОДІ):
-    //   • all-image + toggle OFF → DP image-merge editor (склейка авто).
-    //   • toggle ON «Просто додати» → ЗАВЖДИ addFiles (простий per-file додаток),
-    //     НІКОЛИ нарізка/стрім-блоки — незалежно від типу і OCR-режиму.
-    //     Повний OCR розпізнає кожен файл ЦІЛИМ документом (layout у 02), але
-    //     НЕ ріже на шматки. «Без OCR» — лише 01, без артефактів.
-    //   • toggle OFF + мікс photo+PDF → toast (нарізка-мікс поза scope; для
-    //     комбо адвокат вмикає «Просто додати»).
-    //   • toggle OFF + all-PDF / mix без фото → стрім-шлях з AI Triage (нарізка).
-    if (isAllImagesInput() && !settings.skipPdfSlicing) {
+    //   • all-image + «Нарізати том» ON → DP image-merge editor (склейка авто).
+    //   • «Нарізати том» OFF (дефолт, просто-додати) → ЗАВЖДИ addFiles (простий
+    //     per-file додаток, ВКЛ. all-image), НІКОЛИ нарізка/стрім-блоки/склейка —
+    //     незалежно від типу і OCR-режиму. Повний OCR розпізнає кожен файл ЦІЛИМ
+    //     документом (layout у 02), але НЕ ріже на шматки. «Без OCR» — лише 01.
+    //   • «Нарізати том» ON + мікс photo+PDF → toast (нарізка-мікс поза scope;
+    //     для комбо адвокат вимикає «Нарізати том»).
+    //   • «Нарізати том» ON + all-PDF / mix без фото → стрім-шлях з AI Triage.
+    // ВАЖЛИВО (rename A2): склейка спрацьовує ЛИШЕ в режимі нарізки (sliceVolume).
+    // У просто-додати (дефолт) all-image йде в addFiles, НЕ в склейку — як до A2.
+    if (isAllImagesInput() && settings.sliceVolume) {
       await startImageMergeProcessing();
       return;
     }
-    // «Просто додати» (skipPdfSlicing) → ЗАВЖДИ простий додаток без нарізки.
-    // Виправлення (рішення власника): раніше all-PDF+повний OCR з увімкненим
-    // «Просто додати» все одно йшов у стрім-нарізку (блоки/OCR) — «знову полізли
-    // в процесор». Тепер тумблер однозначний: увімкнено → ніякої нарізки.
-    const useAddAsIs = settings.skipPdfSlicing === true;
+    // Просто-додати (sliceVolume OFF) → ЗАВЖДИ простий додаток без нарізки.
+    // Дефолт. Нарізка вмикається свідомо тумблером «Нарізати том на документи»:
+    // увімкнено → стрім-шлях з AI Triage; вимкнено → ніякої нарізки.
+    const useAddAsIs = settings.sliceVolume !== true;
     if (!useAddAsIs && hasAnyImage() && hasAnyNonImage()) {
-      // Мікс фото+PDF у режимі НАРІЗКИ (toggle OFF) — поза scope. Підказуємо
-      // увімкнути «Просто додати» для комбо без нарізки.
-      toast.warning('Мікс фото + PDF: увімкніть «Просто додати файли» для комбо', {
-        description: 'Нарізка працює лише для чистих наборів. Для змішаного набору без нарізки — тумблер «Просто додати файли».',
+      // Мікс фото+PDF у режимі НАРІЗКИ (тумблер «Нарізати том» ON) — поза scope.
+      // Підказуємо вимкнути «Нарізати том» для комбо без нарізки (просто-додати).
+      toast.warning('Мікс фото + PDF: вимкніть «Нарізати том на документи» для комбо', {
+        description: 'Нарізка працює лише для чистих наборів. Для змішаного набору без нарізки — вимкніть тумблер «Нарізати том на документи».',
       });
       return;
     }
@@ -843,7 +844,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       setRunning(false);
       // Скидаємо режимні тумблери після прогону — щоб режим не лишався «липким»
       // (минулого разу скан «не нарізався», бо «Просто додати» лишався увімкненим).
-      setSettings((s) => ({ ...s, skipPdfSlicing: false, skipOcr: false, compressAll: false }));
+      setSettings((s) => ({ ...s, sliceVolume: false, skipOcr: false, compressAll: false }));
     }
   };
 
@@ -1034,16 +1035,16 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           <div className="dpv2-settings-group">
             <div className="dpv2-section-label">ОРГАНІЗАЦІЯ</div>
             <Toggle
-              label="Просто додати файли"
-              description="кожен PDF — окремий документ, без AI-нарізки"
-              checked={settings.skipPdfSlicing}
-              onChange={setToggle('skipPdfSlicing')}
+              label="Нарізати том на документи"
+              description="AI поділить PDF-том на окремі документи; вимкнено — кожен файл додається як є"
+              checked={settings.sliceVolume}
+              onChange={setToggle('sliceVolume')}
             />
             <Toggle
               label="Без розпізнавання тексту"
-              description="лише з «Просто додати»: AI прочитає перші сторінки і запропонує дані, повне розпізнавання — пізніше"
+              description="лише без нарізки: AI прочитає перші сторінки і запропонує дані, повне розпізнавання — пізніше"
               checked={settings.skipOcr}
-              disabled={!settings.skipPdfSlicing}
+              disabled={settings.sliceVolume === true}
               onChange={setToggle('skipOcr')}
             />
           </div>
