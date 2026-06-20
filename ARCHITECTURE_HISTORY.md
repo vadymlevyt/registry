@@ -31,6 +31,8 @@
 | TASK DP image parity (#1 дублі+сортування через спільну sortImageDocument, #9 банер обрізки, #4 portal попапа) | без bump | `report_task_dp_image_parity.md`, `bugs_found_during_dp_testing.md` |
 | Court Sync MVP (case.origin) v9 | 8 → 9 | `report_task_0_4_court_sync_mvp.md`, `TASK_0_4_court_sync_mvp.md` |
 | **TASK 3.1 clean_text core (ядро `cleanTextService` + DP-консолідація + viewer `.md`) v10** | **9 → 10** | `report_task3.1_clean_text_core.md`, `TASK_3.1_clean_text_core.md`, `TASK_3_clean_text.md`, `flow_clean_text.md`, `bugs_found_during_clean_text_core.md` |
+| **TASK A1 — конвеєр стає чистою нарізкою (Вісь A; ворота «лише сканований PDF» + спеціалізація диригента + знесення мертвих поколінь меж; борги #67/#68/#69 закрито) (2026-06-17)** | без bump | `report_task_A1_clean_slicing.md`, `TASK_A1_clean_slicing.md`, `audit_dp_consolidated_real_state.md` |
+| **TASK A2 — тумблери DP: чистка + інверсія дефолту (Вісь A; викинуто 5 мертвих тумблерів, дефолт→просто-додати, тумблер «Нарізати / склеїти», датасет→founder; борг #73) (2026-06-20)** | без bump | `report_task_A2_toggles_cleanup.md`, `TASK_A2_toggles_cleanup.md` |
 
 ---
 
