@@ -16,7 +16,7 @@ import { Button, Toggle, Tabs } from '../UI';
 import { toast } from '../../services/toast.js';
 import { driveRequest } from '../../services/driveAuth.js';
 import { readDriveFileBytes, findOrCreateFolder, uploadBytesToDrive } from '../../services/driveService.js';
-import { getSplitterDatasetEnabled, setSplitterDatasetEnabled, getCurrentUserId, getCurrentTenantId } from '../../services/tenantService.js';
+import { getSplitterDatasetEnabled, setSplitterDatasetEnabled, getCurrentUserId, getCurrentTenantId, isCurrentUserFounder } from '../../services/tenantService.js';
 import * as eventBus from '../../services/eventBus.js';
 import { DOCUMENT_BATCH_PROCESSED } from '../../services/eventBusTopics.js';
 import { useDocumentPipeline } from '../../contexts/DocumentPipelineContext.jsx';
@@ -1058,26 +1058,28 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
             <Toggle label="Оновити case_context.md" checked={settings.updateCaseContext} onChange={setToggle('updateCaseContext')} />
           </div>
 
-          <div className="dpv2-settings-group">
-            <div className="dpv2-section-label">ВЛАСНА МОДЕЛЬ НАРІЗКИ</div>
-            <Toggle
-              label="Накопичувати приклади нарізки для тренування власної моделі"
-              checked={datasetEnabled}
-              onChange={toggleDataset}
-            />
-            {datasetEnabled && (
-              <div className="dpv2-counter">
-                Збір увімкнено — приклади додаються у _datasets після кожної обробки.
+          {isCurrentUserFounder() && (
+            <div className="dpv2-settings-group">
+              <div className="dpv2-section-label">ВЛАСНА МОДЕЛЬ НАРІЗКИ</div>
+              <Toggle
+                label="Накопичувати приклади нарізки для тренування власної моделі"
+                checked={datasetEnabled}
+                onChange={toggleDataset}
+              />
+              {datasetEnabled && (
+                <div className="dpv2-counter">
+                  Збір увімкнено — приклади додаються у _datasets після кожної обробки.
+                </div>
+              )}
+              <div className="dpv2-disclaimer">
+                Увімкнувши збір датасету, ви зберігаєте розпізнаний текст, межі і
+                метадані документів цієї справи для майбутнього навчання власного
+                спліттера. Дані містять зміст матеріалів справи. Відповідальність
+                за дотримання адвокатської таємниці і правомірність використання
+                цих даних несе адвокат. Технічної анонімізації не виконується.
               </div>
-            )}
-            <div className="dpv2-disclaimer">
-              Увімкнувши збір датасету, ви зберігаєте розпізнаний текст, межі і
-              метадані документів цієї справи для майбутнього навчання власного
-              спліттера. Дані містять зміст матеріалів справи. Відповідальність
-              за дотримання адвокатської таємниці і правомірність використання
-              цих даних несе адвокат. Технічної анонімізації не виконується.
             </div>
-          </div>
+          )}
 
           <div className="dpv2-preview">
             <span>
