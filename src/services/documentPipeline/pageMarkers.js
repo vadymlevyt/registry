@@ -342,14 +342,11 @@ export function buildCompactTriagePassport(layoutJson, expectedPageCount = null,
  * ФД-1.1 (валідація адвокатом на Брановському): чисто компактний паспорт
  * втрачав ТІЛО тексту, з якого AI дискримінує межі за змістом фраз. На
  * малому томі це збіднення зайве — вікно Haiku вистачає. Тому щільність
- * ПРОПОРЦІЙНА обсягу (A4-ч.1): єдиний символьний бюджет на весь том
- * (PASSPORT_CHAR_BUDGET) розподіляється рівномірно по сторінках і
- * клампиться в [FLOOR, CEIL] на сторінку (див. passportOptsForBudget).
- * ≤70 стор. → clamp дає стелю CEIL=3000 = rich (байт-у-байт як було);
- * 70-250 стор. отримують плавно меншу, але все ще щедру щільність (не
- * обрив у компакт); великі (>350) — підлога FLOOR=600. Брановський
- * (65 стор.) лишається на старій точності, 100-250 стор. виходять із
- * голодування 600 симв/стор. без ризику degenerate (бюджет ≤ рівня rich-70).
+ * адаптивна за обсягом: ≤richMaxPages() стор. → rich profile (head/tail
+ * у рази більші, фактично повне тіло короткої OCR-сторінки); вище →
+ * стартовий мінімум (краї, не переповнюючи 250-стор. тома). Брановський
+ * (65 стор.) повертається до старої точності, 200-250 стор. лишаються в
+ * зоні якості.
  * @param {object|null} layoutJson
  * @param {number|null} expectedPageCount
  * @param {string} plainText — fallback (OCR-текст без структури / resume)
@@ -363,54 +360,29 @@ export function resolveBoundaryText(layoutJson, expectedPageCount, plainText) {
     || String(plainText || '');
 }
 
-// RICH_PASSPORT_OPTS — профіль «щедрого» паспорта (рясні краї, фактично повне
-// тіло короткої OCR-сторінки). Числові headChars/tailChars нижче перевизначає
-// passportOptsForBudget пропорційно обсягу; решта полів (headLines/tailLines/
-// fullTextIfNoSignal/ambiguousMaxChars) — спільні для будь-якої щільності.
-export const RICH_PASSPORT_OPTS = Object.freeze({
+// Один сенс: «з цього порогу адаптивна rich-щільність паспорта небезпечна —
+// переходимо на стартовий мінімум». Зниження зі 100 до 70: валідація
+// адвокатом на томах 70-100 стор. показала, що Haiku на rich-паспорті в
+// цьому діапазоні втрачає межі (degenerate plan). Стартова точка,
+// обґрунтована емпірично; override-хук для калібровки/тестів.
+const RICH_PASSPORT_MAX_PAGES_DEFAULT = 70;
+let _richMaxPagesOverride = null;
+
+// _setRichPassportMaxPages — внутрішня контракт-конвенція (префікс `_`):
+// «не для production-коду, тільки тести / майбутня tenant-калібровка через
+// явний оператор». Не для UI.
+export function _setRichPassportMaxPages(n) {
+  _richMaxPagesOverride = (typeof n === 'number' && n > 0) ? n : null;
+}
+function richMaxPages() {
+  return _richMaxPagesOverride ?? RICH_PASSPORT_MAX_PAGES_DEFAULT;
+}
+
+const RICH_PASSPORT_OPTS = Object.freeze({
   headLines: 10, tailLines: 10,
   headChars: 1500, tailChars: 1500,
   fullTextIfNoSignal: true, ambiguousMaxChars: 1200,
 });
-
-// PASSPORT_CHAR_BUDGET — сумарний символьний бюджет паспорта на ВЕСЬ том.
-// Один сенс: «скільки символів усього віддаємо Triage; розподіляється рівномірно
-// по сторінках, клампиться в [FLOOR, CEIL] на сторінку». Дефолт = 70×CEIL =
-// рівень rich-70 (відомо-добрий за реальним count_tokens 2026-06-21: ~105K ток,
-// нижче degenerate-стелі Haiku ~150K ток). FLOOR = поточний компакт (600 =
-// head400+tail200), CEIL = поточний rich (3000 = head1500+tail1500). Поріг 70
-// тепер імпліцитний: 210000/3000 = 70 (де clamp вперше відходить від стелі).
-const PASSPORT_CHAR_BUDGET_DEFAULT = 210000;
-const PASSPORT_FLOOR_CHARS = 600;   // = поточний компакт (head 400 + tail 200)
-const PASSPORT_CEIL_CHARS = 3000;   // = поточний rich   (head 1500 + tail 1500)
-let _charBudgetOverride = null;
-
-// _setPassportCharBudget — внутрішня контракт-конвенція (префікс `_`): «не для
-// production-коду, тільки тести / майбутня tenant-калібровка через явний
-// оператор». Не для UI. Замінює знятий _setRichPassportMaxPages (A4-ч.1).
-export function _setPassportCharBudget(n) {
-  _charBudgetOverride = (typeof n === 'number' && n > 0) ? n : null;
-}
-function passportCharBudget() {
-  return _charBudgetOverride ?? PASSPORT_CHAR_BUDGET_DEFAULT;
-}
-
-// passportOptsForBudget — пропорційне заповнення бюджету (A4-ч.1). Один сенс:
-// «скільки head/tail-символів на сторінку при цьому обсязі». perPage = бюджет/
-// pageCount, клампнутий у [FLOOR, CEIL]; split head:tail = 1:1. Решта opts =
-// RICH_PASSPORT_OPTS. Інваріант: pageCount ∈ [1,70] → perPage=CEIL=3000 →
-// {headChars:1500, tailChars:1500} = байт-у-байт RICH_PASSPORT_OPTS (малі томи
-// не міняються). Невідомий обсяг (≤0) → {} → buildCompactTriagePassport бере
-// COMPACT_DEFAULTS (як було).
-export function passportOptsForBudget(pageCount) {
-  if (!(pageCount > 0)) return {};
-  const perPage = Math.min(
-    PASSPORT_CEIL_CHARS,
-    Math.max(PASSPORT_FLOOR_CHARS, Math.round(passportCharBudget() / pageCount)),
-  );
-  return {
-    ...RICH_PASSPORT_OPTS,
-    headChars: Math.ceil(perPage / 2),
-    tailChars: Math.floor(perPage / 2),
-  };
+function passportOptsForBudget(pageCount) {
+  return pageCount > 0 && pageCount <= richMaxPages() ? RICH_PASSPORT_OPTS : {};
 }

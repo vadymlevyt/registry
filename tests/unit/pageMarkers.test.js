@@ -1,7 +1,7 @@
 // Ф1 Smart Triage — pageMarkers: чистий примітив посторінкових маркерів.
 // Покриває корінь R5/R6 (немає якорів сторінок → AI галюцинує межі).
 import { describe, it, expect } from 'vitest';
-import { buildPagedText, isPagedLayout, buildStructuralPassport, buildCompactTriagePassport, resolveBoundaryText, passportOptsForBudget, RICH_PASSPORT_OPTS, _setPassportCharBudget } from '../../src/services/documentPipeline/pageMarkers.js';
+import { buildPagedText, isPagedLayout, buildStructuralPassport, buildCompactTriagePassport, resolveBoundaryText } from '../../src/services/documentPipeline/pageMarkers.js';
 
 // Реалістичний об'єкт сторінки Document AI (форма як persist у .layout.json).
 const centeredTopBlock = (text) => ({
@@ -340,11 +340,9 @@ describe('pageMarkers.buildCompactTriagePassport (ФД-0)', () => {
 // великий том знову переповнить вікно Haiku (тихий passthrough). Цей тест
 // ловить регрес: resolveBoundaryText мусить бути компактним, не повнотекстовим.
 describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
-  it('великий том (>70 стор.) → пропорційна щільність: компактніший за структурний, через passportOptsForBudget', () => {
-    // A4-ч.1: 120 стор. — більше не обрив у компакт-дефолти, а пропорційна
-    // щільність perPage = clamp(210000/120, 600, 3000) = 1750 (head 875 / tail 875).
-    // resolveBoundaryText мусить маршрутизувати рівно через passportOptsForBudget,
-    // а НЕ повертати повнотекстовий структурний паспорт (регрес-сторож ФД-1).
+  it('великий том (>70 стор.) → стартовий мінімум: у рази менший за структурний', () => {
+    // 120 стор. — вище RICH_PASSPORT_MAX_PAGES_DEFAULT → дефолти компактного
+    // паспорта (без зайвої тіла-тексту, безпечно для вікна Haiku).
     const big = { schemaVersion: 1, pages: Array.from({ length: 120 }, (_, p) => ({
       _text: Array.from({ length: 45 }, (_, k) =>
         `Сторінка ${p + 1} рядок ${k + 1} реального обсягу абзацу судового документа`).join('\n'),
@@ -353,16 +351,14 @@ describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
     expect(out).toContain('=== СТОРІНКА 1 ===');
     expect(out).toContain('=== СТОРІНКА 120 ===');
     expect(out).not.toContain('PLAIN-FALLBACK');
-    expect(out).toBe(buildCompactTriagePassport(big, null, passportOptsForBudget(120))); // пропорційні opts
-    expect(passportOptsForBudget(120)).toMatchObject({ headChars: 875, tailChars: 875 });
-    // Усе ще КОМПАКТНИЙ шлях, не повнотекстовий структурний (сторож проти passthrough).
-    expect(out.length).toBeLessThan(buildStructuralPassport(big).length);
+    expect(out).toBe(buildCompactTriagePassport(big));            // дефолти на великому
+    expect(out.length).toBeLessThan(buildStructuralPassport(big).length / 5);
   });
 
   it('малий том (≤70 стор.) → rich profile: head 10 + tail 10 (Брановський-зрізає)', () => {
     // Реалістична багаторядкова OCR-сторінка (Document AI _text з \n).
-    // 65 стор. → perPage = clamp(210000/65, 600, 3000) = 3000 (стеля) → rich head/tail
-    // 10/10 по 1500 симв (байт-у-байт як до A4). На сторінці з 30 рядками rich покриває 1-10 + 21-30
+    // 65 стор. ≤ RICH_PASSPORT_MAX_PAGES_DEFAULT → активується rich profile: head/tail
+    // 10/10 по 1500 симв. На сторінці з 30 рядками rich покриває 1-10 + 21-30
     // (20 з 30), середина 11-20 елідується ⟨…⟩. Дефолтний компактний покривав
     // би лише 1-3 + 29-30 (5 з 30) — у 4x менше тексту для дискримінації меж.
     // dimension забезпечує непорожній дайджест (fullTextIfNoSignal не лізе).
@@ -386,21 +382,17 @@ describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
     expect(pureDefault).not.toContain('рядок 21 реального');
   });
 
-  it('межа 70/71: НЕМАЄ обриву — щільність неперервна (A4-ч.1)', () => {
-    // A4-ч.1 СКАСУВАВ бінарний обрив. Раніше 71-ша стор. падала в ~5x (rich→компакт);
-    // тепер perPage(70)=3000, perPage(71)=clamp(210000/71,600,3000)=2958 — майже
-    // рівні. Цей тест — зворотній сторож: per-page на 71 НЕ менший удвічі за 70
-    // (раніше — навпаки). Гарантує, що 70-71-сторінкові томи не голодують.
-    expect(passportOptsForBudget(70)).toEqual(RICH_PASSPORT_OPTS);        // стеля = rich
-    expect(passportOptsForBudget(71)).toMatchObject({ headChars: 1479, tailChars: 1479 }); // 2958/2
+  it('поріг переходу: 70 → rich, 71 → дефолти (один сенс — за обсягом)', () => {
+    // dimension → непорожній дайджест → fullTextIfNoSignal не плутає тест.
     const make = (n) => ({ schemaVersion: 1, pages: Array.from({ length: n }, () => ({
       _text: Array.from({ length: 30 }, (_, k) => `рядок ${k + 1} достатньо інформативний для тесту`).join('\n'),
       dimension: { width: 595, height: 842 },
     })) });
     const at70 = resolveBoundaryText(make(70), null, '');
     const at71 = resolveBoundaryText(make(71), null, '');
-    // Жодного обриву: per-page на 71 у межах ~10% від 70 (неперервність).
-    expect(at71.length / 71).toBeGreaterThan(at70.length / 70 * 0.85);
+    // Розмір на сторінку: rich значно більший за дефолтний (близько 4x при
+    // 30 рядках per page; беремо безпечний поріг 2x).
+    expect(at70.length / 70).toBeGreaterThan(at71.length / 71 * 2);
   });
 
   it('layout непридатний → fallback на plain текст цілий', () => {
@@ -413,84 +405,5 @@ describe('pageMarkers.resolveBoundaryText (ФД-1)', () => {
   it('layout непридатний і plain порожній → ""', () => {
     expect(resolveBoundaryText(null, null, '')).toBe('');
     expect(resolveBoundaryText(null, null, null)).toBe('');
-  });
-});
-
-// ── A4-ч.1 · passportOptsForBudget — пропорційна щільність паспорта ──────────
-// Контракт: perPage = clamp(round(CHAR_BUDGET / pageCount), 600, 3000), split
-// head:tail = 1:1 (head=ceil, tail=floor), решта opts = RICH_PASSPORT_OPTS.
-// КРИТИЧНО: ≤70 стор. → байт-у-байт rich (малі томи фізично не міняються).
-describe('passportOptsForBudget — пропорційна щільність (A4-ч.1)', () => {
-  // ★ БАЙТ-ІДЕНТИЧНІСТЬ ≤70 — головний інваріант §0 спеки. Без нього TASK не зданий.
-  it('≤70 стор. → байт-у-байт RICH_PASSPORT_OPTS (1500/1500) — малі томи незмінні', () => {
-    for (const pc of [1, 35, 70]) {
-      const opts = passportOptsForBudget(pc);
-      expect(opts).toEqual(RICH_PASSPORT_OPTS);                 // повна рівність об'єкта
-      expect(opts.headChars).toBe(1500);
-      expect(opts.tailChars).toBe(1500);
-    }
-  });
-
-  it('спуск після 70: 100→2100 (1050/1050), 150→1400 (700/700), 250→840 (420/420)', () => {
-    expect(passportOptsForBudget(100)).toMatchObject({ headChars: 1050, tailChars: 1050 });
-    expect(passportOptsForBudget(150)).toMatchObject({ headChars: 700, tailChars: 700 });
-    expect(passportOptsForBudget(250)).toMatchObject({ headChars: 420, tailChars: 420 });
-  });
-
-  it('підлога 600 на великих томах: 350 → 300/300, 700 → 300/300 (не нижче)', () => {
-    expect(passportOptsForBudget(350)).toMatchObject({ headChars: 300, tailChars: 300 });
-    expect(passportOptsForBudget(700)).toMatchObject({ headChars: 300, tailChars: 300 });
-    // 700 стор. сирий бюджет/стор = 300 < FLOOR/2 — клампнуто у підлогу, не нижче.
-    const o = passportOptsForBudget(700);
-    expect(o.headChars + o.tailChars).toBeGreaterThanOrEqual(600);
-  });
-
-  it('стеля 3000, підлога 600: perPage ніколи поза [600,3000]', () => {
-    for (const pc of [1, 50, 70, 71, 120, 250, 350, 1000, 5000]) {
-      const o = passportOptsForBudget(pc);
-      const perPage = o.headChars + o.tailChars;
-      expect(perPage).toBeGreaterThanOrEqual(600);
-      expect(perPage).toBeLessThanOrEqual(3000);
-    }
-  });
-
-  it('split 1:1 — head=ceil, tail=floor (різниця ≤1 на непарному perPage)', () => {
-    // 99 стор.: round(210000/99)=2121 (непарне) → head 1061, tail 1060.
-    const o = passportOptsForBudget(99);
-    expect(o.headChars).toBe(1061);
-    expect(o.tailChars).toBe(1060);
-    expect(o.headChars - o.tailChars).toBeLessThanOrEqual(1);
-  });
-
-  it('монотонність: perPage не зростає зі зростанням pageCount', () => {
-    let prev = Infinity;
-    for (let pc = 1; pc <= 800; pc += 7) {
-      const o = passportOptsForBudget(pc);
-      const perPage = o.headChars + o.tailChars;
-      expect(perPage).toBeLessThanOrEqual(prev);
-      prev = perPage;
-    }
-  });
-
-  it('невідомий обсяг (0 / від’ємний / NaN) → {} (компакт-дефолти як було)', () => {
-    expect(passportOptsForBudget(0)).toEqual({});
-    expect(passportOptsForBudget(-5)).toEqual({});
-    expect(passportOptsForBudget(NaN)).toEqual({});
-    expect(passportOptsForBudget(undefined)).toEqual({});
-  });
-
-  it('_setPassportCharBudget — override змінює спуск; null/невалід повертає дефолт', () => {
-    try {
-      _setPassportCharBudget(300000);                          // вищий бюджет
-      expect(passportOptsForBudget(100)).toMatchObject({ headChars: 1500, tailChars: 1500 }); // 3000→стеля
-      expect(passportOptsForBudget(150)).toMatchObject({ headChars: 1000, tailChars: 1000 }); // 2000/2
-      _setPassportCharBudget(-1);                              // невалід → ігнор, дефолт
-      expect(passportOptsForBudget(100)).toMatchObject({ headChars: 1050, tailChars: 1050 });
-    } finally {
-      _setPassportCharBudget(null);                            // штатна поведінка назад
-    }
-    expect(passportOptsForBudget(100)).toMatchObject({ headChars: 1050, tailChars: 1050 });
-    // override не зачіпає інваріант байт-ідентичності ≤70 при дефолті:
-    expect(passportOptsForBudget(70)).toEqual(RICH_PASSPORT_OPTS);
   });
 });
