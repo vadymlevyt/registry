@@ -73,3 +73,45 @@ export function resolveModel(agentType) {
 export function getSystemDefaults() {
   return { ...SYSTEM_DEFAULTS };
 }
+
+// ROLE_LABELS — людські назви ролей агентів для UI Налаштувань / ModelPicker.
+// Ключі = ключі SYSTEM_DEFAULTS. Один сенс: відображувана назва ролі (НЕ модель,
+// НЕ дефолт; правило #11).
+export const ROLE_LABELS = {
+  qiAgent: 'Quick Input — чат-команди',
+  dashboardAgent: 'Дашборд — чат',
+  dossierAgent: 'Досьє справи — чат',
+  documentProcessor: 'Обробка документів',
+  documentParserVision: 'Розпізнавання документів (зір)',
+  caseContextGenerator: 'Генератор контексту справи',
+  deepAnalysis: 'Глибокий аналіз',
+  imageSorter: 'Сортування зображень',
+  imageDocumentGrouper: 'Межі документів (фото)',
+  qiParserDocument: 'QI — парсер документів',
+  qiParserImage: 'QI — парсер зображень',
+  textCleaner: 'Очистка тексту — Чистий',
+  textDigest: 'Очистка тексту — Конспект',
+  metadataExtractor: 'Метадані без OCR',
+};
+
+// withModelPreference / withoutModelPreference — ЧИСТІ immutable-хелпери: повертають
+// НОВИЙ tenant-об'єкт з оновленим modelPreferences, не мутуючи вхідний. App.jsx
+// бере результат і прокидає його І в setTenants (→ Drive), І в setActiveTenant
+// (→ читання resolveModel) — щоб запис і читання дивилися в одне джерело (§4.6).
+// «Clear» = виставити null (resolveModel трактує falsy як «нема override» → падає
+// у SYSTEM_DEFAULTS); форма узгоджена з DEFAULT_TENANT.modelPreferences (ключі з null).
+export function withModelPreference(tenant, agentType, modelId) {
+  const base = tenant || {};
+  return {
+    ...base,
+    modelPreferences: { ...(base.modelPreferences || {}), [agentType]: modelId },
+  };
+}
+
+export function withoutModelPreference(tenant, agentType) {
+  const base = tenant || {};
+  return {
+    ...base,
+    modelPreferences: { ...(base.modelPreferences || {}), [agentType]: null },
+  };
+}

@@ -69,6 +69,15 @@ export const DOCUMENT_FRAGMENT_SAVED = 'document.fragment_saved';
 // (індикатор у досьє) — DP-4. Зараз UI немає, подія behavior-neutral.
 export const ECITS_INBOX_PENDING = 'ecits.inbox_pending';
 
+// ── AI model availability (TASK Model Picker) ──────────────────────────────
+// Публікується з точок виклику Anthropic API, коли модель повертає 404
+// not_found_error (виведена з обігу / недоступна ключу). Один сенс: «модель X
+// для агента Y недоступна — потрібен вибір актуальної». Payload:
+// { agentType, model, tenantId }. Підписник — App.jsx (відкриває ModelPicker).
+// НЕ плутати з мережевими (timeout) / авторизаційними (401) помилками — для них
+// реакція інша (правило #11).
+export const AI_MODEL_UNAVAILABLE = 'ai.model_unavailable';
+
 export const ECITS_TOPICS = Object.freeze([
   ECITS_DOCUMENTS_RECEIVED,
   ECITS_HEARING_SCHEDULED,

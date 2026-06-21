@@ -183,9 +183,29 @@ export const DEFAULT_USER = {
   lastLoginAt: null,
 };
 
+// _activeTenant — ЄДИНЕ живе джерело поточного tenant: і для читання (через
+// getCurrentTenant — resolveModel, білінг, permissions), і для запису (App
+// прошиває сюди через setActiveTenant). До гідрації = DEFAULT_TENANT (поведінка
+// незмінна). App прошиває живий tenant (а) при гідрації з Drive/localStorage і
+// (б) при кожній зміні modelPreferences — щоб запис (серіалізується у
+// registry_data.json на Drive) і читання дивилися в ОДИН об'єкт. Без цього вибір
+// моделі зберігся б на Drive, але resolveModel читав би застиглу заглушку.
+// Це ж — майбутня точка серверної гідрації (завантаження tenant із БД/сесії):
+// контракт лишається плоским серіалізовним об'єктом; про джерело знає лише
+// гідрація, не точки виклику.
+let _activeTenant = DEFAULT_TENANT;
+
+// setActiveTenant — прошити живий tenant у джерело читання. Один сенс: оновити
+// _activeTenant. null/невалідне — лишаємо поточний (безпечний дефолт, не обнуляємо).
+export function setActiveTenant(tenant) {
+  if (tenant && typeof tenant === 'object') _activeTenant = tenant;
+  return _activeTenant;
+}
+
 export function getCurrentTenant() {
-  // ЗАГЛУШКА: завжди АБ Левицького. У SaaS — з контексту авторизації.
-  return DEFAULT_TENANT;
+  // Живий tenant (прошитий App при гідрації); до гідрації — DEFAULT_TENANT.
+  // У SaaS — з контексту авторизації через ту саму setActiveTenant.
+  return _activeTenant;
 }
 
 export function getCurrentUser() {
