@@ -195,6 +195,19 @@ tenant. Тобто `setModelPreference` має бути **функцією з Ap
 моделі у вибір — оновити `MODEL_PRICING`». Авто-підтягування цін НЕ робимо (Models API цін не
 віддає; YAGNI).
 
+**Знахідка (виправити в цьому TASK): поточна `MODEL_PRICING` неправильна.** Звірено з довідником
+`claude-api` на 2026-06-19:
+
+| Модель | ID | $/1М вхід | $/1М вихід | Зараз у коді |
+|--------|-----|----------:|-----------:|--------------|
+| Claude Sonnet 4.6 | `claude-sonnet-4-6` | 3.00 | 15.00 | ✅ вірно |
+| Claude Opus 4.8 | `claude-opus-4-8` | 5.00 | 25.00 | ❌ нема (а `opus-4-7` стоїть `15/75` — ціни Opus-3, хибно) |
+| Claude Haiku 4.5 | `claude-haiku-4-5` | 1.00 | 5.00 | ❌ стоїть `0.80/4.00` (хибно) |
+
+Тобто навіть для чинних моделей `estimatedCostUSD` рахується неточно. Оновити таблицю на ці
+значення; `claude-sonnet-4-20250514` лишити в таблиці з поміткою historical (для старих записів
+`ai_usage[]`).
+
 ---
 
 ## 7. ФАЙЛИ
@@ -280,11 +293,8 @@ executeAction→Drive). Verifiable: агент може прочитати `reso
    модульні налаштування ЄСІТС — не системні).
 3. **`ROLE_LABELS`** (людські назви агентів) — новий маленький мапінг у `modelResolver.js`
    поряд з `SYSTEM_DEFAULTS` (там, де живуть ролі) — узгодити.
-4. **Чи чіпати `SYSTEM_DEFAULTS` зараз:** дефолти ще містять виведений `claude-sonnet-4-20250514`
-   (тимчасово рятує лише `FALLBACK_MODEL = claude-sonnet-4-6`). Пропоную в рамках цього TASK
-   також оновити `SYSTEM_DEFAULTS` на чинні моделі — інакше «з коробки» все одно 404 до першого
-   ручного вибору. (Окреме мікро-питання: підтвердити цільові ID — Sonnet/Opus — через
-   `claude-api` skill на момент імплементації.)
+4. **`SYSTEM_DEFAULTS` — вирішено, див. §13.** Оновлюємо на чинні ID + навмисно лишаємо одного
+   Sonnet-агента на виведеному ID як тест-фікстуру.
 
 ---
 
@@ -294,3 +304,54 @@ executeAction→Drive). Verifiable: агент може прочитати `reso
   вибір; не додає UI керування ролями/користувачами; не робить білінг-UI; не авто-підтягує ціни;
   не будує спільний `callAnthropic()`-фасад (борг); не виправляє чужий борг
   `setSplitterDatasetEnabled` (тільки фіксує в `tracking_debt.md`).
+
+---
+
+## 13. ОНОВЛЕННЯ ДЕФОЛТНИХ МОДЕЛЕЙ + ТЕСТ-ФІКСТУРА
+
+Мета: щоб «з коробки» все одразу працювало на чинних моделях, АЛЕ щоб можна було наживо
+відтворити й перевірити весь ланцюг реакції на retirement (помилка → повідомлення → ручний
+вибір → працює → вибір зберігся крос-девайс).
+
+### 13.1 Нові `SYSTEM_DEFAULTS` (звірено з `claude-api` 2026-06-19)
+
+| agentType | Зараз | Стає |
+|-----------|-------|------|
+| `dossierAgent` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
+| `qiAgent` | `claude-sonnet-4-20250514` (retired) | **лишаємо `claude-sonnet-4-20250514` — ТЕСТ-ФІКСТУРА (§13.2)** |
+| `dashboardAgent` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
+| `documentProcessor` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
+| `documentParserVision` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
+| `caseContextGenerator` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
+| `imageSorter` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
+| `deepAnalysis` | `claude-opus-4-7` | `claude-opus-4-8` |
+| `qiParserDocument` / `qiParserImage` / `imageDocumentGrouper` / `textCleaner` / `textDigest` / `metadataExtractor` | `claude-haiku-4-5-20251001` | без змін (чинна) |
+
+`FALLBACK_MODEL` уже `claude-sonnet-4-6` — лишається. Haiku-ID не чіпаємо (валідний, не зламаний).
+
+### 13.2 Тест-фікстура — `qiAgent` лишається на виведеному ID
+
+**Свідомо** лишаємо `SYSTEM_DEFAULTS.qiAgent = 'claude-sonnet-4-20250514'`, щоб:
+
+1. Адвокат відкриває Quick Input, пише команду → виклик повертає `not_found_error`.
+2. Спрацьовує детектор → `ai.model_unavailable` → відкривається `ModelPicker` із живим списком.
+3. Адвокат обирає `Claude Sonnet 4.6` (чи Opus) → запис у `tenant.modelPreferences.qiAgent`.
+4. QI одразу працює (override перекриває виведений дефолт), вибір синкається на Drive (крос-девайс).
+
+Це за один прогон перевіряє: детектор 404, eventBus-сигнал, відкриття пікера, живий список з API,
+persist у tenant, пріоритет override над дефолтом у `resolveModel`, крос-девайс через Drive.
+
+**Чому саме `qiAgent`:** (а) це місце, де баг уперше виявився (відтворюваність очевидна адвокату);
+(б) це phase-1 точка емісії сигналу (App.jsx); (в) тригериться тривіально — просто ввести команду
+в QI. Альтернатива — `dashboardAgent` (теж phase-1, теж інтерактивний), якщо не хочемо лишати
+зламаним головний QI. **Рекомендація — `qiAgent`.**
+
+**Після перевірки механіки:** окремим маленьким комітом перевести `SYSTEM_DEFAULTS.qiAgent` теж на
+`claude-sonnet-4-6` (доти override з кроку 3 уже тримає QI робочим, тож «з коробки на новому
+пристрої без override» теж стане справним). Зафіксувати цей крок як завершальний у звіті TASK.
+
+### 13.3 Тест на фікстуру
+
+Юніт-тест: `resolveModel('qiAgent')` без override повертає `claude-sonnet-4-20250514`;
+`isModelNotFoundError(404, {error:{type:'not_found_error'}})` === true; після `setModelPreference`
+повертає вибране. Це «живий» індикатор, що ланцюг не зламали майбутні зміни.
