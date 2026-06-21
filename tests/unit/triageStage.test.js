@@ -2,7 +2,7 @@
 // graceful (нема транспорту / AI кидає / порожньо), passport-вхід.
 import { describe, it, expect, vi } from 'vitest';
 import { createTriageStage, isDegeneratePlan } from '../../src/services/documentPipeline/stages/triageStage.js';
-import { _setRichPassportMaxPages } from '../../src/services/documentPipeline/pageMarkers.js';
+import { _setPassportCharBudget } from '../../src/services/documentPipeline/pageMarkers.js';
 
 const ctxOf = (files, over = {}) => ({
   job: { caseId: 'c1', jobId: 'j1', addedBy: 'system', source: 'manual' },
@@ -343,37 +343,43 @@ describe('isDegeneratePlan — критерій + фільтри обсягу і
   });
 });
 
-// _setRichPassportMaxPages — round-trip override hook (тестовий/калібровочний).
-describe('_setRichPassportMaxPages — round-trip', () => {
-  it('override впливає на резолвер richMaxPages (через resolveBoundaryText)', async () => {
-    const { resolveBoundaryText, buildCompactTriagePassport } = await import('../../src/services/documentPipeline/pageMarkers.js');
+// _setPassportCharBudget — round-trip override hook (тестовий/калібровочний).
+// A4-ч.1: замінив _setRichPassportMaxPages. Бюджет керує щільністю паспорта
+// пропорційно обсягу; нижчий бюджет → рідший паспорт того ж тома.
+describe('_setPassportCharBudget — round-trip', () => {
+  it('override бюджету змінює щільність паспорта 65-стор. тома (через resolveBoundaryText)', async () => {
+    const { resolveBoundaryText, buildCompactTriagePassport, passportOptsForBudget } =
+      await import('../../src/services/documentPipeline/pageMarkers.js');
     const make = (n) => ({ schemaVersion: 1, pages: Array.from({ length: n }, () => ({
       _text: Array.from({ length: 30 }, (_, k) => `рядок ${k + 1} достатньо інформативний для тесту`).join('\n'),
       dimension: { width: 595, height: 842 },
     })) });
-    // Дефолт 70 → 65 стор. — це rich profile (>2x вище за дефолтний компактний).
-    _setRichPassportMaxPages(50);    // override нижче — 65 стор. вже понад → дефолти.
+    // Дефолт: 65 стор. → 210000/65 клампиться у стелю 3000 = rich (щедрий паспорт).
+    const rich = resolveBoundaryText(make(65), null, '');
+    _setPassportCharBudget(39000);   // 39000/65 = 600 = підлога → набагато рідший паспорт.
     try {
-      const out = resolveBoundaryText(make(65), null, '');
-      const def = buildCompactTriagePassport(make(65));
-      expect(out).toBe(def);          // тепер 65 > override 50 → дефолти компактного
+      const lean = resolveBoundaryText(make(65), null, '');
+      expect(lean).toBe(buildCompactTriagePassport(make(65), null, passportOptsForBudget(65)));
+      expect(lean.length).toBeLessThan(rich.length);   // override справді зменшив щільність
     } finally {
-      _setRichPassportMaxPages(null);  // повертаємо штатну поведінку
+      _setPassportCharBudget(null);    // повертаємо штатну поведінку
     }
+    expect(resolveBoundaryText(make(65), null, '')).toBe(rich);   // null → штатна rich-щільність
   });
 });
 
-// Симетрія порогів: DEGENERATE_MIN_PAGES (у triageStage) ≡
-// RICH_PASSPORT_MAX_PAGES_DEFAULT (у pageMarkers). Правило #11 — одна цифра,
-// один сенс «межа якості Haiku вікна». Якщо одну зміниш — впаде reminder,
-// синхронно зміни іншу.
-describe('Симетрія порогів — нагадувач правила #11', () => {
-  it('DEGENERATE_MIN_PAGES = RICH_PASSPORT_MAX_PAGES_DEFAULT (одна цифра, один сенс)', () => {
+// Поріг degenerate: DEGENERATE_MIN_PAGES (у triageStage) = 70. Це «межа, з якої
+// 1-документний passthrough на великому томі підозрілий». A4-ч.1: у pageMarkers
+// поріг 70 більше не окрема константа (RICH_PASSPORT_MAX_PAGES_DEFAULT знято) —
+// він тепер імпліцитний у бюджеті (PASSPORT_CHAR_BUDGET/CEIL = 210000/3000 = 70,
+// де щільність уперше відходить від стелі rich). Цифри історично збігаються
+// (обидві = «межа якості Haiku вікна»), але це вже НЕ один символ. Тест нижче
+// перевіряє ЛИШЕ degenerate-поведінку triageStage — він самодостатній.
+describe('Поріг degenerate (70) — гранична поведінка', () => {
+  it('70 стор. add_as_is → degenerate; 69 → НЕ degenerate', () => {
     // Поведінкова перевірка через граничні значення:
     // - 70 стор. add_as_is → degenerate (≥ DEGENERATE_MIN_PAGES)
     // - 69 стор. add_as_is → НЕ degenerate
-    // Якщо одна з цифр у коді розійдеться — або degenerate захопить 69, або
-    // не захопить 70, → цей тест червоніє.
     const at70 = isDegeneratePlan(
       { documents: [{ documentId: 'd1', route: 'add_as_is', fragments: [{ fileId: 'f0', startPage: 1, endPage: 70 }] }] },
       [{ fileId: 'f0', pageCount: 70 }],
@@ -384,7 +390,5 @@ describe('Симетрія порогів — нагадувач правила 
     );
     expect(at70).toBe(true);
     expect(at69).toBe(false);
-    // Якщо RICH_PASSPORT_MAX_PAGES_DEFAULT зміниться — синхронно змінити
-    // DEGENERATE_MIN_PAGES і числа в цьому тесті.
   });
 });
