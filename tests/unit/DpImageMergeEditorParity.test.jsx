@@ -201,7 +201,7 @@ describe('DpImageMergeEditor — add-group + порожня група як drop
     expect(screen.getByText(/2 документ\(и\)/)).toBeTruthy();
   });
 
-  it('кнопка-кошик прибирає порожню групу (непорожня — disabled)', async () => {
+  it('кошик: порожня група — один тап; непорожня — two-tap arm', async () => {
     const DpImageMergeEditor = await importEditor();
     render(
       <DpImageMergeEditor
@@ -216,12 +216,24 @@ describe('DpImageMergeEditor — add-group + порожня група як drop
     await waitFor(() => expect(screen.getByText('Документ 1 · 2 фото')).toBeTruthy());
     fireEvent.click(screen.getByText('Додати порожню групу'));
     await waitFor(() => expect(screen.getByText('Перетягніть фото сюди')).toBeTruthy());
-    // Кошик непорожньої групи задизейблений; прибираємо саме порожню (enabled).
-    const trash = screen.getAllByLabelText('Видалити групу');
-    const enabled = trash.find((b) => !b.disabled);
-    expect(enabled).toBeTruthy();
-    fireEvent.click(enabled);
+
+    // Обидва кошики мають однаковий aria-label; у DOM-порядку: [0]=непорожня, [1]=порожня.
+    let trash = screen.getAllByLabelText('Видалити документ');
+    expect(trash).toHaveLength(2);
+    // Жоден не задизейблений (непорожню тепер теж можна видалити).
+    expect(trash.every((b) => !b.disabled)).toBe(true);
+
+    // Порожня група — видаляється з ПЕРШОГО тапу.
+    fireEvent.click(trash[1]);
     await waitFor(() => expect(screen.queryByText('Перетягніть фото сюди')).toBeNull());
+
+    // Непорожня: перший тап лише «озброює» (не видаляє).
+    fireEvent.click(screen.getByLabelText('Видалити документ'));
+    expect(screen.getByText('Документ 1 · 2 фото')).toBeTruthy();
+    // Другий тап (armed) — видаляє разом з фото.
+    const armed = await screen.findByLabelText('Тапніть ще раз, щоб видалити документ');
+    fireEvent.click(armed);
+    await waitFor(() => expect(screen.queryByText('Документ 1 · 2 фото')).toBeNull());
   });
 });
 

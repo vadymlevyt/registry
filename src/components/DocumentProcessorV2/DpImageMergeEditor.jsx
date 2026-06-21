@@ -464,16 +464,12 @@ export function DpImageMergeEditor({
     }]);
   }, [proceedings]);
 
+  // Видалити цілу секцію-документ разом з її фото. Фото зникають з усіх груп →
+  // виключаються зі склейки (та сама модель, що видалення по одному в handleRemove,
+  // лише одним рухом). Захист від випадкового зносу багатофотної секції — two-tap
+  // arm на кнопці-кошику (GroupSection), тож тут безумовно.
   const removeGroup = useCallback((docId) => {
-    setGroups((prev) => {
-      const g = prev.find((x) => x.docId === docId);
-      if (g && g.pageIndices.length > 0) {
-        // Не дозволяємо видалити непорожню — спершу витягнути фото
-        toast.warning('Спочатку перенесіть або видаліть фото з групи');
-        return prev;
-      }
-      return prev.filter((x) => x.docId !== docId);
-    });
+    setGroups((prev) => prev.filter((x) => x.docId !== docId));
   }, []);
 
   // ── Popup ─────────────────────────────────────────────────────────────────
@@ -906,6 +902,27 @@ function GroupSection({
   const containerId = GroupContainerId(group.docId);
   const { setNodeRef: setDroppableRef, isOver } = useDroppable({ id: containerId });
 
+  // Видалення секції: порожня — одразу; непорожня — two-tap arm (перший тап
+  // «озброює» кнопку червоним + підказка, другий тап у межах 3с видаляє разом з
+  // фото). Захищає багатофотний документ від випадкового зносу одним тапом на
+  // сенсорному екрані. Авто-роззброєння через 3с.
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const armTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(armTimerRef.current), []);
+  const hasPhotos = group.pageIndices.length > 0;
+  const handleTrashClick = useCallback(() => {
+    if (!hasPhotos) { removeGroup(group.docId); return; }
+    if (deleteArmed) {
+      clearTimeout(armTimerRef.current);
+      setDeleteArmed(false);
+      removeGroup(group.docId);
+      return;
+    }
+    setDeleteArmed(true);
+    clearTimeout(armTimerRef.current);
+    armTimerRef.current = setTimeout(() => setDeleteArmed(false), 3000);
+  }, [hasPhotos, deleteArmed, removeGroup, group.docId]);
+
   return (
     <section className="dp-image-merge-editor__group">
       <div className="dp-image-merge-editor__group-header">
@@ -916,10 +933,14 @@ function GroupSection({
         <button
           type="button"
           className="dpv2-iconbtn"
-          onClick={() => removeGroup(group.docId)}
-          aria-label="Видалити групу"
-          title="Видалити порожню групу"
-          disabled={group.pageIndices.length > 0}
+          onClick={handleTrashClick}
+          aria-label={deleteArmed ? 'Тапніть ще раз, щоб видалити документ' : 'Видалити документ'}
+          title={
+            deleteArmed
+              ? `Тапніть ще раз, щоб видалити документ і ${group.pageIndices.length} фото`
+              : (hasPhotos ? 'Видалити документ (разом з фото)' : 'Видалити порожню групу')
+          }
+          style={deleteArmed ? { color: '#e74c3c' } : undefined}
         >
           <Trash2 size={ICON_SIZE.sm} />
         </button>
