@@ -44,7 +44,7 @@ function extractJson(text) {
  * @param {string|null} [args.caseId]
  * @param {string} args.apiKey
  * @param {Function} [args.aiUsageSink]
- * @returns {Promise<{documents:Array, unusedPages:Array}>}
+ * @returns {Promise<{documents:Array, unusedPages:Array, usage:object}>}
  */
 export async function analyzeTriageViaToolUse({ artifacts = [], userHint = '', caseId = null, apiKey, aiUsageSink } = {}) {
   if (!apiKey) throw new Error('Немає API ключа для Triage');
@@ -86,5 +86,8 @@ export async function analyzeTriageViaToolUse({ artifacts = [], userHint = '', c
   if (!parsed) {
     throw new Error('Triage повернув не-JSON: ' + String(text || '').slice(0, 200));
   }
-  return { documents: parsed.documents || [], unusedPages: parsed.unusedPages || [] };
+  // usage прокидаємо наскрізь (TASK triage_diag_logging §3.1): triageStage
+  // кладе input/output токени у triage_done — реальна вартість тріажу видима
+  // у diag-лозі поряд з паспортом. Логіки нарізки не торкає.
+  return { documents: parsed.documents || [], unusedPages: parsed.unusedPages || [], usage };
 }

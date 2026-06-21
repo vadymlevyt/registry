@@ -40,6 +40,17 @@ describe('analyzeTriageViaToolUse', () => {
     expect(out.unusedPages).toEqual([]);
   });
 
+  // TASK triage_diag_logging §3.1/§5 — usage прокидається наскрізь поряд з
+  // планом (triageStage кладе токени у triage_done diag-рішення).
+  it('повертає usage поряд з планом (input/output токени)', async () => {
+    stubFetchReturning({
+      documents: [{ documentId: 'd1', route: 'slice', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] }],
+      unusedPages: [],
+    });
+    const out = await analyzeTriageViaToolUse({ artifacts, apiKey: 'k' });
+    expect(out.usage).toEqual({ inputTokens: 10, outputTokens: 5 });
+  });
+
   it('JSON у markdown-обгортці теж парситься (depth-counter)', async () => {
     stubFetchReturning('Ось план:\n```json\n{"documents":[{"documentId":"d1","route":"add_as_is","fragments":[]}],"unusedPages":[]}\n```');
     const out = await analyzeTriageViaToolUse({ artifacts, apiKey: 'k' });

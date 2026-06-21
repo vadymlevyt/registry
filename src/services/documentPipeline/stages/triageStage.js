@@ -316,9 +316,19 @@ export function createTriageStage(stageDeps = {}) {
     // DIAG: скільки артефактів прийшло у триаж з ПОРОЖНІМ паспортом (сигнал що
     // streamed-текст не доїхав по-файлово для мульти-файлу).
     const emptyPassports = artifacts.filter((a) => !((a.passport || '').toString().trim())).length;
+    // DIAG (TASK triage_diag_logging §3.3): обсяг паспорта в символах і
+    // щільність на сторінку — щоб у diag-лозі видно було «AI бачив рідкий
+    // паспорт» vs «густий». Суто вимірювання, маршрут не змінює.
+    const passportChars = artifacts.reduce((s, a) => s + ((a.passport || '').toString().length), 0);
+    const totalPages = artifacts.reduce((s, a) => s + (a.pageCount || 0), 0);
+    const perPageChars = totalPages > 0 ? Math.round(passportChars / totalPages) : null;
     let plan;
+    let triageUsage = null;
     try {
       const raw = await triage({ artifacts, userHint: buildUserHint(ctx), caseId: ctx.job.caseId });
+      // Захопити usage ДО normalizePlan (нормалізація повертає новий план без
+      // usage). Реальні токени тріажу → triage_done нижче.
+      triageUsage = raw?.usage || null;
       plan = normalizePlan(raw);
     } catch (err) {
       // НЕ фатально — пакет ingest-иться без плану (адвокат у DP-4 UI).
@@ -326,7 +336,7 @@ export function createTriageStage(stageDeps = {}) {
         ok: true,
         ctx: { ...ctx, files: ctx.files.map((f) => ({ ...f, warnings: [...(f.warnings || []), `triage: ${err?.message || err}`] })) },
         // DIAG: триаж кинув → без плану → fallback persist → 02 не пишеться.
-        decisions: [{ type: 'triage_error', scope: 'triage', message: `Triage не дав плану (помилка): ${err?.message || err}`, meta: { artifactsCount: artifacts.length, emptyPassports } }],
+        decisions: [{ type: 'triage_error', scope: 'triage', message: `Triage не дав плану (помилка): ${err?.message || err}`, meta: { artifactsCount: artifacts.length, emptyPassports, passportChars, totalPages, errorMessage: String(err?.message || err).slice(0, 300) } }],
       };
     }
     if (plan.documents.length === 0) {
@@ -375,6 +385,24 @@ export function createTriageStage(stageDeps = {}) {
             ? ` Зведено ${plan.dedupDropped} дублюючих пропозицій з тих самих сторінок (анти-дубль реєстру).`
             : '')
           + ' Підтвердьте план обробки перед нарізкою.',
+      }, {
+        // DIAG (TASK triage_diag_logging §3.3): паспорт + реальні токени +
+        // щільність на УСПІШНОМУ тріажі. Канал decisions → pipeline_result у
+        // diag-лозі (streamingExecutor фільтрує scope==='triage'). Окреме
+        // рішення, document_boundaries не торкаємо — нуль зміни поведінки.
+        type: 'triage_done',
+        scope: 'triage',
+        message: `Triage OK: ${plan.documents.length} документів, паспорт ${passportChars} симв. (${perPageChars}/стор.), токени ${triageUsage?.inputTokens ?? '?'}→${triageUsage?.outputTokens ?? '?'}.`,
+        meta: {
+          passportChars,
+          totalPages,
+          perPageChars,
+          inputTokens: triageUsage?.inputTokens ?? null,
+          outputTokens: triageUsage?.outputTokens ?? null,
+          documentsCount: plan.documents.length,
+          unusedPagesCount: plan.unusedPages.length,
+          emptyPassports,
+        },
       }],
     };
   };

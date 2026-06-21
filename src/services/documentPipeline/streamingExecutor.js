@@ -410,6 +410,15 @@ export function createStreamingExecutor(deps = {}) {
         routes: Array.isArray(result.decisions)
           ? result.decisions.map((d) => d?.route || d?.type || null)
           : null,
+        // ДІАГ тріажу (TASK triage_diag_logging §3.4): паспорт + токени + текст
+        // помилки через канал decisions (scope==='triage'). Розгортаємо meta у
+        // плоский запис — у diag-файлі видно ЧОМУ том став одним шматком
+        // (рідкий паспорт? обрізаний max_tokens? AI здався?), без читання коду.
+        triage: Array.isArray(result.decisions)
+          ? result.decisions
+              .filter((d) => d?.scope === 'triage')
+              .map((d) => ({ type: d.type, message: d.message || null, ...(d.meta || {}) }))
+          : null,
         errorsCount: Array.isArray(result.errors) ? result.errors.length : 0,
         firstError: result.errors?.[0]?.message || result.errors?.[0]?.code || null,
         timings: stageTimings,

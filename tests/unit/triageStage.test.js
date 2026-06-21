@@ -150,6 +150,64 @@ describe('createTriageStage — нормалізація AI-плану', () => {
   });
 });
 
+// TASK triage_diag_logging §5 — діагностичний канал тріажу через decisions.
+// АДИТИВНО: triage_done на успіху, збагачений triage_error на помилці.
+// Критерій якості: маршрути/кількість документів document_boundaries
+// лишаються decisions[0] (логіка не змінилась).
+describe('createTriageStage — diag (triage_done / triage_error meta)', () => {
+  it('успіх → triage_done з паспортом/токенами/щільністю поряд з document_boundaries', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [{ documentId: 'd1', name: 'Позов', route: 'slice', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] }],
+      unusedPages: [{ fileId: 'f0', startPage: 3, endPage: 3 }],
+      usage: { inputTokens: 1234, outputTokens: 567 },
+    }));
+    const stage = createTriageStage({
+      triage,
+      getStreamedText: () => 'текст паспорта артефакту',
+    });
+    const res = await stage(ctxOf([{ fileId: 'f0', name: 'big.pdf', originalMime: 'application/pdf', pageCount: 3 }]));
+    // document_boundaries лишається першим (незмінна логіка)
+    expect(res.decisions[0].type).toBe('document_boundaries');
+    const done = res.decisions.find((d) => d.type === 'triage_done');
+    expect(done).toBeTruthy();
+    expect(done.scope).toBe('triage');
+    expect(done.meta.inputTokens).toBe(1234);
+    expect(done.meta.outputTokens).toBe(567);
+    expect(done.meta.documentsCount).toBe(1);
+    expect(done.meta.unusedPagesCount).toBe(1);
+    expect(done.meta.totalPages).toBe(3);
+    expect(done.meta.passportChars).toBeGreaterThan(0);
+    expect(done.meta.perPageChars).toBe(Math.round(done.meta.passportChars / 3));
+    expect(done.meta.emptyPassports).toBe(0);
+  });
+
+  it('усього-без-usage → triage_done meta.inputTokens=null (лог ізольований)', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [{ documentId: 'd1', route: 'slice', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] }],
+      unusedPages: [],
+      // usage свідомо відсутній
+    }));
+    const stage = createTriageStage({ triage, getStreamedText: () => 'txt' });
+    const res = await stage(ctxOf([{ fileId: 'f0', originalMime: 'application/pdf', pageCount: 2 }]));
+    const done = res.decisions.find((d) => d.type === 'triage_done');
+    expect(done.meta.inputTokens).toBeNull();
+    expect(done.meta.outputTokens).toBeNull();
+  });
+
+  it('помилка → triage_error meta має errorMessage + passportChars + totalPages', async () => {
+    const triage = vi.fn(async () => { throw new Error('Triage down 502'); });
+    const stage = createTriageStage({ triage, getStreamedText: () => 'паспорт' });
+    const res = await stage(ctxOf([{ fileId: 'f0', originalMime: 'application/pdf', pageCount: 4 }]));
+    expect(res.decisions[0].type).toBe('triage_error');
+    expect(res.decisions[0].meta.errorMessage).toBe('Triage down 502');
+    expect(res.decisions[0].meta.totalPages).toBe(4);
+    expect(res.decisions[0].meta.passportChars).toBeGreaterThan(0);
+    // існуючі поля лишаються (адитивність)
+    expect(res.decisions[0].meta.artifactsCount).toBe(1);
+    expect(res.decisions[0].meta).toHaveProperty('emptyPassports');
+  });
+});
+
 describe('createTriageStage — graceful', () => {
   it('нема транспорту → passthrough (+ DIAG decision)', async () => {
     const res = await createTriageStage({})(ctxOf([{ fileId: 'f0' }]));
