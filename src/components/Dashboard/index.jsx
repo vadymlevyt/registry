@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { systemConfirm } from "../SystemModal";
 import { logAiUsage } from "../../services/aiUsageService";
 import { resolveModel } from "../../services/modelResolver";
+import { signalIfModelUnavailable } from "../../services/modelAvailabilitySignal";
 import * as activityTracker from "../../services/activityTracker";
 import { MODULES, categoryForCase } from "../../services/moduleNames.js";
 import { ECITSDashboardSection } from "../ECITSBanner/DashboardSection.jsx";
@@ -1505,6 +1506,7 @@ export default function Dashboard({ cases, calendarEvents, onExecuteAction, setA
 
       if (!response.ok) {
         const err = await response.text();
+        try { signalIfModelUnavailable(response.status, JSON.parse(err), 'dashboardAgent', dashboardModel); } catch {}
         setChatHistory(h => [...h, { role: "assistant", content: `❌ API помилка ${response.status}: ${err.slice(0, 200)}` }]);
         setAgentLoading(false);
         return;

@@ -10,7 +10,7 @@ import { DocumentPipelineProvider } from './contexts/DocumentPipelineContext.jsx
 import { ECITSRegistryBadge } from './components/ECITSBanner/RegistryBadge.jsx';
 import { backupRegistryData, backupRegistryDataPreSaas, backupRegistryDataPreV3, backupActionLogPreCleanup, backupRegistryDataPreBilling, backupLegacyTimelogPreImport, backupRegistryDataPreV5, backupRegistryDataPreV6, backupRegistryDataPreV6_5, backupRegistryDataPreV7, backupRegistryDataPreV8, backupRegistryDataPreV9, backupRegistryDataPreV10, backupRegistryDataPreV11, backupRegistryDataPreV12, deleteDriveFile, deleteOcrCacheForDocument, deleteDocumentsArtifactsBatch } from './services/driveService';
 import { clearResume as clearOcrResume } from './services/ocr/resumeStore';
-import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId } from './services/tenantService';
+import { DEFAULT_TENANT, DEFAULT_USER, getCurrentUser, getCurrentUserId, getCurrentTenantId, setActiveTenant } from './services/tenantService';
 import { checkTenantAccess, checkRolePermission, checkCaseAccess } from './services/permissionService';
 import { writeAuditLog as writeAuditLogService, updateAuditLogStatus, shouldAudit } from './services/auditLogService';
 import { migrateRegistry, migrateToVersion6, migrateToVersion6_5, migrateToVersion7, migrateToVersion8, migrateToVersion9, migrateToVersion10, migrateToVersion11, migrateToVersion12, ensureCaseSaasFields, ensureCaseSaasAndEcitsFields, CURRENT_SCHEMA_VERSION, MIGRATION_VERSION, importLegacyTimeLog } from './services/migrationService';
@@ -19,7 +19,7 @@ import {
   ECITS_SYNC_COMPLETED, ECITS_CASE_STATE_UPDATED,
   CASE_PARTIES_UPDATED, CASE_TEAM_UPDATED, CASE_PROCESS_PARTICIPANTS_UPDATED,
   PROCEEDING_COMPOSITION_UPDATED, DOCUMENT_MOVEMENT_CARD_UPDATED,
-  DOCUMENT_ALTERNATIVE_SOURCE_ADDED,
+  DOCUMENT_ALTERNATIVE_SOURCE_ADDED, AI_MODEL_UNAVAILABLE,
 } from './services/eventBusTopics';
 import { canOverwrite, buildAlternativeSourceRecord } from './services/sourcePolicy';
 import { migrateRegistryV4toV5 } from './services/migrations/v4ToV5';
@@ -34,7 +34,10 @@ import { CURRENT_SCHEMA_VERSION as DOCUMENT_SCHEMA_VERSION } from './schemas/doc
 import { driveRequest, refreshDriveToken, forceConsentRefresh, GOOGLE_CLIENT_ID as DRIVE_CLIENT_ID, DRIVE_SCOPE as DRIVE_SCOPE_IMPORT } from './services/driveAuth';
 import { logAiUsage } from './services/aiUsageService';
 import { evaluateRegistryWriteGuard, arrLen, expectIntentionalCasesShrink } from './services/registryWriteGuard';
-import { resolveModel } from './services/modelResolver';
+import { resolveModel, withModelPreference, withoutModelPreference } from './services/modelResolver';
+import { signalIfModelUnavailable } from './services/modelAvailabilitySignal';
+import ModelPicker from './components/ModelPicker';
+import ModelSettings from './components/ModelSettings';
 import * as activityTracker from './services/activityTracker';
 import * as masterTimer from './services/masterTimer';
 import { getTimeStandard, getCategoryDefaults, getVariantDefault } from './services/timeStandards';
@@ -1358,6 +1361,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
       });
       if (!res.ok) {
         const d = await res.json().catch(()=>({}));
+        signalIfModelUnavailable(res.status, d, 'qiParserImage', qiImageModel);
         setErrorCategory('llm_failed');
         setErrorDetail(d?.error?.message || `HTTP ${res.status}`);
         setLoading(false);
@@ -1489,6 +1493,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
 
       if (!res.ok) {
         const d = await res.json().catch(()=>({}));
+        signalIfModelUnavailable(res.status, d, 'qiParserDocument', qiTextModel);
         setErrorCategory('llm_failed');
         setErrorDetail(d?.error?.message || `HTTP ${res.status}`);
         setLoading(false);
@@ -1768,6 +1773,7 @@ function QuickInput({ cases, setCases, onClose, driveConnected, onExecuteAction,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        signalIfModelUnavailable(res.status, err, 'qiAgent', qiChatModel);
         setConversationHistory(prev => [...prev, { role: 'assistant', content: `Помилка: ${err?.error?.message || res.status}` }]);
       } else {
         const data = await res.json();
@@ -3699,6 +3705,44 @@ function App() {
     } catch {}
     return [DEFAULT_TENANT];
   });
+
+  // ── Model Picker (стійкий вибір моделі) ──────────────────────────────────
+  // modelPicker: { agentType, model, mode } | null — драйвить аварійну/добровільну
+  // модалку вибору. modelSettingsOpen — окрема модалка «Моделі агентів» (⚙).
+  const [modelPicker, setModelPicker] = useState(null);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+
+  // Єдине живе джерело tenant для read-path (resolveModel/білінг/permissions):
+  // прошиваємо tenants[0] у tenantService при будь-якій зміні (старт, гідрація з
+  // Drive, setModelPreference) — одне місце, §4.6 спеки. Без цього вибір моделі
+  // зберігся б на Drive, але resolveModel читав би застиглу заглушку.
+  useEffect(() => {
+    if (tenants && tenants[0]) setActiveTenant(tenants[0]);
+  }, [tenants]);
+
+  // Аварійний вхід: модель повернула 404 (retirement) → відкрити пікер під агента.
+  useEffect(() => {
+    return eventBus.subscribe(AI_MODEL_UNAVAILABLE, (payload) => {
+      setModelPicker({ agentType: payload?.agentType, model: payload?.model, mode: 'unavailable' });
+    });
+  }, []);
+
+  // Запис вибору: оновлюємо React-стан (→ серіалізація у registry_data.json на
+  // Drive) І живе джерело (→ resolveModel бачить одразу). Одне джерело — §4.6.
+  const setModelPreference = (agentType, modelId) => {
+    if (!agentType || !modelId) return;
+    const cur = (tenants && tenants[0]) || DEFAULT_TENANT;
+    const updated = withModelPreference(cur, agentType, modelId);
+    setActiveTenant(updated);
+    setTenants(prev => (prev && prev.length ? [updated, ...prev.slice(1)] : [updated]));
+  };
+  const clearModelPreference = (agentType) => {
+    const cur = (tenants && tenants[0]) || DEFAULT_TENANT;
+    const updated = withoutModelPreference(cur, agentType);
+    setActiveTenant(updated);
+    setTenants(prev => (prev && prev.length ? [updated, ...prev.slice(1)] : [updated]));
+  };
+
   const [users, setUsers] = useState(() => {
     try {
       const saved = localStorage.getItem('levytskyi_users');
@@ -5423,6 +5467,7 @@ function App() {
         <JobProgressTopbar />
         <div className="topbar-right" style={{display:'flex',gap:8,alignItems:'center'}}>
           {lastSaved && <span style={{fontSize:10,color:'var(--text3)',letterSpacing:'0.04em'}}>збережено {lastSaved}</span>}
+          <button className="btn-sm btn-ghost" onClick={() => setModelSettingsOpen(true)} style={{fontSize:13,opacity:0.6}} title="Моделі агентів">⚙</button>
           <button className="btn-sm btn-ghost" onClick={async () => {
             if(await systemConfirm('Скинути всі дані і повернути тестові справи?', 'Скидання даних')) {
               localStorage.removeItem('levytskyi_cases');
@@ -5431,6 +5476,25 @@ function App() {
           }} style={{fontSize:11,opacity:0.5}} title="Скинути дані">↺</button>
         </div>
       </div>
+
+      {/* MODEL PICKER / SETTINGS (стійкий вибір моделі) */}
+      {modelSettingsOpen && (
+        <ModelSettings
+          tenant={(tenants && tenants[0]) || null}
+          onPick={(agentType, currentModel) => setModelPicker({ agentType, model: currentModel, mode: 'change' })}
+          onReset={(agentType) => clearModelPreference(agentType)}
+          onClose={() => setModelSettingsOpen(false)}
+        />
+      )}
+      {modelPicker && (
+        <ModelPicker
+          agentType={modelPicker.agentType}
+          currentModel={modelPicker.model}
+          mode={modelPicker.mode}
+          onSelect={(modelId) => { setModelPreference(modelPicker.agentType, modelId); setModelPicker(null); }}
+          onClose={() => setModelPicker(null)}
+        />
+      )}
 
       {/* NAV */}
       <div className="nav">
