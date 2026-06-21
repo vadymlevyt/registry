@@ -1,9 +1,19 @@
 # TASK — Стійкий вибір моделі (Model Picker) і реакція на виведення моделі з обігу
 
 **Статус:** SPEC (на рев'ю адвоката, код не починати до затвердження)
-**Дата:** 2026-06-19
+**Дата:** 2026-06-19 · **рев'ю/правки:** 2026-06-21
 **Гілка розробки:** `claude/quick-input-error-qtek7w`
 **Schema bump:** НЕ потрібен (`modelPreferences` уже в контракті user/tenant)
+
+> **Оновлення 2026-06-21 (після рев'ю збоку):**
+> 1. **Гострий 404 уже закрито хотфіксом у `main`** (`ac51a48`): `SYSTEM_DEFAULTS` на чинних ID,
+>    `MODEL_PRICING` звірено. Прод не висить. Цей TASK — про **довговічний шар** (пікер + живий
+>    список + єдине джерело tenant), а не про повторний bump ID. Реалізувати **поверх `main`** (ребейз).
+> 2. **Виправлено read-path (§4.6):** persist через `setTenants` сам по собі недостатній — `resolveModel`
+>    читає `getCurrentTenant()`, а той повертає застиглий сінглтон. Потрібне **єдине живе джерело tenant**
+>    (і запис, і читання). Це ж — серверний шов гідрації (коротка ремарка в §4.6).
+> 3. **Прибрано «живу qiAgent-фікстуру» (§13):** не лишаємо робочий QI зламаним на проді; ланцюг
+>    реакції на retirement перевіряємо юніт-тестом + разовим ручним override.
 
 ---
 
@@ -141,8 +151,11 @@ Haiku — але адвокат зможе тут поставити йому х
 
 **Рішення адвоката 2026-06-19: вибір має зберігатися між пристроями.** Тому персист — не
 localStorage, а `tenant.modelPreferences[agentType]` у `registry_data.json`, що синхронізується
-через Drive. `resolveModel` уже читає `tenant.modelPreferences` як шар 2 — додаткового читання
-не треба.
+через Drive. **Увага (виправлено на рев'ю 2026-06-21):** недостатньо лише записати — `resolveModel`
+читає tenant НЕ з React-стану, а через `getCurrentTenant()`, який сьогодні повертає **застиглий
+сінглтон**, не зв'язаний ні з Drive-станом, ні з React-`tenants`. Тобто запис і читання мусять
+дивитися в ОДНЕ живе джерело — інакше вибір збережеться, але `resolveModel` його не побачить
+(деталі — read-path нижче).
 
 **Чому tenant, а не user.preferences:** для соло-практики «активна модель агента» — це
 tenant-рівень дефолту (синкається на весь tenant = на одного адвоката). `user.preferences`
@@ -159,16 +172,29 @@ tenant-рівень дефолту (синкається на весь tenant = 
   **новими об'єктами**. Відтоді `tenants[0] !== DEFAULT_TENANT`, а `getCurrentTenant()` усе ще
   повертає стару заглушку.
 
-**Висновок:** писати вибір треба **через React-стан** (`setTenants`, оновлюючи `tenants[0].modelPreferences`),
-а НЕ мутацією сінглтона. Інакше: (а) на Drive нічого не дійде (серіалізується React-стан, не
-заглушка), (б) `resolveModel` через `getCurrentTenant()` читатиме стару заглушку, не оновлений
-tenant. Тобто `setModelPreference` має бути **функцією з App.jsx** (поряд з `updateCase`/`addNote`),
-яка робить `setTenants` і прокидається пропом туди, де є `ModelPicker`.
+**Висновок — ЄДИНЕ ЖИВЕ ДЖЕРЕЛО tenant (і запис, і читання):**
 
-> Це той самий латентний борг, що й `setSplitterDatasetEnabled` (мутує заглушку — її зміна
-> теж може не доходити до Drive після hydration). Фіксувати чужий борг у цьому TASK не треба
-> (DELTA), але `setModelPreference` робимо одразу правильно — через React-стан. Знахідку про
-> `setSplitterDatasetEnabled` занести в `tracking_debt.md`.
+1. **Запис** — через React-стан: `setModelPreference` — **функція з App.jsx** (поряд з
+   `updateCase`/`addNote`), що робить `setTenants`, оновлюючи `tenants[0].modelPreferences`, і
+   прокидається пропом туди, де є `ModelPicker`. Це доводить вибір до Drive (крос-девайс).
+2. **Читання** — `getCurrentTenant()` має повертати **той самий живий tenant**, а не застиглий
+   сінглтон. Інакше `resolveModel` вибору не побачить ні в сесії, ні після reload (бо геттер
+   завжди віддає літерал-заглушку). Мінімальний коректний крок: `tenantService` тримає
+   module-level **`activeTenant`-ref**, який App **прошиває** (а) при гідрації з Drive/localStorage
+   і (б) при кожному `setModelPreference`; `getCurrentTenant()` читає цей ref. Запис і читання
+   тоді дивляться в одне джерело.
+
+Без кроку 2 персист «працює» на Drive, але `resolveModel` лишається на дефолті — вибір марний.
+Це той самий латентний розрив, що й у `getSplitterDatasetEnabled`/`getEcitsAutoProcess` (читають
+заглушку) і `setSplitterDatasetEnabled` (мутує заглушку). Цей TASK лагодить розрив **тільки для
+свого шляху** (tenant-ref + `setModelPreference`); чужі читачі заглушки — у `tracking_debt.md`.
+
+> **Ремарка про майбутню серверну архітектуру (для виконавця).** Цей `activeTenant`-ref і є точкою
+> гідрації, що на сервері стане завантаженням tenant із БД/сесії. Тому тримай контракт чистим і
+> переносимим: `getCurrentTenant()` повертає **плоский серіалізовний об'єкт** (жодних Drive-/
+> сховище-специфічних хендлів крізь нього); **єдина** точка, що знає про джерело, — гідрація (не
+> точки виклику). Більше нічого спеціально «під сервер» робити не треба — лише не зашити сюди
+> прив'язку до конкретного сховища.
 
 **Гідрація після перезавантаження** — безкоштовна: `tenants` вантажиться з localStorage
 (`App.jsx:3692`) і з Drive (`App.jsx:4408`), `tenant.modelPreferences` приходить разом.
@@ -195,18 +221,18 @@ tenant. Тобто `setModelPreference` має бути **функцією з Ap
 моделі у вибір — оновити `MODEL_PRICING`». Авто-підтягування цін НЕ робимо (Models API цін не
 віддає; YAGNI).
 
-**Знахідка (виправити в цьому TASK): поточна `MODEL_PRICING` неправильна.** Звірено з довідником
-`claude-api` на 2026-06-19:
+**Знахідка — ВЖЕ ВИПРАВЛЕНО у `main`** (хотфікс `ac51a48`, разом з ID моделей; tracking_debt #44
+закрито). Звірено з довідником `claude-api`, чинні значення:
 
-| Модель | ID | $/1М вхід | $/1М вихід | Зараз у коді |
-|--------|-----|----------:|-----------:|--------------|
-| Claude Sonnet 4.6 | `claude-sonnet-4-6` | 3.00 | 15.00 | ✅ вірно |
-| Claude Opus 4.8 | `claude-opus-4-8` | 5.00 | 25.00 | ❌ нема (а `opus-4-7` стоїть `15/75` — ціни Opus-3, хибно) |
-| Claude Haiku 4.5 | `claude-haiku-4-5` | 1.00 | 5.00 | ❌ стоїть `0.80/4.00` (хибно) |
+| Модель | ID | $/1М вхід | $/1М вихід |
+|--------|-----|----------:|-----------:|
+| Claude Sonnet 4.6 | `claude-sonnet-4-6` | 3.00 | 15.00 |
+| Claude Opus 4.8 | `claude-opus-4-8` | 5.00 | 25.00 |
+| Claude Haiku 4.5 | `claude-haiku-4-5-20251001` | 1.00 | 5.00 |
 
-Тобто навіть для чинних моделей `estimatedCostUSD` рахується неточно. Оновити таблицю на ці
-значення; `claude-sonnet-4-20250514` лишити в таблиці з поміткою historical (для старих записів
-`ai_usage[]`).
+`claude-sonnet-4-20250514` лишено в таблиці з поміткою historical (для старих записів `ai_usage[]`).
+Цей TASK пунктом цін уже не займається — лишається тригер у `tracking_debt.md`: «при додаванні
+нової моделі у вибір — оновити `MODEL_PRICING`».
 
 ---
 
@@ -225,7 +251,11 @@ tenant. Тобто `setModelPreference` має бути **функцією з Ap
   `tenants[0].modelPreferences`); або ці функції живуть в App.jsx, а modelResolver лишається
   суто читачем. **Рішення — у §12.**
 - `src/services/eventBusTopics.js` — топік `ai.model_unavailable`.
+- `src/services/tenantService.js` — **read-path фікс (§4.6):** module-level `activeTenant`-ref +
+  `setActiveTenant(tenant)`; `getCurrentTenant()` читає ref замість літерал-сінглтона. (Той самий
+  ref природно стане точкою серверної гідрації — ремарка §4.6.)
 - `src/App.jsx` — підписка на топік + рендер `ModelPicker`; `setModelPreference` через `setTenants`;
+  **прошивка `setActiveTenant` при гідрації (Drive/localStorage) і при `setModelPreference`**;
   емісія сигналу на 3 точках API; передача `apiKey` у `modelsService`.
 - `src/components/Dashboard/index.jsx` — емісія сигналу на точці чату.
 - `ROLE_LABELS` (людські назви ролей) — маленький мапінг (де саме — §12).
@@ -274,8 +304,9 @@ executeAction→Drive). Verifiable: агент може прочитати `reso
 ## 10. ФАЗИ (DELTA — 80% сьогодні)
 
 - **Фаза 1 (MVP, цей TASK):** `modelsService` + детектор + топік + `ModelPicker` (аварійний
-  вхід) + персист крос-девайс через `setTenants` + емісія на 3 інтерактивних точках (QI×2 +
-  Dashboard) + екран Налаштувань (добровільний вхід) + тести.
+  вхід) + **єдине живе джерело tenant** (`activeTenant`-ref у `tenantService` + `setModelPreference`
+  через `setTenants`, §4.6) → persist крос-девайс І читання `resolveModel` дивляться в одне джерело +
+  емісія на 3 інтерактивних точках (QI×2 + Dashboard) + екран Налаштувань (добровільний вхід) + тести.
 - **Фаза 2 (борг):** емісія на фонових точках; спільний `callAnthropic()`-фасад; ACTION
   `set_model_preference` (AI-first); інлайн-пікери в модулях (якщо знадобляться).
 
@@ -293,8 +324,9 @@ executeAction→Drive). Verifiable: агент може прочитати `reso
    модульні налаштування ЄСІТС — не системні).
 3. **`ROLE_LABELS`** (людські назви агентів) — новий маленький мапінг у `modelResolver.js`
    поряд з `SYSTEM_DEFAULTS` (там, де живуть ролі) — узгодити.
-4. **`SYSTEM_DEFAULTS` — вирішено, див. §13.** Оновлюємо на чинні ID + навмисно лишаємо одного
-   Sonnet-агента на виведеному ID як тест-фікстуру.
+4. **`SYSTEM_DEFAULTS` ID + `MODEL_PRICING` — вже у `main`** (хотфікс `ac51a48`, §13). Жодного
+   агента на виведеному ID НЕ лишаємо (від ідеї живої qiAgent-фікстури відмовилися — §13.2).
+   Цей TASK реалізується поверх `main` (ребейз перед стартом).
 
 ---
 
@@ -307,51 +339,35 @@ executeAction→Drive). Verifiable: агент може прочитати `reso
 
 ---
 
-## 13. ОНОВЛЕННЯ ДЕФОЛТНИХ МОДЕЛЕЙ + ТЕСТ-ФІКСТУРА
+## 13. ОНОВЛЕННЯ ДЕФОЛТНИХ МОДЕЛЕЙ (вже у `main`) + ТЕСТ ЛАНЦЮГА
 
-Мета: щоб «з коробки» все одразу працювало на чинних моделях, АЛЕ щоб можна було наживо
-відтворити й перевірити весь ланцюг реакції на retirement (помилка → повідомлення → ручний
-вибір → працює → вибір зберігся крос-девайс).
+> **СТАТУС 2026-06-21: §13.1 і §6 ВЖЕ ВИКОНАНО окремим хотфіксом у `main`** (коміт `ac51a48`,
+> «replace retired model IDs causing 404»), бо прод висів на 404. Тобто `SYSTEM_DEFAULTS` уже на
+> чинних ID і `MODEL_PRICING` уже звірено. **Цей TASK НЕ повторює і НЕ відкочує це** — він
+> реалізується **поверх `main`** (гілку перед стартом ребейзнути на `main`, інакше стара
+> partial-версія цих файлів на гілці зреґресує хотфікс). Лишок цього TASK — **довговічний шар**:
+> `modelsService` + детектор + `ModelPicker` + Налаштування + єдине живе джерело tenant (§4.6).
 
-### 13.1 Нові `SYSTEM_DEFAULTS` (звірено з `claude-api` 2026-06-19)
+### 13.1 `SYSTEM_DEFAULTS` — цільовий стан (уже у `main`)
 
-| agentType | Зараз | Стає |
-|-----------|-------|------|
-| `dossierAgent` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
-| `qiAgent` | `claude-sonnet-4-20250514` (retired) | **лишаємо `claude-sonnet-4-20250514` — ТЕСТ-ФІКСТУРА (§13.2)** |
-| `dashboardAgent` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
-| `documentProcessor` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
-| `documentParserVision` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
-| `caseContextGenerator` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
-| `imageSorter` | `claude-sonnet-4-20250514` (retired) | `claude-sonnet-4-6` |
-| `deepAnalysis` | `claude-opus-4-7` | `claude-opus-4-8` |
-| `qiParserDocument` / `qiParserImage` / `imageDocumentGrouper` / `textCleaner` / `textDigest` / `metadataExtractor` | `claude-haiku-4-5-20251001` | без змін (чинна) |
+| agentType | Стало (у `main`) |
+|-----------|------------------|
+| `dossierAgent` / `qiAgent` / `dashboardAgent` / `documentProcessor` / `documentParserVision` / `caseContextGenerator` / `imageSorter` | `claude-sonnet-4-6` |
+| `deepAnalysis` | `claude-opus-4-8` |
+| `qiParserDocument` / `qiParserImage` / `imageDocumentGrouper` / `textCleaner` / `textDigest` / `metadataExtractor` | `claude-haiku-4-5-20251001` (без змін) |
 
-`FALLBACK_MODEL` уже `claude-sonnet-4-6` — лишається. Haiku-ID не чіпаємо (валідний, не зламаний).
+`FALLBACK_MODEL` = `claude-sonnet-4-6`. **Жоден агент НЕ лишається на виведеному ID** —
+відмовилися від ідеї «лишити `qiAgent` зламаним як живу фікстуру»: відвантажувати головний
+робочий вхід (Quick Input) зламаним на проді — зайвий ризик, а «потім окремим комітом полагодити»
+легко забути. Ланцюг реакції на retirement перевіряємо без поломки прода — див. §13.2.
 
-### 13.2 Тест-фікстура — `qiAgent` лишається на виведеному ID
+### 13.2 Перевірка ланцюга реакції — без поломки прода
 
-**Свідомо** лишаємо `SYSTEM_DEFAULTS.qiAgent = 'claude-sonnet-4-20250514'`, щоб:
-
-1. Адвокат відкриває Quick Input, пише команду → виклик повертає `not_found_error`.
-2. Спрацьовує детектор → `ai.model_unavailable` → відкривається `ModelPicker` із живим списком.
-3. Адвокат обирає `Claude Sonnet 4.6` (чи Opus) → запис у `tenant.modelPreferences.qiAgent`.
-4. QI одразу працює (override перекриває виведений дефолт), вибір синкається на Drive (крос-девайс).
-
-Це за один прогон перевіряє: детектор 404, eventBus-сигнал, відкриття пікера, живий список з API,
-persist у tenant, пріоритет override над дефолтом у `resolveModel`, крос-девайс через Drive.
-
-**Чому саме `qiAgent`:** (а) це місце, де баг уперше виявився (відтворюваність очевидна адвокату);
-(б) це phase-1 точка емісії сигналу (App.jsx); (в) тригериться тривіально — просто ввести команду
-в QI. Альтернатива — `dashboardAgent` (теж phase-1, теж інтерактивний), якщо не хочемо лишати
-зламаним головний QI. **Рекомендація — `qiAgent`.**
-
-**Після перевірки механіки:** окремим маленьким комітом перевести `SYSTEM_DEFAULTS.qiAgent` теж на
-`claude-sonnet-4-6` (доти override з кроку 3 уже тримає QI робочим, тож «з коробки на новому
-пристрої без override» теж стане справним). Зафіксувати цей крок як завершальний у звіті TASK.
-
-### 13.3 Тест на фікстуру
-
-Юніт-тест: `resolveModel('qiAgent')` без override повертає `claude-sonnet-4-20250514`;
-`isModelNotFoundError(404, {error:{type:'not_found_error'}})` === true; після `setModelPreference`
-повертає вибране. Це «живий» індикатор, що ланцюг не зламали майбутні зміни.
+1. **Детермінований юніт-тест (основний доказ):** `isModelNotFoundError(404, {error:{type:'not_found_error'}})`
+   === true (і false для 401/429/400); після `setModelPreference(agentType, id)` — `resolveModel(agentType)`
+   повертає вибране (override перекриває `SYSTEM_DEFAULTS`); читання йде через живий tenant-ref (§4.6),
+   не через сінглтон. Це «живий» індикатор, що майбутні зміни не зламали ланцюг.
+2. **Разовий ручний прогін (наскрізно):** тимчасово виставити для одного агента **завідомо неіснуючий
+   ID** через `tenant.modelPreferences` (override, НЕ дефолт у коді) → переконатися, що 404 ловиться,
+   `ModelPicker` відкривається з живим списком, вибір зберігається і застосовується крос-девайс →
+   прибрати тимчасовий override. Прод-дефолти при цьому лишаються робочими.
