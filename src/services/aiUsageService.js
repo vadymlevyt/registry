@@ -8,11 +8,11 @@
 
 import { getCurrentTenant, getCurrentUser } from './tenantService.js';
 
-// pricing as of 2026-05-04, verify quarterly
+// pricing as of 2026-06-21, verify quarterly
 export const MODEL_PRICING = {
-  'claude-haiku-4-5-20251001': { input: 0.80,  output: 4.00 },
-  'claude-sonnet-4-20250514':  { input: 3.00,  output: 15.00 },
-  'claude-opus-4-7':           { input: 15.00, output: 75.00 },
+  'claude-haiku-4-5-20251001': { input: 1.00,  output: 5.00 },
+  'claude-sonnet-4-6':         { input: 3.00,  output: 15.00 },
+  'claude-opus-4-8':           { input: 5.00,  output: 25.00 },
   default:                     { input: 0,     output: 0 },
 };
 

@@ -10,20 +10,20 @@
 import { getCurrentTenant, getCurrentUser } from './tenantService.js';
 
 export const SYSTEM_DEFAULTS = {
-  dossierAgent: 'claude-sonnet-4-20250514',
-  qiAgent: 'claude-sonnet-4-20250514',
+  dossierAgent: 'claude-sonnet-4-6',
+  qiAgent: 'claude-sonnet-4-6',
   qiParserDocument: 'claude-haiku-4-5-20251001',
   qiParserImage: 'claude-haiku-4-5-20251001',
-  dashboardAgent: 'claude-sonnet-4-20250514',
-  documentProcessor: 'claude-sonnet-4-20250514',
-  documentParserVision: 'claude-sonnet-4-20250514',
-  caseContextGenerator: 'claude-sonnet-4-20250514',
-  deepAnalysis: 'claude-opus-4-7',
+  dashboardAgent: 'claude-sonnet-4-6',
+  documentProcessor: 'claude-sonnet-4-6',
+  documentParserVision: 'claude-sonnet-4-6',
+  caseContextGenerator: 'claude-sonnet-4-6',
+  deepAnalysis: 'claude-opus-4-8',
 
   // imageSorter — семантичне сортування кількох зображень в один документ
   // (TASK B: склейка фото у PDF з виявленням підмінених сторінок).
   // Готова точка ієрархії user → tenant → system. Поки не використовується.
-  imageSorter: 'claude-sonnet-4-20250514',
+  imageSorter: 'claude-sonnet-4-6',
 
   // imageDocumentGrouper — AI-агент межі ДОКУМЕНТІВ між фото у DP image-merge
   // сценарії (TASK 1B image_merge_unify). Адвокат фотографує N сторінок =
@@ -56,7 +56,7 @@ export const SYSTEM_DEFAULTS = {
   metadataExtractor: 'claude-haiku-4-5-20251001',
 };
 
-const FALLBACK_MODEL = 'claude-sonnet-4-20250514';
+const FALLBACK_MODEL = 'claude-sonnet-4-6';
 
 export function resolveModel(agentType) {
   const user = getCurrentUser();
