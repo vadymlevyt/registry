@@ -2663,7 +2663,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
                 <div style={{ fontSize: 11, color: "var(--color-text-3)", marginBottom: 4 }}>{"Файл (необов\u02BCязково)"}</div>
                 <input
                   type="file"
-                  accept=".pdf,.jpeg,.jpg,.png,.heic,.docx,.xlsx,.pptx,.zip,.md,.txt,.html,.htm"
+                  accept=".pdf,.jpeg,.jpg,.png,.heic,.docx,.zip,.md,.txt,.html,.htm"
                   onChange={e => setNewDoc(d => ({ ...d, file: e.target.files[0] || null }))}
                   style={{ width: "100%", background: "var(--color-surface-2)", border: "1px solid var(--color-border)", color: "var(--color-text-2)", padding: "6px 10px", borderRadius: 'var(--radius-sm)', fontSize: 11, boxSizing: "border-box" }}
                 />

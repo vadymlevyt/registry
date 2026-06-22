@@ -962,7 +962,7 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           >
             <div className="dpv2-dropzone-icon"><Upload size={ICON_SIZE.xl} /></div>
             <div>Перетягніть файли сюди або натисніть щоб вибрати</div>
-            <div className="dpv2-dropzone-hint">PDF, JPG, PNG, HEIC, DOCX, XLSX, PPTX, RTF, ODT, TXT, MD, ZIP, RAR, 7z</div>
+            <div className="dpv2-dropzone-hint">PDF, JPG, PNG, HEIC, DOCX, HTML, TXT, MD, ZIP</div>
           </div>
           <input
             ref={fileInputRef}
