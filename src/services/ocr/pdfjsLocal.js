@@ -75,12 +75,22 @@ export default {
       arrayBuffer = await dl.arrayBuffer();
     }
 
+    // mimeType — АВТОРИТЕТНЕ джерело типу контенту; розширення імені — лише
+    // fallback коли mimeType не задає тип однозначно (правило #11). Файл у
+    // 01_ОРИГІНАЛИ ЗАВЖДИ PDF (конвертер), навіть якщо originalName зберіг
+    // розширення джерела (.html/.docx). Без цього гарду документ, конвертований
+    // з ЄСІТС-HTML (name="X.html", driveId→PDF, mimeType='application/pdf'),
+    // потрапляв у HTML-гілку → TextDecoder(win-1251) на байтах PDF → бінарне
+    // сміття («PDF у бінарному форматі» у case_context.md). Тому явний
+    // application/pdf вимикає text/html-гілки за іменем.
+    const isPdfMime = file.mimeType === 'application/pdf';
+
     const lname = (file.name || '').toLowerCase();
-    const isText =
+    const isText = !isPdfMime && (
       file.mimeType === 'text/plain' ||
       file.mimeType === 'text/markdown' ||
       lname.endsWith('.txt') ||
-      lname.endsWith('.md');
+      lname.endsWith('.md'));
 
     // 3. Текстові формати
     if (isText) {
@@ -91,12 +101,14 @@ export default {
     // 4. HTML / XHTML (ухвали з ЄСІТС приходять у text/html, часто у
     //    windows-1251 без явного <meta charset>). Має йти ПЕРЕД PDF
     //    блоком — HTML потребує спеціальної обробки (DOMParser +
-    //    автодетекція кодування), яку plain text не дає.
-    const isHtml =
+    //    автодетекція кодування), яку plain text не дає. Гард isPdfMime: коли
+    //    caller явно каже application/pdf (stored PDF з originalName="*.html"),
+    //    це НЕ html — пропускаємо у PDF-гілку нижче.
+    const isHtml = !isPdfMime && (
       file.mimeType === 'text/html' ||
       file.mimeType === 'application/xhtml+xml' ||
       lname.endsWith('.html') ||
-      lname.endsWith('.htm');
+      lname.endsWith('.htm'));
 
     if (isHtml) {
       // 4.1. Детекція кодування
