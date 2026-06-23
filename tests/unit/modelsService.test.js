@@ -4,6 +4,7 @@ import {
   fetchAvailableModels,
   getCachedModels,
   isModelNotFoundError,
+  shortModelLabel,
 } from '../../src/services/modelsService.js';
 
 const CACHE_KEY = 'levytskyi_models_cache';
@@ -46,6 +47,23 @@ describe('modelsService', () => {
     it('404 без розпізнаваного тіла → false', () => {
       expect(isModelNotFoundError(404, {})).toBe(false);
       expect(isModelNotFoundError(404, null)).toBe(false);
+    });
+  });
+
+  describe('shortModelLabel', () => {
+    it('канонічний id → «Tier major.minor»', () => {
+      expect(shortModelLabel('claude-opus-4-8')).toBe('Opus 4.8');
+      expect(shortModelLabel('claude-sonnet-4-6')).toBe('Sonnet 4.6');
+      expect(shortModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+    });
+    it('невідомий формат → сам id (без вгадування)', () => {
+      expect(shortModelLabel('gpt-4o')).toBe('gpt-4o');
+      expect(shortModelLabel('custom-model')).toBe('custom-model');
+    });
+    it('порожнє / невалідне → порожній рядок', () => {
+      expect(shortModelLabel('')).toBe('');
+      expect(shortModelLabel(null)).toBe('');
+      expect(shortModelLabel(undefined)).toBe('');
     });
   });
 

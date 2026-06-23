@@ -67,6 +67,18 @@ export function isModelNotFoundError(status, body) {
   return false;
 }
 
+// shortModelLabel — людська коротка назва моделі для тісних місць UI (бейдж
+// агента). ЄДИНИЙ сенс: «Opus 4.8» / «Sonnet 4.6» / «Haiku 4.5» з канонічного
+// id. Не для вибору і не для виклику API (там — повний id; правило #11).
+// Невідомий формат → повертаємо сам id (чесно, без вгадування).
+export function shortModelLabel(modelId) {
+  if (!modelId || typeof modelId !== 'string') return '';
+  const m = modelId.match(/claude-(opus|sonnet|haiku)-(\d+)-(\d+)/i);
+  if (!m) return modelId;
+  const tier = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+  return `${tier} ${m[2]}.${m[3]}`;
+}
+
 // fetchAvailableModels — тягне живий список моделей. Повертає
 // { models, stale, fetchedAt, error }:
 //  • свіжий кеш (< TTL) і !force → кеш без мережі (stale:false, error:null);

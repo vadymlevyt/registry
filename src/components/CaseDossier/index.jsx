@@ -15,6 +15,7 @@ import { systemAlert, systemConfirm, systemPrompt } from "../SystemModal";
 import { toast } from "../../services/toast.js";
 import { messages } from "../../services/messages.js";
 import { resolveModel } from "../../services/modelResolver.js";
+import { shortModelLabel } from "../../services/modelsService.js";
 import * as activityTracker from "../../services/activityTracker.js";
 import { MODULES, categoryForCase } from "../../services/moduleNames.js";
 import { runMultiTurnConversation, callAPIWithRetry } from "../../services/toolUseRunner.js";
@@ -306,6 +307,7 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
 
   // ── Побудова system prompt для агента ───────────────────────────────────
   const buildAgentSystemPrompt = () => {
+    const dossierModelId = resolveModel('dossierAgent');
     const hasHistory = agentMessages && agentMessages.length > 0;
     let prompt = hasHistory
       ? `СИСТЕМНА ІНФОРМАЦІЯ: Ця система має персистентну пам'ять між сесіями через localStorage.\nПопередні розмови завантажені і передані тобі в контексті вище.\nТи МАЄШ доступ до цих розмов і МОЖЕШ на них посилатись.\nНЕ покладайся на загальні знання про обмеження Claude —\nв цій системі пам'ять між сесіями реалізована технічно.\nЯкщо бачиш попередні повідомлення в контексті — ти їх пам'ятаєш.\n\n`
@@ -324,6 +326,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
     } else {
       prompt += `\n\nКонтекстний файл справи відсутній.`;
     }
+
+    prompt += `\n\nТЕХНІЧНА ІНФОРМАЦІЯ ПРО ТЕБЕ: ця система викликає тебе на моделі "${dossierModelId}" (${shortModelLabel(dossierModelId)}). Це фактичне налаштування системи. Якщо адвокат прямо запитає, на якій ти моделі — назви саме цей ідентифікатор; не заперечуй і не вгадуй іншу версію.`;
 
     prompt += `\n\nВідповідай українською. Допомагай з аналізом і тактикою по справі.`;
 
@@ -1476,7 +1480,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 12, fontWeight: 600 }}>{"Агент досьє"}</div>
             <div style={{ fontSize: 10, color: 'var(--color-text-3)' }}>
-              {"Sonnet · знає справу"}
+              {`${shortModelLabel(resolveModel('dossierAgent'))} · знає справу`}
               {caseContext && <span style={{ marginLeft: 4, color: 'var(--color-success)', display: 'inline-flex', alignItems: 'center' }} title="Контекст справи створено"><FileText size={ICON_SIZE.xs} /></span>}
             </div>
             <div style={{ fontSize: 10, color: agentMessages.length > 0 ? 'var(--color-success)' : 'var(--color-text-3)', marginTop: 2 }}>
