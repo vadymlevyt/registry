@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest';
 import {
   pageKey, parsePageKey, collapsePagesToFragments,
   planToGroups, groupsToPlan,
-  renameGroup, setGroupType, splitGroupAt, mergeWithNext, movePage, removeGroup,
+  renameGroup, setGroupType, setGroupDate, splitGroupAt, mergeWithNext, movePage, removeGroup,
+  isIsoDate, resolveEffectiveDate,
 } from '../../src/services/documentPipeline/slicePlanModel.js';
 
 const PLAN = {
@@ -165,5 +166,108 @@ describe('removeGroup', () => {
     const r = removeGroup(groups, 'd1');
     expect(r).toHaveLength(1);
     expect(r[0].docId).toBe('d2');
+  });
+});
+
+// ── A7.3 · дата вузла (виняток ii) ──────────────────────────────────────────
+describe('isIsoDate', () => {
+  it('валідна ISO-дата', () => {
+    expect(isIsoDate('2026-03-14')).toBe(true);
+  });
+  it('невалідне → false', () => {
+    expect(isIsoDate('14.03.2026')).toBe(false);
+    expect(isIsoDate('')).toBe(false);
+    expect(isIsoDate(null)).toBe(false);
+    expect(isIsoDate(undefined)).toBe(false);
+  });
+});
+
+describe('resolveEffectiveDate (manual завжди перемагає; auto лише при тумблері)', () => {
+  it('manual з датою → дата, незалежно від тумблера', () => {
+    const node = { date: '2026-03-14', dateSource: 'manual' };
+    expect(resolveEffectiveDate(node, false)).toBe('2026-03-14');
+    expect(resolveEffectiveDate(node, true)).toBe('2026-03-14');
+  });
+  it('manual-null (явне «без дати») → null навіть при тумблері ON', () => {
+    const node = { date: '', dateSource: 'manual' };
+    expect(resolveEffectiveDate(node, true)).toBeNull();
+    expect(resolveEffectiveDate(node, false)).toBeNull();
+  });
+  it('auto: тумблер ON → AI-дата; OFF → null', () => {
+    const node = { date: '2026-03-14', dateSource: 'auto' };
+    expect(resolveEffectiveDate(node, true)).toBe('2026-03-14');
+    expect(resolveEffectiveDate(node, false)).toBeNull();
+  });
+  it('auto без дати → null у будь-якому стані', () => {
+    const node = { date: null, dateSource: 'auto' };
+    expect(resolveEffectiveDate(node, true)).toBeNull();
+    expect(resolveEffectiveDate(node, false)).toBeNull();
+  });
+});
+
+describe('planToGroups / groupsToPlan — date + dateSource', () => {
+  it('AI-дата з плану → вузол з dateSource auto', () => {
+    const plan = { documents: [
+      { documentId: 'd1', name: 'Ухвала', route: 'add_as_is', date: '2026-03-14', fragments: [{ fileId: 'a', startPage: 1, endPage: 1 }] },
+    ], unusedPages: [] };
+    const { groups } = planToGroups(plan);
+    expect(groups[0].date).toBe('2026-03-14');
+    expect(groups[0].dateSource).toBe('auto');
+  });
+  it('без дати у плані → date "" + auto', () => {
+    const { groups } = planToGroups(PLAN);
+    expect(groups[0].date).toBe('');
+    expect(groups[0].dateSource).toBe('auto');
+  });
+  it('applyAutoDates їде на рівні плану; вузли несуть сиру date+dateSource', () => {
+    const { groups } = planToGroups({ documents: [
+      { documentId: 'd1', name: 'X', route: 'add_as_is', date: '2026-01-02', fragments: [{ fileId: 'a', startPage: 1, endPage: 1 }] },
+    ], unusedPages: [] });
+    const planOff = groupsToPlan(groups, [], false);
+    expect(planOff.applyAutoDates).toBe(false);
+    expect(planOff.documents[0]).toMatchObject({ date: '2026-01-02', dateSource: 'auto' });
+    const planOn = groupsToPlan(groups, [], true);
+    expect(planOn.applyAutoDates).toBe(true);
+  });
+  it('groupsToPlan default applyAutoDates = false (behavior-preserving)', () => {
+    const { groups, unusedPages } = planToGroups(PLAN);
+    expect(groupsToPlan(groups, unusedPages).applyAutoDates).toBe(false);
+  });
+});
+
+describe('setGroupDate', () => {
+  it('поставити дату → manual', () => {
+    const { groups } = planToGroups(PLAN);
+    const r = setGroupDate(groups, 'd1', '2026-05-01');
+    expect(r[0]).toMatchObject({ date: '2026-05-01', dateSource: 'manual' });
+    expect(r[1].dateSource).toBe('auto');                 // лише цільову
+  });
+  it('явне «без дати» ("") → manual-null', () => {
+    const { groups } = planToGroups(PLAN);
+    const r = setGroupDate(groups, 'd1', '');
+    expect(r[0]).toMatchObject({ date: '', dateSource: 'manual' });
+  });
+  it('невалідна дата → "" + manual', () => {
+    const { groups } = planToGroups(PLAN);
+    const r = setGroupDate(groups, 'd1', '14.05.2026');
+    expect(r[0]).toMatchObject({ date: '', dateSource: 'manual' });
+  });
+});
+
+describe('splitGroupAt / mergeWithNext — дата', () => {
+  it('хвіст split — новий документ без успадкованої дати (auto, порожньо)', () => {
+    const plan = { documents: [
+      { documentId: 'd1', name: 'A', route: 'slice', date: '2026-03-14', fragments: [{ fileId: 'a', startPage: 1, endPage: 3 }] },
+    ], unusedPages: [] };
+    const { groups } = planToGroups(plan);
+    const r = splitGroupAt(groups, 'd1', pageKey('a', 2));
+    expect(r[0].date).toBe('2026-03-14');                 // голова лишає дату
+    expect(r[1]).toMatchObject({ date: '', dateSource: 'auto' });  // хвіст — без дати
+  });
+  it('merge зберігає дату/джерело першого документа', () => {
+    const { groups } = planToGroups(PLAN);
+    const withDate = setGroupDate(groups, 'd1', '2026-02-02');
+    const r = mergeWithNext(withDate, 'd1');
+    expect(r[0]).toMatchObject({ date: '2026-02-02', dateSource: 'manual' });
   });
 });

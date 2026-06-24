@@ -337,3 +337,58 @@ describe('splitDocumentsV3 — saveFragments + dataset', () => {
     expect(res.decisions.some((d) => d.type === 'dataset_collected')).toBe(true);
   });
 });
+
+// ── A7.3 · ефективна дата у createDocument (виняток ii) ──────────────────────
+describe('splitDocumentsV3 — A7.3 ефективна дата', () => {
+  let port, created, stage;
+  beforeEach(async () => {
+    port = createMemDrivePort();
+    created = [];
+    stage = createSplitDocumentsV3({
+      runInWorker: wc.runInWorker, drivePort: port,
+      uploadFile: async () => 'drv',
+      createDocument: (m) => ({ id: 'd', ...m }),
+      persistDocument: async ({ document }) => { created.push(document); return { success: true }; },
+    });
+  });
+
+  async function runPlan(plan) {
+    const d1 = await seedSource(port, 'f1', 3);
+    return stage(baseCtx(port, {
+      plan,
+      files: [{ fileId: 'f1', driveId: d1, skipped: false, metadataTemplate: {} }],
+    }));
+  }
+
+  it('manual-дата → createDocument.date = дата (незалежно від applyAutoDates)', async () => {
+    await runPlan({ confirmed: true, applyAutoDates: false, documents: [{
+      documentId: 'd1', name: 'Ухвала', route: 'add_as_is', date: '2026-03-14', dateSource: 'manual',
+      fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }],
+    }], unusedPages: [] });
+    expect(created[0].date).toBe('2026-03-14');
+  });
+
+  it('manual-null → createDocument.date = null навіть при applyAutoDates ON', async () => {
+    await runPlan({ confirmed: true, applyAutoDates: true, documents: [{
+      documentId: 'd1', name: 'Без дати', route: 'add_as_is', date: null, dateSource: 'manual',
+      fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }],
+    }], unusedPages: [] });
+    expect(created[0].date).toBeNull();
+  });
+
+  it('auto + applyAutoDates ON → AI-дата пишеться', async () => {
+    await runPlan({ confirmed: true, applyAutoDates: true, documents: [{
+      documentId: 'd1', name: 'Позов', route: 'add_as_is', date: '2026-05-01', dateSource: 'auto',
+      fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }],
+    }], unusedPages: [] });
+    expect(created[0].date).toBe('2026-05-01');
+  });
+
+  it('auto + applyAutoDates OFF → date null (як сьогодні, behavior-preserving)', async () => {
+    await runPlan({ confirmed: true, documents: [{
+      documentId: 'd1', name: 'Позов', route: 'add_as_is', date: '2026-05-01', dateSource: 'auto',
+      fragments: [{ fileId: 'f1', startPage: 1, endPage: 3 }],
+    }], unusedPages: [] });
+    expect(created[0].date).toBeNull();
+  });
+});
