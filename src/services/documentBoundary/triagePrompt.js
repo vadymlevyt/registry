@@ -67,10 +67,15 @@ image_merge. Обрив тексту в кінці одного файла і п
 документі, НЕ у to_fragments. Втратити юридично значущу сторінку гірше, ніж
 зберегти зайву.
 
+Дата документа (date): дата складання/винесення документа у форматі
+YYYY-MM-DD, якщо вона ОДНОЗНАЧНО видна в тексті (дата ухвали, дата позову,
+дата довідки). Якщо дати немає або вона сумнівна — постав null, НЕ вгадуй.
+Це лише пропозиція — адвокат підтвердить або поправить.
+
 Поверни ТІЛЬКИ JSON без тексту до/після:
 {
   "documents": [
-    {"documentId":"d1","name":"Позовна заява","type":"pleading","route":"slice","fragments":[{"fileId":"f0","startPage":1,"endPage":8}],"open":false}
+    {"documentId":"d1","name":"Позовна заява","type":"pleading","date":"2026-03-14","route":"slice","fragments":[{"fileId":"f0","startPage":1,"endPage":8}],"open":false}
   ],
   "unusedPages": [{"fileId":"f0","startPage":9,"endPage":9,"reason":"порожня сторінка"}]
 }

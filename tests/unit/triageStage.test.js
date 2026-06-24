@@ -148,6 +148,24 @@ describe('createTriageStage — нормалізація AI-плану', () => {
     expect(res.ctx.unusedPages[0].reason).toBeTruthy();  // дефолтна причина
     expect(res.decisions[0].scope).toBe('triage');
   });
+
+  // A7.3 (виняток ii) — date переноситься у вузол плану; джерело за замовч.
+  // 'auto'; applyAutoDates на рівні плану дефолтить OFF (behavior-preserving).
+  it('A7.3: date валідується у вузол (auto), невалідна → null; applyAutoDates OFF', async () => {
+    const triage = vi.fn(async () => ({
+      documents: [
+        { documentId: 'd1', name: 'Ухвала', route: 'add_as_is', date: '2026-03-14', fragments: [{ fileId: 'f0', startPage: 1, endPage: 2 }] },
+        { documentId: 'd2', name: 'Позов', route: 'add_as_is', date: '14.03.2026', fragments: [{ fileId: 'f0', startPage: 3, endPage: 4 }] },
+      ],
+      unusedPages: [],
+    }));
+    const stage = createTriageStage({ triage });
+    const res = await stage(ctxOf([{ fileId: 'f0' }]));
+    const plan = res.ctx.reconstructionPlan;
+    expect(plan.documents[0]).toMatchObject({ date: '2026-03-14', dateSource: 'auto' });
+    expect(plan.documents[1]).toMatchObject({ date: null, dateSource: 'auto' }); // невалідна → null
+    expect(plan.applyAutoDates).toBe(false);              // дефолт OFF
+  });
 });
 
 // TASK triage_diag_logging §5 — діагностичний канал тріажу через decisions.

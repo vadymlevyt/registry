@@ -388,6 +388,10 @@
 .dp-slice-editor__hint {
   line-height: 1.4;
 }
+/* A7.3 — тумблер «Проставити дати» над стрічкою документів. */
+.dp-slice-editor__dates-toggle {
+  margin: var(--space-2) 0;
+}
 .dp-slice-editor__group-actions {
   display: flex;
   align-items: center;

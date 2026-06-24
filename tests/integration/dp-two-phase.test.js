@@ -162,6 +162,44 @@ describe('A7.1 — двофазний DP наскрізь', () => {
     expect(port._allNames().some((n) => /^orig_|^chunk_/.test(n))).toBe(false);
   });
 
+  it('A7.3: дата тече propose→persist — editedPlan з manual-датою → createDocument.date', async () => {
+    stubTriageFetch(TWO_DOC_PLAN);
+    const exec = buildExecutor(port, h);
+    const proposed = await exec.proposeRun({ ...input(), files: [await file('a', 2), await file('b', 2)] });
+
+    // Адвокат поставив дату на перший документ (manual); тумблер OFF.
+    const editedPlan = {
+      applyAutoDates: false,
+      documents: [
+        { documentId: 'e1', name: 'З датою', type: 'pleading', route: 'add_as_is', date: '2026-03-14', dateSource: 'manual', fragments: [{ fileId: 'a', startPage: 1, endPage: 2 }] },
+        { documentId: 'e2', name: 'Без дати', type: 'court_act', route: 'add_as_is', date: null, dateSource: 'auto', fragments: [{ fileId: 'b', startPage: 1, endPage: 2 }] },
+      ],
+      unusedPages: [],
+    };
+    const res = await exec.executeRun(proposed.session, editedPlan);
+    expect(res.ok).toBe(true);
+    const stored = docsOf(h);
+    const withDate = stored.find((d) => d.name === 'З датою.pdf');
+    const noDate = stored.find((d) => d.name === 'Без дати.pdf');
+    expect(withDate.date).toBe('2026-03-14');             // manual → персистована
+    expect(noDate.date).toBeNull();                       // auto + тумблер OFF → null
+  });
+
+  it('A7.3: applyAutoDates ON у плані → auto-дата персиститься (executeRun)', async () => {
+    stubTriageFetch(TWO_DOC_PLAN);
+    const exec = buildExecutor(port, h);
+    const proposed = await exec.proposeRun({ ...input(), files: [await file('a', 2)] });
+    const editedPlan = {
+      applyAutoDates: true,
+      documents: [
+        { documentId: 'e1', name: 'Авто', route: 'add_as_is', date: '2026-06-01', dateSource: 'auto', fragments: [{ fileId: 'a', startPage: 1, endPage: 2 }] },
+      ],
+      unusedPages: [],
+    };
+    await exec.executeRun(proposed.session, editedPlan);
+    expect(docsOf(h).find((d) => d.name === 'Авто.pdf').date).toBe('2026-06-01');
+  });
+
   it('run() = композиція: персистить ЗАПРОПОНОВАНИЙ план без редагування (behavior-preserving)', async () => {
     stubTriageFetch(TWO_DOC_PLAN);
     const exec = buildExecutor(port, h);

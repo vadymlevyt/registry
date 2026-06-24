@@ -23,13 +23,13 @@ import {
   ArrowLeft, Play, FileText, Scissors, Combine, Trash2, Eye,
 } from 'lucide-react';
 import { ICON_SIZE } from '../UI/icons.js';
-import { Button, Input, Select } from '../UI';
+import { Button, Input, Select, Toggle, DatePicker } from '../UI';
 import { toast } from '../../services/toast.js';
 import { CATEGORY_OPTIONS } from '../ImageEditor/constants.js';
 import { normalizePlan } from '../../services/documentPipeline/stages/triageStage.js';
 import {
   pageKey, planToGroups, groupsToPlan,
-  renameGroup, setGroupType, splitGroupAt, mergeWithNext, movePage, removeGroup,
+  renameGroup, setGroupType, setGroupDate, splitGroupAt, mergeWithNext, movePage, removeGroup,
 } from '../../services/documentPipeline/slicePlanModel.js';
 import { SlicePagePreview } from './SlicePagePreview.jsx';
 
@@ -71,6 +71,12 @@ export function DpSlicePlanEditor({
   const [groups, setGroups] = useState(initial.groups);
   const [unusedPages] = useState(initial.unusedPages);
   const [previewKey, setPreviewKey] = useState(null);   // {fileId,pageNumber} | null
+  // A7.3 — тумблер «Проставити дати». Дефолт OFF (// experimental — review;
+  // tunable одним рядком): не плодити помилкові AI-дати на великих пакетах.
+  // ON → вузли 'auto' показують AI-дату; 'manual' завжди свою; на «Виконати»
+  // ефективну дату рахує splitDocumentsV3 (resolveEffectiveDate). Тумблер —
+  // суто UI-стан над уже-готовими даними session (нуль повторного AI).
+  const [applyAutoDates, setApplyAutoDates] = useState(false);
 
   // ── DnD (lazy @dnd-kit) ───────────────────────────────────────────────────
   const [dndReady, setDndReady] = useState(null);
@@ -100,6 +106,8 @@ export function DpSlicePlanEditor({
   // ── Операції (через чистий slicePlanModel) ────────────────────────────────
   const handleRename = useCallback((docId, name) => setGroups((g) => renameGroup(g, docId, name)), []);
   const handleType = useCallback((docId, type) => setGroups((g) => setGroupType(g, docId, type)), []);
+  // Правка дати календариком → вузол стає 'manual' (ручне в пріоритеті, #11).
+  const handleDate = useCallback((docId, iso) => setGroups((g) => setGroupDate(g, docId, iso)), []);
   const handleSplit = useCallback((docId, key) => setGroups((g) => splitGroupAt(g, docId, key)), []);
   const handleMerge = useCallback((docId) => setGroups((g) => mergeWithNext(g, docId)), []);
   const handleRemove = useCallback((docId) => setGroups((g) => removeGroup(g, docId)), []);
@@ -119,7 +127,7 @@ export function DpSlicePlanEditor({
   const [submitting, setSubmitting] = useState(false);
   const handleExecute = useCallback(async () => {
     if (submitting || busy) return;
-    const edited = groupsToPlan(groups, unusedPages);
+    const edited = groupsToPlan(groups, unusedPages, applyAutoDates);
     // Валідація: реюз normalizePlan/resolveOverlaps (межі у сторінках джерела,
     // без небажаних перекриттів). Невалідне — видимий warning, не тихо (§2.2).
     const normalized = normalizePlan(edited);
@@ -139,7 +147,7 @@ export function DpSlicePlanEditor({
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, busy, groups, unusedPages, onExecute]);
+  }, [submitting, busy, groups, unusedPages, applyAutoDates, onExecute]);
 
   const totalPages = useMemo(() => groups.reduce((s, g) => s + g.pages.length, 0), [groups]);
   const isBusy = submitting || busy;
@@ -151,10 +159,12 @@ export function DpSlicePlanEditor({
       index={gi}
       isLast={gi === groups.length - 1}
       dndReady={dndReady}
+      applyAutoDates={applyAutoDates}
       getPageText={getPageText}
       getFileName={getFileName}
       onRename={handleRename}
       onType={handleType}
+      onDate={handleDate}
       onSplit={handleSplit}
       onMerge={handleMerge}
       onRemove={handleRemove}
@@ -176,6 +186,16 @@ export function DpSlicePlanEditor({
         межа документа. Перетягніть картку в сусідню групу або скористайтесь
         «Розділити тут» / «Обʼєднати з наступним». До «Виконати» на Drive нічого
         не зберігається.
+      </div>
+
+      <div className="dp-slice-editor__dates-toggle">
+        <Toggle
+          checked={applyAutoDates}
+          onChange={setApplyAutoDates}
+          size="sm"
+          label="Проставити дати"
+          description="Підставити дати, які запропонував AI. Ручні дати завжди лишаються."
+        />
       </div>
 
       {dndReady ? (
@@ -264,9 +284,14 @@ function SliceDndZone({ dndReady, onDragEnd, children }) {
 // Хуки у кожному варіанті — БЕЗумовні (Rules of Hooks дотримано незалежно від
 // порядку завантаження редактора; не покладаємось на ремаунт через swap-обгортки).
 function SliceGroupSection({
-  group, index, isLast, dndReady, getPageText, getFileName,
-  onRename, onType, onSplit, onMerge, onRemove, onPreview,
+  group, index, isLast, dndReady, applyAutoDates, getPageText, getFileName,
+  onRename, onType, onDate, onSplit, onMerge, onRemove, onPreview,
 }) {
+  // A7.3 — що показує DatePicker: manual → завжди свою дату (вкл. '' для
+  // явного «без дати»); auto → AI-дату ЛИШЕ коли тумблер ON, інакше порожньо.
+  const displayDate = group.dateSource === 'manual'
+    ? group.date
+    : (applyAutoDates ? group.date : '');
   // Спільні пропси картки для обох варіантів стрічки.
   const cardPropsFor = (p, pi) => ({
     page: p,
@@ -308,6 +333,12 @@ function SliceGroupSection({
           onChange={(v) => onType(group.docId, v)}
           options={CATEGORY_OPTIONS}
           placeholder="Оберіть тип"
+        />
+        <DatePicker
+          label="Дата"
+          value={displayDate}
+          onChange={(iso) => onDate(group.docId, iso)}
+          placeholder={group.dateSource === 'auto' && !applyAutoDates ? 'Без дати' : 'Оберіть дату'}
         />
       </div>
 

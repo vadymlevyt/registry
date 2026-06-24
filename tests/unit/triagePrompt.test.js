@@ -24,6 +24,15 @@ describe('buildTriagePrompt', () => {
     expect(p).toContain('=== СТОРІНКА 1 ===');
   });
 
+  // A7.3 (виняток ii): AI пропонує дату документа у JSON-виході.
+  it('A7.3: інструктує date (YYYY-MM-DD|null) у виході + приклад', () => {
+    const p = buildTriagePrompt({ artifacts });
+    expect(p).toMatch(/Дата документа \(date\)/);
+    expect(p).toContain('YYYY-MM-DD');
+    expect(p).toMatch(/null, НЕ вгадуй/);
+    expect(p).toContain('"date":"2026-03-14"');
+  });
+
   it('інструктує JSON-only + маркери + userHint', () => {
     const p = buildTriagePrompt({ artifacts, userHint: 'цивільна справа' });
     expect(p).toContain('ТІЛЬКИ JSON');
