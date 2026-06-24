@@ -16,6 +16,28 @@
 // pageKey = `${fileId}::${pageNumber}` — стабільний ідентифікатор картки для
 // DnD і React-ключів. Один сенс: «яка фізична сторінка джерела».
 
+// ── A7.3 · ДАТА ВУЗЛА (date + dateSource) ───────────────────────────────────
+// Вузол групи несе `date` (ISO 'YYYY-MM-DD' | '') і `dateSource`:
+//   • 'auto'   — дата прийшла від AI Triage (пропозиція, недетермінована);
+//   • 'manual' — адвокат явно поставив дату АБО явно зняв її («без дати»).
+// Один сенс кожного (правило #11), той самий патерн, що `namingStatus auto/
+// manual`: ручне завжди перемагає авто і тумблер його не чіпає.
+
+// Валідація ISO-дати без залежності від UI DatePicker (сервіс не тягне React).
+export function isIsoDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+// Ефективна дата вузла на «Виконати»: manual завжди перемагає (вкл. manual-null
+// → null); auto застосовується ЛИШЕ коли тумблер «Проставити дати» увімкнено
+// (applyAutoDates). Інакше auto «розчиняється» у null (як сьогодні). Чиста
+// функція — спільне джерело правди для editor-прев'ю і splitDocumentsV3.
+export function resolveEffectiveDate(node, applyAutoDates) {
+  const date = isIsoDate(node?.date) ? node.date.trim() : null;
+  if (node?.dateSource === 'manual') return date;     // ручне (вкл. явне «без дати»)
+  return applyAutoDates === true ? date : null;        // auto: лише при тумблері ON
+}
+
 export function pageKey(fileId, pageNumber) {
   return `${fileId}::${pageNumber}`;
 }
@@ -65,6 +87,10 @@ export function planToGroups(plan) {
     type: d?.type || '',
     route: d?.route || 'add_as_is',
     open: d?.open === true,
+    // A7.3 — дата вузла. План із Triage несе AI-дату (dateSource 'auto');
+    // редаговані плани зберігають своє джерело. '' = немає дати у DatePicker.
+    date: isIsoDate(d?.date) ? d.date.trim() : '',
+    dateSource: d?.dateSource === 'manual' ? 'manual' : 'auto',
     pages: fragmentsToPages(d?.fragments),
   }));
   return { groups, unusedPages: Array.isArray(plan?.unusedPages) ? plan.unusedPages : [] };
@@ -72,18 +98,27 @@ export function planToGroups(plan) {
 
 // Групи → план (для executeRun). Порожні групи відкидаються (немає сторінок —
 // немає документа). normalizePlan нижче по конвеєру ще раз нормалізує/дедупить.
-export function groupsToPlan(groups, unusedPages = []) {
+// A7.3 — `applyAutoDates` (стан тумблера «Проставити дати», дефолт OFF) їде
+// на РІВНІ ПЛАНУ, а кожен вузол несе СИРУ date+dateSource: ефективну дату
+// рахує splitDocumentsV3 (resolveEffectiveDate) — один сенс, одне місце.
+export function groupsToPlan(groups, unusedPages = [], applyAutoDates = false) {
   const documents = (Array.isArray(groups) ? groups : [])
     .map((g) => ({
       documentId: g.docId,
       name: (g.name && String(g.name).trim()) ? g.name : null,
       type: g.type || null,
       route: g.route || 'add_as_is',
+      date: isIsoDate(g.date) ? g.date.trim() : null,
+      dateSource: g.dateSource === 'manual' ? 'manual' : 'auto',
       fragments: collapsePagesToFragments(g.pages),
       open: g.open === true,
     }))
     .filter((d) => d.fragments.length > 0);
-  return { documents, unusedPages: Array.isArray(unusedPages) ? unusedPages : [] };
+  return {
+    documents,
+    unusedPages: Array.isArray(unusedPages) ? unusedPages : [],
+    applyAutoDates: applyAutoDates === true,
+  };
 }
 
 let splitSeq = 0;
@@ -105,6 +140,15 @@ export function setGroupType(groups, docId, type) {
   return groups.map((g) => (g.docId === docId ? { ...g, type } : g));
 }
 
+// A7.3 — поставити/зняти дату вузла календариком. БУДЬ-ЯКА правка DatePicker'ом
+// (дата АБО явне «без дати» = '') переводить вузол у dateSource 'manual' —
+// ручне в пріоритеті, тумблер його більше не чіпає (правило #11). isoDate ''
+// → manual-null (адвокат свідомо сказав «без дати»).
+export function setGroupDate(groups, docId, isoDate) {
+  const date = isIsoDate(isoDate) ? isoDate.trim() : '';
+  return groups.map((g) => (g.docId === docId ? { ...g, date, dateSource: 'manual' } : g));
+}
+
 // Розділити групу НА сторінці (pageKey стає першою сторінкою НОВОГО документа).
 // Межа зсувається: усе до pageKey лишається у поточному документі, від pageKey
 // (включно) — новий документ ОДРАЗУ ПІСЛЯ поточного. Розділ на першій сторінці
@@ -123,6 +167,9 @@ export function splitGroupAt(groups, docId, splitPageKey) {
     type: '',
     route: g.route,
     open: false,
+    // Новий документ — інша сутність: дату НЕ успадковує (адвокат проставить).
+    date: '',
+    dateSource: 'auto',
     pages: g.pages.slice(at),
   };
   const next = groups.slice();

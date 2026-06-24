@@ -21,6 +21,7 @@
 
 import { categoryFromBoundaryType } from './boundaryCategory.js';
 import { isPagedLayout } from '../pageMarkers.js';
+import { resolveEffectiveDate } from '../slicePlanModel.js';
 
 // G4 — маршрути що НЕ йдуть через buildDocumentPdf (обробляються окремими
 // гілками диспетчу до нарізки): пре-нарізка джерела їх не включає.
@@ -111,6 +112,10 @@ function defaultBuildMetadata({ item, driveId, originalDriveId, job, name, pageC
     ...(item.metadataTemplate || {}),
     name: name || item.name,
     pageCount: pageCount ?? item.pageCount ?? null,
+    // A7.3 — ефективна дата документа (виняток ii). Кладеться у metadataTemplate
+    // ефективною (resolveEffectiveDate) у гілці plan-split нижче; createDocument
+    // читає meta.date. Без неї — null (як сьогодні, fallback-гілка без плану).
+    date: item.metadataTemplate?.date ?? null,
     driveId: driveId || null,
     driveUrl: driveId ? `https://drive.google.com/file/d/${driveId}/view` : null,
     originalDriveId: originalDriveId || null,
@@ -373,6 +378,11 @@ export function createSplitDocumentsV3(stageDeps = {}) {
         // DocumentViewer вмикається лише за 'scanned'; нарізані з 65-стор.
         // скана раніше падали у 'searchable' (дефолт detectNature .pdf).
         const planNature = inferDocumentNatureFromSource(srcItem);
+        // A7.3 — ефективна дата вузла (виняток ii): manual завжди перемагає;
+        // auto застосовується ЛИШЕ коли тумблер «Проставити дати» увімкнено
+        // (plan.applyAutoDates). Неінтерактивний run() / план без тумблера →
+        // applyAutoDates відсутній → auto «розчиняється» у null (як сьогодні).
+        const planDate = resolveEffectiveDate(doc, plan.applyAutoDates === true);
         const planItem = {
           ...srcItem,
           name: docName,
@@ -381,6 +391,7 @@ export function createSplitDocumentsV3(stageDeps = {}) {
             ...(srcItem.metadataTemplate || {}),
             ...(planCategory ? { category: planCategory } : {}),
             ...(planNature ? { documentNature: planNature } : {}),
+            ...(planDate ? { date: planDate } : {}),
           },
         };
         const meta = buildMeta

@@ -21,6 +21,7 @@
 // ключа → НЕ фатально: passthrough (ingest не блокуємо).
 
 import { resolveBoundaryText } from '../pageMarkers.js';
+import { isIsoDate } from '../slicePlanModel.js';
 
 // Текст артефакту для Triage: structural passport → posторінковий → plain.
 function passportOf(item, getStreamedText, getStreamedLayout) {
@@ -216,6 +217,12 @@ export function normalizePlan(raw) {
       name: d?.name || null,
       type: d?.type || null,
       route,
+      // A7.3 — date (виняток ii): AI-пропозиція дати документа. Валідуємо до
+      // ISO|null; джерело за замовчуванням 'auto' (від Triage). Редаговані
+      // плани (executeRun) несуть власний dateSource — зберігаємо його
+      // (ідемпотентність: повторна нормалізація не «перезатирає» manual в auto).
+      date: isIsoDate(d?.date) ? d.date.trim() : null,
+      dateSource: d?.dateSource === 'manual' ? 'manual' : 'auto',
       fragments,
       open: d?.open === true,
     };
@@ -229,7 +236,16 @@ export function normalizePlan(raw) {
         reason: u.reason || 'не визначено тип сторінки',
       }))
     : [];
-  return { documents: deduped, unusedPages, dedupDropped: droppedCount };
+  // A7.3 — applyAutoDates (стан тумблера «Проставити дати») їде на рівні плану.
+  // Дефолт OFF: автодати застосовуються ЛИШЕ якщо план явно поставив true
+  // (editor groupsToPlan). Triage-план / неінтерактивний run() його не ставлять
+  // → auto-дати у null (behavior-preserving — як сьогодні, дати не пишуться).
+  return {
+    documents: deduped,
+    unusedPages,
+    dedupDropped: droppedCount,
+    applyAutoDates: raw?.applyAutoDates === true,
+  };
 }
 
 // stageDeps:
