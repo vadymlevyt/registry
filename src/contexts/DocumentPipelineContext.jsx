@@ -253,6 +253,25 @@ export function DocumentPipelineProvider({ executeAction, children }) {
     return executor.resume(input);
   }, [executor]);
 
+  // ── A7.2 · ДВОФАЗНИЙ ІНТЕРАКТИВНИЙ ШЛЯХ ───────────────────────────────────
+  // proposeRun — Фаза 1 (OCR-стрім + Triage до точки паузи). Опції прогону
+  // (8 перемикачів) виставляємо ТУТ, бо buildPipelineDeps читає runOptionsRef
+  // під час побудови pipeline у proposeRun; pipeline-інстанс лежить у session,
+  // тож executeRun (Фаза 2) успадковує ті самі опції — окремо їх не передаємо.
+  const proposeRun = useCallback((input, options = {}) => {
+    runOptionsRef.current = options || {};
+    cancelledRef.current = false;
+    return executor.proposeRun(input);
+  }, [executor]);
+
+  // executeRun — Фаза 2 (нарізка/persist за відредагованим планом). session —
+  // непрозора RAM-«шухляда» з proposeRun; editedPlan — план після правок
+  // адвоката (executor сам нормалізує його через normalizePlan).
+  const executeRun = useCallback((session, editedPlan) => {
+    cancelledRef.current = false;
+    return executor.executeRun(session, editedPlan);
+  }, [executor]);
+
   // TASK 4 · етап C — default OCR-enrich для «просто додати» (non-streaming).
   // Пост-крок ПІСЛЯ persist для одного документа: scanned/image → OCR через
   // ocrService (каскад pdfjsLocal→documentAi; пише ЛИШЕ .layout у 02, оновлює
@@ -426,11 +445,12 @@ export function DocumentPipelineProvider({ executeAction, children }) {
   }, [executeAction, run, getActor, executor]);
 
   const value = useMemo(() => ({
-    run, addFiles: addFilesRun, resume, cancel, keepPartial, discardAll,
+    run, proposeRun, executeRun, addFiles: addFilesRun, resume, cancel, keepPartial, discardAll,
     ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   }), [
-    run, addFilesRun, resume, cancel, keepPartial, discardAll, ecitsPending, clearEcitsPending,
+    run, proposeRun, executeRun, addFilesRun, resume, cancel, keepPartial, discardAll,
+    ecitsPending, clearEcitsPending,
     progressMinimized, minimizeProgress, expandProgress,
   ]);
 

@@ -26,6 +26,7 @@ import { CompressFilesModal } from './modals/CompressFilesModal.jsx';
 import { InboxConflictModal } from './modals/InboxConflictModal.jsx';
 import { CancelDecisionModal } from './modals/CancelDecisionModal.jsx';
 import { DpImageMergeEditor } from './DpImageMergeEditor.jsx';
+import { DpSlicePlanEditor } from './DpSlicePlanEditor.jsx';
 import { isImageFile } from '../ImageEditor/constants.js';
 import { ProcessingProgress } from '../ImageEditor/ProcessingProgress.jsx';
 import { prepareImagesForMerge } from '../../services/imageDocument/prepareImagesForMerge.js';
@@ -128,6 +129,13 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   // imageMerge={pre, groups, files, …} активний поки адвокат у редакторі;
   // null = звичайний DP flow (нарізка PDF / мікс).
   const [imageMerge, setImageMerge] = useState(null);
+  // ── A7.2 двофазний DP: екран редагування плану нарізки ──────────────────
+  // planSession = { session, plan } після proposeRun (Фаза 1). Поки активний —
+  // Зона 3 показує редагований план; до «Виконати» (executeRun) на Drive нічого.
+  // session живе ЛИШЕ у RAM цього сеансу (борг #42 — довговічність серверна);
+  // навігація з вкладки = втрата плану (свідомо, §10). null = звичайний DP flow.
+  const [planSession, setPlanSession] = useState(null);
+  const [planExecuting, setPlanExecuting] = useState(false);
   // mergeProgress — видимий прогрес важкої фото-обробки (prepare/grouper/sort)
   // для image-merge режиму. { phase, done, total } | null. Локальний оверлей з
   // ProcessingProgress (variant="screen") — НЕ через jobProgressStore: image-merge
@@ -695,6 +703,51 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
     setImageMerge(null);
   };
 
+  // ── A7.2 · «Виконати» з екрана редагування плану (Фаза 2 executeRun) ─────
+  // Гейт: ТІЛЬКИ тут план матеріалізується на Drive. До цього (proposeRun +
+  // редагування) — нічого. editedPlan іде у executeRun, який сам нормалізує
+  // його (normalizePlan) і доганяє диригент EXTRACT→PERSIST→EMIT + clearState.
+  const handlePlanExecute = async (editedPlan) => {
+    const ps = planSession;
+    if (!ps || planExecuting) return;
+    setPlanExecuting(true);
+    pipeline.expandProgress?.();                 // PERSIST може бути довгим — повноекран
+    try {
+      const res = await pipeline.executeRun(ps.session, editedPlan);
+      if (res?.cancelled) {
+        setCancelInfo({ jobId: res.jobId, readyCount: (res.readyDocuments || []).length });
+        setPlanSession(null);
+      } else if (res?.blocked) {
+        toast.error('Недостатньо місця на Drive', { description: res.error?.message });
+      } else if (res?.ok) {
+        setResult(res);
+        setResultTab('tree');
+        toast.success(`Оброблено: ${res.documents?.length || 0} документів`);
+        setPlanSession(null);
+        setSelected([]);
+        setInboxChecked(new Set());
+        loadInbox();
+      } else {
+        setResult(res);
+        setResultTab('attention');
+        setPlanSession(null);
+        toast.error('Нарізка завершилась з помилками', { description: res?.errors?.[0]?.message });
+      }
+    } catch (e) {
+      toast.error('Не вдалось виконати нарізку', { description: e?.message });
+    } finally {
+      setPlanExecuting(false);
+    }
+  };
+
+  // Скасувати екран редагування: план/сесія живуть лише в RAM (борг #42) —
+  // просто відкидаємо. _temp лишається до наступного clearState/resume; для
+  // живого сеансу це прийнятно (довговічність — серверна ера, §10).
+  const cancelPlanSession = () => {
+    setPlanSession(null);
+    pipeline.minimizeProgress?.();
+  };
+
   const startProcessing = async () => {
     if (totalCount === 0 || running) return;
     // Конфлікт INBOX: є нові (device/drive) файли і INBOX непорожній.
@@ -806,14 +859,12 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
       // addFiles (нуль звʼязку з нарізкою; стиснення/OCR-пост-крок усередині);
       // slice → стрім-нарізка (pipeline.run). «без OCR» дійсний ЛИШЕ у add_as_is.
       let res;
-      if (useAddAsIs) {
-        res = await pipeline.addFiles(input, {
-          ocrMode: settings.skipOcr ? 'none' : 'full',
-          compress: settings.compressAll === true,
-          updateCaseContext: settings.updateCaseContext === true,
-        });
-      } else {
-        res = await pipeline.run(input, {
+      if (!useAddAsIs) {
+        // ── A7.2 · SLICE → ДВОФАЗНО ──────────────────────────────────────
+        // Фаза 1: proposeRun (OCR-стрім + Triage до точки паузи). НІЧОГО на
+        // Drive. Успіх з планом → екран редагування плану (planSession);
+        // адвокат править межі → «Виконати» (executeRun) — справжній гейт.
+        const proposed = await pipeline.proposeRun(input, {
           ...settings,
           autoConfirm: true,
           collectDataset: getSplitterDatasetEnabled(),
@@ -821,7 +872,30 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
           // Стиснення scanned PDF ПЕРЕД нарізкою — КРИТИЧНО для §3.2 (slice-able).
           compress: settings.compressAll === true,
         });
+        if (proposed?.blocked) {
+          toast.error('Недостатньо місця на Drive', { description: proposed.error?.message });
+        } else if (proposed?.cancelled) {
+          setCancelInfo({ jobId: proposed.jobId, readyCount: (proposed.readyDocuments || []).length });
+        } else if (proposed?.ok && proposed.session && proposed.plan?.documents?.length > 0) {
+          // Гейт: план запропоновано, на Drive нічого. Відкриваємо редагування.
+          setPlanSession({ session: proposed.session, plan: proposed.plan });
+          pipeline.minimizeProgress?.();        // OCR завершено — без повноекрану під час правки
+        } else {
+          // Halt (triage_whole_volume) / помилка / порожній план → «Потребує уваги».
+          setResult(proposed);
+          setResultTab('attention');
+          toast.error('Не вдалось побудувати план нарізки', {
+            description: proposed?.errors?.[0]?.message
+              || proposed?.decisions?.find((d) => d.message)?.message,
+          });
+        }
+        return;                                 // slice-шлях завершено (finally скине стан)
       }
+      res = await pipeline.addFiles(input, {
+        ocrMode: settings.skipOcr ? 'none' : 'full',
+        compress: settings.compressAll === true,
+        updateCaseContext: settings.updateCaseContext === true,
+      });
       if (res?.cancelled) {
         setCancelInfo({ jobId: res.jobId, readyCount: (res.readyDocuments || []).length });
       } else if (res?.blocked) {
@@ -892,6 +966,39 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
   // Адвокат у Editor може натиснути «Назад» (cancelImageMerge) → повернутись
   // до звичайного DP UI, або «Виконати» → handleImageMergeSubmit створить
   // N документів і вийде з editor'а.
+  if (planSession) {
+    const session = planSession.session;
+    const findPf = (fileId) => (session?.pipelineFiles || []).find((f) => f.fileId === fileId) || null;
+    const getPageText = (fileId, pageNumber) => {
+      try {
+        const layout = session?.accessors?.getStreamedLayout?.(fileId);
+        const t = layout?.pages?.[pageNumber - 1]?._text;
+        return typeof t === 'string' ? t : '';
+      } catch { return ''; }
+    };
+    const getFileDriveId = (fileId) => findPf(fileId)?.driveId || null;
+    const getFileName = (fileId) => findPf(fileId)?.name || null;
+    return (
+      <div className="dpv2">
+        <div className="dpv2-header">
+          <span className="dpv2-title">
+            <Wrench size={ICON_SIZE.md} aria-hidden="true" />
+            Робота з документами · план нарізки
+          </span>
+        </div>
+        <DpSlicePlanEditor
+          plan={planSession.plan}
+          getPageText={getPageText}
+          getFileDriveId={getFileDriveId}
+          getFileName={getFileName}
+          onExecute={handlePlanExecute}
+          onCancel={cancelPlanSession}
+          busy={planExecuting}
+        />
+      </div>
+    );
+  }
+
   if (imageMerge) {
     return (
       <div className="dpv2">
@@ -1143,14 +1250,20 @@ export default function DocumentProcessorV2({ caseData, onExecuteAction, driveCo
 
             {result && resultTab === 'cutting' && (
               <>
+                {/* A7.2: інтерактивна правка меж (розділити/обʼєднати/перейменувати/
+                    тип) тепер відбувається на ЕКРАНІ ПЛАНУ ДО «Виконати». Тут —
+                    уже нарізаний результат. Перенарізати збережені документи —
+                    окремий напрямок (повторний прогін). */}
+                <div className="dpv2-placeholder">
+                  Межі редагуються на екрані плану перед «Виконати». Нижче — готовий
+                  результат нарізки.
+                </div>
                 {docs.map((d) => (
                   <div key={d.id} className="dpv2-attention-card">
                     <strong>{d.name}</strong>
                     <div className="dpv2-muted">{d.category || 'тип не визначено'} · {d.pageCount || '?'} стор.</div>
                     <div className="dpv2-attention-actions">
                       <Button variant="secondary" size="sm" onClick={() => setCompressOpen(true)}>Стиснути</Button>
-                      <Button variant="ghost" size="sm" disabled title="Інтерактивна нарізка — DP-6">Розділити</Button>
-                      <Button variant="ghost" size="sm" disabled title="Об'єднання документів — DP-6">Об'єднати з…</Button>
                     </div>
                   </div>
                 ))}
