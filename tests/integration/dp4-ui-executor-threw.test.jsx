@@ -27,7 +27,9 @@ describe('DP-4 UI — EXECUTOR_THREW у «Помилки» Зони 3 (TASK exec
   beforeEach(() => store._resetForTests());
 
   it('catch-return executor рендериться у блоці «Помилки»; блок «Питання» порожній', async () => {
-    const run = vi.fn().mockResolvedValue({
+    // A7.2: збій OCR/стріму належить Фазі 1 (proposeRun) — повертає ok:false з
+    // errors[] і БЕЗ session/плану; UI показує його у «Помилки» Зони 3.
+    const proposeRun = vi.fn().mockResolvedValue({
       ok: false,
       jobId: 'jE1',
       resumable: true,
@@ -40,8 +42,11 @@ describe('DP-4 UI — EXECUTOR_THREW у «Помилки» Зони 3 (TASK exec
         stage: 'streaming',
       }],
     });
-    // TASK 4 rework · Стадія D — slice-шлях кличе pipeline.run напряму.
-    const ctx = { run, ingestFiles: vi.fn(), addFiles: vi.fn(), cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+    const ctx = {
+      run: vi.fn(), proposeRun, executeRun: vi.fn(), ingestFiles: vi.fn(), addFiles: vi.fn(),
+      cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {},
+      minimizeProgress: vi.fn(), expandProgress: vi.fn(),
+    };
 
     const { container } = render(
       <DocumentPipelineContext.Provider value={ctx}>
