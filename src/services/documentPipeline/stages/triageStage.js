@@ -132,7 +132,7 @@ function fragsOverlap(a, b) {
   return false;
 }
 
-function resolveOverlaps(documents) {
+export function resolveOverlaps(documents) {
   const order = documents.map((d, i) => ({ d, i }));
   const ranked = [...order].sort((x, y) =>
     ((ROUTE_PRIORITY[y.d.route] ?? 3) - (ROUTE_PRIORITY[x.d.route] ?? 3)) || (x.i - y.i));
@@ -197,7 +197,10 @@ export function isDegeneratePlan(plan, liveFiles) {
 }
 
 // Нормалізувати AI-план у канонічний транзитний формат плану.
-function normalizePlan(raw) {
+// Експортується (TASK A7.1): executeRun валідує/нормалізує відредагований план
+// перед Фазою 2 через цю саму функцію (ідемпотентна на вже-нормалізованому
+// плані → behavior-preserving для композиції run()).
+export function normalizePlan(raw) {
   const docs = Array.isArray(raw?.documents) ? raw.documents : [];
   const documents = docs.map((d, i) => {
     const route = ROUTES.has(d?.route) ? d.route : 'add_as_is';
