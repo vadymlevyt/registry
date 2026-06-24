@@ -258,49 +258,30 @@ function SliceDndZone({ dndReady, onDragEnd, children }) {
 }
 
 // ── Секція документа: форма (назва/тип) + стрічка карток-сторінок ────────────
+// БЕЗ DnD-хуків у самій секції. Стрічка — окремий компонент-ТИП (Droppable vs
+// Plain), обраний за dndReady на рівні JSX: коли @dnd-kit довантажується (null→
+// object), змінюється ТИП дочірнього елемента → React ремаунтить лише стрічку.
+// Хуки у кожному варіанті — БЕЗумовні (Rules of Hooks дотримано незалежно від
+// порядку завантаження редактора; не покладаємось на ремаунт через swap-обгортки).
 function SliceGroupSection({
   group, index, isLast, dndReady, getPageText, getFileName,
   onRename, onType, onSplit, onMerge, onRemove, onPreview,
 }) {
-  const itemIds = group.pages.map((p) => ItemId(group.docId, p.fileId, p.pageNumber));
-  const containerId = ContainerId(group.docId);
-
-  const droppable = dndReady?.useDroppable
-    ? dndReady.useDroppable({ id: containerId })
-    : { setNodeRef: undefined, isOver: false };
-
-  const grid = (
-    <div
-      ref={droppable.setNodeRef}
-      className="dp-slice-editor__strip"
-      style={droppable.isOver ? {
-        outline: '2px dashed var(--color-accent)', outlineOffset: '2px', borderRadius: 'var(--radius-sm)',
-      } : undefined}
-    >
-      {group.pages.map((p, pi) => (
-        <SlicePageCard
-          key={pageKey(p.fileId, p.pageNumber)}
-          docId={group.docId}
-          page={p}
-          canSplit={pi > 0}
-          dndReady={dndReady}
-          text={getPageText?.(p.fileId, p.pageNumber) || ''}
-          fileLabel={getFileName?.(p.fileId) || null}
-          onSplit={() => onSplit(group.docId, pageKey(p.fileId, p.pageNumber))}
-          onPreview={() => onPreview({ fileId: p.fileId, pageNumber: p.pageNumber })}
-        />
-      ))}
-      {group.pages.length === 0 && (
-        <div className="dpv2-muted dp-image-merge-editor__group-empty">Перетягніть сторінки сюди</div>
-      )}
-    </div>
-  );
+  // Спільні пропси картки для обох варіантів стрічки.
+  const cardPropsFor = (p, pi) => ({
+    page: p,
+    canSplit: pi > 0,
+    text: getPageText?.(p.fileId, p.pageNumber) || '',
+    fileLabel: getFileName?.(p.fileId) || null,
+    onSplit: () => onSplit(group.docId, pageKey(p.fileId, p.pageNumber)),
+    onPreview: () => onPreview({ fileId: p.fileId, pageNumber: p.pageNumber }),
+  });
 
   return (
     <section className="dp-image-merge-editor__group">
       <div className="dp-image-merge-editor__group-header">
         <span className="dp-image-merge-editor__group-title">
-          Документ {index + 1} · {group.pages.length} {group.pages.length === 1 ? 'стор.' : 'стор.'}
+          Документ {index + 1} · {group.pages.length} стор.
         </span>
         <span className="dp-slice-editor__group-actions">
           {!isLast && (
@@ -330,29 +311,76 @@ function SliceGroupSection({
         />
       </div>
 
-      {dndReady?.SortableContext ? (
-        <dndReady.SortableContext items={itemIds} strategy={dndReady.rectSortingStrategy}>
-          {grid}
-        </dndReady.SortableContext>
-      ) : grid}
+      {dndReady
+        ? <SliceDroppableStrip dndReady={dndReady} group={group} cardPropsFor={cardPropsFor} />
+        : <SlicePlainStrip group={group} cardPropsFor={cardPropsFor} />}
     </section>
   );
 }
 
-// ── Картка сторінки ─────────────────────────────────────────────────────────
-function SlicePageCard({
-  docId, page, canSplit, dndReady, text, fileLabel, onSplit, onPreview,
-}) {
-  const sortableId = ItemId(docId, page.fileId, page.pageNumber);
-  const sortable = dndReady?.useSortable ? dndReady.useSortable({ id: sortableId }) : null;
-  const style = sortable
-    ? { transform: dndReady.CSS.Transform.toString(sortable.transform), transition: sortable.transition }
-    : undefined;
+// Стрічка без DnD (фолбек / поки редактор вантажиться). Жодних хуків.
+function SlicePlainStrip({ group, cardPropsFor }) {
+  return (
+    <div className="dp-slice-editor__strip">
+      {group.pages.map((p, pi) => (
+        <SlicePageCard key={pageKey(p.fileId, p.pageNumber)} sortable={null} {...cardPropsFor(p, pi)} />
+      ))}
+      {group.pages.length === 0 && (
+        <div className="dpv2-muted dp-image-merge-editor__group-empty">Документ порожній — перетягніть сторінки сюди</div>
+      )}
+    </div>
+  );
+}
 
+// Стрічка з DnD. useDroppable — БЕЗумовний (компонент монтується лише при dndReady).
+function SliceDroppableStrip({ dndReady, group, cardPropsFor }) {
+  const { setNodeRef, isOver } = dndReady.useDroppable({ id: ContainerId(group.docId) });
+  const itemIds = group.pages.map((p) => ItemId(group.docId, p.fileId, p.pageNumber));
+  return (
+    <dndReady.SortableContext items={itemIds} strategy={dndReady.rectSortingStrategy}>
+      <div
+        ref={setNodeRef}
+        className="dp-slice-editor__strip"
+        style={isOver ? {
+          outline: '2px dashed var(--color-accent)', outlineOffset: '2px', borderRadius: 'var(--radius-sm)',
+        } : undefined}
+      >
+        {group.pages.map((p, pi) => (
+          <SliceSortableCard
+            key={pageKey(p.fileId, p.pageNumber)}
+            dndReady={dndReady}
+            docId={group.docId}
+            {...cardPropsFor(p, pi)}
+          />
+        ))}
+        {group.pages.length === 0 && (
+          <div className="dpv2-muted dp-image-merge-editor__group-empty">Перетягніть сторінки сюди</div>
+        )}
+      </div>
+    </dndReady.SortableContext>
+  );
+}
+
+// Sortable-обгортка картки. useSortable — БЕЗумовний (монтується лише при DnD).
+function SliceSortableCard({ dndReady, docId, page, ...rest }) {
+  const s = dndReady.useSortable({ id: ItemId(docId, page.fileId, page.pageNumber) });
+  const sortable = {
+    setNodeRef: s.setNodeRef,
+    style: { transform: dndReady.CSS.Transform.toString(s.transform), transition: s.transition },
+    listeners: s.listeners,
+    attributes: s.attributes,
+    isDragging: s.isDragging,
+  };
+  return <SlicePageCard page={page} sortable={sortable} {...rest} />;
+}
+
+// ── Картка сторінки (презентаційна, БЕЗ хуків) ──────────────────────────────
+// sortable = { setNodeRef, style, listeners, attributes, isDragging } | null.
+function SlicePageCard({ page, canSplit, text, fileLabel, onSplit, onPreview, sortable }) {
   return (
     <div
       ref={sortable?.setNodeRef}
-      style={style}
+      style={sortable?.style}
       className={`dp-slice-editor__card${sortable?.isDragging ? ' dp-slice-editor__card--dragging' : ''}`}
     >
       <div className="dp-slice-editor__card-head" {...(sortable?.listeners || {})} {...(sortable?.attributes || {})}>
