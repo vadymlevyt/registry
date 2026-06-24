@@ -154,7 +154,9 @@ describe('A7.1 — двофазний DP наскрізь', () => {
     expect(res.cleanedUp).toBe(true);
     const stored = docsOf(h);
     expect(stored).toHaveLength(1);                       // 1, не запропоновані 2
-    expect(stored[0].name).toBe('Лише А (відредаговано)');
+    // Персистована назва отримує суфікс `.pdf` (splitDocumentsV3 route-handler),
+    // на відміну від назви у плані (без суфікса) — поведінка незмінна.
+    expect(stored[0].name).toBe('Лише А (відредаговано).pdf');
     // _temp прибрано на успіху Фази 2.
     expect(port._countFilesNamed('job_state.json')).toBe(0);
     expect(port._allNames().some((n) => /^orig_|^chunk_/.test(n))).toBe(false);
@@ -169,7 +171,7 @@ describe('A7.1 — двофазний DP наскрізь', () => {
     expect(res.cleanedUp).toBe(true);
     const stored = docsOf(h);
     expect(stored).toHaveLength(2);
-    expect(stored.map((d) => d.name).sort()).toEqual(['Документ А', 'Документ Б']);
+    expect(stored.map((d) => d.name).sort()).toEqual(['Документ А.pdf', 'Документ Б.pdf']);
     expect(port._countFilesNamed('job_state.json')).toBe(0);
   });
 });
