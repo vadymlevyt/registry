@@ -24,7 +24,9 @@ describe('DP-4 UI — triage_whole_volume у «Питання» (TASK degenerate
   beforeEach(() => store._resetForTests());
 
   it('halt-decision рендериться у блоці «Питання»; блок «Помилки» порожній', async () => {
-    const run = vi.fn().mockResolvedValue({
+    // A7.2: slice-шлях двофазний — halt Triage приходить з proposeRun (Фаза 1)
+    // як ok:false з decision; UI показує його у «Потребує уваги» (плану нема).
+    const proposeRun = vi.fn().mockResolvedValue({
       ok: false,
       stoppedAt: 'detectBoundaries',
       documents: [],
@@ -36,8 +38,11 @@ describe('DP-4 UI — triage_whole_volume у «Питання» (TASK degenerate
       }],
       errors: [],
     });
-    // TASK 4 rework · Стадія D — slice-шлях кличе pipeline.run напряму.
-    const ctx = { run, ingestFiles: vi.fn(), addFiles: vi.fn(), cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+    const ctx = {
+      run: vi.fn(), proposeRun, executeRun: vi.fn(), ingestFiles: vi.fn(), addFiles: vi.fn(),
+      cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {},
+      minimizeProgress: vi.fn(), expandProgress: vi.fn(),
+    };
 
     const { container } = render(
       <DocumentPipelineContext.Provider value={ctx}>

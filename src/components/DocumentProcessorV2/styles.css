@@ -377,3 +377,102 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── A7.2 · Екран редагування плану нарізки ─────────────────────────────── */
+.dp-slice-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+.dp-slice-editor__hint {
+  line-height: 1.4;
+}
+.dp-slice-editor__group-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* Стрічка карток-сторінок: горизонтальний скрол — сусіди межі завжди поруч. */
+.dp-slice-editor__strip {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 90px;
+}
+.dp-slice-editor__card {
+  width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  padding: var(--space-2);
+}
+.dp-slice-editor__card--dragging { opacity: 0.5; }
+.dp-slice-editor__card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: grab;
+  touch-action: none;
+}
+.dp-slice-editor__card-page { font-weight: 600; font-size: var(--text-xs); }
+.dp-slice-editor__card-file {
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  margin-left: auto;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dp-slice-editor__card-text {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 84px;
+  overflow: hidden;
+}
+.dp-slice-editor__card-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--color-border);
+}
+.dp-slice-editor__card-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--color-text-3);
+  padding: 0;
+}
+.dp-slice-editor__card-btn:hover { color: var(--color-accent); }
+.dp-slice-editor__preview-modal {
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  max-width: 600px;
+  max-height: 90vh;
+  overflow: auto;
+}
+.dp-slice-editor__preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+.dp-slice-editor__preview-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+}

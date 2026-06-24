@@ -20,12 +20,16 @@ import * as store from '../../src/services/documentPipeline/jobProgressStore.js'
 
 const CASE = { id: 'case_aai', name: 'Справа add-as-is', storage: { subFolders: {} } };
 
-function renderDP({ addFiles, run } = {}) {
+function renderDP({ addFiles, run, proposeRun, executeRun } = {}) {
   const ctx = {
     run: run || vi.fn().mockResolvedValue({ ok: true, documents: [], decisions: [], errors: [] }),
+    // A7.2: slice-шлях двофазний — proposeRun (Фаза 1), executeRun (Фаза 2).
+    proposeRun: proposeRun || vi.fn().mockResolvedValue({ ok: true, jobId: 'j', session: {}, plan: { documents: [], unusedPages: [] } }),
+    executeRun: executeRun || vi.fn().mockResolvedValue({ ok: true, documents: [], decisions: [], errors: [] }),
     addFiles: addFiles || vi.fn().mockResolvedValue({ ok: true, documents: [], files: [], errors: [] }),
     ingestFiles: vi.fn(),
     cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {},
+    minimizeProgress: vi.fn(), expandProgress: vi.fn(),
   };
   return render(
     <DocumentPipelineContext.Provider value={ctx}>
@@ -170,12 +174,17 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('A2 двері нарізки — «Нарізати том» ON + об’ємний скан-PDF → pipeline.run (нарізка)', async () => {
-    // Явний тумблер «Нарізати / склеїти» → стрім-шлях нарізки. Об’ємний
-    // (≥1МБ) сканований PDF проходить ворота входу → pipeline.run, НЕ addFiles.
-    const run = vi.fn().mockResolvedValue({ ok: true, documents: [], decisions: [], errors: [] });
+  it('A2 двері нарізки — «Нарізати том» ON + об’ємний скан-PDF → proposeRun (двофазно), НЕ addFiles', async () => {
+    // A7.2: явний тумблер «Нарізати / склеїти» → стрім-шлях нарізки, тепер
+    // ДВОФАЗНО. Об’ємний (≥1МБ) сканований PDF проходить ворота входу →
+    // proposeRun (Фаза 1), НЕ addFiles і НЕ run (run лишається для неінтерактивних).
+    const proposeRun = vi.fn().mockResolvedValue({
+      ok: true, jobId: 'j1', session: { pipelineFiles: [], accessors: {} },
+      plan: { documents: [{ documentId: 'd1', name: 'том', type: null, route: 'slice', fragments: [{ fileId: 'f', startPage: 1, endPage: 1 }] }], unusedPages: [] },
+    });
+    const run = vi.fn();
     const addFiles = vi.fn();
-    const { container } = renderDP({ run, addFiles });
+    const { container } = renderDP({ run, proposeRun, addFiles });
 
     const fileInput = container.querySelector('input[type="file"]');
     const pdf = new File([new Uint8Array(1024 * 1024)], 'том.pdf', { type: 'application/pdf' });
@@ -189,7 +198,10 @@ describe('DP-4 · «просто додати» (add_as_is) маршрутиза
       fireEvent.click(screen.getByRole('button', { name: /Розпочати обробку/ }));
     });
 
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(proposeRun).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
     expect(addFiles).not.toHaveBeenCalled();
+    // Гейт: екран редагування плану зʼявився (нічого не персистимо до «Виконати»).
+    expect(await screen.findByText(/План нарізки/)).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// DP-4 інтеграція — повний UI flow: вибрати файл → «Розпочати» → run
-// викликано з input.files + опціями 8 перемикачів → результат у Зоні 3.
+// DP-4/A7.2 інтеграція — slice UI flow двофазний: вибрати файл → «Розпочати» →
+// proposeRun(input, options) → екран редагування плану (Фаза 1, нічого на Drive).
 // Контракт UI→pipeline (executor — окремо в dp3-streaming.test.js).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/services/ocrService.js', () => ({
@@ -22,16 +22,19 @@ const CASE = { id: 'case_dp4', name: 'Справа DP-4', storage: { subFolders:
 describe('DP-4 UI flow (вибір → запуск → результат)', () => {
   beforeEach(() => store._resetForTests());
 
-  it('вибраний файл вмикає «Розпочати»; клік викликає run(input,options) і показує документи', async () => {
-    // TASK 4 rework · Стадія D — чистий PDF + «Нарізати том» ON → slice → pipeline.run.
-    // A2: нарізка тепер явний тумблер (дефолт — просто-додати).
-    const run = vi.fn().mockResolvedValue({
-      ok: true,
-      documents: [{ id: 'd1', name: 'Позовна заява.pdf', category: 'pleading', pageCount: 3 }],
-      decisions: [],
-      errors: [],
+  it('вибраний файл вмикає «Розпочати»; клік викликає proposeRun(input,options) і показує екран плану', async () => {
+    // A7.2 · чистий PDF + «Нарізати / склеїти» ON → slice → двофазно (proposeRun).
+    const proposeRun = vi.fn().mockResolvedValue({
+      ok: true, jobId: 'j1',
+      session: { pipelineFiles: [{ fileId: 'f', name: 'позов.pdf', driveId: 'tmp1' }], accessors: { getStreamedLayout: () => null } },
+      plan: { documents: [{ documentId: 'd1', name: 'Позовна заява', type: 'pleading', route: 'slice', fragments: [{ fileId: 'f', startPage: 1, endPage: 3 }] }], unusedPages: [] },
     });
-    const ctx = { run, ingestFiles: vi.fn(), addFiles: vi.fn(), cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {} };
+    const executeRun = vi.fn();
+    const ctx = {
+      run: vi.fn(), proposeRun, executeRun, ingestFiles: vi.fn(), addFiles: vi.fn(),
+      cancel: vi.fn(), resume: vi.fn(), keepPartial: vi.fn(), discardAll: vi.fn(), ecitsPending: {},
+      minimizeProgress: vi.fn(), expandProgress: vi.fn(),
+    };
 
     const { container } = render(
       <DocumentPipelineContext.Provider value={ctx}>
@@ -61,12 +64,12 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
       fireEvent.click(startBtn2);
     });
 
-    expect(run).toHaveBeenCalledTimes(1);
-    const [input, options] = run.mock.calls[0];
+    expect(proposeRun).toHaveBeenCalledTimes(1);
+    const [input, options] = proposeRun.mock.calls[0];
     expect(input.caseId).toBe('case_dp4');
     expect(input.files).toHaveLength(1);
     expect(input.files[0].name).toBe('позов.pdf');
-    // робочі перемикачі + системні опції прокинуті у run (A2 Частина 1 прибрала
+    // робочі перемикачі + системні опції прокинуті у proposeRun (A2 прибрала
     // 5 мертвих тумблерів; V2-A2 раніше прибрав cleanForReading)
     expect(options).toMatchObject({
       compressAll: false,
@@ -74,14 +77,13 @@ describe('DP-4 UI flow (вибір → запуск → результат)', ()
       autoConfirm: true,
     });
     expect(options).not.toHaveProperty('organizeByProceedings');
-    expect(options).not.toHaveProperty('integrityCheck');
-    expect(options).not.toHaveProperty('generateSummary');
-    expect(options).not.toHaveProperty('suggestDeadlines');
-    expect(options).not.toHaveProperty('fillCaseCard');
     expect(options).not.toHaveProperty('cleanForReading');
     expect(options).toHaveProperty('collectDataset');
 
-    // Зона 3 (вкладка Дерево) показує створений документ
-    expect(await screen.findByText('Позовна заява.pdf')).toBeInTheDocument();
+    // A7.2 ГЕЙТ: екран редагування плану зʼявився, executeRun ЩЕ не викликано
+    // (на Drive нічого до «Виконати»).
+    expect(await screen.findByText(/План нарізки/)).toBeInTheDocument();
+    expect(await screen.findByDisplayValue('Позовна заява')).toBeInTheDocument();
+    expect(executeRun).not.toHaveBeenCalled();
   });
 });
