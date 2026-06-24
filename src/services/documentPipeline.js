@@ -238,6 +238,10 @@ function finalizeResult(ctx) {
     stoppedAt: ctx.stoppedAt,
     resumable: ctx.resumable,
     job: ctx.job,
+    // ctx — повний контекст конвеєра (двофазний DP, TASK A7.1): proposeRun
+    // читає ctx.reconstructionPlan і передає цей ctx у executeRun (Фаза 2).
+    // Адитивне поле — наявні викликачі його ігнорують (behavior-preserving).
+    ctx,
   };
 }
 
@@ -261,9 +265,26 @@ export function createDocumentPipeline(deps = {}) {
   const stageImpl = { ...DEFAULT_STAGE_IMPL, ...stageOverrides };
   const flags = deps.stageFlags || {};
 
-  async function run(input) {
-    let ctx = makeContext(input);
-    for (const name of DEFAULT_STAGE_ORDER) {
+  // run(input, opts?) — прогнати конвеєр. Без opts — повний прогін
+  // DEFAULT_STAGE_ORDER (поведінка НЕзмінна, OCP). opts (двофазний DP, TASK A7.1):
+  //   • startFrom — назва стадії, З ЯКОЇ почати (включно); дефолт INTAKE.
+  //   • stopAfter — назва стадії, ПІСЛЯ якої спинитись (включно); дефолт EMIT.
+  //   • ctx      — готовий контекст замість makeContext(input): продовжити вже
+  //                почату обробку (Фаза 2 подає ctx Фази 1). input ігнорується.
+  // Кожна опція — один сенс (правило #11); межі ріжуть лише ВИКОНАННЯ стадій,
+  // логіка самих стадій незмінна. finalizeResult завжди повертає ctx, щоб
+  // викликач міг продовжити з паузи (proposeRun → executeRun).
+  async function run(input, opts = {}) {
+    const order = DEFAULT_STAGE_ORDER;
+    const startIdx = opts.startFrom == null ? 0 : order.indexOf(opts.startFrom);
+    const stopIdx = opts.stopAfter == null ? order.length - 1 : order.indexOf(opts.stopAfter);
+    if (startIdx < 0) throw new Error(`documentPipeline.run: невідома стадія startFrom='${opts.startFrom}'`);
+    if (stopIdx < 0) throw new Error(`documentPipeline.run: невідома стадія stopAfter='${opts.stopAfter}'`);
+    if (startIdx > stopIdx) throw new Error(`documentPipeline.run: порожнє вікно стадій (startFrom='${opts.startFrom}' після stopAfter='${opts.stopAfter}')`);
+
+    let ctx = opts.ctx || makeContext(input);
+    for (let si = startIdx; si <= stopIdx; si++) {
+      const name = order[si];
       if (flags[name] === false) continue;        // стадія вимкнена прапором
       const impl = stageImpl[name];
       if (typeof impl !== 'function') continue;

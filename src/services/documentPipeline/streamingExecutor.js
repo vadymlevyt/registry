@@ -25,6 +25,8 @@
 // Чиста фабрика DI (як createActions/createDocumentPipeline). Нуль глобальних
 // сінглтонів. Worker/Drive/AI/pipeline — через deps.
 
+import { STAGE } from '../documentPipeline.js';
+import { normalizePlan } from './stages/triageStage.js';
 import { createWorkerClient } from './workerClient.js';
 import { createChunkManager } from './chunkManager.js';
 import {
@@ -215,17 +217,34 @@ export function createStreamingExecutor(deps = {}) {
     return { text, layoutJson: layout.length ? { schemaVersion: 1, pages: layout } : null, pageCount };
   }
 
-  // Головний запуск. input: { caseId, caseData, files:[{fileId,name,raw|
+  // ── ДВОФАЗНИЙ DP (TASK A7.1) ──────────────────────────────────────────────
+  // run() розщеплено на дві фази навколо точки паузи (план готовий після
+  // DETECT_BOUNDARIES — triage будує паспорт з RAM-accessors, EXTRACT його не
+  // торкає):
+  //   • proposeRun(input)         → Фаза 1: OCR-стрім + диригент stopAfter
+  //     DETECT_BOUNDARIES. Повертає { ok, jobId, plan, session }. _temp НЕ чистить.
+  //   • executeRun(session, plan) → Фаза 2: диригент startFrom EXTRACT
+  //     (EXTRACT→CONFIRM→PERSIST→EMIT) за переданим планом + clearState на успіху.
+  //   • run(input)                = proposeRun + executeRun(plan) — композиція,
+  //     behavior-preserving (вихід байт-у-байт як до A7.1). Неінтерактивні
+  //     викликачі (ecitsInboxWatcher, addFiles, тести) лишаються на run().
+  // Інтерактивний DP-UI (A7.2) кличе дві фази окремо, редагуючи план між ними.
+
+  // proposeRun — Фаза 1. input: { caseId, caseData, files:[{fileId,name,raw|
   // arrayBuffer, size, originalMime, metadataTemplate}], source, addedBy,
   // agentId, conversionContext, jobId? } — той самий вхід що pipeline +
-  // streaming-обгортка.
-  async function run(input, { resumeState = null } = {}) {
+  // streaming-обгортка. На успіху повертає непрозорий `session` (RAM-«шухляда»):
+  // state, pipelineFiles, accessors, builtDeps, pipeline+pipelineInput, ctx
+  // диригента (з .reconstructionPlan), stageTimings, diag, jobId/caseId/input.
+  // `diag` лишається ВІДКРИТИМ (flush — у Фазі 2); термінальні виходи Фази 1
+  // (blocked/cancelled/stop/throw) флашать самі (session не створено).
+  async function proposeRun(input, { resumeState = null } = {}) {
     const jobId = resumeState?.jobId || input.jobId || `dpjob_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const caseId = input.caseId;
     const title = input.files?.length > 1 ? `Пакет: ${input.files.length} файлів` : (input.files?.[0]?.name || 'Обробка документа');
 
-    // ДІАГ: свіжий логер на цей прогін. flush() у finally нижче — пише файл на
-    // Drive незалежно від того, яким return вийшов run() (успіх/стоп/throw).
+    // ДІАГ: свіжий логер на цей прогін. flush() — у Фазі 2 (executeRun) на
+    // happy-path, або тут (finally) на термінальному виході Фази 1.
     const diag = makeDiag();
     diag.log('run_start', {
       jobId, caseId,
@@ -237,12 +256,8 @@ export function createStreamingExecutor(deps = {}) {
         fileId: f.fileId, name: f.name, sizeMB: mb(f.size || f.raw?.size || 0),
       })),
     });
-    return runGuarded(input, { resumeState, jobId, caseId, title, diag });
-  }
 
-  // runGuarded — тіло run() з гарантованим diag.flush() у finally на всіх
-  // шляхах виходу (винесено, щоб не дублювати flush перед кожним return).
-  async function runGuarded(input, { resumeState, jobId, caseId, title, diag }) {
+    let session = null;
     try {
     progressStore.startJob({ jobId, caseId, title, total: 0 });
     progressStore.reconcilePolling();
@@ -353,7 +368,9 @@ export function createStreamingExecutor(deps = {}) {
       // кличе deps.onStage/onStageEnd, Provider buildPipelineDeps НЕ чіпаємо.
       // bug 7: людський підпис стадії у jobProgressStore (UI). bug 3:
       // per-stage таймінг у консоль + накопичений у снапшот для діагностики
-      // 46-хв шляху. Обидва ізольовані — телеметрія не валить job.
+      // 46-хв шляху. Обидва ізольовані — телеметрія не валить job. stageTimings —
+      // СПІЛЬНИЙ між фазами (pipeline-інстанс із цими closures лежить у session
+      // → Фаза 2 накопичує у той самий об'єкт; ось чому pipeline НЕ перебудовуємо).
       const stageTimings = {};
       const pipeDeps = {
         ...builtDeps,
@@ -388,7 +405,7 @@ export function createStreamingExecutor(deps = {}) {
         },
       };
       const pipeline = deps.createPipeline(pipeDeps);
-      const result = await pipeline.run({
+      const pipelineInput = {
         jobId,
         caseId,
         caseData: input.caseData,
@@ -397,32 +414,116 @@ export function createStreamingExecutor(deps = {}) {
         addedBy: input.addedBy || 'user',
         conversionContext: input.conversionContext || null,
         files: pipelineFiles,
-      });
+      };
 
-      // ДІАГ: підсумок диригента — скільки документів вийшло, які маршрути
-      // (route), де зупинився. ОСЬ де видно «1 документ / порожня 02»: route
-      // add_as_is×1, stoppedAt='triage_whole_volume', чи documentsCount=0.
-      diag.log('pipeline_result', {
-        ok: !!result.ok,
-        stoppedAt: result.stoppedAt || null,
-        documentsCount: Array.isArray(result.documents) ? result.documents.length : 0,
+      // Фаза 1: диригент до точки паузи (включно DETECT_BOUNDARIES). План —
+      // у ctx.reconstructionPlan. Документів ще немає (PERSIST — Фаза 2), тому
+      // result.ok тут НЕ показник успіху; орієнтир — stoppedAt/errors.
+      const result = await pipeline.run(pipelineInput, { stopAfter: STAGE.DETECT_BOUNDARIES });
+
+      if (result.stoppedAt) {
+        // Фаза 1 спинилась штатно з помилкою/halt (intake fatal, triage
+        // whole-volume halt тощо) — плану нема. Той самий return-shape, що й
+        // pipeline-stoppage у старому run() (resumable, _temp лишається).
+        logPipelineResult(diag, result, stageTimings);
+        state.status = JOB_STATUS.STOPPED;
+        state.stoppedAt = result.stoppedAt;
+        state.error = result.errors?.[result.errors.length - 1] || null;
+        await jobStore.saveState(state);
+        progressStore.finishJob(jobId, { status: 'stopped', graceMs: 0 });
+        progressStore.reconcilePolling();
+        return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: result.errors, decisions: result.decisions };
+      }
+
+      // Точка паузи: план запропоновано. Складаємо «шухляду» і повертаємо —
+      // _temp НЕ чистимо, diag лишаємо відкритим для Фази 2.
+      diag.log('propose_done', {
+        jobId,
+        documentsInPlan: Array.isArray(result.ctx?.reconstructionPlan?.documents)
+          ? result.ctx.reconstructionPlan.documents.length : 0,
         decisionsCount: Array.isArray(result.decisions) ? result.decisions.length : 0,
-        routes: Array.isArray(result.decisions)
-          ? result.decisions.map((d) => d?.route || d?.type || null)
-          : null,
-        // ДІАГ тріажу (TASK triage_diag_logging §3.4): паспорт + токени + текст
-        // помилки через канал decisions (scope==='triage'). Розгортаємо meta у
-        // плоский запис — у diag-файлі видно ЧОМУ том став одним шматком
-        // (рідкий паспорт? обрізаний max_tokens? AI здався?), без читання коду.
         triage: Array.isArray(result.decisions)
-          ? result.decisions
-              .filter((d) => d?.scope === 'triage')
-              .map((d) => ({ type: d.type, message: d.message || null, ...(d.meta || {}) }))
+          ? result.decisions.filter((d) => d?.scope === 'triage').map((d) => ({ type: d.type, ...(d.meta || {}) }))
           : null,
-        errorsCount: Array.isArray(result.errors) ? result.errors.length : 0,
-        firstError: result.errors?.[0]?.message || result.errors?.[0]?.code || null,
-        timings: stageTimings,
       });
+      session = {
+        state, pipelineFiles, accessors, builtDeps,
+        pipeline, pipelineInput, stageTimings,
+        ctx: result.ctx, jobId, caseId, input, diag,
+      };
+      return { ok: true, jobId, plan: result.ctx?.reconstructionPlan ?? null, session };
+    } catch (err) {
+      // Вирівнювання return-shape з pipeline-stoppage: для UI (DPv2 Зона 3
+      // «Помилки») і будь-якого caller'а існує ОДИН контракт на ok:false —
+      // `errors[]` масив (правило #11). Збій Фази 1 (throw з streamFile/Drive/
+      // worker/triage) доходить сюди.
+      state.status = JOB_STATUS.STOPPED;
+      state.stoppedAt = state.stoppedAt || 'exception';
+      state.error = { code: 'EXECUTOR_THREW', message: err?.message || String(err), stage: state.stoppedAt };
+      // ДІАГ: фатальний throw (включно з «Файл більший за 40 МБ» що долетів
+      // сюди з processChunk). chunk_ocr_error вище вже зафіксував номер+вагу
+      // блоку — тут лишається загальний підсумок прогону.
+      diag.log('run_error', { code: state.error.code, message: state.error.message, stage: state.stoppedAt });
+      try { await jobStore.saveState(state); } catch { /* стан міг не зберегтись */ }
+      progressStore.finishJob(jobId, { status: 'stopped' });
+      progressStore.reconcilePolling();
+      return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: [state.error], decisions: [] };
+    }
+    } finally {
+      // ДІАГ flush: лише коли НЕ передаємо diag у Фазу 2. Є session (happy-path)
+      // → diag відкритий, Фаза 2 (executeRun) дофлашить. Нема session
+      // (blocked/cancelled/stop/throw Фази 1) → флашимо тут (best-effort).
+      if (!session) { try { await diag.flush({ jobId, caseId }); } catch { /* лог best-effort */ } }
+    }
+  }
+
+  // logPipelineResult — підсумок диригента у diag-лог (винесено: один формат
+  // для Фази-1-стопу і Фази-2-завершення). ОСЬ де видно «1 документ / порожня
+  // 02»: route add_as_is×1, stoppedAt='triage_whole_volume', чи documentsCount=0.
+  function logPipelineResult(diag, result, stageTimings) {
+    diag.log('pipeline_result', {
+      ok: !!result.ok,
+      stoppedAt: result.stoppedAt || null,
+      documentsCount: Array.isArray(result.documents) ? result.documents.length : 0,
+      decisionsCount: Array.isArray(result.decisions) ? result.decisions.length : 0,
+      routes: Array.isArray(result.decisions)
+        ? result.decisions.map((d) => d?.route || d?.type || null)
+        : null,
+      // ДІАГ тріажу (TASK triage_diag_logging §3.4): паспорт + токени + текст
+      // помилки через канал decisions (scope==='triage'). Розгортаємо meta у
+      // плоский запис — у diag-файлі видно ЧОМУ том став одним шматком
+      // (рідкий паспорт? обрізаний max_tokens? AI здався?), без читання коду.
+      triage: Array.isArray(result.decisions)
+        ? result.decisions
+            .filter((d) => d?.scope === 'triage')
+            .map((d) => ({ type: d.type, message: d.message || null, ...(d.meta || {}) }))
+        : null,
+      errorsCount: Array.isArray(result.errors) ? result.errors.length : 0,
+      firstError: result.errors?.[0]?.message || result.errors?.[0]?.code || null,
+      timings: stageTimings,
+    });
+  }
+
+  // executeRun — Фаза 2. Бере «шухляду» Фази 1 + (відредагований) план,
+  // нормалізує його (реюз triage normalizePlan; ідемпотентний на плані Фази 1),
+  // кладе у ctx.reconstructionPlan і доганяє диригент від EXTRACT до EMIT. На
+  // успіху чистить _temp (clearState). Повертає той самий shape, що й happy/
+  // stopped виходи старого run(). diag завжди флашиться (finally).
+  // editedPlan == null → НЕ чіпаємо ctx.reconstructionPlan (Фаза 1 не дала
+  // плану → fallback persist, поведінка як сьогодні).
+  async function executeRun(session, editedPlan) {
+    const { state, jobId, caseId, pipeline, pipelineInput, ctx: seedCtx, stageTimings, diag } = session;
+    try {
+      let ctx = seedCtx;
+      if (editedPlan != null) {
+        ctx = { ...seedCtx, reconstructionPlan: normalizePlan(editedPlan) };
+      }
+
+      // Фаза 2: диригент від EXTRACT (EXTRACT→CONFIRM→PERSIST→EMIT) на ctx
+      // Фази 1. ctx подається — input ігнорується (стадії читають ctx).
+      const result = await pipeline.run(pipelineInput, { startFrom: STAGE.EXTRACT, ctx });
+
+      logPipelineResult(diag, result, stageTimings);
 
       if (result.ok && !result.stoppedAt) {
         // 6. успіх → чистимо _temp повністю (chunks + temp-оригінали + state).
@@ -444,30 +545,30 @@ export function createStreamingExecutor(deps = {}) {
       progressStore.reconcilePolling();
       return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: result.errors, decisions: result.decisions };
     } catch (err) {
-      // Вирівнювання return-shape з pipeline-stoppage (рядки 299-306): для UI
-      // (DPv2 Зона 3 «Помилки») і будь-якого caller'а існує ОДИН контракт
-      // на ok:false — `errors[]` масив (правило #11). Без цього збій executor
-      // (throw з streamFile/Drive/worker) доходить до адвоката лише тостом
-      // без деталей: `res.errors` undefined → опис тосту порожній → блок
-      // «Помилки» показує «Помилок немає» хоча реально стався збій.
+      // Збій Фази 2 (throw з PERSIST/Drive/worker). Той самий EXECUTOR_THREW
+      // контракт, що й Фаза 1 (правило #11 — один shape на ok:false).
       state.status = JOB_STATUS.STOPPED;
       state.stoppedAt = state.stoppedAt || 'exception';
       state.error = { code: 'EXECUTOR_THREW', message: err?.message || String(err), stage: state.stoppedAt };
-      // ДІАГ: фатальний throw (включно з «Файл більший за 40 МБ» що долетів
-      // сюди з processChunk). chunk_ocr_error вище вже зафіксував номер+вагу
-      // блоку — тут лишається загальний підсумок прогону.
       diag.log('run_error', { code: state.error.code, message: state.error.message, stage: state.stoppedAt });
       try { await jobStore.saveState(state); } catch { /* стан міг не зберегтись */ }
       progressStore.finishJob(jobId, { status: 'stopped' });
       progressStore.reconcilePolling();
       return { ok: false, jobId, resumable: true, stoppedAt: state.stoppedAt, errors: [state.error], decisions: [] };
-    }
     } finally {
-      // ДІАГ: ЗАВЖДИ викидаємо лог на Drive — на будь-якому шляху виходу
-      // (успіх / стоп / throw / blocked / cancelled). Best-effort: помилка
-      // запису логу не впливає на результат run().
+      // ДІАГ: ЗАВЖДИ викидаємо лог на Drive у Фазі 2 — на будь-якому шляху
+      // виходу (успіх/стоп/throw). Best-effort.
       try { await diag.flush({ jobId, caseId }); } catch { /* лог best-effort */ }
     }
+  }
+
+  // run — композиція двох фаз (behavior-preserving, вихід ідентичний старому).
+  // Неінтерактивний шлях: план Фази 1 виконується без редагування. Термінальний
+  // вихід Фази 1 (blocked/cancelled/stop/throw — без session) повертається як є.
+  async function run(input, { resumeState = null } = {}) {
+    const proposed = await proposeRun(input, { resumeState });
+    if (!proposed.ok || !proposed.session) return proposed;
+    return executeRun(proposed.session, proposed.plan);
   }
 
   // Скасування адвокатом (Варіант В §8): рішення «зберегти N / видалити все»
@@ -518,5 +619,5 @@ export function createStreamingExecutor(deps = {}) {
     return jobStore.hasResumableJob(caseId, jobId);
   }
 
-  return { run, resume, checkResumable, keepPartial, discardAll, _jobStore: jobStore };
+  return { run, proposeRun, executeRun, resume, checkResumable, keepPartial, discardAll, _jobStore: jobStore };
 }
