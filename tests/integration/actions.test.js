@@ -106,6 +106,31 @@ describe('executeAction integration', () => {
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/addedBy/);
     });
+
+    // A7.4 — inline-правка метаданів у «Деталях» вʼювера ОБОВʼЯЗКОВО йде через
+    // update_document ACTION (R2: аудит/білінг/permission), не локальний updateCase.
+    it('A7.4: date/author/category тече через update_document ACTION', async () => {
+      const result = await h.executeAction('dossier_agent', 'update_document', {
+        caseId: 'case_001', documentId: doc.id,
+        fields: { date: '2026-03-14', author: 'opponent', category: 'motion' },
+      });
+      expect(result.success).toBe(true);
+      const updated = h.getCases()[0].documents[0];
+      expect(updated.date).toBe('2026-03-14');
+      expect(updated.author).toBe('opponent');
+      expect(updated.category).toBe('motion');
+    });
+
+    it('A7.4: очищення дати (null) через update_document — валідне', async () => {
+      await h.executeAction('dossier_agent', 'update_document', {
+        caseId: 'case_001', documentId: doc.id, fields: { date: '2026-03-14' },
+      });
+      const result = await h.executeAction('dossier_agent', 'update_document', {
+        caseId: 'case_001', documentId: doc.id, fields: { date: null },
+      });
+      expect(result.success).toBe(true);
+      expect(h.getCases()[0].documents[0].date).toBe(null);
+    });
   });
 
   describe('delete_document — UI-only через _fromUI', () => {

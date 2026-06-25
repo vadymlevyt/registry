@@ -30,6 +30,7 @@ import { ICON_SIZE } from "../UI/icons.js";
 import { DatePicker, DateTimePicker, Input, Modal, Button, Checkbox, BulkActionBar, useSelection, InlineEditableText } from "../UI";
 import { categoryLabel as getCategoryLabel } from "../../services/caseCategories.js";
 import { DocumentViewer } from "../DocumentViewer";
+import { DocumentDetailsPanel } from "../DocumentViewer/DocumentDetailsPanel.jsx";
 import { AddDocumentModal } from "./AddDocumentModal.jsx";
 import DocumentProcessorV2 from "../DocumentProcessorV2";
 import { ECITSBanner } from "../ECITSBanner";
@@ -68,6 +69,8 @@ export default function CaseDossier({ caseData, cases, updateCase, onClose, onSa
   const [activeTab, setActiveTab] = useState("overview");
   const [matMode, setMatMode] = useState("tree");
   const [selectedDoc, setSelectedDoc] = useState(null);
+  // A7.4 — панель inline-правки метаданих (date/author/category) поточного документа.
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [docFilters, setDocFilters] = useState({ proc: "all", category: "all", author: "all" });
   const [notesExpanded, setNotesExpanded] = useState(false);
   const [ideaOpen, setIdeaOpen] = useState(false);
@@ -2313,9 +2316,7 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             updateCase && updateCase(caseData.id, 'documents', updated);
             setSelectedDoc(prev => (prev && prev.id === documentId ? { ...prev, ...fields } : prev));
           }}
-          onOpenDetails={() => {
-            toast.info('Панель деталей у розробці');
-          }}
+          onOpenDetails={() => setDetailsOpen(true)}
           onDiscussWithAgent={() => {
             setAgentOpen(true);
             toast.info('Передача документа в чат агента — у розробці', {
@@ -2352,6 +2353,32 @@ Deadlines: ${JSON.stringify(caseData.deadlines || [])}`;
             if (!selectedDoc) return;
             setDocPendingDelete(selectedDoc);
             setDeleteDocOpen(true);
+          }}
+        />
+        {/* A7.4 — inline-правка метаданів через ACTION (R2: не локальний updateCase). */}
+        <DocumentDetailsPanel
+          isOpen={detailsOpen}
+          document={selectedDoc}
+          onClose={() => setDetailsOpen(false)}
+          onSave={async (documentId, fields) => {
+            if (!onExecuteAction) {
+              toast.error('Дія недоступна');
+              return { success: false };
+            }
+            const res = await onExecuteAction('dossier_agent', 'update_document', {
+              caseId: caseData.id,
+              documentId,
+              fields,
+            });
+            if (res?.success) {
+              setSelectedDoc(prev =>
+                prev && prev.id === documentId ? { ...prev, ...fields } : prev
+              );
+              toast.success('Деталі документа оновлено');
+            } else {
+              toast.error(res?.error || 'Не вдалося оновити документ');
+            }
+            return res;
           }}
         />
       </div>
