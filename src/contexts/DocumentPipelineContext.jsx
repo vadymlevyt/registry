@@ -79,11 +79,13 @@ async function aiTriage({ artifacts, userHint, caseId }) {
 // OCR одного chunk: байти приходять з _temp (streamingExecutor читає, потім
 // зануляє). documentAi.extract підтримує localBlob — Drive-id чанку не
 // потрібен. Кеш у 02_ОБРОБЛЕНІ не пишеться (нема subFolders → no-op).
-async function ocrChunkBytes({ bytes }) {
+async function ocrChunkBytes({ bytes, startPage }) {
   const blob = new Blob([bytes], { type: 'application/pdf' });
   const res = await ocrService.extractText(
     { name: 'chunk.pdf', mimeType: 'application/pdf', localBlob: blob },
-    { skipCache: true, forceProvider: 'documentAi' },
+    // pageOffset (діаг A7-fix): глобальний зсув, щоб помилки Document AI
+    // показували СПРАВЖНІ сторінки джерела (51-75), а не локальні 1-15 чанка.
+    { skipCache: true, forceProvider: 'documentAi', pageOffset: startPage ? startPage - 1 : 0 },
   );
   return { text: res?.text || '', layout: res?.pageStructure || null };
 }

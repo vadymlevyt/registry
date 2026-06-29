@@ -358,6 +358,14 @@ export default {
     const isRangeProcessed = (startPage) =>
       state.processedRanges.some((r) => r.startPage === startPage);
 
+    // pageOffset (діаг, A7-fix) — глобальний зсув сторінок у вихідному файлі.
+    // documentAi отримує чанк як свіжий PDF (локальні стор. 1..N); коли його
+    // викликає streamingExecutor на чанку 51-75, локальні «1-15» вводять в оману.
+    // Caller (ocrChunkBytes) передає pageOffset=startGlobal-1 → у повідомленнях
+    // показуємо СПРАВЖНІ сторінки. Дефолт 0 (single-file шлях — локальні=глобальні).
+    const pageOffset = Number(options.pageOffset) || 0;
+    const gp = (lo, hi) => `${lo + pageOffset}-${hi + pageOffset}`;
+
     for (let start = 0; start < pageCount; start += DOC_AI_PAGES_PER_REQUEST) {
       const end = Math.min(start + DOC_AI_PAGES_PER_REQUEST, pageCount);
       const startPage1 = start + 1;       // 1-based для зовнішнього звіту
@@ -393,7 +401,7 @@ export default {
         setResume(file.id, state);
         throw makeError(
           'UNSUPPORTED',
-          `Чанк сторінок ${startPage1}-${endPage1} більший за ${DOC_AI_MB_PER_REQUEST} МБ`
+          `Чанк сторінок ${gp(startPage1, endPage1)} більший за ${DOC_AI_MB_PER_REQUEST} МБ`
         );
       }
 
@@ -412,8 +420,11 @@ export default {
           state.lastFailedRange = { startPage: startPage1, endPage: endPage1 };
           state.lastError = { code: 'NETWORK', message: e.message };
           setResume(file.id, state);
+          // Діаг (A7-fix): НЕ затирати справжню причину — додаємо реальне
+          // повідомлення Google (postToDocAi кладе туди «Document AI 5xx: <тіло>»
+          // / «таймаут»). + глобальні сторінки замість локальних 1-15.
           throw makePartialError(
-            `Document AI: вичерпано retry на сторінках ${startPage1}-${endPage1}`,
+            `Document AI: вичерпано retry на сторінках ${gp(startPage1, endPage1)} — ${e.message}`,
             state
           );
         }
