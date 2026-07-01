@@ -424,6 +424,10 @@ A6 (Електронний суд) і Вісь C (рефактори) — пар
 ---
 
 ## ПОЗА ЦІЄЮ КАРТОЮ (ширша картина — лише перелік)
+> **Серверний перехід + нові модулі + продукт/бізнес/маркетинг — окремий форвард-план:**
+> `docs/MASTER_PLAN_server_transition.md` (виріб жнив знань 2026-07-01; фази B1-B16, Canvas/Billing/
+> Content Hub/Workflow/Telegram/Main-agent, двоканальна ЄСІТС, тарифи). Ця ROADMAP — DP/рефактор-скоуп.
+
 CLAUDE.md «Заплановано»: Canvas-конструктор, Multi-user Activation, Storage Migration,
 Billing UI, AI Provider Abstraction, Telegram-бот (борг #41). Серверні: sliding window
 (#48), нічна пакетна очистка (#45), паралельні сценарії, AI-оркестратор (Ітерація 3).

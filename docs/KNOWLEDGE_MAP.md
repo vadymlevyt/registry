@@ -29,9 +29,10 @@
 ## 1. Серверна міграція / готовність 🟢
 | Файл | Що там |
 |------|--------|
-| `docs/audits/audit_dp_server_migration_readiness.md` | 16 browser-bound блокерів (B1-B16, 3 безпекові-критичні); DI-порти = актив міграції; порядок переїзду. **Головний файл теми.** |
+| `docs/MASTER_PLAN_server_transition.md` | **⭐ ГОЛОВНИЙ форвард-план** (виріб жнив 2026-07-01): фази міграції + блокери B1-B16, таблиця «допил vs наново», нові модулі, паралельні гілки, продукт/бізнес/маркетинг. Читати першим при плануванні серверу. |
+| `docs/audits/audit_dp_server_migration_readiness.md` | 16 browser-bound блокерів (B1-B16, 3 безпекові-критичні); DI-порти = актив міграції; порядок переїзду. **Хребет блокерів.** |
 | `docs/consultations/handoff_2026-06-23_metadata_a5_decisions_and_deferral.md` | Прецедент «джерело тексту → БД = rework»; чому клієнтська передбудова = подвійна робота. |
-> Висновки ЦІЄЇ сесії (серверна лінза «переживає/розчиняється»; напрям стеку Postgres+TS+worker+managed auth; порядок фаз; дата-модель Canvas) — засіяні в `handoff_2026-06-27_knowledge_harvest_kickoff.md` §4. **Варто винести в окремий keeper при плануванні сервера.**
+> Серверна лінза (переживає/розчиняється/переробляється) + big-bang/strangler — винесені в `DEVELOPMENT_PHILOSOPHY.md`. Напрям стеку (Postgres+TS+worker+managed auth), порядок фаз, тарифи — у майстер-плані вище.
 
 ## 2. Дата-модель / метадані / граф знань 🟢
 | Файл | Що там |
@@ -58,7 +59,7 @@
 |------|--------|
 | `docs/consultations/recommended_activity_event_billing_architecture.md` | Архітектура подій активності → білінг. |
 | `docs/tasks/TASK_ai_cost_analysis_and_forecast.md` | Модель $/токен, ранжування агентів → вхід для tariff matrix і `subscription.limits`. |
-> Продуктова візія Billing/CRM (`context_billing_crm_v1…v1_5`, `ROADMAP_billing_crm`) — у **зіпах** (`_harvest_inbox/`); після жнив — RETAIN сюди.
+| `docs/consultations/context_billing_crm_v1_5.md` | **RETAIN (жнива).** Продуктова візія Billing/CRM: майстер-таймер+субтаймери, 3-шарова детекція активності, 7 моделей оплати (укр. fixed-price), CRM як зріз. 13 тез — уже в philosophy; тут — понад них. |
 
 ## 6. Multi-user activation 🟢
 | `docs/consultations/multiuser_saas_activation_notes.md` | Активація мульти-юзера (Олена-помічниця), ролі/доступ (потребує Auth+RLS сервера). |
@@ -69,6 +70,7 @@
 | `docs/CONTEXT_for_extension_session.md` | Контекст extension-сесії. |
 | `docs/consultations/extension_architecture_recommendations.md` | Track B — власне Chrome-розширення. |
 | `docs/consultations/ecits_admin_context.md` | ЄСІТС адмін-контекст. |
+| `docs/tasks/TASK_ecourt_api_research.md` | **RETAIN (жнива).** Канал 2 — офіційне АРІ ЕС через корпоративний кабінет юр.особи (enterprise, за ЄДРПОУ); двоканальна стратегія RPA↔API. Борг #89. |
 > Продовження Court Sync (Журнал/Розбіжності/синхронізація документів) — у `ROADMAP.md` (паралельна гілка).
 
 ## 8. Дизайн / UI / рефакторинг 🟢
@@ -97,7 +99,24 @@
 | Файл | Що там |
 |------|--------|
 | `docs/consultations/handoff_2026-06-27_knowledge_harvest_kickoff.md` | Метод жнив + курований список читання + засів висновків сесії. |
-| `docs/_harvest_inbox/README.md` | Процедура обробки zip-архівів чатів (тимчасова папка). |
+| `docs/MASTER_PLAN_server_transition.md` | Виріб жнив 2026-07-01 — форвард майстер-план (див. §1 вище). |
+> `docs/_harvest_inbox/` (сирі zip-дампи) прибрано після жнив 2026-07-01 — конвенція «лише канонічне лишається».
+
+## 13. Продукт / бізнес / маркетинг (RETAIN-keeper'и жнив) 🟢
+| Файл | Що там |
+|------|--------|
+| `docs/consultations/retained_product_vision_v1.md` | **RETAIN.** Загальнопродуктова візія (ОС адвоката, не чат), двоканальна ЄСІТС, ARR-оцінка, білт-лейбл. Осиротілі ідеї: `related_cases[]` (борг #85), інституційна памʼять (борг #88). |
+| `docs/consultations/context_marketing_strategy_v1.md` | **RETAIN.** Ринок ~32-35 тис адвокатів, 6 сегментів, позиціонування «розумний робочий простір», стратегія відеоархіву, канали без згадки конкурентів. |
+| `docs/consultations/context_billing_crm_v1_5.md` | Продуктова візія Billing/CRM (див. §5). |
+
+## 14. Нові модулі — візії (RETAIN-keeper'и жнив) 🟢
+| Файл | Що там |
+|------|--------|
+| `docs/consultations/context_content_hub_v1.md` | **RETAIN.** Content Hub — ОС маркетингу бюро: розвідка→ідеї→бібліотека→генерація→відео→автопостинг; 3 ітерації ($0/$47/$94 міс). Парк→план. |
+| `docs/consultations/architecture_workflow_engine_v1.md` | **RETAIN.** Workflow engine — гнучкі правила створення справ/акцептів (5 сценаріїв соло→юрфірма); `draft`-статус = захист. ДНК-заготовка. |
+| `docs/consultations/architecture_agents_hierarchy_v1.md` | **RETAIN.** Ієрархія агентів (Opus головний + горизонтальні), 3 шари інституційної памʼяті, `logDecision()`, RAG (pgvector). Main-agent — борг #88. |
+| `docs/consultations/context_telegram_integration_v2.md` | **RETAIN.** Telegram — 3 модулі (клієнтський канал / внутрішні групи / enterprise з фільтром конфіденційності); downscale на вході закриває #40/#41. |
+| `docs/tasks/TASK_system_prompt_v2_case_context.md` | **RETAIN.** Готова спека системного промпту `case_context.md` (11 розділів, адаптація під тип справи, 8 anti-hallucination правил) → вхід для селективного контекст-генератора. |
 
 ---
 
