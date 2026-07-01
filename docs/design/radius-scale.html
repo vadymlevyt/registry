@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Foundations" -->
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Шкала заокруглень + колізія --radius-sm</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0f1117;--surface:#191c27;--surface2:#222638;--border:#2d3250;
+    --text:#e8eaf0;--text2:#a8b3cf;--muted:#6b7693;--accent:#4f7cff;--danger:#ff4f6a;--success:#3dd68c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Manrope',system-ui,sans-serif;
+    font-size:14px;line-height:1.5;padding:32px;max-width:960px;margin:0 auto}
+  h1{font-family:'Unbounded',sans-serif;font-size:22px;margin-bottom:4px}
+  h2{font-family:'Unbounded',sans-serif;font-size:15px;margin:30px 0 16px;
+    padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .sub{color:var(--text2);margin-bottom:6px}
+  .scale{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end}
+  .item{text-align:center}
+  .box{width:92px;height:92px;background:var(--surface2);border:2px solid var(--accent)}
+  .lbl{margin-top:10px;font-weight:600;font-size:13px}
+  .px{color:var(--text2);font-size:12px;font-family:'JetBrains Mono',monospace}
+
+  .collide{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px;margin-top:6px}
+  .pair{display:flex;gap:40px;align-items:flex-end;flex-wrap:wrap}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:9999px;margin-bottom:8px;font-weight:600}
+  .tag.old{background:rgba(255,79,106,.15);color:#ff8ea1}
+  .tag.new{background:rgba(79,124,255,.15);color:#93b0ff}
+  .box.old{border-color:var(--danger)}
+  .arrow{font-size:26px;color:var(--muted);align-self:center;padding-bottom:38px}
+  .fix{margin-top:20px;background:rgba(61,214,140,.10);border:1px solid rgba(61,214,140,.35);
+    border-radius:8px;padding:12px 14px;color:#8ee9bd;font-size:13px}
+  .fix b{color:#b6f2d5}
+  .fix code{font-family:'JetBrains Mono',monospace}
+</style>
+</head>
+<body>
+  <h1>Заокруглення кутів (radius)</h1>
+  <p class="sub">Наскільки скруглені кути. Більше число — круглішіші кути. Значення звірено з коду.</p>
+
+  <h2>Повна шкала нового словника (tokens.css)</h2>
+  <div class="scale">
+    <div class="item"><div class="box" style="border-radius:4px"></div><div class="lbl">xs</div><div class="px">4px</div></div>
+    <div class="item"><div class="box" style="border-radius:6px"></div><div class="lbl">sm</div><div class="px">6px</div></div>
+    <div class="item"><div class="box" style="border-radius:8px"></div><div class="lbl">md</div><div class="px">8px</div></div>
+    <div class="item"><div class="box" style="border-radius:12px"></div><div class="lbl">lg</div><div class="px">12px</div></div>
+    <div class="item"><div class="box" style="border-radius:16px"></div><div class="lbl">xl</div><div class="px">16px</div></div>
+    <div class="item"><div class="box" style="border-radius:9999px"></div><div class="lbl">full</div><div class="px">коло/пігулка</div></div>
+  </div>
+
+  <h2>Колізія: однакова назва <code>--radius-sm</code> — різний розмір</h2>
+  <p class="sub">Придивись до кутів: лівий (старий) помітно круглішіший за правий (новий). Однакове ім'я, різне заокруглення.</p>
+  <div class="collide">
+    <div class="pair">
+      <div class="item">
+        <span class="tag old">старий App.css</span>
+        <div class="box old" style="border-radius:8px"></div>
+        <div class="lbl">--radius-sm</div><div class="px">8px</div>
+      </div>
+      <div class="arrow">≠</div>
+      <div class="item">
+        <span class="tag new">новий tokens.css</span>
+        <div class="box" style="border-radius:6px"></div>
+        <div class="lbl">--radius-sm</div><div class="px">6px</div>
+      </div>
+    </div>
+    <div class="fix">
+      <b>Розгадка:</b> старий <code>--radius-sm</code> (8px) за розміром = новий <code>--radius-md</code> (8px), а НЕ новий <code>--radius-sm</code> (6px). Тому аліасити треба <b>за розміром</b>: старий <code>sm</code> → новий <code>md</code>. Тоді кути лишаються як зараз.
+    </div>
+  </div>
+</body>
+</html>
