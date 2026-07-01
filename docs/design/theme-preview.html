@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<!-- @dsCard group="Foundations" -->
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Тема темна / світла — прев'ю картки справи</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     ДЕМО перемикання тем через ОДИН словник змінних.
+     Тумблер міняє лише набір значень — увесь макет перемальовується сам.
+     Це і є "перемкнув дизайн — змінилось скрізь", про що говорили.
+
+     ТЕМНА  — поточний вигляд великих екранів (значення з App.css:
+              accent/семантика — старі; фони/текст — спільні).
+     СВІТЛА — ЧЕРНЕТКА-пропозиція (світлої теми в застосунку ще нема).
+              Значення orієнтовні, крутимо разом.
+     ============================================================ */
+
+  [data-theme="dark"]{
+    --bg:#0f1117; --surface:#191c27; --surface2:#222638; --border:#2d3250;
+    --text:#e8eaf0; --text2:#8b90a7; --muted:#555a73;
+    --accent:#4f7cff; --accent-hover:#3f68e0;
+    --success:#3dd68c; --warning:#ff8c42; --danger:#ff4f6a; --gold:#ffd166;
+    --shadow:0 12px 24px rgba(0,0,0,.5);
+  }
+  [data-theme="light"]{
+    --bg:#f5f7fa; --surface:#ffffff; --surface2:#eef1f6; --border:#d8dee9;
+    --text:#1a1e2b; --text2:#565f78; --muted:#8a92a6;
+    --accent:#3b6fe0; --accent-hover:#2f5bc4;
+    --success:#16a34a; --warning:#d97706; --danger:#dc2626; --gold:#bd8b1a;
+    --shadow:0 12px 24px rgba(20,30,60,.12);
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Manrope',system-ui,sans-serif;
+    font-size:14px;line-height:1.5;padding:28px;transition:background .25s,color .25s}
+  .bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;max-width:560px}
+  .bar h1{font-family:'Unbounded',sans-serif;font-size:18px}
+  .toggle{display:flex;gap:0;border:1px solid var(--border);border-radius:9999px;overflow:hidden}
+  .toggle button{border:0;background:transparent;color:var(--text2);padding:7px 16px;font:inherit;cursor:pointer;font-size:13px}
+  .toggle button.on{background:var(--accent);color:#fff}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:20px;max-width:560px;box-shadow:var(--shadow);transition:background .25s,border-color .25s}
+  .card .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+  .title{font-family:'Unbounded',sans-serif;font-size:17px;line-height:1.3}
+  .star{color:var(--gold);font-size:18px}
+  .cno{color:var(--text2);font-size:13px;margin-top:4px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+  .chip{font-size:12px;padding:4px 10px;border-radius:9999px;background:var(--surface2);color:var(--text2);border:1px solid var(--border)}
+  .chip.appeal{background:rgba(59,111,224,.15);color:var(--accent);border-color:transparent}
+  .rows{border-top:1px solid var(--border);margin-top:6px;padding-top:14px;display:grid;gap:10px}
+  .r{display:flex;justify-content:space-between;font-size:13px}
+  .r .k{color:var(--muted)}
+  .r .v{color:var(--text)}
+  .status{display:flex;align-items:center;gap:7px}
+  .d{width:8px;height:8px;border-radius:9999px}
+  .actions{display:flex;gap:10px;margin-top:18px}
+  .btn{border:0;border-radius:8px;padding:9px 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .btn.primary{background:var(--accent);color:#fff}
+  .btn.ghost{background:transparent;color:var(--text2);border:1px solid var(--border)}
+  .legend{display:flex;gap:16px;margin-top:16px;max-width:560px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .legend span{display:flex;align-items:center;gap:6px}
+</style>
+</head>
+<body data-theme="dark">
+  <div class="bar">
+    <h1>Картка справи</h1>
+    <div class="toggle">
+      <button id="bDark" class="on" onclick="setTheme('dark')">Темна</button>
+      <button id="bLight" onclick="setTheme('light')">Світла</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <div>
+        <div class="title">Брановський М. О. ⚖</div>
+        <div class="cno">Справа № 205/4770/25 · Заводський районний суд</div>
+      </div>
+      <div class="star" title="Ключова справа">★</div>
+    </div>
+
+    <div class="chips">
+      <span class="chip appeal">Апеляція</span>
+      <span class="chip">Цивільна</span>
+      <span class="chip">Активна</span>
+    </div>
+
+    <div class="rows">
+      <div class="r"><span class="k">Наступне засідання</span><span class="v">14.07.2026, 10:00</span></div>
+      <div class="r"><span class="k">Суддя</span><span class="v">Коваленко І. П.</span></div>
+      <div class="r"><span class="k">Наступна дія</span><span class="v">Подати апеляційну скаргу</span></div>
+      <div class="r"><span class="k">Статус</span><span class="v status"><span class="d" style="background:var(--success)"></span>У роботі</span></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary">Відкрити досьє</button>
+      <button class="btn ghost">Додати нотатку</button>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="d" style="background:var(--success)"></span>успіх</span>
+    <span><span class="d" style="background:var(--warning)"></span>попередження</span>
+    <span><span class="d" style="background:var(--danger)"></span>небезпека</span>
+    <span><span class="d" style="background:var(--gold)"></span>ключове</span>
+  </div>
+
+  <script>
+    function setTheme(t){
+      document.body.setAttribute('data-theme',t);
+      document.getElementById('bDark').classList.toggle('on',t==='dark');
+      document.getElementById('bLight').classList.toggle('on',t==='light');
+    }
+  </script>
+</body>
+</html>
